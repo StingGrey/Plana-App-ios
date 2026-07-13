@@ -1,8 +1,24 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 联网:直连 NAI。必须放在主 manifest;否则 release 包无联网权限(debug 包因 debug manifest 自带 INTERNET 才能上网) -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+
+    <!-- 下载到相册:仅 Android 9 及以下需要;10+ 走 MediaStore 免权限(gal) -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+
+    <!-- 后台生成进度:前台服务(dataSync)+ 常驻/可上岛通知 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS"/>
+
     <application
-        android:label="plana_app"
+        android:label="Plana"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true"
+        android:enableOnBackInvokedCallback="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -30,6 +46,12 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+
+        <!-- 生成进度前台服务:切后台不被杀 + 独占进度通知(API 36 上灵动岛/状态栏胶囊) -->
+        <service
+            android:name=".LiveProgressService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

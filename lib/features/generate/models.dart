@@ -1,0 +1,425 @@
+/// 创作页 UI 状态模型。当前里程碑仅承载界面,后续接 NAI API 时补充序列化。
+library;
+
+import 'dart:typed_data';
+
+import 'res_rules.dart' show kFreePixelThreshold;
+
+const Object _unset = Object();
+
+/// 角色提示词当前编辑面
+enum CharTab { positive, negative }
+
+class CharacterPrompt {
+  const CharacterPrompt({
+    required this.id,
+    required this.name,
+    this.positive = '',
+    this.negative = '',
+    this.enabled = true,
+    this.position, // 'A1'..'E5';null = AUTO
+    this.activeTab = CharTab.positive,
+  });
+
+  final String id;
+  final String name;
+  final String positive;
+  final String negative;
+  final bool enabled;
+  final String? position;
+  final CharTab activeTab;
+
+  CharacterPrompt copyWith({
+    String? name,
+    String? positive,
+    String? negative,
+    bool? enabled,
+    Object? position = _unset,
+    CharTab? activeTab,
+  }) {
+    return CharacterPrompt(
+      id: id,
+      name: name ?? this.name,
+      positive: positive ?? this.positive,
+      negative: negative ?? this.negative,
+      enabled: enabled ?? this.enabled,
+      position: position == _unset ? this.position : position as String?,
+      activeTab: activeTab ?? this.activeTab,
+    );
+  }
+}
+
+class VibeItem {
+  const VibeItem({
+    required this.id,
+    this.name = '',
+    this.enabled = true,
+    this.strength = 0.6,
+    this.infoExtracted = 1.0,
+    this.image,
+    this.imageHash,
+    this.encodedByModel,
+    this.sourceId,
+  });
+
+  final String id;
+  final String name; // 来源文件名/展示名
+  final bool enabled;
+  final double strength;
+  final double infoExtracted;
+
+  /// 原始图片字节(用户选的图);编码时用,缩略图也用它显示。
+  final Uint8List? image;
+
+  /// 图片内容哈希(sha256 hex),编码缓存键用——内容寻址,重选同图/重启后仍可命中。
+  final String? imageHash;
+
+  /// 纯编码 vibe(库导入的 type:'encoding' 文件,无原图):
+  /// encodings 键(v4-5full 等)→ 编码串;生成时按当前模型取,取不到跳过。
+  /// IE 随文件固定,不可调。
+  final Map<String, String>? encodedByModel;
+
+  /// 来源库条目 id(从 Vibe 库添加/自动入库时有),生成成功后回写「最近使用」。
+  final String? sourceId;
+
+  /// 只有编码没有原图(IE 滑条锁定,无法重编码)。
+  bool get isEncodingOnly => image == null;
+
+  VibeItem copyWith({bool? enabled, double? strength, double? infoExtracted}) =>
+      VibeItem(
+        id: id,
+        name: name,
+        enabled: enabled ?? this.enabled,
+        strength: strength ?? this.strength,
+        infoExtracted: infoExtracted ?? this.infoExtracted,
+        image: image,
+        imageHash: imageHash,
+        encodedByModel: encodedByModel,
+        sourceId: sourceId,
+      );
+}
+
+/// 角色参考迁移模式。label 显示用;api 直接进载荷 base_caption(对齐 web)。
+enum CharRefMode {
+  character('角色', 'character'),
+  style('风格', 'style'),
+  both('角色&风格', 'character&style');
+
+  const CharRefMode(this.label, this.api);
+  final String label;
+  final String api;
+}
+
+class CharRefItem {
+  const CharRefItem({
+    required this.id,
+    this.name = '',
+    this.enabled = true,
+    this.mode = CharRefMode.both,
+    this.strength = 1.0,
+    this.infoExtracted = 1.0,
+    this.image,
+    this.imageHash,
+  });
+
+  final String id;
+  final String name;
+  final bool enabled;
+  final CharRefMode mode;
+  final double strength;
+
+  /// UI 上的「保真度 Fidelity」;载荷 secondary_strength = 1 - infoExtracted。
+  /// (director_reference_information_extracted 本身恒为 1,故此字段其实是 Fidelity。)
+  final double infoExtracted;
+  final Uint8List? image;
+  final String? imageHash;
+
+  CharRefItem copyWith({
+    bool? enabled,
+    CharRefMode? mode,
+    double? strength,
+    double? infoExtracted,
+  }) => CharRefItem(
+    id: id,
+    name: name,
+    enabled: enabled ?? this.enabled,
+    mode: mode ?? this.mode,
+    strength: strength ?? this.strength,
+    infoExtracted: infoExtracted ?? this.infoExtracted,
+    image: image,
+    imageHash: imageHash,
+  );
+}
+
+/// 一次重绘任务的完整载荷(由重绘编辑器构造,只存在于生成快照中,
+/// 不进创作页 UI)。image/mask 已按发送尺寸备好(整图或 64 对齐的局部框)。
+class InpaintJob {
+  const InpaintJob({
+    required this.image,
+    required this.mask,
+    required this.strength,
+    this.paste,
+  });
+
+  /// 发送底图 PNG(整图重绘=原图;局部=裁切子图)。
+  final Uint8List image;
+
+  /// 与 image 同尺寸的黑白 mask PNG(白=重绘区,已 8×8 对齐)。
+  final Uint8List mask;
+
+  final double strength;
+
+  /// 局部重绘的贴回信息;null = 整图(结果直接入库)。
+  final InpaintPaste? paste;
+}
+
+/// 局部重绘贴回:结果(发送框尺寸)中 tight 区域贴回原图对应位置。
+class InpaintPaste {
+  const InpaintPaste({
+    required this.original,
+    required this.sendX,
+    required this.sendY,
+    required this.tightX,
+    required this.tightY,
+    required this.tightW,
+    required this.tightH,
+    required this.outW,
+    required this.outH,
+  });
+
+  /// 原完整图 PNG(贴回底)。
+  final Uint8List original;
+
+  /// 发送框原点(相对原图;发送框尺寸即快照 params.width/height)。
+  final int sendX, sendY;
+
+  /// 贴回的紧凑区域(相对原图)。
+  final int tightX, tightY, tightW, tightH;
+
+  /// 入库尺寸(=原图尺寸)。
+  final int outW, outH;
+}
+
+class Img2ImgConfig {
+  const Img2ImgConfig({this.strength = 0.7, this.noise = 0.0, this.image});
+
+  final double strength;
+  final double noise;
+
+  /// 原始底图字节;生成时 cover 到目标分辨率再编码发送。
+  final Uint8List? image;
+
+  Img2ImgConfig copyWith({double? strength, double? noise, Uint8List? image}) =>
+      Img2ImgConfig(
+        strength: strength ?? this.strength,
+        noise: noise ?? this.noise,
+        image: image ?? this.image,
+      );
+}
+
+enum LoopCount {
+  x4('4'),
+  x8('8'),
+  x16('16'),
+  infinite('∞');
+
+  const LoopCount(this.label);
+  final String label;
+
+  /// 循环张数;0 表示无限(手动停止或失败为止)。
+  int get count => switch (this) {
+    LoopCount.x4 => 4,
+    LoopCount.x8 => 8,
+    LoopCount.x16 => 16,
+    LoopCount.infinite => 0,
+  };
+}
+
+class SizePreset {
+  const SizePreset(
+    this.name,
+    this.ratio,
+    this.width,
+    this.height, {
+    this.free = false,
+  });
+  final String name;
+  final String ratio;
+  final int width;
+  final int height;
+  final bool free;
+}
+
+/// 分辨率三档
+const sizeTabs = <String, List<SizePreset>>{
+  '小图': [
+    SizePreset('竖图', '2:3', 832, 1216, free: true),
+    SizePreset('横图', '3:2', 1216, 832, free: true),
+    SizePreset('方形', '1:1', 1024, 1024, free: true),
+  ],
+  '大图': [
+    SizePreset('竖图', '2:3', 1024, 1536),
+    SizePreset('横图', '3:2', 1536, 1024),
+    SizePreset('方形', '1:1', 1472, 1472),
+  ],
+  '壁纸': [
+    SizePreset('竖屏', '9:16', 1088, 1920),
+    SizePreset('横屏', '16:9', 1920, 1088),
+    SizePreset('手机', '15:34', 960, 2176),
+  ],
+};
+
+// 对齐 web 移动端:只保留 V4/V4.5(V3 用另一套载荷,移动端不提供)。
+const models = <String>[
+  'NAI 4.5 Full',
+  'NAI 4.5 Curated',
+  'NAI 4.0 Full',
+  'NAI 4.0 Curated',
+];
+
+const samplers = <String>[
+  'Euler Ancestral',
+  'Euler',
+  'DPM++ 2S A',
+  'DPM++ 2M SDE',
+  'DPM++ 2M',
+  'DPM++ SDE',
+];
+
+const noiseSchedules = <String>['karras', 'exponential', 'polyexponential'];
+
+class GenParams {
+  const GenParams({
+    this.model = 'NAI 4.5 Full',
+    this.width = 832,
+    this.height = 1216,
+    this.steps = 28,
+    this.cfg = 5.0,
+    this.varietyPlus = false,
+    this.sampler = 'Euler Ancestral',
+    this.noiseSchedule = 'karras',
+    this.seed = '',
+    this.cfgRescale = 0.0,
+    this.loop = LoopCount.x8,
+  });
+
+  final String model;
+  final int width;
+  final int height;
+  final int steps;
+  final double cfg;
+  final bool varietyPlus;
+  final String sampler;
+  final String noiseSchedule;
+  final String seed;
+  final double cfgRescale;
+  final LoopCount loop;
+
+  /// Opus 免费判定(像素 ≤ 免费阈值 + ≤28 步),按像素而非预设成员,兼容自定义尺寸。
+  bool get isFree => steps <= 28 && width * height <= kFreePixelThreshold;
+
+  GenParams copyWith({
+    String? model,
+    int? width,
+    int? height,
+    int? steps,
+    double? cfg,
+    bool? varietyPlus,
+    String? sampler,
+    String? noiseSchedule,
+    String? seed,
+    double? cfgRescale,
+    LoopCount? loop,
+  }) {
+    return GenParams(
+      model: model ?? this.model,
+      width: width ?? this.width,
+      height: height ?? this.height,
+      steps: steps ?? this.steps,
+      cfg: cfg ?? this.cfg,
+      varietyPlus: varietyPlus ?? this.varietyPlus,
+      sampler: sampler ?? this.sampler,
+      noiseSchedule: noiseSchedule ?? this.noiseSchedule,
+      seed: seed ?? this.seed,
+      cfgRescale: cfgRescale ?? this.cfgRescale,
+      loop: loop ?? this.loop,
+    );
+  }
+}
+
+/// 折叠面板标识
+enum Panel { prompt, characters, vibe, charRef, i2i }
+
+class GenerateState {
+  const GenerateState({
+    required this.prompt,
+    required this.negativePrompt,
+    required this.characters,
+    required this.vibes,
+    required this.charRefs,
+    required this.img2img,
+    required this.params,
+    required this.anlas,
+    required this.openPanels,
+    this.inpaint,
+  });
+
+  factory GenerateState.initial() => const GenerateState(
+    prompt: '',
+    negativePrompt: '',
+    characters: [],
+    vibes: [], // 真实 Vibe:用户选图后才有
+    charRefs: [],
+    img2img: null,
+    params: GenParams(),
+    anlas: 8420,
+    openPanels: {},
+  );
+
+  final String prompt;
+  final String negativePrompt;
+  final List<CharacterPrompt> characters;
+  final List<VibeItem> vibes;
+  final List<CharRefItem> charRefs;
+  final Img2ImgConfig? img2img;
+  final GenParams params;
+  final int anlas;
+  final Set<Panel> openPanels;
+
+  /// 重绘任务载荷:仅由重绘编辑器写入生成快照(与 img2img 互斥,
+  /// 优先生效);创作页编辑器状态恒为 null。
+  final InpaintJob? inpaint;
+
+  /// 粗略 token 估算(占位;正式版接 T5 分词)
+  int get promptTokens => (prompt.length / 2.2).round().clamp(0, 999);
+  int get negativeTokens => (negativePrompt.length / 2.2).round().clamp(0, 999);
+
+  int get enabledVibes => vibes.where((v) => v.enabled).length;
+  int get enabledCharRefs => charRefs.where((r) => r.enabled).length;
+
+  GenerateState copyWith({
+    String? prompt,
+    String? negativePrompt,
+    List<CharacterPrompt>? characters,
+    List<VibeItem>? vibes,
+    List<CharRefItem>? charRefs,
+    Object? img2img = _unset,
+    GenParams? params,
+    int? anlas,
+    Set<Panel>? openPanels,
+    Object? inpaint = _unset,
+  }) {
+    return GenerateState(
+      prompt: prompt ?? this.prompt,
+      negativePrompt: negativePrompt ?? this.negativePrompt,
+      characters: characters ?? this.characters,
+      vibes: vibes ?? this.vibes,
+      charRefs: charRefs ?? this.charRefs,
+      img2img: img2img == _unset ? this.img2img : img2img as Img2ImgConfig?,
+      params: params ?? this.params,
+      anlas: anlas ?? this.anlas,
+      openPanels: openPanels ?? this.openPanels,
+      inpaint: inpaint == _unset ? this.inpaint : inpaint as InpaintJob?,
+    );
+  }
+}
