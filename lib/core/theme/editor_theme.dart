@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
 
-import 'app_theme.dart';
-
 /// 编辑器专用「实体类型」强调色。
 /// 说明:正面=primary、负面=error 由 M3 语义角色天然给出;
 /// 但「角色 / OC / 作品 / 加权 / 降权」是种子色无法表达的类型语义,集中定义在此扩展里,
@@ -14,6 +12,10 @@ class EditorPalette extends ThemeExtension<EditorPalette> {
     required this.work,
     required this.weightUp,
     required this.weightDown,
+    required this.weightUpWash,
+    required this.weightDownWash,
+    required this.weightUpBorder,
+    required this.weightDownBorder,
     required this.cursor,
   });
 
@@ -26,11 +28,24 @@ class EditorPalette extends ThemeExtension<EditorPalette> {
   /// 作品(紫罗兰)
   final Color work;
 
-  /// 加权 {} (橙)
+  /// 加权 {} (橙,文本/读数/按钮用)
   final Color weightUp;
 
-  /// 降权 [] (蓝)
+  /// 降权 [] (蓝,文本/读数/按钮用)
   final Color weightDown;
+
+  /// 加权底色(朱红;web 的深锈红在浅色底上会被冲成棕褐,改用更红的
+  /// 色相并抬高透明度下限,浅色主题下才读得出「红」)
+  final Color weightUpWash;
+
+  /// 降权底色(web rgba(59,130,246) 蓝)
+  final Color weightDownWash;
+
+  /// 加权 chip 边框(web rgba(251,146,60) 橙)
+  final Color weightUpBorder;
+
+  /// 降权 chip 边框(web rgba(96,165,250) 浅蓝)
+  final Color weightDownBorder;
 
   /// 输入光标
   final Color cursor;
@@ -42,7 +57,25 @@ class EditorPalette extends ThemeExtension<EditorPalette> {
     work: Color(0xFF8E44AD), // 紫罗兰
     weightUp: Color(0xFFC7620E), // 橙
     weightDown: Color(0xFF1B66C9), // 蓝
+    weightUpWash: Color(0xFFC63A10), // 朱红(浅底上显红)
+    weightDownWash: Color(0xFF3B82F6), // web 蓝
+    weightUpBorder: Color(0xFFFB923C), // web 橙
+    weightDownBorder: Color(0xFF60A5FA), // web 浅蓝
     cursor: Color(0xFF6750A4),
+  );
+
+  /// 深色变体:文本强调色提亮保证暗底可读,底色/边框回到 web 暗色稿原色。
+  static const dark = EditorPalette(
+    character: Color(0xFFCBB8FF),
+    oc: Color(0xFF81C784),
+    work: Color(0xFFCE93D8),
+    weightUp: Color(0xFFFFB74D),
+    weightDown: Color(0xFF64B5F6),
+    weightUpWash: Color(0xFFC2410C),
+    weightDownWash: Color(0xFF3B82F6),
+    weightUpBorder: Color(0xFFFB923C),
+    weightDownBorder: Color(0xFF60A5FA),
+    cursor: Color(0xFFCBB8FF),
   );
 
   @override
@@ -52,6 +85,10 @@ class EditorPalette extends ThemeExtension<EditorPalette> {
     Color? work,
     Color? weightUp,
     Color? weightDown,
+    Color? weightUpWash,
+    Color? weightDownWash,
+    Color? weightUpBorder,
+    Color? weightDownBorder,
     Color? cursor,
   }) =>
       EditorPalette(
@@ -60,8 +97,27 @@ class EditorPalette extends ThemeExtension<EditorPalette> {
         work: work ?? this.work,
         weightUp: weightUp ?? this.weightUp,
         weightDown: weightDown ?? this.weightDown,
+        weightUpWash: weightUpWash ?? this.weightUpWash,
+        weightDownWash: weightDownWash ?? this.weightDownWash,
+        weightUpBorder: weightUpBorder ?? this.weightUpBorder,
+        weightDownBorder: weightDownBorder ?? this.weightDownBorder,
         cursor: cursor ?? this.cursor,
       );
+
+  /// 权重底色(强度曲线集中在此,正文色带与排序 chip 共用):
+  /// 加权 (w−1)/1.5、降权 (1−w)/0.7 定强度,越偏离 1 越深;
+  /// 浅色主题下限抬高(加权 .20 起、降权 .12 起),1.05 也看得出色相。
+  Color? weightWash(double m) {
+    if (m > 1.0001) {
+      final i = ((m - 1) / 1.5).clamp(0.0, 1.0);
+      return weightUpWash.withValues(alpha: .20 + i * .50);
+    }
+    if (m < 0.9999) {
+      final i = ((1 - m) / 0.7).clamp(0.0, 1.0);
+      return weightDownWash.withValues(alpha: .12 + i * .45);
+    }
+    return null;
+  }
 
   @override
   EditorPalette lerp(EditorPalette? other, double t) {
@@ -72,15 +128,29 @@ class EditorPalette extends ThemeExtension<EditorPalette> {
       work: Color.lerp(work, other.work, t)!,
       weightUp: Color.lerp(weightUp, other.weightUp, t)!,
       weightDown: Color.lerp(weightDown, other.weightDown, t)!,
+      weightUpWash: Color.lerp(weightUpWash, other.weightUpWash, t)!,
+      weightDownWash: Color.lerp(weightDownWash, other.weightDownWash, t)!,
+      weightUpBorder: Color.lerp(weightUpBorder, other.weightUpBorder, t)!,
+      weightDownBorder: Color.lerp(
+        weightDownBorder,
+        other.weightDownBorder,
+        t,
+      )!,
       cursor: Color.lerp(cursor, other.cursor, t)!,
     );
   }
 }
 
-/// 编辑器沿用 App 浅色主题,仅注入「类型强调」扩展色(与全局一致,不再强制暗色)。
-ThemeData editorTheme() {
-  final base = AppTheme.light();
-  return base.copyWith(extensions: const [EditorPalette.light]);
+/// 编辑器主题 = 当前全局主题 + 「类型强调」扩展色(按亮暗选变体)。
+ThemeData editorTheme(BuildContext context) {
+  final base = Theme.of(context);
+  return base.copyWith(
+    extensions: [
+      base.brightness == Brightness.dark
+          ? EditorPalette.dark
+          : EditorPalette.light,
+    ],
+  );
 }
 
 extension EditorPaletteX on BuildContext {

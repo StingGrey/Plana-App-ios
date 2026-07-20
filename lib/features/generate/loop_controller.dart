@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/live_progress/live_progress.dart';
 import '../shell/shell_state.dart';
+import 'gen_queue.dart';
 import 'generate_state.dart';
 import 'generation_controller.dart';
 
@@ -45,11 +46,15 @@ class LoopNotifier extends Notifier<LoopStatus> {
       WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
 
   Future<void> start() async {
-    if (state.active || ref.read(generationProvider).busy) return;
+    if (state.active ||
+        ref.read(generationProvider).busy ||
+        ref.read(genQueueProvider).active) {
+      return;
+    }
     final total = ref.read(generateProvider).params.loop.count; // 开跑时锁档位
     state = LoopStatus(active: true, total: total);
     // 只在开跑时切一次图库;之后每张不再强拉(generate 里按 _inLoop 跳过)
-    ref.read(shellIndexProvider.notifier).select(1);
+    ref.read(shellIndexProvider.notifier).select(kTabGallery);
 
     var done = 0; // 成功张数
     var ok = true;
@@ -72,6 +77,8 @@ class LoopNotifier extends Notifier<LoopStatus> {
             : (done > 0 ? '循环中止 · 已出 $done 张' : '生成失败'),
       );
     }
+    // 循环收尾后放行排队任务(失败中止时不放行,先让用户处理错误)
+    if (ok) ref.read(genQueueProvider.notifier).maybeStart();
   }
 
   /// 请求停止:当前张跑完后不再续(不打断进行中的生成)。

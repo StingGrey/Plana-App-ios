@@ -50,6 +50,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
+    final isAnima = isAnimaModel(draft.model);
     return Column(
       children: [
         Padding(
@@ -95,94 +96,171 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
               const SizedBox(height: 14),
               _SectionLabel('采样'),
               const SizedBox(height: 10),
-              ParamSlider(
-                label: '步数 Steps',
-                value: draft.steps.toDouble(),
-                min: 1,
-                max: 50,
-                divisions: 49,
-                valueText: '${draft.steps}',
-                trailing: AnimatedOpacity(
-                  duration: Motion.fast,
-                  opacity: draft.steps <= 28 ? 1 : 0,
-                  child: const CountBadge('≤28 免费'),
+              if (isAnima) ...[
+                // Anima:与 NAI 两套独立采样参数,范围对齐 web animaOptions
+                ParamSlider(
+                  label: '步数 Steps',
+                  value: draft.animaSteps.toDouble(),
+                  min: 6,
+                  max: 50,
+                  divisions: 44,
+                  valueText: '${draft.animaSteps}',
+                  onChanged: (v) =>
+                      _set(draft.copyWith(animaSteps: v.round())),
                 ),
-                onChanged: (v) => _set(draft.copyWith(steps: v.round())),
-              ),
-              const SizedBox(height: 8),
-              ParamSlider(
-                label: '提示词引导 CFG',
-                value: draft.cfg,
-                min: 0,
-                max: 25,
-                divisions: 250, // step 0.1(对齐 web)
-                valueText: draft.cfg.toStringAsFixed(1),
-                trailing: FilterChip(
-                  avatar: Icon(
-                    Icons.shuffle,
-                    size: 13,
-                    color: draft.varietyPlus
-                        ? scheme.onSecondaryContainer
-                        : scheme.onSurfaceVariant,
+                const SizedBox(height: 8),
+                ParamSlider(
+                  label: '提示词引导 CFG',
+                  value: draft.animaCfg,
+                  min: 1,
+                  max: 7,
+                  divisions: 12, // step 0.5(对齐 web)
+                  valueText: draft.animaCfg.toStringAsFixed(1),
+                  onChanged: (v) => _set(draft.copyWith(animaCfg: v)),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  '采样器 Sampler',
+                  style: context.texts.bodySmall!.copyWith(
+                    color: scheme.onSurfaceVariant,
                   ),
-                  label: const Text('Variety+', style: TextStyle(fontSize: 11)),
-                  selected: draft.varietyPlus,
-                  showCheckmark: false,
-                  visualDensity: const VisualDensity(
-                    horizontal: -3,
-                    vertical: -3,
-                  ),
-                  onSelected: (v) => _set(draft.copyWith(varietyPlus: v)),
                 ),
-                onChanged: (v) => _set(draft.copyWith(cfg: v)),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                '采样器 Sampler',
-                style: context.texts.bodySmall!.copyWith(
-                  color: scheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: 8),
-              GridView.count(
-                crossAxisCount: 2,
-                mainAxisSpacing: 7,
-                crossAxisSpacing: 7,
-                childAspectRatio: 4.4,
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                children: [
-                  for (final s in samplers)
-                    _SelectTile(
-                      label: s,
-                      selected: draft.sampler == s,
-                      onTap: () => _set(draft.copyWith(sampler: s)),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 14),
-              Text(
-                '噪声调度 Noise Schedule',
-                style: context.texts.bodySmall!.copyWith(
-                  color: scheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  for (final n in noiseSchedules) ...[
-                    Expanded(
-                      child: _SelectTile(
-                        label: n,
-                        selected: draft.noiseSchedule == n,
-                        height: 34,
-                        onTap: () => _set(draft.copyWith(noiseSchedule: n)),
+                const SizedBox(height: 8),
+                GridView.count(
+                  crossAxisCount: 2,
+                  mainAxisSpacing: 7,
+                  crossAxisSpacing: 7,
+                  childAspectRatio: 4.4,
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  children: [
+                    for (final s in animaSamplers)
+                      _SelectTile(
+                        label: s.label,
+                        selected: draft.animaSampler == s.id,
+                        onTap: () =>
+                            _set(draft.copyWith(animaSampler: s.id)),
                       ),
-                    ),
-                    if (n != noiseSchedules.last) const SizedBox(width: 7),
                   ],
-                ],
-              ),
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  '调度器 Scheduler',
+                  style: context.texts.bodySmall!.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                GridView.count(
+                  crossAxisCount: 3,
+                  mainAxisSpacing: 7,
+                  crossAxisSpacing: 7,
+                  childAspectRatio: 3.0,
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  children: [
+                    for (final n in animaSchedulers)
+                      _SelectTile(
+                        label: n.label,
+                        selected: draft.animaScheduler == n.id,
+                        onTap: () =>
+                            _set(draft.copyWith(animaScheduler: n.id)),
+                      ),
+                  ],
+                ),
+              ] else ...[
+                ParamSlider(
+                  label: '步数 Steps',
+                  value: draft.steps.toDouble(),
+                  min: 1,
+                  max: 50,
+                  divisions: 49,
+                  valueText: '${draft.steps}',
+                  trailing: AnimatedOpacity(
+                    duration: Motion.fast,
+                    opacity: draft.steps <= 28 ? 1 : 0,
+                    child: const CountBadge('≤28 免费'),
+                  ),
+                  onChanged: (v) => _set(draft.copyWith(steps: v.round())),
+                ),
+                const SizedBox(height: 8),
+                ParamSlider(
+                  label: '提示词引导 CFG',
+                  value: draft.cfg,
+                  min: 0,
+                  max: 25,
+                  divisions: 250, // step 0.1(对齐 web)
+                  valueText: draft.cfg.toStringAsFixed(1),
+                  trailing: FilterChip(
+                    avatar: Icon(
+                      Icons.shuffle,
+                      size: 13,
+                      color: draft.varietyPlus
+                          ? scheme.onSecondaryContainer
+                          : scheme.onSurfaceVariant,
+                    ),
+                    label: const Text(
+                      'Variety+',
+                      style: TextStyle(fontSize: 11),
+                    ),
+                    selected: draft.varietyPlus,
+                    showCheckmark: false,
+                    visualDensity: const VisualDensity(
+                      horizontal: -3,
+                      vertical: -3,
+                    ),
+                    onSelected: (v) => _set(draft.copyWith(varietyPlus: v)),
+                  ),
+                  onChanged: (v) => _set(draft.copyWith(cfg: v)),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  '采样器 Sampler',
+                  style: context.texts.bodySmall!.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                GridView.count(
+                  crossAxisCount: 2,
+                  mainAxisSpacing: 7,
+                  crossAxisSpacing: 7,
+                  childAspectRatio: 4.4,
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  children: [
+                    for (final s in samplers)
+                      _SelectTile(
+                        label: s,
+                        selected: draft.sampler == s,
+                        onTap: () => _set(draft.copyWith(sampler: s)),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  '噪声调度 Noise Schedule',
+                  style: context.texts.bodySmall!.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    for (final n in noiseSchedules) ...[
+                      Expanded(
+                        child: _SelectTile(
+                          label: n,
+                          selected: draft.noiseSchedule == n,
+                          height: 34,
+                          onTap: () => _set(draft.copyWith(noiseSchedule: n)),
+                        ),
+                      ),
+                      if (n != noiseSchedules.last) const SizedBox(width: 7),
+                    ],
+                  ],
+                ),
+              ],
               const SizedBox(height: 18),
               Divider(
                 color: scheme.outlineVariant.withValues(alpha: .5),
@@ -221,13 +299,15 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                   ),
                 ],
               ),
-              const SizedBox(height: 14),
-              ParamSlider(
-                label: 'CFG Rescale',
-                value: draft.cfgRescale,
-                divisions: 100, // step 0.01(对齐 web)
-                onChanged: (v) => _set(draft.copyWith(cfgRescale: v)),
-              ),
+              if (!isAnima) ...[
+                const SizedBox(height: 14),
+                ParamSlider(
+                  label: 'CFG Rescale',
+                  value: draft.cfgRescale,
+                  divisions: 100, // step 0.01(对齐 web)
+                  onChanged: (v) => _set(draft.copyWith(cfgRescale: v)),
+                ),
+              ],
             ],
           ),
         ),
@@ -247,13 +327,22 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
               Expanded(
                 child: OutlinedButton(
                   onPressed: () {
-                    _set(
-                      const GenParams().copyWith(
-                        model: draft.model,
-                        width: draft.width,
-                        height: draft.height,
-                      ),
+                    var next = const GenParams().copyWith(
+                      model: draft.model,
+                      width: draft.width,
+                      height: draft.height,
                     );
+                    if (isAnima) {
+                      // anima 默认 = 当前档位的推荐采样参数
+                      final d = animaTierDefaults(animaTierOf(draft.model));
+                      next = next.copyWith(
+                        animaSteps: d.steps,
+                        animaCfg: d.cfg,
+                        animaSampler: d.sampler,
+                        animaScheduler: d.scheduler,
+                      );
+                    }
+                    _set(next);
                     seedCtrl.clear();
                   },
                   style: OutlinedButton.styleFrom(

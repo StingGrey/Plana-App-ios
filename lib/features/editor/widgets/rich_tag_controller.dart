@@ -42,16 +42,17 @@ double _textWidth(String s, TextStyle style, TextScaler scaler) {
 /// 需要补偿的字符下标(**词段最后一个字符**)→ 额外 letterSpacing。
 /// 附着词尾字符:词内不可断行,断行器把「词+译文预算」当整体处理——
 /// 行尾放不下就整词(带译文)折到下一行,译文永不出屏。
-Map<int, double> tagExtraSpacing(String text, TextScaler scaler) {
+/// [base] 必须与 TextField 实际渲染样式同字号,否则补偿量对不上。
+Map<int, double> tagExtraSpacing(
+  String text,
+  TextScaler scaler, {
+  TextStyle base = kEditorBaseStyle,
+}) {
   final out = <int, double>{};
   for (final t in parseToks(text)) {
     final tr = t.trans;
     if (tr == null || tr.isEmpty || t.segEnd <= t.segStart) continue;
-    final segW = _textWidth(
-      text.substring(t.segStart, t.segEnd),
-      kEditorBaseStyle,
-      scaler,
-    );
+    final segW = _textWidth(text.substring(t.segStart, t.segEnd), base, scaler);
     final transW = _textWidth(tr, kTransMeasureStyle, scaler);
     final extra = transW - segW;
     if (extra > 0) out[t.segEnd - 1] = extra;
@@ -59,10 +60,13 @@ Map<int, double> tagExtraSpacing(String text, TextScaler scaler) {
   return out;
 }
 
-/// 布局同构 span(注音/圈框/排序层测量用):纯基准样式 + 同款间距。
-TextSpan measureSpan(String text, TextScaler scaler) {
-  const base = kEditorBaseStyle;
-  final spacing = tagExtraSpacing(text, scaler);
+/// 布局同构 span(注音/圈框/排序层测量用):基准样式 + 同款间距。
+TextSpan measureSpan(
+  String text,
+  TextScaler scaler, {
+  TextStyle base = kEditorBaseStyle,
+}) {
+  final spacing = tagExtraSpacing(text, scaler, base: base);
   if (spacing.isEmpty) {
     return TextSpan(text: text, style: base);
   }
@@ -83,10 +87,15 @@ TextSpan measureSpan(String text, TextScaler scaler) {
 }
 
 /// 光标驱动编辑器的文本控制器:文本含**原样权重语法**(`N::tag::`/`{}`/`[]`),
-/// [buildTextSpan] 现算 token、按方向上色(加权橙 / 降权蓝 / 禁用灰删除线),
-/// `::` 标记与逗号淡显。只改颜色不改字号字重,故与翻译绘制层布局一致。
+/// [buildTextSpan] 现算 token 做文字着色:禁用灰+删除线,`::`/括号等记号
+/// 淡显 45%。权重底色不在这里画——由 AnnotatedField 的权重底色绘制层
+/// 负责(贴字形高度、含组记号)。只改颜色不改字号字重,与绘制层布局一致。
 class RichTagController extends TextEditingController {
   RichTagController({super.text});
+
+  /// 注音翻译开关(编辑器设置)。关掉时不再做译文宽度补偿——
+  /// 注音层同时被 AnnotatedField 摘除,无布局同构需求。
+  bool showTrans = true;
 
   /// 文本没变但外部数据到了(翻译缓存灌注完成)时手动触发重建/重绘。
   void refresh() => notifyListeners();
@@ -101,17 +110,39 @@ class RichTagController extends TextEditingController {
     final scheme = context.scheme;
     final pal = context.editor;
     final t = text;
-    final toks = parseToks(t);
-    final spacing = tagExtraSpacing(t, MediaQuery.textScalerOf(context));
+    final spans = <WeightSpan>[];
+    final toks = parseToks(t, weightSpans: spans);
+    final spacing = showTrans
+        ? tagExtraSpacing(t, MediaQuery.textScalerOf(context), base: base)
+        : const <int, double>{};
 
-    Color dirColor(Tok tok) {
-      if (tok.disabled) return scheme.onSurfaceVariant;
-      if (tok.effMult > 1.0001) return pal.weightUp;
-      if (tok.effMult < 0.9999) return pal.weightDown;
-      return scheme.onSurface;
+    // 组权重记号(词条之外的 `1.2::`/`::`/`{`/`}`):按组方向着色,
+    // 不再混同于逗号的灰。取覆盖该字符的最内层权重区间定方向。
+    Color? groupMarkColor(int k) {
+      final ch = t[k];
+      final isMark =
+          ch == '{' ||
+          ch == '}' ||
+          ch == '[' ||
+          ch == ']' ||
+          ch == ':' ||
+          ch == '-' ||
+          ch == '.' ||
+          (ch.codeUnitAt(0) >= 0x30 && ch.codeUnitAt(0) <= 0x39);
+      if (!isMark) return null;
+      WeightSpan? best;
+      for (final s in spans) {
+        if (k >= s.start && k < s.end) {
+          if (best == null || s.end - s.start < best.end - best.start) {
+            best = s;
+          }
+        }
+      }
+      if (best == null || (best.mult - 1).abs() < 0.0001) return null;
+      return best.mult > 1 ? pal.weightUp : pal.weightDown;
     }
 
-    // 逐字符着色:token 内=方向色(`:`/`~`/括号淡一档),token 外=分隔色
+    // 逐字符着色:token 内=正文色(记号淡一档),token 外=分隔色
     final children = <InlineSpan>[];
     final buf = StringBuffer();
     Color? curColor;
@@ -142,7 +173,8 @@ class RichTagController extends TextEditingController {
       Color c;
       var strike = false;
       if (!inTok) {
-        c = scheme.outline; // 逗号 / 词间空隙
+        // 逗号/空隙灰;组权重记号按组方向着色
+        c = groupMarkColor(k) ?? scheme.outline;
       } else {
         final tok = toks[ti];
         final ch = t[k];
@@ -153,13 +185,13 @@ class RichTagController extends TextEditingController {
             ch == '[' ||
             ch == ']' ||
             ch == '~';
-        final dc = dirColor(tok);
-        c = marker ? dc.withValues(alpha: .45) : dc;
+        final tc = tok.disabled ? scheme.onSurfaceVariant : scheme.onSurface;
+        c = marker ? tc.withValues(alpha: .45) : tc;
         strike = tok.disabled;
       }
       final sp = spacing[k];
       if (sp != null) {
-        // 宽度补偿的逗号:独立 span 携带 letterSpacing(把下一词推开)
+        // 宽度补偿的词尾字符:独立 span 携带 letterSpacing(把下一词推开)
         flush();
         children.add(
           TextSpan(

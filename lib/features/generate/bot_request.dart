@@ -22,7 +22,7 @@ Map<String, dynamic> buildBotParams(
 }) {
   final p = s.params;
   final model = naiModelId(p.model);
-  final is45 = model.startsWith('nai-diffusion-4-5');
+  final is45 = crSupportsModel(p.model);
 
   final chars = s.characters
       .where((c) => c.enabled && c.positive.trim().isNotEmpty)
@@ -97,6 +97,21 @@ Map<String, dynamic> buildBotParams(
           'informationExtracted': v.infoExtracted,
         },
     ];
+  }
+
+  // Anima:snake_case 对齐服务端 req.params.get("anima_extra")。
+  // anima 后端只读 正负词+尺寸+seed+anima_extra,其余 NAI 参数被忽略
+  // (NAI 专属数据已在剥离层清掉,此处无需重复处理)。
+  if (isAnimaModel(p.model)) {
+    final tier = animaTierOf(p.model);
+    params['anima_extra'] = {
+      'steps': p.animaSteps,
+      'cfg': p.animaCfg,
+      'sampler': p.animaSampler,
+      'scheduler': p.animaScheduler,
+      'model': tier,
+      'turbo': tier == 'turbo',
+    };
   }
 
   return params;

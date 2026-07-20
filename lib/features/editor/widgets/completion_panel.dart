@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../generate/widgets/common.dart' show hintSnack;
 import '../data/suggestions.dart';
 import '../data/tag_completion.dart';
 import 'completion_bar.dart' show suggestionGlyph;
@@ -11,15 +12,13 @@ import 'completion_bar.dart' show suggestionGlyph;
 /// 由形态 A 上滑 / 点抓手进入;顶部抓手或下滑 / 底部提示 → 收起回形态 A。
 ///
 /// 结构(只借设计稿布局,图标与配色沿用现有 [suggestionGlyph] + M3 语义色):
-/// - 抓手 + 头部(`补全·"query"` · 项数 · 热度/字母排序切换)
-/// - 分节:角色 / 我的 OC / 作品 / 标签,各带彩色图标 + 计数 + 细分隔线,节标题点按折叠
-/// - 每行:名 + 译文/来源 · 热度 · 👁 预览(作品行为随机抽取)· `+` 连续插入
-/// - 标签 / 角色行 👁 展开 Wiki 预览卡(缩略图 + 摘要 + 外链)
-/// - 底部提示:下滑回键盘 · 「+」连续插入 · 节标题点按可折叠
+/// - 抓手 + 头部(`补全结果` · 项数 · 热度/字母排序切换)
+/// - 分节:画师 / 角色 / 我的 OC / 作品 / 标签,各带彩色图标 + 计数 + 细分隔线,节标题点按折叠
+/// - 每行:名 + 译文/来源 · 热度 · 👁 预览(作品行为骰子随机抽取)· `+` 连续插入
+/// - 👁 只给标签 / 角色:画师串与 OC 在 Danbooru 上没有词条,点开必空
 class CompletionPanel extends ConsumerStatefulWidget {
   const CompletionPanel({
     super.key,
-    required this.query,
     required this.result,
     required this.maxHeight,
     required this.onPick,
@@ -27,7 +26,6 @@ class CompletionPanel extends ConsumerStatefulWidget {
     required this.onCollapse,
   });
 
-  final String query;
   final SuggestResult result;
   final double maxHeight;
 
@@ -137,11 +135,6 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
                   children: rows,
                 ),
               ),
-              Divider(
-                height: 1,
-                color: scheme.outlineVariant.withValues(alpha: .5),
-              ),
-              _footer(),
             ],
           ),
         ),
@@ -178,26 +171,15 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
   Widget _header() {
     final scheme = context.scheme;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 2, 8, 6),
+      // 右边距 4:排序按钮自带 8 内衬,合起来正好与下方行尾圆钮的 12 对齐
+      padding: const EdgeInsets.fromLTRB(16, 2, 4, 6),
       child: Row(
         children: [
           Text(
-            '补全',
+            '补全结果',
             style: context.texts.titleSmall!.copyWith(
               fontWeight: FontWeight.w700,
               color: scheme.onSurface,
-            ),
-          ),
-          const SizedBox(width: 6),
-          Flexible(
-            child: Text(
-              '· "${widget.query}"',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: context.texts.titleSmall!.copyWith(
-                fontWeight: FontWeight.w700,
-                color: scheme.onSurface,
-              ),
             ),
           ),
           const SizedBox(width: 7),
@@ -234,27 +216,6 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _footer() {
-    final scheme = context.scheme;
-    return InkWell(
-      onTap: widget.onCollapse,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 9),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.keyboard_arrow_down, size: 15, color: scheme.outline),
-            const SizedBox(width: 4),
-            Text(
-              '下滑回键盘 · 「+」连续插入 · 节标题点按可折叠',
-              style: context.texts.bodySmall!.copyWith(color: scheme.outline),
-            ),
-          ],
-        ),
       ),
     );
   }
@@ -313,6 +274,10 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
   Widget _row(Suggestion s) {
     final scheme = context.scheme;
     final isWork = s.kind == SuggestionKind.work;
+    // 眼睛 = Danbooru Wiki 预览。画师串是自建条目、OC 是本地条目,
+    // Danbooru 上没有对应词条,给了按钮点开也是空,所以这两类不出。
+    final canWiki =
+        s.kind == SuggestionKind.tag || s.kind == SuggestionKind.character;
     final subtitle = _subtitle(s);
     final count = isWork ? null : formatCount(s.count);
     final open = _wikiOpen == s.text;
@@ -361,14 +326,19 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
                   ),
                   const SizedBox(width: 6),
                 ],
-                isWork ? _diceBtn(s) : _eyeBtn(s, open),
-                const SizedBox(width: 4),
+                if (isWork) ...[
+                  _diceBtn(s),
+                  const SizedBox(width: 4),
+                ] else if (canWiki) ...[
+                  _eyeBtn(s, open),
+                  const SizedBox(width: 4),
+                ],
                 _plusBtn(s),
               ],
             ),
           ),
         ),
-        if (open && !isWork) _previewCard(s),
+        if (open && canWiki) _previewCard(s),
       ],
     );
   }
@@ -386,10 +356,18 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
     );
   }
 
-  /// 作品行:随机抽角色(沿用作品彩色图标)
+  /// 作品行:随机抽一个角色插入。**只有这个按钮**做抽取——点行主体和 `+`
+  /// 都是直接插作品 tag 本身。抽取靠把预抽的 [Suggestion.randomPick] 送进
+  /// insertText,让下游按常规插入路径处理。
   Widget _diceBtn(Suggestion s) {
     final (icon, color) = suggestionGlyph(context, s.kind);
-    return _circleBtn(icon: icon, fg: color, onTap: () => widget.onPick(s));
+    final pick = s.randomPick;
+    return _circleBtn(
+      icon: icon,
+      fg: color,
+      onTap: () =>
+          widget.onPick(pick == null ? s : s.copyWith(insertText: pick)),
+    );
   }
 
   Widget _circleBtn({
@@ -532,8 +510,6 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
   void _openWiki(Suggestion s) {
     final url = danbooruWikiUrl(s.text);
     Clipboard.setData(ClipboardData(text: url));
-    ScaffoldMessenger.of(context)
-      ..clearSnackBars()
-      ..showSnackBar(SnackBar(content: Text('已复制 Wiki 链接:$url')));
+    hintSnack(context, '已复制 Wiki 链接:$url', icon: Icons.check);
   }
 }

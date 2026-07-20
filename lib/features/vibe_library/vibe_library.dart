@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart' show compute, debugPrint;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../../core/store/storage_settings.dart';
 import '../../core/util/image_ops.dart';
 import '../generate/vibe_cache.dart';
 import 'naiv4vibe_codec.dart';
@@ -30,6 +31,11 @@ class VibeEntry {
     this.lastUsedAt = 0,
     this.sizeBytes = 0,
     this.originFilename,
+    this.cloudFilename,
+    this.cloudImageHash,
+    this.cloudMetaHash,
+    this.pushedImageHash,
+    this.pushedMetaFp,
   });
 
   /// NAI 官方 vibe id(SHA256 of base64 文本);纯编码文件为其自带 id。
@@ -59,6 +65,41 @@ class VibeEntry {
   /// 索引重建时会丢失(仅影响公共 tab 的「已收藏」标记,不影响功能)。
   final String? originFilename;
 
+  // ---- 个人云端备份状态(只存 index.json;索引重建后归零 = 退化为整包重传)----
+
+  /// 本条在云端对应的文件名(推送成功后由后端给出),改元数据时定向 PUT 用。
+  final String? cloudFilename;
+
+  /// 上次同步时后端算出的双 hash:恢复时与云端列表比对,判断该不该覆盖本地。
+  final String? cloudImageHash;
+  final String? cloudMetaHash;
+
+  /// 上次**推送时**本地的图哈希与元数据指纹:与当前值比对判断本地改没改。
+  /// 两者都没变 → 整条跳过不发请求;只有元数据变 → 走 PUT 不重传图。
+  final String? pushedImageHash;
+  final String? pushedMetaFp;
+
+  /// 元数据指纹:名称/标签/默认参数的规范化拼接(标签排序,顺序不算改动)。
+  String get metaFp {
+    final t = [...tags]..sort();
+    return [
+      name,
+      t.join(''),
+      defaultStrength?.toStringAsFixed(3) ?? '',
+      defaultInfoExtracted?.toStringAsFixed(3) ?? '',
+    ].join('');
+  }
+
+  /// 从未推送过,或推送后本地又改了图/元数据。
+  bool get needsPush =>
+      cloudFilename == null ||
+      pushedImageHash != imageHash ||
+      pushedMetaFp != metaFp;
+
+  /// 图没变、只有元数据变 → 可以只 PUT 元数据,省掉整张图的重传。
+  bool get canPushMetaOnly =>
+      cloudFilename != null && pushedImageHash == imageHash;
+
   VibeEntry copyWith({
     String? name,
     double? defaultStrength,
@@ -68,39 +109,53 @@ class VibeEntry {
     int? sizeBytes,
     List<String>? supportedModels,
     String? originFilename,
-  }) =>
-      VibeEntry(
-        id: id,
-        name: name ?? this.name,
-        fileName: fileName,
-        imageHash: imageHash,
-        hasImage: hasImage,
-        defaultStrength: defaultStrength ?? this.defaultStrength,
-        defaultInfoExtracted: defaultInfoExtracted ?? this.defaultInfoExtracted,
-        supportedModels: supportedModels ?? this.supportedModels,
-        tags: tags ?? this.tags,
-        createdAt: createdAt,
-        lastUsedAt: lastUsedAt ?? this.lastUsedAt,
-        sizeBytes: sizeBytes ?? this.sizeBytes,
-        originFilename: originFilename ?? this.originFilename,
-      );
+    String? cloudFilename,
+    String? cloudImageHash,
+    String? cloudMetaHash,
+    String? pushedImageHash,
+    String? pushedMetaFp,
+  }) => VibeEntry(
+    id: id,
+    name: name ?? this.name,
+    fileName: fileName,
+    imageHash: imageHash,
+    hasImage: hasImage,
+    defaultStrength: defaultStrength ?? this.defaultStrength,
+    defaultInfoExtracted: defaultInfoExtracted ?? this.defaultInfoExtracted,
+    supportedModels: supportedModels ?? this.supportedModels,
+    tags: tags ?? this.tags,
+    createdAt: createdAt,
+    lastUsedAt: lastUsedAt ?? this.lastUsedAt,
+    sizeBytes: sizeBytes ?? this.sizeBytes,
+    originFilename: originFilename ?? this.originFilename,
+    cloudFilename: cloudFilename ?? this.cloudFilename,
+    cloudImageHash: cloudImageHash ?? this.cloudImageHash,
+    cloudMetaHash: cloudMetaHash ?? this.cloudMetaHash,
+    pushedImageHash: pushedImageHash ?? this.pushedImageHash,
+    pushedMetaFp: pushedMetaFp ?? this.pushedMetaFp,
+  );
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'name': name,
-        'fileName': fileName,
-        if (imageHash != null) 'imageHash': imageHash,
-        'hasImage': hasImage,
-        if (defaultStrength != null) 'defaultStrength': defaultStrength,
-        if (defaultInfoExtracted != null)
-          'defaultInfoExtracted': defaultInfoExtracted,
-        'supportedModels': supportedModels,
-        'tags': tags,
-        'createdAt': createdAt,
-        'lastUsedAt': lastUsedAt,
-        'sizeBytes': sizeBytes,
-        if (originFilename != null) 'originFilename': originFilename,
-      };
+    'id': id,
+    'name': name,
+    'fileName': fileName,
+    if (imageHash != null) 'imageHash': imageHash,
+    'hasImage': hasImage,
+    if (defaultStrength != null) 'defaultStrength': defaultStrength,
+    if (defaultInfoExtracted != null)
+      'defaultInfoExtracted': defaultInfoExtracted,
+    'supportedModels': supportedModels,
+    'tags': tags,
+    'createdAt': createdAt,
+    'lastUsedAt': lastUsedAt,
+    'sizeBytes': sizeBytes,
+    'originFilename': ?originFilename,
+    'cloudFilename': ?cloudFilename,
+    'cloudImageHash': ?cloudImageHash,
+    'cloudMetaHash': ?cloudMetaHash,
+    'pushedImageHash': ?pushedImageHash,
+    'pushedMetaFp': ?pushedMetaFp,
+  };
 
   static VibeEntry? fromJson(Map<String, dynamic> j) {
     final id = j['id'];
@@ -115,15 +170,26 @@ class VibeEntry {
       defaultStrength: (j['defaultStrength'] as num?)?.toDouble(),
       defaultInfoExtracted: (j['defaultInfoExtracted'] as num?)?.toDouble(),
       supportedModels: j['supportedModels'] is List
-          ? [for (final m in j['supportedModels'] as List) if (m is String) m]
+          ? [
+              for (final m in j['supportedModels'] as List)
+                if (m is String) m,
+            ]
           : const [],
       tags: j['tags'] is List
-          ? [for (final t in j['tags'] as List) if (t is String) t]
+          ? [
+              for (final t in j['tags'] as List)
+                if (t is String) t,
+            ]
           : const [],
       createdAt: (j['createdAt'] as num?)?.toInt() ?? 0,
       lastUsedAt: (j['lastUsedAt'] as num?)?.toInt() ?? 0,
       sizeBytes: (j['sizeBytes'] as num?)?.toInt() ?? 0,
       originFilename: j['originFilename'] as String?,
+      cloudFilename: j['cloudFilename'] as String?,
+      cloudImageHash: j['cloudImageHash'] as String?,
+      cloudMetaHash: j['cloudMetaHash'] as String?,
+      pushedImageHash: j['pushedImageHash'] as String?,
+      pushedMetaFp: j['pushedMetaFp'] as String?,
     );
   }
 }
@@ -140,11 +206,16 @@ typedef VibeForGenerate = ({
 /// (文件即真相,与 NAI 官方/web 端互通),旁挂 index.json + thumbs/ 供列表页;
 /// 索引损坏时从文件全量重建。编码不存这里——唯一真相是内容寻址缓存
 /// [vibeCacheProvider],导入时灌入、导出时收集。
-final vibeLibraryProvider =
-    AsyncNotifierProvider<VibeLibrary, List<VibeEntry>>(VibeLibrary.new);
+final vibeLibraryProvider = AsyncNotifierProvider<VibeLibrary, List<VibeEntry>>(
+  VibeLibrary.new,
+);
 
 class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
   late Directory _root;
+
+  /// 用户新建、但可能尚未挂到任何条目的「空标签」登记表(随 index.json 持久化)。
+  /// 条目在用的标签仍以文件/条目为准,这里只补充「还没被用过」的那些。
+  final Set<String> _registryTags = {};
 
   Directory get _filesDir => Directory('${_root.path}/files');
   Directory get _thumbsDir => Directory('${_root.path}/thumbs');
@@ -153,10 +224,15 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
   File fileOf(VibeEntry e) => File('${_filesDir.path}/${e.fileName}');
 
   /// 缩略图文件(可能不存在,UI 用 errorBuilder/占位兜底)。
-  File thumbOf(VibeEntry e) => File('${_thumbsDir.path}/${_safeName(e.id)}.png');
+  File thumbOf(VibeEntry e) =>
+      File('${_thumbsDir.path}/${_safeName(e.id)}.png');
 
   @override
   Future<List<VibeEntry>> build() async {
+    // 上限设置就绪/变更时裁剪(超出删「最久未用」的)
+    ref.listen(storageSettingsProvider, (_, next) {
+      if (next.hasValue) enforceCap();
+    });
     final sup = await getApplicationSupportDirectory();
     _root = Directory('${sup.path}/vibe_library');
     await _filesDir.create(recursive: true);
@@ -165,6 +241,14 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
       if (await _indexFile.exists()) {
         final j = jsonDecode(await _indexFile.readAsString());
         if (j is Map && j['entries'] is List) {
+          if (j['tagRegistry'] is List) {
+            _registryTags
+              ..clear()
+              ..addAll([
+                for (final t in j['tagRegistry'] as List)
+                  if (t is String) t,
+              ]);
+          }
           return [
             for (final e in j['entries'] as List)
               if (e is Map<String, dynamic>)
@@ -207,6 +291,7 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
         jsonEncode({
           'version': 1,
           'entries': [for (final e in list) e.toJson()],
+          'tagRegistry': _registryTags.toList()..sort(),
         }),
       );
     } catch (e) {
@@ -216,7 +301,9 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
 
   Future<void> _writeThumb(String id, Uint8List pngBytes) async {
     try {
-      await File('${_thumbsDir.path}/${_safeName(id)}.png').writeAsBytes(pngBytes);
+      await File(
+        '${_thumbsDir.path}/${_safeName(id)}.png',
+      ).writeAsBytes(pngBytes);
     } catch (_) {}
   }
 
@@ -224,8 +311,8 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
   static String idOfParsed(ParsedVibe p) => p.id.isNotEmpty
       ? p.id
       : (p.imageBase64 != null
-          ? naiVibeIdOfBase64(p.imageBase64!)
-          : 'enc_${DateTime.now().millisecondsSinceEpoch}');
+            ? naiVibeIdOfBase64(p.imageBase64!)
+            : 'enc_${DateTime.now().millisecondsSinceEpoch}');
 
   /// 由解析结果组装索引条目并落缩略图。
   /// 有原图时缩略图一律从原图现生成(导入文件的 thumbnail 可能是截断伪图)。
@@ -264,11 +351,15 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
       imageHash: hash,
       hasImage: img != null,
       defaultStrength: p.defaultStrength ?? existing?.defaultStrength,
-      defaultInfoExtracted: p.defaultInfoExtracted ?? existing?.defaultInfoExtracted,
+      defaultInfoExtracted:
+          p.defaultInfoExtracted ?? existing?.defaultInfoExtracted,
       supportedModels: p.supportedModelKeys,
       tags: p.tags.isNotEmpty ? p.tags : (existing?.tags ?? const []),
-      createdAt: existing?.createdAt ??
-          (p.createdAt > 0 ? p.createdAt : DateTime.now().millisecondsSinceEpoch),
+      createdAt:
+          existing?.createdAt ??
+          (p.createdAt > 0
+              ? p.createdAt
+              : DateTime.now().millisecondsSinceEpoch),
       lastUsedAt: existing?.lastUsedAt ?? 0,
       sizeBytes: sizeBytes,
       originFilename: originFilename ?? existing?.originFilename,
@@ -310,10 +401,13 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
         }
       }
       out.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-      await _indexFile.writeAsString(jsonEncode({
-        'version': 1,
-        'entries': [for (final e in out) e.toJson()],
-      }));
+      await _indexFile.writeAsString(
+        jsonEncode({
+          'version': 1,
+          'entries': [for (final e in out) e.toJson()],
+          'tagRegistry': _registryTags.toList()..sort(),
+        }),
+      );
     } catch (e) {
       debugPrint('[vibe-lib] 重建失败: $e');
     }
@@ -369,6 +463,7 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
       sizeBytes: text.length,
     );
     await _upsert(entry);
+    await enforceCap();
     return entry;
   }
 
@@ -390,8 +485,8 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
       final id = p.id.isNotEmpty
           ? p.id
           : (p.imageBase64 != null
-              ? naiVibeIdOfBase64(p.imageBase64!)
-              : 'enc_${DateTime.now().millisecondsSinceEpoch}_$n');
+                ? naiVibeIdOfBase64(p.imageBase64!)
+                : 'enc_${DateTime.now().millisecondsSinceEpoch}_$n');
       final fileName = '${_safeName(id)}.naiv4vibe';
       await File('${_filesDir.path}/$fileName').writeAsString(singleText);
       final existing = _byId(id);
@@ -409,6 +504,7 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
       out.add(entry);
       n++;
     }
+    await enforceCap();
     return out;
   }
 
@@ -438,11 +534,42 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
       for (final it in cache.entriesForImage(hash)) {
         final enc = await cache.get(hash, it.modelKey, it.ie);
         if (enc == null) continue;
-        mergeEncodingIntoRaw(raw,
-            modelKey: it.modelKey, infoExtracted: it.ie, encoding: enc);
+        mergeEncodingIntoRaw(
+          raw,
+          modelKey: it.modelKey,
+          infoExtracted: it.ie,
+          encoding: enc,
+        );
       }
     }
     return raw;
+  }
+
+  /// 云端备份要推的完整 vibe JSON:文件本体 + 缓存里该图的全部编码。
+  /// 与导出同源,保证云端拿到的和用户手动导出的是同一份东西。
+  Future<Map<String, dynamic>> rawForUpload(VibeEntry e) => _readRawMerged(e);
+
+  /// 回写云端同步状态(推送成功 / 从云端恢复后调用)。
+  Future<void> markCloudState(
+    String id, {
+    String? cloudFilename,
+    String? cloudImageHash,
+    String? cloudMetaHash,
+    String? pushedImageHash,
+    String? pushedMetaFp,
+  }) async {
+    await future;
+    final e = _byId(id);
+    if (e == null) return;
+    await _upsert(
+      e.copyWith(
+        cloudFilename: cloudFilename,
+        cloudImageHash: cloudImageHash,
+        cloudMetaHash: cloudMetaHash,
+        pushedImageHash: pushedImageHash,
+        pushedMetaFp: pushedMetaFp,
+      ),
+    );
   }
 
   // ---- 编辑 ----
@@ -467,7 +594,7 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
             : <String, dynamic>{};
         info['model'] ??= e.supportedModels.isNotEmpty
             ? (kEncodingKeyToModel[e.supportedModels.first] ??
-                e.supportedModels.first)
+                  e.supportedModels.first)
             : 'nai-diffusion-4-5-full';
         if (defaultStrength != null) info['strength'] = defaultStrength;
         if (defaultInfoExtracted != null) {
@@ -479,12 +606,14 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
       }
       final text = jsonEncode(raw);
       await fileOf(e).writeAsString(text);
-      await _upsert(e.copyWith(
-        name: name,
-        defaultStrength: defaultStrength,
-        defaultInfoExtracted: defaultInfoExtracted,
-        sizeBytes: text.length,
-      ));
+      await _upsert(
+        e.copyWith(
+          name: name,
+          defaultStrength: defaultStrength,
+          defaultInfoExtracted: defaultInfoExtracted,
+          sizeBytes: text.length,
+        ),
+      );
     } catch (err) {
       debugPrint('[vibe-lib] 更新失败: $err');
     }
@@ -515,28 +644,56 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
     }
   }
 
-  /// 全局重命名标签(所有含 [old] 的条目改成 [neu],neu 已存在则合并去重)。
+  /// 全部已知标签:条目在用的 ∪ 登记表里新建的空标签,升序。
+  List<String> get knownTags =>
+      (<String>{..._registryTags, for (final e in _entries) ...e.tags}).toList()
+        ..sort();
+
+  /// 新建标签(可暂时不挂到任何条目):登记进标签表并持久化。
+  /// 返回 false = 已存在(在用或已登记),不重复添加。
+  Future<bool> createTag(String name) async {
+    await future;
+    final t = name.trim();
+    if (t.isEmpty) return false;
+    if (_registryTags.contains(t) || _entries.any((e) => e.tags.contains(t))) {
+      return false;
+    }
+    _registryTags.add(t);
+    await _setEntries([..._entries]); // 持久化 + 通知刷新
+    return true;
+  }
+
+  /// 全局重命名标签(所有含 [old] 的条目改成 [neu],neu 已存在则合并去重;
+  /// 仅登记、未挂条目的空标签也一并改名)。
   Future<void> renameTag(String old, String neu) async {
     await future;
-    if (old == neu || neu.isEmpty) return;
+    final n = neu.trim();
+    if (old == n || n.isEmpty) return;
     for (final e in [..._entries]) {
       if (!e.tags.contains(old)) continue;
       final next = <String>[];
       for (final t in e.tags) {
-        final r = t == old ? neu : t;
+        final r = t == old ? n : t;
         if (!next.contains(r)) next.add(r);
       }
       await setTags(e.id, next);
     }
+    if (_registryTags.remove(old)) _registryTags.add(n);
+    await _setEntries([..._entries]);
   }
 
-  /// 全局删除标签(从所有条目移除)。
+  /// 全局删除标签(从所有条目移除,并从登记表移除)。
   Future<void> removeTag(String tag) async {
     await future;
     for (final e in [..._entries]) {
       if (!e.tags.contains(tag)) continue;
-      await setTags(e.id, [for (final t in e.tags) if (t != tag) t]);
+      await setTags(e.id, [
+        for (final t in e.tags)
+          if (t != tag) t,
+      ]);
     }
+    _registryTags.remove(tag);
+    await _setEntries([..._entries]);
   }
 
   Future<void> delete(String id) async {
@@ -550,6 +707,34 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
       await thumbOf(e).delete();
     } catch (_) {}
     await _setEntries([..._entries]..removeWhere((x) => x.id == id));
+  }
+
+  /// 清空整库(存储管理页):原图/缩略图/索引一并删净。
+  Future<void> clearAll() async {
+    await future;
+    for (final e in [..._entries]) {
+      try {
+        await fileOf(e).delete();
+      } catch (_) {}
+      try {
+        await thumbOf(e).delete();
+      } catch (_) {}
+    }
+    await _setEntries(const []);
+  }
+
+  /// 库上限裁剪:超出上限删「最久未用」的(用过看最近使用,
+  /// 没用过看入库时间);新导入的最新,永远最后被裁。
+  Future<void> enforceCap() async {
+    await future;
+    final cap = ref.read(storageSettingsProvider).value?.vibeCap ?? 0;
+    if (cap <= 0 || _entries.length <= cap) return;
+    int recency(VibeEntry e) => e.lastUsedAt > 0 ? e.lastUsedAt : e.createdAt;
+    final sorted = [..._entries]
+      ..sort((a, b) => recency(b).compareTo(recency(a)));
+    for (final e in sorted.sublist(cap)) {
+      await delete(e.id);
+    }
   }
 
   /// 生成成功后回写「最近使用」。
@@ -596,8 +781,7 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
       final img = p.imageBase64;
       if (img != null) {
         final bytes = base64Decode(img);
-        final hash =
-            e.imageHash ?? await compute(sha256HexOfBytes, bytes);
+        final hash = e.imageHash ?? await compute(sha256HexOfBytes, bytes);
         return (
           image: bytes,
           imageHash: hash,
@@ -615,7 +799,8 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
           pickedIe ??= it.infoExtracted;
         } else if (it.infoExtracted != null &&
             (pickedIe == null ||
-                (it.infoExtracted! - prefer).abs() < (pickedIe - prefer).abs())) {
+                (it.infoExtracted! - prefer).abs() <
+                    (pickedIe - prefer).abs())) {
           byModel[it.modelKey] = it.encoding;
           pickedIe = it.infoExtracted;
         }
@@ -633,7 +818,9 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
   }
 
   /// 详情页编码清单:文件自带 + 缓存新增,按 (modelKey, IE) 去重。
-  Future<List<({String modelKey, double? ie})>> encodingList(VibeEntry e) async {
+  Future<List<({String modelKey, double? ie})>> encodingList(
+    VibeEntry e,
+  ) async {
     final seen = <String>{};
     final out = <({String modelKey, double? ie})>[];
     void add(String modelKey, double? ie) {

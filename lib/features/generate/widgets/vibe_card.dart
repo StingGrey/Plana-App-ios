@@ -20,7 +20,9 @@ String _sha256Hex(Uint8List bytes) => sha256.convert(bytes).toString();
 /// Vibe Transfer 卡:缩略图横条(可选)+ 虚线添加格,
 /// 下方只显示当前选中那张的详情(参考图名 · 移除 · Strength / Info Extracted)。
 class VibeCard extends ConsumerStatefulWidget {
-  const VibeCard({super.key});
+  const VibeCard({super.key, this.reorderIndex});
+
+  final int? reorderIndex;
 
   @override
   ConsumerState<VibeCard> createState() => _VibeCardState();
@@ -49,15 +51,25 @@ class _VibeCardState extends ConsumerState<VibeCard> {
       // 入库失败不影响本次使用
     }
     if (!mounted) return;
+    final hadCharRefs = ref.read(generateProvider).enabledCharRefs > 0;
     final id = ref
         .read(generateProvider.notifier)
         .addVibe(image: bytes, name: name, imageHash: hash, sourceId: sourceId);
-    if (id.isNotEmpty) setState(() => _selectedId = id);
+    if (id.isNotEmpty) {
+      if (hadCharRefs) _mutexHint();
+      setState(() => _selectedId = id);
+    }
   }
 
   void _toggle(String id, bool currentlyEnabled) {
+    final hadCharRefs = ref.read(generateProvider).enabledCharRefs > 0;
     ref.read(generateProvider.notifier).setVibeEnabled(id, !currentlyEnabled);
+    if (!currentlyEnabled && hadCharRefs) _mutexHint();
   }
+
+  /// 互斥切换提示:启用/加入 Vibe 导致角色参考被暂停时,弹一次 toast。
+  void _mutexHint() =>
+      hintSnack(context, '与角色参考互斥,已暂停角色参考', icon: Icons.swap_horiz);
 
   /// 删除某张,并把选中态平移到相邻项
   void _removeVibe(String id) {
@@ -96,6 +108,7 @@ class _VibeCardState extends ConsumerState<VibeCard> {
     return SectionCard(
       icon: Icons.palette_outlined,
       title: 'Vibe Transfer',
+      reorderIndex: widget.reorderIndex,
       badge: vibes.isEmpty ? null : CountBadge('${vibes.length}'),
       actions: [
         RoundIconBtn(
@@ -185,11 +198,11 @@ class _VibeDetail extends ConsumerWidget {
           enableToggle: RefEnableToggle(enabled: vibe.enabled, onTap: onToggle),
         ),
         const SizedBox(height: 14),
-        ParamSlider(
+        LiveParamSlider(
           label: 'Strength 参考强度',
           value: vibe.strength,
           divisions: 100, // step 0.01(对齐 web)
-          onChanged: (v) => notifier.updateVibe(vibe.id, strength: v),
+          onCommit: (v) => notifier.updateVibe(vibe.id, strength: v),
         ),
         const SizedBox(height: 6),
         if (vibe.isEncodingOnly)
@@ -206,11 +219,11 @@ class _VibeDetail extends ConsumerWidget {
             ),
           )
         else
-          ParamSlider(
+          LiveParamSlider(
             label: 'Info Extracted 信息提取',
             value: vibe.infoExtracted,
             divisions: 100,
-            onChanged: (v) => notifier.updateVibe(vibe.id, infoExtracted: v),
+            onCommit: (v) => notifier.updateVibe(vibe.id, infoExtracted: v),
           ),
       ],
     );

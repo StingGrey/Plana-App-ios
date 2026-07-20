@@ -936,7 +936,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     final hasPrev = _prevImg != null; // 至少重绘过一次才有「前后对比」
     // 编辑中允许切 tab(图库页 keep-alive 保留本面板);仅当图库可见时
     // 返回键收面板,在其他 tab 返回键走系统默认(最小化)。
-    final onGallery = ref.watch(shellIndexProvider) == 1;
+    final onGallery = ref.watch(shellIndexProvider) == kTabGallery;
 
     return PopScope(
       canPop: !onGallery,

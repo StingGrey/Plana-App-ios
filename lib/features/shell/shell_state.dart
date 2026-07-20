@@ -1,6 +1,12 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-/// 当前底部 tab 索引(0 创作 / 1 图库 / 2 我的)。
+/// 底部 tab 索引常量(跨页跳转统一引用,别再写裸数字)。
+const kTabCreate = 0;
+const kTabGallery = 1;
+const kTabInspiration = 2;
+const kTabProfile = 3;
+
+/// 当前底部 tab 索引。
 /// 独立成 Provider,好让「生成完成跳图库」「缺 token 跳我的」等跨页切换。
 final shellIndexProvider =
     NotifierProvider<ShellIndexNotifier, int>(ShellIndexNotifier.new);

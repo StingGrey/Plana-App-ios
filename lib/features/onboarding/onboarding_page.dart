@@ -39,7 +39,7 @@ class OnboardingPage extends ConsumerWidget {
                 onTap: () {
                   // 先切到「我的」页(填令牌),再置模式触发 gate 换到 AppShell。
                   // 顺序不能反:set 会销毁本页,之后再用 ref 会报错。
-                  ref.read(shellIndexProvider.notifier).select(2);
+                  ref.read(shellIndexProvider.notifier).select(kTabProfile);
                   ref.read(authModeProvider.notifier).set(AuthMode.token);
                 },
               ),

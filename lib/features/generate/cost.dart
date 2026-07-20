@@ -8,13 +8,14 @@ import 'models.dart';
 /// 每张 +5(两者免费档也照收;CR 仅 4.5 模型实际下发,故按模型计费)。
 int estimateCost(GenerateState s, {required bool isOpus}) {
   final p = s.params;
+  if (isAnimaModel(p.model)) return 0; // Anima 走 Modal 后端,不扣 Anlas
   final pixels = p.width * p.height;
   final free = isOpus && p.steps <= 28 && pixels <= 1048576;
   var baseCost = max(2, (5.773e-7 * pixels * (p.steps + 5)).ceil());
   final i2i = s.img2img;
   if (i2i?.image != null) baseCost = max(2, (baseCost * i2i!.strength).ceil());
   final vibeExtra = max(0, s.enabledVibes - 4) * 2;
-  final crExtra = p.model.startsWith('NAI 4.5') ? s.enabledCharRefs * 5 : 0;
+  final crExtra = crSupportsModel(p.model) ? s.enabledCharRefs * 5 : 0;
   return (free ? 0 : baseCost) + vibeExtra + crExtra;
 }
 
@@ -29,11 +30,12 @@ int estimateInpaintCost(
   required double strength,
 }) {
   final p = s.params;
+  if (isAnimaModel(p.model)) return 0; // Anima 走 Modal 后端,不扣 Anlas
   final pixels = sendW * sendH;
   final free = isOpus && p.steps <= 28 && pixels <= 1048576;
   var baseCost = max(2, (5.773e-7 * pixels * (p.steps + 5)).ceil());
   baseCost = max(2, (baseCost * strength).ceil());
   final vibeExtra = max(0, s.enabledVibes - 4) * 2;
-  final crExtra = p.model.startsWith('NAI 4.5') ? s.enabledCharRefs * 5 : 0;
+  final crExtra = crSupportsModel(p.model) ? s.enabledCharRefs * 5 : 0;
   return (free ? 0 : baseCost) + vibeExtra + crExtra;
 }

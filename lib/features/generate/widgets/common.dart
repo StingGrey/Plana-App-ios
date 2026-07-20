@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:animations/animations.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -155,6 +157,7 @@ class ParamSlider extends StatelessWidget {
     required this.label,
     required this.value,
     required this.onChanged,
+    this.onChangeEnd,
     this.min = 0,
     this.max = 1,
     this.divisions,
@@ -167,6 +170,7 @@ class ParamSlider extends StatelessWidget {
   final String label;
   final double value;
   final ValueChanged<double> onChanged;
+  final ValueChanged<double>? onChangeEnd;
   final double min;
   final double max;
   final int? divisions;
@@ -209,6 +213,7 @@ class ParamSlider extends StatelessWidget {
               max: max,
               divisions: divisions,
               onChanged: onChanged,
+              onChangeEnd: onChangeEnd,
             ),
           ),
         ),
@@ -216,6 +221,64 @@ class ParamSlider extends StatelessWidget {
           Text(caption!,
               style: context.texts.labelSmall!.copyWith(color: context.scheme.outline)),
       ],
+    );
+  }
+}
+
+/// 拖动时只更新本地读数(不触发外部 provider 重建),松手才 [onCommit]。
+/// 用于「拖一下就整页重建」的场景(如 vibe/角色强度),避免每帧全量重建卡顿。
+class LiveParamSlider extends StatefulWidget {
+  const LiveParamSlider({
+    super.key,
+    required this.label,
+    required this.value,
+    required this.onCommit,
+    this.min = 0,
+    this.max = 1,
+    this.divisions,
+    this.caption,
+    this.dense = false,
+  });
+
+  final String label;
+  final double value;
+  final ValueChanged<double> onCommit;
+  final double min;
+  final double max;
+  final int? divisions;
+  final String? caption;
+  final bool dense;
+
+  @override
+  State<LiveParamSlider> createState() => _LiveParamSliderState();
+}
+
+class _LiveParamSliderState extends State<LiveParamSlider> {
+  double? _drag; // 拖动中的本地值;null = 用 widget.value
+
+  // divisions 只用于「松手时量化」,拖动本身连续 —— 避免离散滑杆的吸附动画/数值气泡带来的延迟感。
+  double _quantize(double v) {
+    final d = widget.divisions;
+    if (d == null || d <= 0) return v;
+    final step = (widget.max - widget.min) / d;
+    return ((v - widget.min) / step).round() * step + widget.min;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ParamSlider(
+      label: widget.label,
+      value: _drag ?? widget.value,
+      min: widget.min,
+      max: widget.max,
+      // 不给底层 Slider 传 divisions:连续拖动、无吸附动画、跟手无延迟。
+      caption: widget.caption,
+      dense: widget.dense,
+      onChanged: (v) => setState(() => _drag = v),
+      onChangeEnd: (v) {
+        widget.onCommit(_quantize(v));
+        setState(() => _drag = null); // 同帧父级会带新值下来,不闪
+      },
     );
   }
 }
@@ -680,27 +743,179 @@ Future<bool> confirmDialog(
   return ok ?? false;
 }
 
-void todoSnack(BuildContext context, String what) {
-  ScaffoldMessenger.of(context)
-    ..clearSnackBars()
-    ..showSnackBar(SnackBar(content: Text('$what · 下一里程碑接入')));
+void todoSnack(BuildContext context, String what) =>
+    hintSnack(context, '$what · 下一里程碑接入', icon: Icons.upcoming_outlined);
+
+// ---- 顶部悬浮提示(全 app 统一;替代底部 SnackBar) ----
+
+OverlayEntry? _activeToast;
+
+void _removeActiveToast() {
+  final e = _activeToast;
+  _activeToast = null;
+  if (e != null && e.mounted) e.remove();
 }
 
-/// 轻提示:带图标的浮层 snack,用于「分辨率已自动调整」这类被动变更告知。
-void hintSnack(BuildContext context, String text,
-    {IconData icon = Icons.info_outline}) {
-  final scheme = context.scheme;
-  ScaffoldMessenger.of(context)
-    ..clearSnackBars()
-    ..showSnackBar(SnackBar(
-      duration: const Duration(seconds: 3),
-      content: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 18, color: scheme.onInverseSurface),
-          const SizedBox(width: 10),
-          Flexible(child: Text(text)),
-        ],
+/// 轻提示:顶部悬浮 toast(root overlay,pop 路由也不消失)。
+/// 3 秒自动消失(带动作按钮 4 秒),点击提示本体立即关闭,新提示顶掉旧提示。
+/// 可选 [actionLabel]+[onAction] 提供一个动作按钮(如「撤销」「去设置」)。
+void hintSnack(
+  BuildContext context,
+  String text, {
+  IconData icon = Icons.info_outline,
+  String? actionLabel,
+  VoidCallback? onAction,
+}) {
+  final overlay = Overlay.of(context, rootOverlay: true);
+  _removeActiveToast();
+  late final OverlayEntry entry;
+  void done() {
+    if (identical(_activeToast, entry)) _activeToast = null;
+    if (entry.mounted) entry.remove();
+  }
+
+  entry = OverlayEntry(
+    builder: (_) => _TopToast(
+      text: text,
+      icon: icon,
+      actionLabel: actionLabel,
+      onAction: onAction,
+      duration: Duration(seconds: actionLabel != null ? 4 : 3),
+      onDismissed: done,
+    ),
+  );
+  _activeToast = entry;
+  overlay.insert(entry);
+}
+
+class _TopToast extends StatefulWidget {
+  const _TopToast({
+    required this.text,
+    required this.icon,
+    required this.duration,
+    required this.onDismissed,
+    this.actionLabel,
+    this.onAction,
+  });
+
+  final String text;
+  final IconData icon;
+  final Duration duration;
+  final VoidCallback onDismissed;
+  final String? actionLabel;
+  final VoidCallback? onAction;
+
+  @override
+  State<_TopToast> createState() => _TopToastState();
+}
+
+class _TopToastState extends State<_TopToast>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c =
+      AnimationController(vsync: this, duration: Motion.medium);
+  Timer? _timer;
+  bool _closing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _c.forward();
+    _timer = Timer(widget.duration, _close);
+  }
+
+  /// 收场动画后移除 overlay;被新提示强拆(dispose)时由调用侧兜底。
+  void _close() {
+    if (_closing || !mounted) return;
+    _closing = true;
+    _timer?.cancel();
+    _c.reverse().whenCompleteOrCancel(widget.onDismissed);
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return Positioned(
+      top: MediaQuery.paddingOf(context).top + 12,
+      left: 16,
+      right: 16,
+      child: SlideTransition(
+        position: Tween(
+          begin: const Offset(0, -0.8),
+          end: Offset.zero,
+        ).animate(CurvedAnimation(
+          parent: _c,
+          curve: Motion.emphasized,
+          reverseCurve: Motion.standard,
+        )),
+        child: FadeTransition(
+          opacity: _c,
+          child: Center(
+            child: Material(
+              color: scheme.inverseSurface,
+              elevation: 6,
+              shadowColor: scheme.shadow,
+              borderRadius: BorderRadius.circular(16),
+              clipBehavior: Clip.antiAlias,
+              child: InkWell(
+                onTap: _close,
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(
+                      17, 11, widget.actionLabel != null ? 8 : 17, 11),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(widget.icon,
+                          size: 19, color: scheme.onInverseSurface),
+                      const SizedBox(width: 10),
+                      Flexible(
+                        child: Text(
+                          widget.text,
+                          style: TextStyle(
+                            fontSize: 14.5,
+                            height: 1.3,
+                            color: scheme.onInverseSurface,
+                          ),
+                        ),
+                      ),
+                      if (widget.actionLabel != null) ...[
+                        const SizedBox(width: 6),
+                        TextButton(
+                          style: TextButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            minimumSize: const Size(0, 34),
+                            padding:
+                                const EdgeInsets.symmetric(horizontal: 12),
+                          ),
+                          onPressed: () {
+                            widget.onAction?.call();
+                            _close();
+                          },
+                          child: Text(
+                            widget.actionLabel!,
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700,
+                              color: scheme.inversePrimary,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
-    ));
+    );
+  }
 }

@@ -1,7 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-import '../../../core/auth/auth_mode.dart';
+import '../../../core/auth/bot_session_store.dart';
 import '../../../core/auth/secure_storage.dart';
 
 /// 补全来源。
@@ -44,10 +44,13 @@ class CompletionSourcePrefNotifier extends AsyncNotifier<CompletionSource?> {
   }
 }
 
-/// 生效补全来源。非 bot 一律用离线词库(不走后端);bot 默认增强,可在设置切换。
+/// 生效补全来源。增强补全是纯后端功能,只看**有没有 Bot 会话**——
+/// 与生成走直连 Token 还是走后端无关(自带 Token 的用户授权 Bot 后一样能用)。
+/// 没有会话则一律离线词库;有会话默认增强,可在设置切换。
 final effectiveCompletionSourceProvider = Provider<CompletionSource>((ref) {
-  final mode = ref.watch(authModeProvider).value;
-  if (mode != AuthMode.bot) return CompletionSource.danbooru;
+  if (ref.watch(botSessionProvider).value == null) {
+    return CompletionSource.danbooru;
+  }
   final pref = ref.watch(completionSourcePrefProvider).value;
   return pref ?? CompletionSource.enhanced;
 });

@@ -34,7 +34,9 @@ Future<void> pickImg2ImgImage(BuildContext context, WidgetRef ref) async {
 
 /// 图生图:选底图(自动匹配分辨率)+ 强度/噪声滑杆 + 移除。
 class Img2ImgCard extends ConsumerStatefulWidget {
-  const Img2ImgCard({super.key});
+  const Img2ImgCard({super.key, this.reorderIndex});
+
+  final int? reorderIndex;
 
   @override
   ConsumerState<Img2ImgCard> createState() => _Img2ImgCardState();
@@ -54,6 +56,7 @@ class _Img2ImgCardState extends ConsumerState<Img2ImgCard> {
     return SectionCard(
       icon: Icons.image_outlined,
       title: '图生图',
+      reorderIndex: widget.reorderIndex,
       badge: hasImage ? const CountBadge('1') : null,
       actions: [
         if (hasImage)

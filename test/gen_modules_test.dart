@@ -1,0 +1,132 @@
+import 'package:flutter_test/flutter_test.dart';
+import 'package:plana_app/features/generate/gen_modules.dart';
+import 'package:plana_app/features/generate/models.dart';
+
+GenerateState _stateWithAll({String model = 'NAI 4.5 Full'}) =>
+    GenerateState.initial().copyWith(
+      characters: const [
+        CharacterPrompt(id: 'c1', name: '角色1', positive: '1girl'),
+      ],
+      vibes: const [VibeItem(id: 'v1')],
+      charRefs: const [CharRefItem(id: 'r1')],
+      img2img: const Img2ImgConfig(),
+      params: const GenParams().copyWith(model: model),
+    );
+
+void main() {
+  const naiDefault = [
+    GenModule.character,
+    GenModule.vibe,
+    GenModule.charRef,
+    GenModule.img2img,
+  ];
+
+  group('GenModuleSettings', () {
+    test('默认全启用,nai 组顺序为注册表顺序', () {
+      const s = GenModuleSettings();
+      expect(s.orderOf(GenProvider.nai), naiDefault);
+      for (final m in GenModule.values) {
+        expect(s.isEnabled(m), isTrue);
+      }
+      expect(s.visibleFor('NAI 4.5 Full'), naiDefault);
+    });
+
+    test('型号能力门槛:4.0 下角色参考不可见(但组顺序仍保留)', () {
+      const s = GenModuleSettings();
+      expect(s.visibleFor('NAI 4.0 Full'), isNot(contains(GenModule.charRef)));
+      expect(s.visibleFor('NAI 4.0 Curated'), hasLength(3));
+      expect(s.orderOf(GenProvider.nai), contains(GenModule.charRef));
+    });
+
+    test('fromJson 容错:过滤未知项、去重、补齐缺失、读启用位', () {
+      final s = GenModuleSettings.fromJson({
+        'enabled': {'vibe': false, 'ghost': true, 'img2img': 1},
+        'order': {
+          'nai': ['img2img', 'ghost', 'img2img', 'vibe'],
+        },
+      });
+      expect(s.orderOf(GenProvider.nai), [
+        GenModule.img2img,
+        GenModule.vibe,
+        GenModule.character,
+        GenModule.charRef,
+      ]);
+      expect(s.isEnabled(GenModule.vibe), isFalse);
+      expect(s.isEnabled(GenModule.img2img), isTrue); // 非 bool 丢弃 → 默认启用
+      expect(s.visibleFor('NAI 4.5 Full'), isNot(contains(GenModule.vibe)));
+    });
+
+    test('旧版扁平 order 数组归入 nai 组', () {
+      final s = GenModuleSettings.fromJson({
+        'order': ['vibe', 'character'],
+      });
+      expect(s.orderOf(GenProvider.nai), [
+        GenModule.vibe,
+        GenModule.character,
+        GenModule.charRef,
+        GenModule.img2img,
+      ]);
+    });
+
+    test('toJson/fromJson 往返一致', () {
+      final a = GenModuleSettings(
+        enabled: const {GenModule.charRef: false},
+        order: const {
+          GenProvider.nai: [
+            GenModule.vibe,
+            GenModule.img2img,
+            GenModule.character,
+            GenModule.charRef,
+          ],
+        },
+      );
+      final b = GenModuleSettings.fromJson(
+        Map<String, dynamic>.from(a.toJson()),
+      );
+      expect(b.orderOf(GenProvider.nai), a.orderOf(GenProvider.nai));
+      for (final m in GenModule.values) {
+        expect(b.isEnabled(m), a.isEnabled(m));
+      }
+    });
+  });
+
+  group('stripHiddenModules', () {
+    test('全启用且型号全支持时原样返回(同一对象,零拷贝)', () {
+      final s = _stateWithAll();
+      expect(
+        identical(stripHiddenModules(s, const GenModuleSettings()), s),
+        isTrue,
+      );
+    });
+
+    test('隐藏的模块数据被剥离,其余保留', () {
+      final s = _stateWithAll();
+      final out = stripHiddenModules(
+        s,
+        const GenModuleSettings(
+          enabled: {GenModule.vibe: false, GenModule.img2img: false},
+        ),
+      );
+      expect(out.vibes, isEmpty);
+      expect(out.img2img, isNull);
+      expect(out.characters, hasLength(1));
+      expect(out.charRefs, hasLength(1));
+    });
+
+    test('型号不支持的模块同样剥离:4.0 下角色参考不发', () {
+      final s = _stateWithAll(model: 'NAI 4.0 Full');
+      final out = stripHiddenModules(s, const GenModuleSettings());
+      expect(out.charRefs, isEmpty);
+      expect(out.vibes, hasLength(1));
+      expect(out.characters, hasLength(1));
+      expect(out.img2img, isNotNull);
+    });
+  });
+
+  test('crSupportsModel 仅 4.5 系为真', () {
+    expect(crSupportsModel('NAI 4.5 Full'), isTrue);
+    expect(crSupportsModel('NAI 4.5 Curated'), isTrue);
+    expect(crSupportsModel('NAI 4.0 Full'), isFalse);
+    expect(crSupportsModel('NAI 4.0 Curated'), isFalse);
+  });
+}

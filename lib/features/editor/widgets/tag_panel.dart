@@ -2,9 +2,11 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/editor_theme.dart';
+import '../../generate/widgets/common.dart' show hintSnack;
 import '../data/suggestions.dart' show translationOf;
 import '../editor_models.dart';
 
@@ -18,6 +20,10 @@ class TagPanel extends StatefulWidget {
     required this.count,
     required this.related,
     this.relatedLoading = false,
+    this.weightStep = 0.1,
+    this.warning,
+    this.sdConvert,
+    this.onSelectGroup,
     required this.onWrap,
     required this.onSetMult,
     required this.onClear,
@@ -30,6 +36,19 @@ class TagPanel extends StatefulWidget {
   final Tok tok;
   final int? count;
   final List<String> related;
+
+  /// 异常权重警示:词中段疑似丢逗号的数字串(如 '10'),null=正常。
+  final String? warning;
+
+  /// 当前词条是 SD 权重语法时的转换回调(web convertSDToNAI);null=非 SD。
+  final VoidCallback? sdConvert;
+
+  /// 词条处于跨词条权重组时的「选中整组」回调(把选区扩到整组进批量
+  /// 面板调组权重);null=不在组内。
+  final VoidCallback? onSelectGroup;
+
+  /// 数值加减每步的调整量(编辑器设置:0.05 / 0.1)。
+  final double weightStep;
 
   /// 关联标签正在异步拉取(按钮不置灰,左侧显示转圈)。
   final bool relatedLoading;
@@ -70,11 +89,13 @@ class _TagPanelState extends State<TagPanel> {
     final tok = widget.tok;
     final on = !tok.disabled;
 
+    // 读数/名字色以**自身**权重为准(组权重单独一行展示,web 同款语义):
+    // +/− 与清除操作的对象都是自身权重,读数一致才不跳变。
     final Color wc = tok.disabled
         ? scheme.onSurfaceVariant
-        : tok.effMult > 1.0001
+        : tok.ownMult > 1.0001
         ? pal.weightUp
-        : tok.effMult < 0.9999
+        : tok.ownMult < 0.9999
         ? pal.weightDown
         : scheme.onSurface;
 
@@ -94,6 +115,118 @@ class _TagPanelState extends State<TagPanel> {
               wc: wc,
               onClose: widget.onClose,
             ),
+            // 跨词条权重组信息:自身读数之外单独陈述组权重与合计,
+            // 「选中整组」一键进批量面板调组权重。
+            if ((tok.groupMult - 1).abs() > 0.0001)
+              Padding(
+                padding: const EdgeInsets.only(top: 5),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.layers_outlined,
+                      size: 15,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        '处于权重组 ×${fmtMult(tok.groupMult)} · '
+                        '合计 ×${fmtMult(tok.effMult)}',
+                        style: context.texts.labelSmall!.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                    if (widget.onSelectGroup != null)
+                      Material(
+                        color: scheme.secondaryContainer,
+                        borderRadius: BorderRadius.circular(9),
+                        clipBehavior: Clip.antiAlias,
+                        child: InkWell(
+                          onTap: widget.onSelectGroup,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 9,
+                              vertical: 5,
+                            ),
+                            child: Text(
+                              '选中整组',
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                                color: scheme.onSecondaryContainer,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            if (widget.warning != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 5),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.warning_amber_rounded,
+                      size: 15,
+                      color: scheme.error,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        '「${widget.warning}」可能被误识别为权重,疑似丢了逗号',
+                        style: context.texts.labelSmall!.copyWith(
+                          color: scheme.error,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            if (widget.sdConvert != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Material(
+                  color: scheme.tertiaryContainer,
+                  borderRadius: BorderRadius.circular(10),
+                  clipBehavior: Clip.antiAlias,
+                  child: InkWell(
+                    onTap: widget.sdConvert,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 11,
+                        vertical: 9,
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.autorenew,
+                            size: 16,
+                            color: scheme.onTertiaryContainer,
+                          ),
+                          const SizedBox(width: 7),
+                          Expanded(
+                            child: Text(
+                              'SD 权重语法 · 点击转换为 NAI 格式',
+                              style: context.texts.labelMedium!.copyWith(
+                                color: scheme.onTertiaryContainer,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          Icon(
+                            Icons.chevron_right,
+                            size: 16,
+                            color: scheme.onTertiaryContainer,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             const SizedBox(height: 8),
             // 权重:括号快捷键(左)· 数值加减(右,支持长按持续步进,读数居中)
             Row(
@@ -126,12 +259,12 @@ class _TagPanelState extends State<TagPanel> {
                 _RepeatBtn(
                   icon: Icons.remove,
                   enabled: on,
-                  step: () => widget.onSetMult(tok.numMult - 0.1),
+                  step: () => widget.onSetMult(tok.numMult - widget.weightStep),
                 ),
                 SizedBox(
                   width: 60,
                   child: Text(
-                    '×${fmtMult(tok.effMult)}',
+                    '×${fmtMult(tok.ownMult)}',
                     textAlign: TextAlign.center,
                     style: mono(context, size: 16, color: wc),
                   ),
@@ -139,7 +272,7 @@ class _TagPanelState extends State<TagPanel> {
                 _RepeatBtn(
                   icon: Icons.add,
                   enabled: on,
-                  step: () => widget.onSetMult(tok.numMult + 0.1),
+                  step: () => widget.onSetMult(tok.numMult + widget.weightStep),
                 ),
               ],
             ),
@@ -238,100 +371,6 @@ class _TagPanelState extends State<TagPanel> {
                   : const SizedBox(width: double.infinity),
             ),
           ],
-        ),
-      ),
-    );
-  }
-
-  Widget _weightBtn(
-    BuildContext context,
-    String label,
-    Color bg,
-    Color fg, {
-    required bool enabled,
-    required VoidCallback onTap,
-  }) {
-    final scheme = context.scheme;
-    return Material(
-      color: enabled ? bg : scheme.surfaceContainerHighest,
-      borderRadius: BorderRadius.circular(11),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: enabled ? onTap : null,
-        child: SizedBox(
-          width: 46,
-          height: 38,
-          child: Center(
-            child: Text(
-              label,
-              style: TextStyle(
-                fontFamily: 'monospace',
-                fontSize: 14,
-                fontWeight: FontWeight.w700,
-                color: enabled ? fg : scheme.outlineVariant,
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _action(
-    BuildContext context,
-    String label, {
-    IconData? icon,
-    Widget? leading, // 覆盖 icon 的自定义前导(如加载转圈)
-    bool danger = false,
-    bool selected = false,
-    required bool enabled,
-    required VoidCallback onTap,
-  }) {
-    final scheme = context.scheme;
-    final fg = !enabled
-        ? scheme.outlineVariant
-        : selected
-        ? scheme.onSecondaryContainer
-        : danger
-        ? scheme.error
-        : scheme.onSurface;
-    final bg = selected
-        ? scheme.secondaryContainer
-        : danger
-        ? scheme.error.withValues(alpha: .10)
-        : scheme.surfaceContainerHigh;
-    return Material(
-      color: bg,
-      borderRadius: BorderRadius.circular(12),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: enabled ? onTap : null,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 11),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              if (leading != null) ...[
-                leading,
-                const SizedBox(width: 5),
-              ] else if (icon != null) ...[
-                Icon(icon, size: 17, color: fg),
-                const SizedBox(width: 5),
-              ],
-              Flexible(
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.clip,
-                  softWrap: false,
-                  style: context.texts.bodyMedium!.copyWith(
-                    color: fg,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ],
-          ),
         ),
       ),
     );
@@ -457,14 +496,20 @@ class _Header extends StatelessWidget {
             ],
           ),
         ),
+        if (tok.name.isNotEmpty) ...[
+          _circleIcon(
+            context,
+            icon: Icons.travel_explore,
+            onTap: () => _openWiki(context, tok.name),
+          ),
+          const SizedBox(width: 4),
+        ],
         _circleIcon(
           context,
           icon: Icons.content_copy,
           onTap: () {
             Clipboard.setData(ClipboardData(text: tok.name));
-            ScaffoldMessenger.of(context)
-              ..clearSnackBars()
-              ..showSnackBar(const SnackBar(content: Text('已复制标签')));
+            hintSnack(context, '已复制标签', icon: Icons.check);
           },
         ),
         const SizedBox(width: 4),
@@ -473,31 +518,292 @@ class _Header extends StatelessWidget {
     );
   }
 
-  Widget _circleIcon(
-    BuildContext context, {
-    required IconData icon,
-    required VoidCallback onTap,
-  }) {
-    final scheme = context.scheme;
-    return Material(
-      color: scheme.surfaceContainerHighest,
-      shape: const CircleBorder(),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        child: SizedBox(
-          width: 40,
-          height: 40,
-          child: Icon(icon, size: 18, color: scheme.onSurfaceVariant),
-        ),
-      ),
-    );
+  /// 跳系统浏览器开 Danbooru wiki(web openDanbooru 同款,空格转下划线)。
+  Future<void> _openWiki(BuildContext context, String name) async {
+    final tag = name.trim().replaceAll(' ', '_');
+    final uri = Uri.https('danbooru.donmai.us', '/wiki_pages/$tag');
+    var ok = false;
+    try {
+      ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {}
+    if (!ok && context.mounted) {
+      hintSnack(context, '无法打开浏览器', icon: Icons.error_outline);
+    }
   }
 
   static String _formatCount(int n) {
     if (n < 1000) return '';
     if (n < 10000) return '${(n / 1000).toStringAsFixed(1)}k';
     return '${(n / 1000).round()}k';
+  }
+}
+
+// ---- 面板共享控件(单词条 TagPanel 与多选 MultiTagPanel 共用)----
+
+/// 括号快捷键按钮(`[ ]` / `{ }`,语义色填充)。
+Widget _weightBtn(
+  BuildContext context,
+  String label,
+  Color bg,
+  Color fg, {
+  required bool enabled,
+  required VoidCallback onTap,
+}) {
+  final scheme = context.scheme;
+  return Material(
+    color: enabled ? bg : scheme.surfaceContainerHighest,
+    borderRadius: BorderRadius.circular(11),
+    clipBehavior: Clip.antiAlias,
+    child: InkWell(
+      onTap: enabled ? onTap : null,
+      child: SizedBox(
+        width: 46,
+        height: 38,
+        child: Center(
+          child: Text(
+            label,
+            style: TextStyle(
+              fontFamily: 'monospace',
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+              color: enabled ? fg : scheme.outlineVariant,
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+/// 操作按钮(清除权重/禁用/删除等,危险=红调)。
+Widget _action(
+  BuildContext context,
+  String label, {
+  IconData? icon,
+  Widget? leading, // 覆盖 icon 的自定义前导(如加载转圈)
+  bool danger = false,
+  bool selected = false,
+  required bool enabled,
+  required VoidCallback onTap,
+}) {
+  final scheme = context.scheme;
+  final fg = !enabled
+      ? scheme.outlineVariant
+      : selected
+      ? scheme.onSecondaryContainer
+      : danger
+      ? scheme.error
+      : scheme.onSurface;
+  final bg = selected
+      ? scheme.secondaryContainer
+      : danger
+      ? scheme.error.withValues(alpha: .10)
+      : scheme.surfaceContainerHigh;
+  return Material(
+    color: bg,
+    borderRadius: BorderRadius.circular(12),
+    clipBehavior: Clip.antiAlias,
+    child: InkWell(
+      onTap: enabled ? onTap : null,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 11),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            if (leading != null) ...[
+              leading,
+              const SizedBox(width: 5),
+            ] else if (icon != null) ...[
+              Icon(icon, size: 17, color: fg),
+              const SizedBox(width: 5),
+            ],
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.clip,
+                softWrap: false,
+                style: context.texts.bodyMedium!.copyWith(
+                  color: fg,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+/// 圆形小图标按钮(复制/关闭)。
+Widget _circleIcon(
+  BuildContext context, {
+  required IconData icon,
+  required VoidCallback onTap,
+}) {
+  final scheme = context.scheme;
+  return Material(
+    color: scheme.surfaceContainerHighest,
+    shape: const CircleBorder(),
+    clipBehavior: Clip.antiAlias,
+    child: InkWell(
+      onTap: onTap,
+      child: SizedBox(
+        width: 40,
+        height: 40,
+        child: Icon(icon, size: 18, color: scheme.onSurfaceVariant),
+      ),
+    ),
+  );
+}
+
+/// 划词多选批量面板(web multiSelectPanel 移植):选区盖住 ≥2 枚词条时
+/// 替换词条栏。操作逐词应用,应用后选区保持、面板不关(删除/关闭除外)。
+class MultiTagPanel extends StatelessWidget {
+  const MultiTagPanel({
+    super.key,
+    required this.count,
+    required this.mult,
+    required this.anyEnabled,
+    required this.onWrap,
+    required this.onStepMult,
+    required this.onClear,
+    required this.onToggleDisabled,
+    required this.onDelete,
+    required this.onClose,
+  });
+
+  /// 选中的词条数。
+  final int count;
+
+  /// 面板本地的统一数值权重读数(进入多选时重置 1.0)。
+  final double mult;
+
+  /// 选中里还有启用的 → 动作为「全部禁用」;全禁 → 「全部启用」。
+  final bool anyEnabled;
+
+  final void Function(bool up) onWrap;
+  final void Function(bool up) onStepMult;
+  final VoidCallback onClear;
+  final VoidCallback onToggleDisabled;
+  final VoidCallback onDelete;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    final pal = context.editor;
+
+    return Material(
+      color: scheme.surfaceContainer,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 12, 12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.select_all, size: 18, color: scheme.primary),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: Text(
+                    '已选 $count 枚词条',
+                    style: context.texts.titleMedium!.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                _circleIcon(context, icon: Icons.close, onTap: onClose),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Text(
+                  '整体',
+                  style: context.texts.bodyMedium!.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                _weightBtn(
+                  context,
+                  '[ ]',
+                  pal.weightDown,
+                  scheme.onError,
+                  enabled: true,
+                  onTap: () => onWrap(false),
+                ),
+                const SizedBox(width: 6),
+                _weightBtn(
+                  context,
+                  '{ }',
+                  pal.weightUp,
+                  scheme.onError,
+                  enabled: true,
+                  onTap: () => onWrap(true),
+                ),
+                const Spacer(),
+                _RepeatBtn(
+                  icon: Icons.remove,
+                  enabled: true,
+                  step: () => onStepMult(false),
+                ),
+                SizedBox(
+                  width: 60,
+                  child: Text(
+                    '×${fmtMult(mult)}',
+                    textAlign: TextAlign.center,
+                    style: mono(context, size: 16, color: scheme.onSurface),
+                  ),
+                ),
+                _RepeatBtn(
+                  icon: Icons.add,
+                  enabled: true,
+                  step: () => onStepMult(true),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: _action(
+                    context,
+                    '清除权重',
+                    enabled: true,
+                    onTap: onClear,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _action(
+                    context,
+                    anyEnabled ? '全部禁用' : '全部启用',
+                    icon: anyEnabled ? Icons.visibility_off : Icons.visibility,
+                    enabled: true,
+                    onTap: onToggleDisabled,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _action(
+                    context,
+                    '删除',
+                    icon: Icons.delete_outline,
+                    danger: true,
+                    enabled: true,
+                    onTap: onDelete,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

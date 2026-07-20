@@ -46,12 +46,23 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
       return const _EmptyGallery();
     }
 
-    // 大图层:生成中优先显预览(未到帧则垫当前选中图);否则显选中结果。
+    // 生成中视角可切换(对齐 web viewingHistory):默认看生成预览,
+    // 点历史缩略图切走(生成继续后台跑,进度在胶片条占位卡上),
+    // 点占位卡切回。空库时没得切,强制看生成。
+    final viewingGen = ref.watch(galleryViewGenProvider);
+    final showGen = gen.busy && (viewingGen || selected == null);
+
+    // 大图层:看生成时显预览(未到帧则垫当前选中图);否则显选中结果。
     // 终帧字节与入库字节同一引用 → busy→出图切换零重解码,不闪。
-    final bytes = gen.busy ? (gen.preview ?? selected?.bytes) : selected?.bytes;
-    final w = gen.busy ? gen.width : (selected?.width ?? 0);
-    final h = gen.busy ? gen.height : (selected?.height ?? 0);
-    final showChrome = !gen.busy && selected != null;
+    // 选中图字节不在内存(重启水合/RAM 减负)时按需从盘读,读到前显斜纹。
+    var selBytes = selected?.bytes;
+    if (selBytes == null && selected != null) {
+      selBytes = ref.watch(galleryImageProvider(selected.id)).value;
+    }
+    final bytes = showGen ? (gen.preview ?? selBytes) : selBytes;
+    final w = showGen ? gen.width : (selected?.width ?? 0);
+    final h = showGen ? gen.height : (selected?.height ?? 0);
+    final showChrome = !showGen && selected != null;
 
     return Stack(
       fit: StackFit.expand,
@@ -67,7 +78,7 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
                   if (bytes != null)
                     _ZoomableImage(
                       key: ValueKey(
-                        gen.busy ? 'busy' : (state.selectedId ?? ''),
+                        showGen ? 'busy' : (state.selectedId ?? ''),
                       ),
                       bytes: bytes,
                       width: w,
@@ -107,7 +118,8 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
                             child: child,
                           ),
                         ),
-                        child: gen.busy
+                        // 切看历史图时胶囊让位(进度看占位卡),不挡图
+                        child: showGen
                             ? ProgressPill(
                                 key: const ValueKey('pill'),
                                 status: gen,
@@ -122,7 +134,15 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
             FilmStrip(
               results: state.results,
               selectedId: state.selectedId,
-              onSelect: ref.read(galleryProvider.notifier).select,
+              onSelect: (id) {
+                // 生成中点历史图 = 切走看历史(生成继续);平时就是普通选图
+                ref.read(galleryViewGenProvider.notifier).set(false);
+                ref.read(galleryProvider.notifier).select(id);
+              },
+              gen: gen.busy ? gen : null,
+              genActive: showGen,
+              onTapGen: () =>
+                  ref.read(galleryViewGenProvider.notifier).set(true),
             ),
           ],
         ),

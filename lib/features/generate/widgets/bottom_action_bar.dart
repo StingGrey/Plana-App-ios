@@ -4,11 +4,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/net/anlas_provider.dart';
 import '../../../core/theme/app_theme.dart';
 import '../cost.dart';
+import '../gen_modules.dart';
 import '../generate_state.dart';
 import '../generation_controller.dart';
 import '../loop_controller.dart';
+import '../../import/import_panel.dart';
 import 'advanced_sheet.dart';
-import 'img2img_card.dart';
+import 'common.dart' show hintSnack;
 import 'loop_sheet.dart';
 import 'resolution_sheet.dart';
 
@@ -25,7 +27,13 @@ class BottomActionBar extends ConsumerWidget {
     final loop = ref.watch(loopStatusProvider);
 
     final isOpus = ref.watch(anlasProvider).asData?.value?.isOpus ?? false;
-    final totalCost = estimateCost(state, isOpus: isOpus);
+    // 成本按实际会发送的内容估:隐藏模块的数据不发也不计
+    final mods =
+        ref.watch(genModulesProvider).value ?? const GenModuleSettings();
+    final totalCost = estimateCost(
+      stripHiddenModules(state, mods),
+      isOpus: isOpus,
+    );
 
     return Material(
       color: scheme.surfaceContainer,
@@ -44,7 +52,9 @@ class BottomActionBar extends ConsumerWidget {
                 const SizedBox(width: 8),
                 _ReadoutChip(
                   caption: '步数',
-                  value: '${p.steps}',
+                  value: isAnimaModel(p.model)
+                      ? '${p.animaSteps}'
+                      : '${p.steps}',
                   onTap: () => showAdvancedSheet(context),
                 ),
                 const Spacer(),
@@ -59,48 +69,36 @@ class BottomActionBar extends ConsumerWidget {
             const SizedBox(height: 8),
             Row(
               children: [
-                // 底图伴钮:选相册图设为图生图底图(已有底图时高亮,点击更换)
-                Builder(
-                  builder: (context) {
-                    final hasI2i = state.img2img?.image != null;
-                    return Tooltip(
-                      message: hasI2i ? '更换图生图底图' : '导入图生图底图',
-                      child: AnimatedContainer(
-                        duration: Motion.fast,
-                        width: 52,
-                        height: 52,
-                        decoration: BoxDecoration(
-                          color: hasI2i
-                              ? scheme.primaryContainer
-                              : Colors.transparent,
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(
-                            color: hasI2i
-                                ? scheme.primary
-                                : scheme.outline.withValues(alpha: .7),
-                            width: 1.5,
-                          ),
-                        ),
-                        child: Material(
-                          color: Colors.transparent,
-                          borderRadius: BorderRadius.circular(15),
-                          clipBehavior: Clip.antiAlias,
-                          child: InkWell(
-                            onTap: () => pickImg2ImgImage(context, ref),
-                            child: Center(
-                              child: Icon(
-                                hasI2i ? Icons.image : Icons.input,
-                                size: 22,
-                                color: hasI2i
-                                    ? scheme.onPrimaryContainer
-                                    : scheme.primary,
-                              ),
-                            ),
+                // 导入图片:选相册图 → 解析元数据/用作参考的全屏导入面板
+                Tooltip(
+                  message: '导入图片',
+                  child: AnimatedContainer(
+                    duration: Motion.fast,
+                    width: 52,
+                    height: 52,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: scheme.outline.withValues(alpha: .9),
+                        width: 1.5,
+                      ),
+                    ),
+                    child: Material(
+                      color: Colors.transparent,
+                      borderRadius: BorderRadius.circular(15),
+                      clipBehavior: Clip.antiAlias,
+                      child: InkWell(
+                        onTap: () => openImportPanel(context),
+                        child: Center(
+                          child: Icon(
+                            Icons.add_photo_alternate_outlined,
+                            size: 22,
+                            color: scheme.primary,
                           ),
                         ),
                       ),
-                    );
-                  },
+                    ),
+                  ),
                 ),
                 const SizedBox(width: 9),
                 // 循环伴钮:进循环面板(选张数并开始);运行中高亮,面板里可停
@@ -118,7 +116,7 @@ class BottomActionBar extends ConsumerWidget {
                       border: Border.all(
                         color: loop.active
                             ? scheme.primary
-                            : scheme.outline.withValues(alpha: .7),
+                            : scheme.outline.withValues(alpha: .9),
                         width: 1.5,
                       ),
                     ),
@@ -164,9 +162,12 @@ class BottomActionBar extends ConsumerWidget {
                                 borderRadius: BorderRadius.circular(26),
                               ),
                             ),
-                            onPressed: () => ref
-                                .read(generationProvider.notifier)
-                                .generate(),
+                            onPressed: () {
+                              _hintDisabledVibes(context, ref);
+                              ref
+                                  .read(generationProvider.notifier)
+                                  .generate();
+                            },
                             child: Row(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
@@ -203,6 +204,19 @@ class BottomActionBar extends ConsumerWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// 生成/排队前置检查:缺当前模型编码的纯编码 Vibe 无从现场编码,
+/// 只会被静默跳过——直接停用并提示,别让人误以为它生效了。
+void _hintDisabledVibes(BuildContext context, WidgetRef ref) {
+  final n = ref.read(generateProvider.notifier).disableVibesMissingEncoding();
+  if (n > 0) {
+    hintSnack(
+      context,
+      '$n 个 Vibe 缺当前模型编码,已停用',
+      icon: Icons.visibility_off_outlined,
     );
   }
 }
@@ -266,7 +280,7 @@ class _BusyBar extends StatelessWidget {
         children: [
           LinearProgressIndicator(
             value: gen.progress,
-            backgroundColor: scheme.surfaceContainerHigh,
+            backgroundColor: scheme.surfaceContainerHighest,
             color: scheme.primary.withValues(alpha: .38),
           ),
           if (onStop != null)
@@ -331,7 +345,7 @@ class _ReadoutChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     return Material(
-      color: scheme.surfaceContainerHigh,
+      color: scheme.surfaceContainerHighest,
       borderRadius: BorderRadius.circular(10),
       clipBehavior: Clip.antiAlias,
       child: InkWell(

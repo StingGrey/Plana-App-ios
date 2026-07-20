@@ -13,7 +13,9 @@ import 'section_card.dart';
 /// 行 1:电源开关 · 名称(+状态说明)· 站位徽章 · 删除
 /// 行 2:提示词单行预览 + token 计数
 class CharacterCard extends ConsumerWidget {
-  const CharacterCard({super.key});
+  const CharacterCard({super.key, this.reorderIndex});
+
+  final int? reorderIndex;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -26,6 +28,7 @@ class CharacterCard extends ConsumerWidget {
     return SectionCard(
       icon: Icons.group_outlined,
       title: '角色',
+      reorderIndex: reorderIndex,
       badge: CountBadge('${chars.length} / 6'),
       actions: [
         if (chars.isNotEmpty)
@@ -42,10 +45,12 @@ class CharacterCard extends ConsumerWidget {
           onTap: canAdd ? notifier.addCharacter : null,
         ),
       ],
-      expanded: state.openPanels.contains(Panel.characters),
-      onHeaderTap: () => notifier.togglePanel(Panel.characters),
+      // 没有角色时整卡不可展开:展开体本就是空的,留个箭头点开只会给出一片空白。
+      expanded: chars.isNotEmpty && state.openPanels.contains(Panel.characters),
+      onHeaderTap:
+          chars.isEmpty ? null : () => notifier.togglePanel(Panel.characters),
       body: chars.isEmpty
-          ? const InfoNote('还没有角色。多角色可分别设置提示词与画面站位(最多 6 个)。')
+          ? null
           // 长按卡片拖动排序;横滑删除保留
           : ReorderableListView(
               shrinkWrap: true,
@@ -118,7 +123,7 @@ class _CharacterTile extends ConsumerWidget {
         clipBehavior: Clip.antiAlias,
         child: InkWell(
           onTap: () => Navigator.of(context).push(sharedAxisRoute(
-            EditorPage(positive: true, characterName: char.name),
+            EditorPage(positive: true, charId: char.id),
           )),
           child: Padding(
             padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),

@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
 import '../../../core/net/backend_config.dart';
+import '../../../core/util/prompt_tokens.dart';
 import 'suggestions.dart';
 
 /// 角色·作品库(增强模式):后端 `GET /api/data/role_tag_mapping.json`(~6.5MB,中英双语,公开)。
@@ -147,21 +148,45 @@ class RoleLibrary {
       if (o.roles.isEmpty) continue;
       final hit = cjk ? (o.zh?.contains(q) ?? false) : o.en.startsWith(ql);
       if (hit) {
-        // 作品选中=随机抽一个角色插入(对齐 web)
+        // 预抽一个角色备用;点作品行本身插入的是作品 tag,抽取要点骰子。
         final pick = o.roles[_rand.nextInt(o.roles.length)];
         works.add(
           Suggestion(
             text: o.en.replaceAll('_', ' '),
             kind: SuggestionKind.work,
             trans: o.zh,
-            note: '${o.roles.length} 个角色 · 随机抽取',
-            insertText: pick.roleEn.replaceAll('_', ' '),
+            note: '${o.roles.length} 个角色 · 点骰子随机抽取',
+            randomPick: pick.roleEn.replaceAll('_', ' '),
           ),
         );
         if (works.length >= limit) break;
       }
     }
     return (chars, works);
+  }
+
+  /// 角色识别(元数据工具):提示词分词集合中命中的角色,最多 [limit] 个。
+  /// 词库不可用(离线模式且无缓存)时返回空,不报错。
+  Future<List<({String zh, String en, String origin})>> matchInPrompt(
+    Set<String> tokens, {
+    int limit = 5,
+  }) async {
+    try {
+      await _ensureLoaded();
+    } catch (_) {
+      return const [];
+    }
+    final out = <({String zh, String en, String origin})>[];
+    for (final r in _roles ?? const <_Role>[]) {
+      if (r.originEn == 'original_character' || r.originEn == 'oc') continue;
+      final zh = r.roleZh;
+      if (zh == null || zh.isEmpty) continue;
+      if (tokens.contains(cleanPromptToken(r.roleEn))) {
+        out.add((zh: zh, en: r.roleEn, origin: r.originZh ?? r.originEn));
+        if (out.length >= limit) break;
+      }
+    }
+    return out;
   }
 }
 

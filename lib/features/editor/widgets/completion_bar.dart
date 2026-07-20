@@ -104,7 +104,7 @@ class CompletionBar extends StatelessWidget {
               if (result.isEmpty)
                 (loading ? _loadingHint(context) : _emptyHint(context))
               else ...[
-                _row(context, result.tags),
+                // 实体行(画师/角色/OC/作品)命中时才滑入,占上;标签行常驻在下。
                 AnimatedSize(
                   duration: Motion.medium,
                   curve: Motion.emphasized,
@@ -112,10 +112,11 @@ class CompletionBar extends StatelessWidget {
                   child: entities.isEmpty
                       ? const SizedBox(width: double.infinity)
                       : Padding(
-                          padding: const EdgeInsets.only(top: 5),
+                          padding: const EdgeInsets.only(bottom: 5),
                           child: _row(context, entities),
                         ),
                 ),
+                _row(context, result.tags),
               ],
             ],
           ),
@@ -192,6 +193,24 @@ class CompletionBar extends StatelessWidget {
     );
   }
 
+  /// chip 副标题。横向态没有分节标题,光靠图标分不清 OC 与画师串,
+  /// 所以这两类直接写类型名;角色带作品来源;其余用译文。
+  String? _subtitle(Suggestion s) {
+    switch (s.kind) {
+      case SuggestionKind.oc:
+        return '原创角色';
+      case SuggestionKind.artist:
+        return '画风';
+      case SuggestionKind.character:
+        final t = s.trans;
+        if (t == null || t.isEmpty) return s.source;
+        return s.source != null ? '$t · ${s.source}' : t;
+      case SuggestionKind.work:
+      case SuggestionKind.tag:
+        return s.trans;
+    }
+  }
+
   Widget _chip(BuildContext context, Suggestion s) {
     final scheme = context.scheme;
     final (icon, iconColor) = suggestionGlyph(context, s.kind);
@@ -229,13 +248,11 @@ class CompletionBar extends StatelessWidget {
                   ],
                 ],
               ),
-              if (s.trans != null && s.trans!.isNotEmpty)
+              if (_subtitle(s) case final String sub when sub.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(top: 1),
                   child: Text(
-                    s.kind == SuggestionKind.character && s.source != null
-                        ? '${s.trans} · ${s.source}'
-                        : s.trans!,
+                    sub,
                     style: TextStyle(
                       fontSize: 10,
                       color: scheme.onSurfaceVariant,

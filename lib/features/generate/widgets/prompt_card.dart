@@ -66,17 +66,13 @@ class PromptCard extends ConsumerWidget {
                     final old = state.prompt;
                     if (old.isEmpty) return;
                     notifier.setPrompts(positive: '');
-                    ScaffoldMessenger.of(context)
-                      ..clearSnackBars()
-                      ..showSnackBar(
-                        SnackBar(
-                          content: const Text('已清空正向提示词'),
-                          action: SnackBarAction(
-                            label: '撤销',
-                            onPressed: () => notifier.setPrompts(positive: old),
-                          ),
-                        ),
-                      );
+                    hintSnack(
+                      context,
+                      '已清空正向提示词',
+                      icon: Icons.delete_sweep_outlined,
+                      actionLabel: '撤销',
+                      onAction: () => notifier.setPrompts(positive: old),
+                    );
                   },
                 ),
               ],

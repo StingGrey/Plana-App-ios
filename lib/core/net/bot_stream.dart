@@ -11,6 +11,7 @@ import 'backend_client.dart';
 ///
 /// - [onProgress] `(step, total, preview?)`:逐步进度,WS 携带预览图 base64。
 /// - [onQueue] `(queuePos)`:排队中。
+/// - [onStage] `(note)`:特殊阶段文案(anima Modal 冷启动 status=starting)。
 Future<Uint8List> streamBotTask({
   required String baseUrl,
   required String sessionId,
@@ -18,6 +19,7 @@ Future<Uint8List> streamBotTask({
   required BackendClient client,
   void Function(int step, int total, Uint8List? preview)? onProgress,
   void Function(int queuePos)? onQueue,
+  void Function(String note)? onStage,
   Duration timeout = const Duration(minutes: 5),
 }) async {
   final completer = Completer<Uint8List>();
@@ -85,6 +87,9 @@ Future<Uint8List> streamBotTask({
           case 'queued':
             onQueue?.call((m['queue_position'] as num?)?.toInt() ?? 0);
             break;
+          case 'starting': // anima:Modal 容器冷启动(约 20~60 秒)
+            onStage?.call('模型启动中…');
+            break;
         }
         break;
     }
@@ -119,6 +124,8 @@ Future<Uint8List> streamBotTask({
         fail(BackendException(t.error ?? '生成失败'));
       } else if (t.status == 'queued') {
         onQueue?.call(t.queuePosition);
+      } else if (t.status == 'starting') {
+        onStage?.call('模型启动中…');
       } else {
         progress(t.step, t.totalSteps, null);
       }

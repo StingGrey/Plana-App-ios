@@ -6,6 +6,15 @@ import '../data/suggestions.dart' show transCacheRev;
 import '../editor_models.dart';
 import 'rich_tag_controller.dart';
 
+/// 行距分配策略:注音行高(2.0)默认按**比例**分配行距,会把绝大部分行距塞到
+/// 基线**上方**(升部权重远大于降部),基线下方几乎不留白——结果正文连同权重
+/// 底色被压到行槽下半部,上方空一截,看着「偏下」。改为 even(均分):正文回到
+/// 行槽垂直居中,权重底色随之居中,译文改用基线下方那半行距落位。
+/// TextField 与权重底色层 / 注音层三者必须共用同款,否则垂直不同构、底色再度错位。
+const TextHeightBehavior _kEvenLeading = TextHeightBehavior(
+  leadingDistribution: TextLeadingDistribution.even,
+);
+
 /// 表面 · 注音流(光标驱动富文本):
 /// 一个真正可编辑的 [TextField](光标点哪改哪、词内可改字、权重原样显示),
 /// 下叠 [_FuriganaPainter],按每枚标签**名字范围**把中文当「注音」画在下方。
@@ -17,12 +26,30 @@ class AnnotatedField extends StatelessWidget {
     required this.controller,
     required this.focusNode,
     required this.hint,
+    this.showTrans = true,
+    this.showWeightWash = true,
+    this.fontSize = 16,
+    this.abnormalThreshold = 10,
     this.scrollController,
   });
 
   final RichTagController controller;
   final FocusNode focusNode;
   final String hint;
+
+  /// 注音翻译开关(编辑器设置):关=摘除注音层,行高收紧不再为译文留白。
+  final bool showTrans;
+
+  /// 权重底色开关(编辑器设置):关=整层摘除,正文回到纯文本
+  /// (异常权重警示仍在词条栏给出,不靠底色兜底)。
+  final bool showWeightWash;
+
+  /// 正文字号(编辑器设置):TextField 与注音测量层必须同字号(布局同构)。
+  final double fontSize;
+
+  /// 异常权重阈值(编辑器设置):权重底色层的红色警示判定。
+  final double abnormalThreshold;
+
   final ScrollController? scrollController;
 
   @override
@@ -30,6 +57,10 @@ class AnnotatedField extends StatelessWidget {
     final scheme = context.scheme;
     final pal = context.editor;
     final scaler = MediaQuery.textScalerOf(context);
+    final base = kEditorBaseStyle.copyWith(
+      fontSize: fontSize,
+      height: showTrans ? null : 1.5,
+    );
 
     return SingleChildScrollView(
       controller: scrollController,
@@ -39,41 +70,72 @@ class AnnotatedField extends StatelessWidget {
           final width = constraints.maxWidth;
           return Stack(
             children: [
-              Positioned.fill(
-                child: IgnorePointer(
-                  child: AnimatedBuilder(
-                    animation: controller,
-                    builder: (_, _) => CustomPaint(
-                      painter: _FuriganaPainter(
-                        text: controller.text,
-                        // RenderEditable 排版时给光标留 cursorWidth+1 的边距,
-                        // 注音层必须用同一宽度重排,否则临界行折点不一致,
-                        // 折点一岔开整行注音全错位(真机截图踩过)。
-                        maxWidth: width - _kCaretMargin,
-                        color: scheme.onSurfaceVariant,
-                        scaler: scaler,
-                        revision: transCacheRev,
+              // 权重底色层(最底):贴字形高度的圆角色带,范围含权重记号,
+              // 组=开记号到闭记号整条;嵌套/叠加权重=多层半透明叠色。
+              if (showWeightWash)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: AnimatedBuilder(
+                      animation: controller,
+                      builder: (_, _) => CustomPaint(
+                        painter: _WeightWashPainter(
+                          text: controller.text,
+                          base: base,
+                          maxWidth: width - _kCaretMargin,
+                          scaler: scaler,
+                          withSpacing: showTrans,
+                          abnormalThreshold: abnormalThreshold,
+                          pal: pal,
+                          errorWash: scheme.error,
+                          sdWash: scheme.tertiary,
+                          revision: transCacheRev,
+                        ),
                       ),
                     ),
                   ),
                 ),
-              ),
-              TextField(
-                controller: controller,
-                focusNode: focusNode,
-                style: kEditorBaseStyle.copyWith(color: scheme.onSurface),
-                maxLines: null,
-                cursorColor: pal.cursor,
-                cursorWidth: _kCursorWidth,
-                keyboardType: TextInputType.multiline,
-                textInputAction: TextInputAction.newline,
-                decoration: InputDecoration(
-                  isDense: true,
-                  isCollapsed: true,
-                  contentPadding: EdgeInsets.zero,
-                  border: InputBorder.none,
-                  hintText: hint,
-                  hintStyle: kEditorBaseStyle.copyWith(color: scheme.outline),
+              if (showTrans)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: AnimatedBuilder(
+                      animation: controller,
+                      builder: (_, _) => CustomPaint(
+                        painter: _FuriganaPainter(
+                          text: controller.text,
+                          base: base,
+                          // RenderEditable 排版时给光标留 cursorWidth+1 的边距,
+                          // 注音层必须用同一宽度重排,否则临界行折点不一致,
+                          // 折点一岔开整行注音全错位(真机截图踩过)。
+                          maxWidth: width - _kCaretMargin,
+                          color: scheme.onSurfaceVariant,
+                          scaler: scaler,
+                          revision: transCacheRev,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              // EditableText 无 textHeightBehavior 直参,靠 DefaultTextHeightBehavior
+              // 下发 even——与上面两个绘制层同款行距,底色/注音才与字严格对齐。
+              DefaultTextHeightBehavior(
+                textHeightBehavior: _kEvenLeading,
+                child: TextField(
+                  controller: controller,
+                  focusNode: focusNode,
+                  style: base.copyWith(color: scheme.onSurface),
+                  maxLines: null,
+                  cursorColor: pal.cursor,
+                  cursorWidth: _kCursorWidth,
+                  keyboardType: TextInputType.multiline,
+                  textInputAction: TextInputAction.newline,
+                  decoration: InputDecoration(
+                    isDense: true,
+                    isCollapsed: true,
+                    contentPadding: EdgeInsets.zero,
+                    border: InputBorder.none,
+                    hintText: hint,
+                    hintStyle: base.copyWith(color: scheme.outline),
+                  ),
                 ),
               ),
             ],
@@ -89,11 +151,144 @@ class AnnotatedField extends StatelessWidget {
   static const _kCaretMargin = _kCursorWidth + 1.0;
 }
 
+/// 权重底色层(web WeightHighlightExtension 移植):
+/// - 范围**含权重记号**:单词条=整段语法,跨词条组=开记号画到闭记号
+/// - 贴字形高度(tight 字形盒 + 竖向 1.5px 余量 + 圆角),不染注音区
+/// - 嵌套组 / 组内自带权重 = 多条区间半透明叠色,内层自然更深
+/// - 异常权重红 / SD 语法 tertiary 按词条段绘制,优先于权重色带之上
+class _WeightWashPainter extends CustomPainter {
+  _WeightWashPainter({
+    required this.text,
+    required this.base,
+    required this.maxWidth,
+    required this.scaler,
+    required this.withSpacing,
+    required this.abnormalThreshold,
+    required this.pal,
+    required this.errorWash,
+    required this.sdWash,
+    required this.revision,
+  });
+
+  final String text;
+
+  /// TextField 实际渲染的基准样式(字号/行高),测量层必须同款。
+  final TextStyle base;
+
+  final double maxWidth;
+  final TextScaler scaler;
+
+  /// 是否启用译文宽度补偿(注音开时必须与 TextField 布局同构)。
+  final bool withSpacing;
+
+  final double abnormalThreshold;
+
+  /// 权重色相与强度曲线来源([EditorPalette.weightWash])。
+  final EditorPalette pal;
+
+  final Color errorWash;
+  final Color sdWash;
+
+  /// 翻译缓存版本:补偿间距随译文变化会挪断行,必须跟着重绘。
+  final int revision;
+
+  static const _vPad = 1.5;
+  static const _radius = Radius.circular(4);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (text.isEmpty || maxWidth <= 0) return;
+    final spans = <WeightSpan>[];
+    final toks = parseToks(text, weightSpans: spans);
+
+    // 词条级警示区间(异常红 / SD tertiary),画在权重色带之上
+    final overlays = <(int, int, Color)>[];
+    for (final t in toks) {
+      if (t.disabled) continue;
+      if (abnormalWeightOf(text, t, threshold: abnormalThreshold) != null) {
+        overlays.add((t.segStart, t.segEnd, errorWash.withValues(alpha: .16)));
+      } else if (isSdWeightSeg(text.substring(t.segStart, t.segEnd))) {
+        overlays.add((t.segStart, t.segEnd, sdWash.withValues(alpha: .16)));
+      }
+    }
+    if (spans.isEmpty && overlays.isEmpty) return;
+
+    final layout = TextPainter(
+      text: withSpacing
+          ? measureSpan(text, scaler, base: base)
+          : TextSpan(text: text, style: base),
+      textDirection: TextDirection.ltr,
+      textScaler: scaler,
+      textHeightBehavior: _kEvenLeading,
+      maxLines: null,
+    )..layout(maxWidth: maxWidth);
+    final spacing = withSpacing
+        ? tagExtraSpacing(text, scaler, base: base)
+        : const <int, double>{};
+
+    void drawRange(int start, int end, Color color) {
+      if (end <= start) return;
+      final boxes = layout.getBoxesForSelection(
+        TextSelection(baseOffset: start, extentOffset: end),
+      );
+      if (boxes.isEmpty) return;
+      final paint = Paint()..color = color;
+      // 末字符若带译文补偿间距,回收那截空推距(色带不越过词面)
+      final trim = spacing[end - 1] ?? 0.0;
+      for (var i = 0; i < boxes.length; i++) {
+        var r = boxes[i].toRect();
+        if (i == boxes.length - 1 && trim > 0) {
+          r = Rect.fromLTRB(
+            r.left,
+            r.top,
+            (r.right - trim).clamp(r.left, double.infinity),
+            r.bottom,
+          );
+        }
+        if (r.width <= 0) continue;
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+            Rect.fromLTRB(
+              r.left - 1,
+              r.top - _vPad,
+              r.right + 1,
+              r.bottom + _vPad,
+            ),
+            _radius,
+          ),
+          paint,
+        );
+      }
+    }
+
+    for (final s in spans) {
+      final c = pal.weightWash(s.mult);
+      if (c != null) drawRange(s.start, s.end, c);
+    }
+    for (final (a, b, c) in overlays) {
+      drawRange(a, b, c);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _WeightWashPainter old) =>
+      old.text != text ||
+      old.base != base ||
+      old.maxWidth != maxWidth ||
+      old.withSpacing != withSpacing ||
+      old.abnormalThreshold != abnormalThreshold ||
+      old.pal != pal ||
+      old.errorWash != errorWash ||
+      old.sdWash != sdWash ||
+      old.revision != revision;
+}
+
 /// 翻译当「注音」:始终单行,左端钉词首;地皮由词尾宽度补偿保证
 /// (tag 占位 = max(英文, 译文));行尾放不下先回夹再尾截兜底。
 class _FuriganaPainter extends CustomPainter {
   _FuriganaPainter({
     required this.text,
+    required this.base,
     required this.maxWidth,
     required this.color,
     required this.scaler,
@@ -101,6 +296,10 @@ class _FuriganaPainter extends CustomPainter {
   });
 
   final String text;
+
+  /// TextField 实际渲染的基准样式(字号可调),测量层必须同款。
+  final TextStyle base;
+
   final double maxWidth;
   final Color color;
   final TextScaler scaler;
@@ -116,10 +315,11 @@ class _FuriganaPainter extends CustomPainter {
     if (text.isEmpty || maxWidth <= 0) return;
 
     final layout = TextPainter(
-      // measureSpan:与 TextField 同款宽度补偿,布局同构
-      text: measureSpan(text, scaler),
+      // measureSpan:与 TextField 同款字号 + 宽度补偿,布局同构
+      text: measureSpan(text, scaler, base: base),
       textDirection: TextDirection.ltr,
       textScaler: scaler,
+      textHeightBehavior: _kEvenLeading,
       maxLines: null,
     )..layout(maxWidth: maxWidth);
 
@@ -203,6 +403,7 @@ class _FuriganaPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _FuriganaPainter old) =>
       old.text != text ||
+      old.base != base ||
       old.maxWidth != maxWidth ||
       old.color != color ||
       old.revision != revision;

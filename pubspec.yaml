@@ -45,6 +45,9 @@ dependencies:
   crypto: ^3.0.7
   path_provider: ^2.1.6
   gal: ^2.3.2
+  url_launcher: ^6.3.2
+  image: ^4.8.0
+  material_color_utilities: ^0.13.0
 
 dev_dependencies:
   flutter_test:

@@ -111,12 +111,9 @@ class _BotAuthPageState extends ConsumerState<BotAuthPage> {
         ));
     await ref.read(authModeProvider.notifier).set(AuthMode.bot);
     if (!mounted) return;
-    final messenger = ScaffoldMessenger.of(context);
     HapticFeedback.mediumImpact();
+    hintSnack(context, 'Bot 授权成功', icon: Icons.verified_outlined);
     Navigator.of(context).maybePop();
-    messenger
-      ..clearSnackBars()
-      ..showSnackBar(const SnackBar(content: Text('Bot 授权成功')));
   }
 
   String _fmt(int s) =>

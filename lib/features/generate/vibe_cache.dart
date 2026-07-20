@@ -98,6 +98,25 @@ class VibeEncodeCache {
     }
   }
 
+  /// 已缓存编码条数(存储管理展示用)。
+  int get entryCount => {..._names, ..._mem.keys}.length;
+
+  /// 清空全部编码(存储管理):下次生成同图需重新编码
+  /// (直连线路每张扣 2 Anlas)。
+  Future<void> clear() async {
+    try {
+      await for (final ent in _dir.list()) {
+        if (ent is File && ent.path.endsWith('.enc')) {
+          try {
+            await ent.delete();
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+    _names.clear();
+    _mem.clear();
+  }
+
   /// 某张图已缓存的编码清单(modelKey + IE)——编码清单展示与导出收集用。
   List<({String modelKey, double ie})> entriesForImage(String imageHash) {
     final out = <({String modelKey, double ie})>[];

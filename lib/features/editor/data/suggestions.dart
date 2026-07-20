@@ -15,13 +15,15 @@ class Suggestion {
     this.count = 0,
     this.insertText,
     this.natural = false,
+    this.randomPick,
   });
 
   /// 英文标签 / 实体名
   final String text;
   final SuggestionKind kind;
 
-  /// 实际插入 prompt 的载荷(为空则用 [text])。画师=artist_string、OC=tag_group、作品=随机角色。
+  /// 实际插入 prompt 的载荷(为空则用 [text])。画师=artist_string、OC=tag_group;
+  /// 作品**不用**这个字段(默认插作品 tag 本身),随机角色见 [randomPick]。
   final String? insertText;
 
   /// 「翻译为英文」自然语言行:选中时才把 [text](中文)整句翻成英文再替换。
@@ -39,6 +41,10 @@ class Suggestion {
   /// 热度(0 = 不显示)
   final int count;
 
+  /// 作品行预抽的随机角色。**不放进 [insertText]**:那样默认插入就变成随机角色,
+  /// 而作品的默认行为是插入作品 tag 本身,随机抽取只归补全面板的骰子按钮。
+  final String? randomPick;
+
   Suggestion copyWith({
     String? text,
     SuggestionKind? kind,
@@ -48,6 +54,7 @@ class Suggestion {
     int? count,
     String? insertText,
     bool? natural,
+    String? randomPick,
   }) => Suggestion(
     text: text ?? this.text,
     kind: kind ?? this.kind,
@@ -57,6 +64,7 @@ class Suggestion {
     count: count ?? this.count,
     insertText: insertText ?? this.insertText,
     natural: natural ?? this.natural,
+    randomPick: randomPick ?? this.randomPick,
   );
 }
 
@@ -86,14 +94,20 @@ String? _firstTrans(String? zh) {
 }
 
 /// 回填某标签的中文名/热度(键用小写形式)。由 `TagCompletion` 调用。
+/// 上限防无界增长(一次会话几万个独特标签才会触发,清空只影响注音
+/// 显示,重查询即回填)。
 void cacheTagMeta(String text, {String? trans, int? count}) {
   final k = text.trim().toLowerCase();
   final t = _firstTrans(trans);
   if (t != null) {
+    if (_transCache.length > 20000) _transCache.clear();
     _transCache[k] = t;
     _transRev++;
   }
-  if (count != null && count > 0) _countCache[k] = count;
+  if (count != null && count > 0) {
+    if (_countCache.length > 20000) _countCache.clear();
+    _countCache[k] = count;
+  }
 }
 
 /// 一次查询的分类结果
@@ -362,14 +376,14 @@ const _works = <Suggestion>[
     text: 'yuru yuri',
     kind: SuggestionKind.work,
     trans: '摇曳百合',
-    note: '12 个角色 · 点按随机抽取',
+    note: '12 个角色 · 点骰子随机抽取',
     count: 15000,
   ),
   Suggestion(
     text: 'sword art online',
     kind: SuggestionKind.work,
     trans: '刀剑神域',
-    note: '48 个角色 · 点按随机抽取',
+    note: '48 个角色 · 点骰子随机抽取',
     count: 88000,
   ),
 ];

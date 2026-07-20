@@ -36,6 +36,9 @@ class _ResolutionSheet extends ConsumerStatefulWidget {
 
 class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
   late String tab;
+
+  /// 最后停留的预设页签:自定义档下预设行仍要渲染(CrossFade 常驻两子树)。
+  late String lastPresetTab;
   late SizePreset selected;
   late int customW;
   late int customH;
@@ -60,6 +63,7 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
     }
     // 当前尺寸不是任何预设(如图生图按底图设的怪尺寸)→ 落在自定义档回显。
     if (!matched) tab = _customTab;
+    lastPresetTab = _isCustom ? sizeTabs.keys.first : tab;
   }
 
   bool get _isCustom => tab == _customTab;
@@ -106,36 +110,41 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
             selected: {tab},
             onSelectionChanged: (s) => setState(() {
               tab = s.first;
-              if (!_isCustom) selected = sizeTabs[tab]!.first;
+              if (!_isCustom) {
+                lastPresetTab = tab;
+                selected = sizeTabs[tab]!.first;
+              }
             }),
             showSelectedIcon: false,
           ),
           const SizedBox(height: 14),
-          AnimatedSwitcher(
+          // CrossFade 同步动画高度与透明度:预设行(矮)↔ 画布(高)切换不跳变
+          AnimatedCrossFade(
             duration: Motion.medium,
-            switchInCurve: Motion.emphasized,
-            child: _isCustom
-                ? _CanvasEditor(
-                    key: const ValueKey('canvas'),
-                    width: customW,
-                    height: customH,
-                    onChanged: _setCustom,
-                  )
-                : Row(
-                    key: ValueKey(tab),
-                    children: [
-                      for (final p in sizeTabs[tab]!) ...[
-                        Expanded(
-                          child: _PresetCard(
-                            preset: p,
-                            selected: selected == p,
-                            onTap: () => setState(() => selected = p),
-                          ),
-                        ),
-                        if (p != sizeTabs[tab]!.last) const SizedBox(width: 10),
-                      ],
-                    ],
+            sizeCurve: Motion.emphasized,
+            crossFadeState: _isCustom
+                ? CrossFadeState.showSecond
+                : CrossFadeState.showFirst,
+            firstChild: Row(
+              children: [
+                for (final p in sizeTabs[lastPresetTab]!) ...[
+                  Expanded(
+                    child: _PresetCard(
+                      preset: p,
+                      selected: selected == p,
+                      onTap: () => setState(() => selected = p),
+                    ),
                   ),
+                  if (p != sizeTabs[lastPresetTab]!.last)
+                    const SizedBox(width: 10),
+                ],
+              ],
+            ),
+            secondChild: _CanvasEditor(
+              width: customW,
+              height: customH,
+              onChanged: _setCustom,
+            ),
           ),
           const SizedBox(height: 12),
           _StatusStrip(width: _effW, height: _effH),
@@ -217,7 +226,6 @@ class _StatusStrip extends StatelessWidget {
 /// 触屏在画布任意处按下/拖动即把右下角吸到手指,较桌面「抓把手」更顺。
 class _CanvasEditor extends StatelessWidget {
   const _CanvasEditor({
-    super.key,
     required this.width,
     required this.height,
     required this.onChanged,

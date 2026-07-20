@@ -15,12 +15,16 @@ class SortChipsView extends StatefulWidget {
     super.key,
     required this.controller,
     required this.onReorder,
+    this.abnormalThreshold = 10,
   });
 
   final RichTagController controller;
 
   /// 把第 from 枚移到 to(移除后下标)。
   final void Function(int from, int to) onReorder;
+
+  /// 异常权重阈值(编辑器设置)。
+  final double abnormalThreshold;
 
   @override
   State<SortChipsView> createState() => _SortChipsViewState();
@@ -189,6 +193,19 @@ class _SortChipsViewState extends State<SortChipsView>
                         _TagChip(
                           key: _chipKeys[i],
                           tok: toks[i],
+                          abnormal:
+                              abnormalWeightOf(
+                                widget.controller.text,
+                                toks[i],
+                                threshold: widget.abnormalThreshold,
+                              ) !=
+                              null,
+                          sd: isSdWeightSeg(
+                            widget.controller.text.substring(
+                              toks[i].segStart,
+                              toks[i].segEnd,
+                            ),
+                          ),
                           selected: i == sel,
                           onTap: () => _tapChip(i),
                         ),
@@ -224,11 +241,19 @@ class _TagChip extends StatelessWidget {
     required this.tok,
     required this.selected,
     required this.onTap,
+    this.abnormal = false,
+    this.sd = false,
   });
 
   final Tok tok;
   final bool selected;
   final VoidCallback onTap;
+
+  /// 异常权重(词中段疑似丢逗号的 `N::`):红底红框警示,盖过权重色。
+  final bool abnormal;
+
+  /// SD 权重语法 `(tag:1.2)`:tertiary 底提示可转换。
+  final bool sd;
 
   @override
   Widget build(BuildContext context) {
@@ -240,12 +265,41 @@ class _TagChip extends StatelessWidget {
         : mult < 0.9999
         ? pal.weightDown
         : null;
+    // 权重底色/边框(web getWeightStyle 同款):越偏离 1 越深,禁用不铺色;
+    // 异常权重红底红框优先(web abnormalWeight 同款)。
+    var chipBg = scheme.surfaceContainerHigh;
+    var chipBorder = scheme.outlineVariant;
+    if (abnormal && !tok.disabled) {
+      chipBg = Color.alphaBlend(
+        scheme.error.withValues(alpha: .14),
+        scheme.surfaceContainerHigh,
+      );
+      chipBorder = scheme.error.withValues(alpha: .55);
+    } else if (sd && !tok.disabled) {
+      chipBg = Color.alphaBlend(
+        scheme.tertiary.withValues(alpha: .14),
+        scheme.surfaceContainerHigh,
+      );
+      chipBorder = scheme.tertiary.withValues(alpha: .55);
+    } else if (weightColor != null && !tok.disabled) {
+      // 与正文色带同源:EditorPalette.weightWash 统一色相与强度曲线
+      final up = mult > 1;
+      final i = up
+          ? ((mult - 1) / 1.5).clamp(0.0, 1.0)
+          : ((1 - mult) / 0.7).clamp(0.0, 1.0);
+      chipBg = Color.alphaBlend(
+        pal.weightWash(mult)!,
+        scheme.surfaceContainerHigh,
+      );
+      chipBorder = (up ? pal.weightUpBorder : pal.weightDownBorder)
+          .withValues(alpha: .45 + i * .35);
+    }
     return Material(
-      color: selected ? scheme.primaryContainer : scheme.surfaceContainerHigh,
+      color: selected ? scheme.primaryContainer : chipBg,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(9),
         side: BorderSide(
-          color: selected ? scheme.primary : scheme.outlineVariant,
+          color: selected ? scheme.primary : chipBorder,
           width: selected ? 1.6 : 1,
         ),
       ),

@@ -18,6 +18,7 @@ class SectionCard extends StatelessWidget {
     this.onHeaderTap,
     this.body,
     this.muted = false,
+    this.reorderIndex,
   });
 
   final IconData icon;
@@ -34,10 +35,54 @@ class SectionCard extends StatelessWidget {
   /// 禁用观感(如图生图启用时的 Vibe 卡)
   final bool muted;
 
+  /// 非空时卡头可长按拖拽调序(挂头部不挂展开体,避免抢输入框/滑杆手势)。
+  final int? reorderIndex;
+
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final titleColor = muted ? scheme.onSurfaceVariant : scheme.onSurface;
+    Widget header = InkWell(
+      onTap: onHeaderTap,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(15, 13, 13, 13),
+        child: Row(
+          children: [
+            Icon(icon, size: 20, color: scheme.onSurfaceVariant),
+            const SizedBox(width: 9),
+            Text(
+              title,
+              style: context.texts.bodyLarge!.copyWith(
+                fontWeight: FontWeight.w600,
+                color: titleColor,
+              ),
+            ),
+            if (badge != null) ...[const SizedBox(width: 8), badge!],
+            const SizedBox(width: 8),
+            Expanded(
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  for (final w in inline) ...[w, const SizedBox(width: 6)],
+                ],
+              ),
+            ),
+            for (final a in actions) ...[a, const SizedBox(width: 6)],
+            if (onHeaderTap != null)
+              AnimatedRotation(
+                turns: expanded ? .5 : 0,
+                duration: Motion.medium,
+                curve: Motion.emphasized,
+                child: Icon(Icons.expand_more, size: 22, color: scheme.outline),
+              ),
+          ],
+        ),
+      ),
+    );
+    final idx = reorderIndex;
+    if (idx != null) {
+      header = ReorderableDelayedDragStartListener(index: idx, child: header);
+    }
     return Material(
       color: scheme.surfaceContainerLow,
       borderRadius: BorderRadius.circular(16),
@@ -45,41 +90,7 @@ class SectionCard extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          InkWell(
-            onTap: onHeaderTap,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(15, 13, 13, 13),
-              child: Row(
-                children: [
-                  Icon(icon, size: 20, color: scheme.onSurfaceVariant),
-                  const SizedBox(width: 9),
-                  Text(
-                    title,
-                    style: context.texts.bodyLarge!
-                        .copyWith(fontWeight: FontWeight.w600, color: titleColor),
-                  ),
-                  if (badge != null) ...[const SizedBox(width: 8), badge!],
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        for (final w in inline) ...[w, const SizedBox(width: 6)],
-                      ],
-                    ),
-                  ),
-                  for (final a in actions) ...[a, const SizedBox(width: 6)],
-                  if (onHeaderTap != null)
-                    AnimatedRotation(
-                      turns: expanded ? .5 : 0,
-                      duration: Motion.medium,
-                      curve: Motion.emphasized,
-                      child: Icon(Icons.expand_more, size: 22, color: scheme.outline),
-                    ),
-                ],
-              ),
-            ),
-          ),
+          header,
           ExpandBody(
             expanded: expanded && body != null,
             child: Padding(

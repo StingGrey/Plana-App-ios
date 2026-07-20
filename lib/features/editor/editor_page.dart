@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/store/app_stores.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/editor_theme.dart';
 import '../generate/generate_state.dart';
@@ -12,11 +13,13 @@ import 'data/suggestions.dart';
 import 'data/tag_completion.dart';
 import 'data/tag_translation_service.dart';
 import 'editor_models.dart';
+import 'editor_settings.dart';
 import 'editor_state.dart';
 import 'widgets/annotated_field.dart';
 import 'widgets/completion_bar.dart';
 import 'widgets/completion_panel.dart';
 import 'widgets/editor_bottom_bar.dart';
+import 'widgets/editor_settings_sheet.dart';
 import 'widgets/editor_top_bar.dart';
 import 'widgets/rich_tag_controller.dart';
 import 'widgets/sort_chips_view.dart';
@@ -26,10 +29,12 @@ import 'widgets/tag_panel.dart';
 /// 表面是可编辑文本域,权重原样内联+上色,翻译绘制层画在词下。
 /// **底部只一件事**:光标右邻是词正文→词条栏;是逗号/空隙/行尾或打字中→补全。
 class EditorPage extends ConsumerStatefulWidget {
-  const EditorPage({super.key, required this.positive, this.characterName});
+  const EditorPage({super.key, required this.positive, this.charId});
 
   final bool positive;
-  final String? characterName;
+
+  /// 编辑目标:null = 创作页主提示词,否则 = 该 id 的角色提示词。
+  final String? charId;
 
   @override
   ConsumerState<EditorPage> createState() => _EditorPageState();
@@ -51,6 +56,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
   Timer? _debounce;
   bool _muting = false;
   String _prevText = '';
+  TextSelection _prevSel = const TextSelection.collapsed(offset: -1);
   String? _syncedText;
   String _query = '';
   SuggestResult _result = const SuggestResult();
@@ -58,17 +64,37 @@ class _EditorPageState extends ConsumerState<EditorPage>
   bool _loading = false; // 补全查询进行中(显示加载态)
   bool _sheetOpen = false; // 形态 B(分类竖向列表)弹层是否打开
   Tok? _panelTok; // 光标所在词条(显示词条栏)
+  (int, int)? _multiRange; // 划词多选覆盖的词条区间 [first, last](批量面板)
+  double _multiMult = 1.0; // 批量面板的统一数值权重读数
   List<String> _related = const []; // 当前词的关联标签(异步拉取)
   String? _relatedFor; // _related 归属的词名(防过期回调窜词)
   bool _relatedLoading = false; // 关联标签拉取中(词条栏「关联」显示转圈)
   bool _sortMode = false; // 排序模式:正文按住即拖词条换位
+  String? _charName; // 编辑角色时的名字(顶栏标题);主提示词会话为 null
 
   EditorNotifier get _notifier => ref.read(editorProvider.notifier);
   late final TagTranslationService _transSvc;
 
+  /// 编辑中退后台:先冲刷编辑器回写,再让工作台立即落盘——
+  /// 覆盖「切走后进程被杀」,不依赖防抖计时器有没有走完。
+  AppLifecycleListener? _lifecycle;
+
+  /// 编辑器行为开关(设置弹层里改,即时生效);载入前用默认值(全开)。
+  EditorSettings get _settings =>
+      ref.read(editorSettingsProvider).value ?? const EditorSettings();
+
   @override
   void initState() {
     super.initState();
+    _lifecycle = AppLifecycleListener(
+      onStateChange: (s) {
+        if (!mounted) return;
+        if (s == AppLifecycleState.inactive || s == AppLifecycleState.paused) {
+          _notifier.flushWriteBack();
+          ref.read(appStoresProvider).flushNow();
+        }
+      },
+    );
     _controller.addListener(_onCtrl);
     // 灌注离线词库全量翻译(否则注音只显示补全零星回填过的词);
     // 灌完刷新注音层/词条栏。幂等,重复进编辑器不重复灌。
@@ -78,13 +104,25 @@ class _EditorPageState extends ConsumerState<EditorPage>
     // 增强模式的后端翻译通道:回填到货即刷新注音。
     _transSvc = ref.read(tagTranslationServiceProvider);
     _transSvc.addListener(_refreshAnnotations);
+    // 编辑目标进页面即钉死。角色名只读一次:名字是 app 内部写的
+    // (自动编号 / 导入带入),会话中不会变,不必挂 watch。
+    final id = widget.charId;
+    final hit = [
+      for (final c in ref.read(generateProvider).characters)
+        if (c.id == id) c,
+    ];
+    final char = hit.isEmpty ? null : hit.first;
+    _charName = char?.name;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final gen = ref.read(generateProvider);
+      // 角色会话即使没命中(角色已被删)也**不**退回主提示词:那正是
+      // 这个页面从前的 bug——回写会静默盖掉用户的主提示词。
       _notifier.load(
-        positive: gen.prompt,
-        negative: gen.negativePrompt,
+        positive: id == null ? gen.prompt : (char?.positive ?? ''),
+        negative: id == null ? gen.negativePrompt : (char?.negative ?? ''),
         startPositive: widget.positive,
+        charId: id,
       );
       _focus.requestFocus();
     });
@@ -92,6 +130,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
 
   @override
   void dispose() {
+    _lifecycle?.dispose();
     _debounce?.cancel();
     _transSvc.removeListener(_refreshAnnotations);
     _tabAnim.dispose();
@@ -133,14 +172,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
     ]);
   }
 
-  void _save() {
-    ref
-        .read(generateProvider.notifier)
-        .setPrompts(
-          positive: _notifier.outputPositive(),
-          negative: _notifier.outputNegative(),
-        );
-  }
+  void _save() => _notifier.flushWriteBack();
 
   bool _hasCjk(String s) => s.runes.any((r) => r >= 0x4E00 && r <= 0x9FFF);
 
@@ -161,6 +193,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
       );
       _syncedText = next.activeText;
       _prevText = next.activeText;
+      _prevSel = _controller.selection;
       _muting = false;
       _routeCursor();
       _feedTranslation(next.activeText); // 载入/切 tab 的既有文本也问翻译
@@ -169,6 +202,8 @@ class _EditorPageState extends ConsumerState<EditorPage>
 
   void _onCtrl() {
     if (_muting) return;
+    final prevSel = _prevSel;
+    _prevSel = _controller.selection;
     final text = _controller.text;
     if (text != _prevText) {
       _prevText = text;
@@ -177,23 +212,80 @@ class _EditorPageState extends ConsumerState<EditorPage>
       _routeTyping(); // 打字一律走补全
       _feedTranslation(text);
     } else {
+      // 双击/长按选词 → 扩到整枚词条;改完选区会再进一次监听走 _routeCursor
+      if (_captureTagSelection(prevSel)) return;
       _routeCursor(); // 纯移光标 → 右邻判定
     }
   }
 
-  /// 打字:补全当前词,隐藏词条栏
+  /// 双击/长按选词的 tag 捕获(web handleDoubleClick 同款):
+  /// 从折叠光标一步变出的、落在单一词条内的子选区,扩成整枚词条
+  /// (含权重语法,即 [segStart, segEnd))。已有选区上继续拖手柄
+  /// (prev 已展开)不干预,用户仍可自由精调。
+  bool _captureTagSelection(TextSelection prev) {
+    final sel = _controller.selection;
+    if (!sel.isValid || sel.isCollapsed) return false;
+    if (prev.isValid && !prev.isCollapsed) return false;
+    final text = _controller.text;
+    final toks = parseToks(text);
+    final i = tokIndexAt(text, sel.start, toks);
+    if (i < 0) return false;
+    final t = toks[i];
+    if (sel.end > t.segEnd) return false; // 跨词条(交给多选/自由选区)
+    if (sel.start == t.segStart && sel.end == t.segEnd) return false; // 已整枚
+    _prevSel = TextSelection(baseOffset: t.segStart, extentOffset: t.segEnd);
+    _controller.selection = _prevSel;
+    return true;
+  }
+
+  /// 打字:补全当前词,隐藏词条栏/批量面板
   void _routeTyping() {
-    if (_panelTok != null) setState(() => _panelTok = null);
+    if (_panelTok != null || _multiRange != null) {
+      setState(() {
+        _panelTok = null;
+        _multiRange = null;
+      });
+    }
     _scheduleQuery();
   }
 
-  /// 移光标:右邻是词正文→词条栏;否则清空(底部空)
+  /// 移光标:右邻是词正文→词条栏;否则清空(底部空)。设置里关掉则恒不出。
+  /// 选区盖住 ≥2 枚词条时 dock 换成批量面板(web multiSelectPanel 移植)。
   void _routeCursor() {
     _clearSuggest();
     final text = _controller.text;
+    final sel = _controller.selection;
+    if (sel.isValid && !sel.isCollapsed) {
+      final toks = parseToks(text);
+      var first = -1, last = -1;
+      for (var i = 0; i < toks.length; i++) {
+        if (toks[i].segEnd > sel.start && toks[i].segStart < sel.end) {
+          if (first < 0) first = i;
+          last = i;
+        }
+      }
+      if (first >= 0 && last > first) {
+        setState(() {
+          _panelTok = null;
+          if (_multiRange == null) {
+            // 新进多选:成员共享同一组倍率(如「选中整组」)时从它起步,
+            // 调整才是在原权重基础上加减;否则从 1 起。
+            final gm = toks[first].groupMult;
+            var shared = (gm - 1).abs() > 0.0001;
+            for (var i = first + 1; i <= last && shared; i++) {
+              if ((toks[i].groupMult - gm).abs() > 0.0001) shared = false;
+            }
+            _multiMult = shared ? (gm * 100).roundToDouble() / 100 : 1.0;
+          }
+          _multiRange = (first, last);
+        });
+        return;
+      }
+    }
+    if (_multiRange != null) setState(() => _multiRange = null);
     final off = _controller.selection.baseOffset;
     Tok? tok;
-    if (_rnInside(text, off)) {
+    if (_settings.enableTagPanel && _rnInside(text, off)) {
       final toks = parseToks(text);
       final i = tokIndexAt(text, off, toks);
       if (i >= 0) tok = toks[i];
@@ -228,6 +320,10 @@ class _EditorPageState extends ConsumerState<EditorPage>
   }
 
   void _scheduleQuery() {
+    if (!_settings.enableCompletion) {
+      _clearSuggest();
+      return;
+    }
     _debounce?.cancel();
     final word = _currentWord();
     final trigger = _hasCjk(word) ? word.isNotEmpty : word.length >= 2;
@@ -246,7 +342,9 @@ class _EditorPageState extends ConsumerState<EditorPage>
         _query = word;
         _loading = true;
       });
-      final res = await ref.read(tagCompletionProvider).query(word);
+      var res = await ref.read(tagCompletionProvider).query(word);
+      // 实体建议关闭:只留标签行(引擎缓存不区分设置,出口过滤)
+      if (!_settings.entitySuggest) res = SuggestResult(tags: res.tags);
       // 被后续输入/移光标取代,或光标已移出该词 → 丢弃这次结果
       if (!mounted || gen != _queryGen || _currentWord() != word) return;
       setState(() {
@@ -296,9 +394,8 @@ class _EditorPageState extends ConsumerState<EditorPage>
       backgroundColor: Colors.transparent,
       barrierColor: Colors.black.withValues(alpha: .18),
       builder: (ctx) => Theme(
-        data: editorTheme(),
+        data: editorTheme(ctx),
         child: CompletionPanel(
-          query: _query,
           result: _result,
           maxHeight: size.height * 0.5,
           onPick: (s) {
@@ -312,6 +409,22 @@ class _EditorPageState extends ConsumerState<EditorPage>
     );
     _sheetOpen = false;
     if (mounted) _focus.requestFocus(); // 关闭即回键盘
+  }
+
+  /// 编辑器设置弹层:开关即时生效(经 build 的 ref.listen 反映到当前会话)。
+  Future<void> _openSettings() async {
+    _focus.unfocus();
+    await showModalBottomSheet<void>(
+      context: context,
+      // 内容超过默认 9/16 屏高上限,自控高度(弹层内部滚动 + 85% 封顶)
+      isScrollControlled: true,
+      showDragHandle: false,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withValues(alpha: .18),
+      builder: (ctx) =>
+          Theme(data: editorTheme(ctx), child: const EditorSettingsSheet()),
+    );
+    if (mounted && !_sortMode) _focus.requestFocus();
   }
 
   /// `+` 连续插入:把建议追加为当前词后的新标签,弹层保持打开、结果冻结。
@@ -333,6 +446,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
     );
     _prevText = newText;
     _syncedText = newText;
+    _prevSel = _controller.selection;
     _muting = false;
     _notifier.editActive(newText, structural: true);
     HapticFeedback.selectionClick();
@@ -348,6 +462,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
     );
     _prevText = text;
     _syncedText = text;
+    _prevSel = _controller.selection;
     _muting = false;
     _notifier.editActive(text, structural: structural);
     _routeCursor();
@@ -356,8 +471,9 @@ class _EditorPageState extends ConsumerState<EditorPage>
   // ---- 补全:替换光标所在词的名字(保留其权重语法)----
   /// 若 [at] 之后(跳过空格)没有分隔(逗号/换行),补上 `, ` 并把光标放
   /// 其后——选中补全即可直接打下一枚(web formatAutocompleteTagInsertion
-  /// 同款追加);已有分隔则原样、光标留在词末。
+  /// 同款追加);已有分隔则原样、光标留在词末。设置里可关。
   (String, int) _withTrailingComma(String text, int at) {
+    if (!_settings.autoComma) return (text, at);
     var k = at;
     while (k < text.length && (text[k] == ' ' || text[k] == '\t')) {
       k++;
@@ -447,7 +563,10 @@ class _EditorPageState extends ConsumerState<EditorPage>
     }
     setState(() {
       _sortMode = entering;
-      if (entering) _panelTok = null;
+      if (entering) {
+        _panelTok = null;
+        _multiRange = null;
+      }
     });
     if (!entering) _focus.requestFocus();
   }
@@ -456,6 +575,102 @@ class _EditorPageState extends ConsumerState<EditorPage>
   void _reorderTok(int from, int to) {
     final next = reorderToks(_controller.text, from, to);
     _applyText(next, _controller.selection.baseOffset.clamp(0, next.length));
+  }
+
+  // ---- 划词多选批量操作(dock 批量面板;逐词应用,应用后保持选区)----
+
+  /// 批量改文本落地:重新覆盖同一批词条(数量不变的操作),面板保持。
+  void _applyBatchKeep(String newText) {
+    final r = _multiRange;
+    if (r == null) return;
+    final toks = parseToks(newText);
+    if (toks.isEmpty) return;
+    final last = r.$2 < toks.length ? r.$2 : toks.length - 1;
+    final first = r.$1 <= last ? r.$1 : last;
+    _muting = true;
+    _controller.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection(
+        baseOffset: toks[first].segStart,
+        extentOffset: toks[last].segEnd,
+      ),
+    );
+    _prevText = newText;
+    _syncedText = newText;
+    _prevSel = _controller.selection;
+    _muting = false;
+    _notifier.editActive(newText, structural: true);
+    HapticFeedback.selectionClick();
+    setState(() => _multiRange = (first, last));
+  }
+
+  void _multiWrap(bool up) {
+    final r = _multiRange;
+    if (r == null) return;
+    _applyBatchKeep(batchWrap(_controller.text, r.$1, r.$2, up: up));
+  }
+
+  void _multiStepMult(bool up) {
+    final r = _multiRange;
+    if (r == null) return;
+    final step = _settings.weightStep;
+    final next =
+        ((_multiMult + (up ? step : -step)) * 100).roundToDouble() / 100;
+    _multiMult = next;
+    _applyBatchKeep(batchSetMult(_controller.text, r.$1, r.$2, next));
+  }
+
+  void _multiClear() {
+    final r = _multiRange;
+    if (r == null) return;
+    _multiMult = 1.0;
+    _applyBatchKeep(batchClearWeight(_controller.text, r.$1, r.$2));
+  }
+
+  /// 批量禁用/启用:第一枚的状态决定目标(web 同款),全体对齐。
+  void _multiToggleDisabled() {
+    final r = _multiRange;
+    if (r == null) return;
+    final toks = parseToks(_controller.text);
+    if (r.$1 >= toks.length) return;
+    final target = !toks[r.$1].disabled;
+    _applyBatchKeep(batchSetDisabled(_controller.text, r.$1, r.$2, target));
+  }
+
+  void _multiDelete() {
+    final r = _multiRange;
+    if (r == null) return;
+    final (text, cursor) = batchDelete(_controller.text, r.$1, r.$2);
+    setState(() => _multiRange = null);
+    _applyText(text, cursor);
+  }
+
+  /// 「选中整组」:把选区扩到包住当前词条的最外层权重组,
+  /// 经选区监听自然进入批量面板(≥2 成员时)。
+  void _selectGroupOf(Tok tok) {
+    final spans = <WeightSpan>[];
+    parseToks(_controller.text, weightSpans: spans);
+    WeightSpan? best;
+    for (final s in spans) {
+      if (s.start > tok.segStart || s.end < tok.segEnd) continue;
+      // 恰好等于自身 seg 的是词条自己的权重区间,不算组
+      if (s.start == tok.segStart && s.end == tok.segEnd) continue;
+      if (best == null || s.end - s.start > best.end - best.start) best = s;
+    }
+    if (best == null) return;
+    _controller.selection = TextSelection(
+      baseOffset: best.start,
+      extentOffset: best.end,
+    );
+  }
+
+  /// 关闭批量面板:选区折叠到末端(触发重路由,回到单词条/空 dock)。
+  void _multiClose() {
+    final sel = _controller.selection;
+    setState(() => _multiRange = null);
+    if (sel.isValid && !sel.isCollapsed) {
+      _controller.selection = TextSelection.collapsed(offset: sel.end);
+    }
   }
 
   // ---- 词条栏操作(都改文本)----
@@ -512,6 +727,20 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _focus.requestFocus();
   }
 
+  /// SD 权重语法转 NAI(web convertSDToNAI):`(tag:1.2)` → `1.2::tag::`。
+  /// 光标留在词首,词条栏随即刷新出转换后的权重。
+  void _convertSd() {
+    final t = _tokAtCursor();
+    if (t == null) return;
+    final seg = _controller.text.substring(t.segStart, t.segEnd);
+    final ins = sdToNaiSeg(seg);
+    if (ins == seg) return;
+    _applyText(
+      _controller.text.replaceRange(t.segStart, t.segEnd, ins),
+      t.segStart,
+    );
+  }
+
   /// 关闭词条栏(下次移光标进词内会再出现)
   void _closePanel() {
     if (_panelTok == null) return;
@@ -526,9 +755,30 @@ class _EditorPageState extends ConsumerState<EditorPage>
       }
       _syncFromProvider(next);
     });
+    // 设置改动即时反映到当前会话:关补全清建议、切词条栏重路由、切注音重绘。
+    ref.listen<EditorSettings>(
+      editorSettingsProvider.select((a) => a.value ?? const EditorSettings()),
+      (prev, next) {
+        final p = prev ?? const EditorSettings();
+        if (p == next) return;
+        if (p.enableCompletion && !next.enableCompletion) _clearSuggest();
+        if (p.enableTagPanel != next.enableTagPanel) _routeCursor();
+        if (p.showTranslation != next.showTranslation) {
+          _controller.showTrans = next.showTranslation;
+          _refreshAnnotations();
+        }
+        // 实体建议切换:正在显示的补全就地重查(结果有缓存,秒回)
+        if (p.entitySuggest != next.entitySuggest && _query.isNotEmpty) {
+          _scheduleQuery();
+        }
+      },
+    );
+    final settings =
+        ref.watch(editorSettingsProvider).value ?? const EditorSettings();
+    _controller.showTrans = settings.showTranslation;
 
     return Theme(
-      data: editorTheme(),
+      data: editorTheme(context),
       child: Builder(
         builder: (context) => PopScope(
           // 排序模式中返回键先退出模式,再按一次才离开编辑器
@@ -544,7 +794,11 @@ class _EditorPageState extends ConsumerState<EditorPage>
             body: SafeArea(
               child: Column(
                 children: [
-                  EditorTopBar(onBack: () => Navigator.of(context).maybePop()),
+                  EditorTopBar(
+                    charName: _charName,
+                    onBack: () => Navigator.of(context).maybePop(),
+                    onSettings: _openSettings,
+                  ),
                   Expanded(
                     // 排序模式切换成真 chip 流视图;编辑态是注音富文本。
                     // 切正/负时编辑区随方向轻滑 + 淡入(单实例,不复制
@@ -553,6 +807,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
                         ? SortChipsView(
                             controller: _controller,
                             onReorder: _reorderTok,
+                            abnormalThreshold: settings.abnormalThreshold,
                           )
                         : ClipRect(
                             child: SlideTransition(
@@ -565,7 +820,12 @@ class _EditorPageState extends ConsumerState<EditorPage>
                                   controller: _controller,
                                   focusNode: _focus,
                                   scrollController: _scroll,
-                                  hint: '输入标签,逗号或换行分隔 · 光标进词内改字 · 权重原样如 {tag}',
+                                  showTrans: settings.showTranslation,
+                                  showWeightWash: settings.showWeightWash,
+                                  fontSize: settings.fontSize,
+                                  abnormalThreshold:
+                                      settings.abnormalThreshold,
+                                  hint: '点击输入标签,可输入中文自动触发翻译与联想',
                                 ),
                               ),
                             ),
@@ -618,6 +878,32 @@ class _EditorPageState extends ConsumerState<EditorPage>
         ),
       );
     }
+    if (_multiRange != null) {
+      final toks = parseToks(_controller.text);
+      final r = _multiRange!;
+      if (r.$1 < toks.length) {
+        final last = r.$2 < toks.length ? r.$2 : toks.length - 1;
+        var anyEnabled = false;
+        for (var i = r.$1; i <= last; i++) {
+          if (!toks[i].disabled) {
+            anyEnabled = true;
+            break;
+          }
+        }
+        return MultiTagPanel(
+          key: const ValueKey('dock-multi'),
+          count: last - r.$1 + 1,
+          mult: _multiMult,
+          anyEnabled: anyEnabled,
+          onWrap: _multiWrap,
+          onStepMult: _multiStepMult,
+          onClear: _multiClear,
+          onToggleDisabled: _multiToggleDisabled,
+          onDelete: _multiDelete,
+          onClose: _multiClose,
+        );
+      }
+    }
     if (_query.isNotEmpty) {
       return CompletionBar(
         key: const ValueKey('dock-completion'),
@@ -638,6 +924,21 @@ class _EditorPageState extends ConsumerState<EditorPage>
         count: countOf(tok.name),
         related: tok.name == _relatedFor ? _related : const [],
         relatedLoading: tok.name == _relatedFor && _relatedLoading,
+        weightStep: _settings.weightStep,
+        warning: abnormalWeightOf(
+          _controller.text,
+          tok,
+          threshold: _settings.abnormalThreshold,
+        ),
+        sdConvert:
+            isSdWeightSeg(
+              _controller.text.substring(tok.segStart, tok.segEnd),
+            )
+            ? _convertSd
+            : null,
+        onSelectGroup: (tok.groupMult - 1).abs() > 0.0001
+            ? () => _selectGroupOf(tok)
+            : null,
         onWrap: _wrap,
         onSetMult: _setMult,
         onClear: _clearWeight,

@@ -39,12 +39,6 @@ typedef CharRefPayload = ({
   double fidelity,
 });
 
-/// 支持角色参考(Director/Precise Reference)的模型;其余(4.0 full/curated)静默不发。
-const _crModels = <String>{
-  'nai-diffusion-4-5-full',
-  'nai-diffusion-4-5-curated',
-};
-
 /// UI 展示名 → NAI 采样器串
 const _samplerMap = <String, String>{
   'Euler Ancestral': 'k_euler_ancestral',
@@ -199,9 +193,9 @@ Map<String, double> _center(String? pos, int index) {
     params['reference_strength_multiple'] = strengths;
   }
 
-  // 角色参考(Director/Precise Reference):仅 4.5 模型下发(与 web 门槛一致)。
+  // 角色参考(Director/Precise Reference):仅 4.5 模型下发,其余静默不发。
   // 五个并列数组;information_extracted 恒 1;secondary_strength = 1 - fidelity。
-  if (charRefs.isNotEmpty && _crModels.contains(model)) {
+  if (charRefs.isNotEmpty && crSupportsModel(p.model)) {
     params['director_reference_images'] = [for (final c in charRefs) c.image];
     params['director_reference_descriptions'] = [
       for (final c in charRefs)

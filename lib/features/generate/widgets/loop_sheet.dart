@@ -4,10 +4,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/net/anlas_provider.dart';
 import '../../../core/theme/app_theme.dart';
 import '../cost.dart';
+import '../gen_modules.dart';
 import '../generate_state.dart';
 import '../generation_controller.dart';
 import '../loop_controller.dart';
 import '../models.dart';
+import 'common.dart' show hintSnack;
 
 /// 循环生成面板:选张数 → 看预估 → 开始;运行中切换为批次进度 + 停止。
 /// 抓手由 BottomSheetTheme(showDragHandle: true)统一提供。
@@ -43,7 +45,10 @@ class _Setup extends ConsumerWidget {
     final p = s.params;
     final gen = ref.watch(generationProvider);
     final isOpus = ref.watch(anlasProvider).asData?.value?.isOpus ?? false;
-    final cost = estimateCost(s, isOpus: isOpus);
+    // 与吸底栏同口径:按剥离隐藏模块后的实际发送内容估价
+    final mods =
+        ref.watch(genModulesProvider).value ?? const GenModuleSettings();
+    final cost = estimateCost(stripHiddenModules(s, mods), isOpus: isOpus);
     final n = p.loop.count;
 
     final costText = cost == 0
@@ -111,6 +116,17 @@ class _Setup extends ConsumerWidget {
           onPressed: gen.busy
               ? null
               : () {
+                  // 循环每轮重读当前参数,开跑前先把缺编码的纯编码 Vibe 停掉并提示
+                  final skipped = ref
+                      .read(generateProvider.notifier)
+                      .disableVibesMissingEncoding();
+                  if (skipped > 0) {
+                    hintSnack(
+                      context,
+                      '$skipped 个 Vibe 缺当前模型编码,已停用',
+                      icon: Icons.visibility_off_outlined,
+                    );
+                  }
                   final notifier = ref.read(loopStatusProvider.notifier);
                   Navigator.pop(context);
                   notifier.start();

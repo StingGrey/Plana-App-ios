@@ -7,15 +7,20 @@ import '../../../core/theme/app_theme.dart';
 import '../../generate/generate_state.dart';
 import '../../generate/generation_controller.dart';
 import '../../generate/models.dart';
-import '../../generate/widgets/common.dart' show hintSnack, todoSnack;
+import '../../generate/widgets/common.dart' show hintSnack, sharedAxisRoute;
+import '../../import/import_panel.dart';
 import '../../inpaint/inpaint_overlay.dart';
 import '../../../core/net/anlas_provider.dart';
+import '../../../core/store/app_stores.dart';
 import '../../../core/util/image_ops.dart';
 import '../gallery_state.dart';
 import '../models.dart';
+import '../save_pipeline.dart';
+import '../save_settings.dart';
 import '../upscale_local.dart';
 import '../upscale_model.dart';
 import '../upscale_nai.dart';
+import 'save_sheet.dart';
 
 /// 持久大图层:有字节 → `Image.memory`(gaplessPlayback);否则斜纹 + 尺寸占位。
 /// 生成/查看全程复用同一个 Image widget,借 gaplessPlayback 桥接逐帧预览与终图,消除切换闪烁。
@@ -162,16 +167,16 @@ class _ActionRail extends ConsumerWidget {
         ),
         const SizedBox(height: 10),
         _RailButton(
-          label: '下载',
+          label: '保存',
           icon: Icons.download,
-          onTap: () => _download(context),
+          onTap: () => _download(context, ref),
+          onLongPress: () => _openSaveSheet(context, ref),
         ),
         const SizedBox(height: 10),
         _RailButton(
           label: '导入',
           icon: Icons.input,
-          accent: true,
-          onTap: () => todoSnack(context, '导入到创作'),
+          onTap: () => _import(context, ref),
         ),
         const SizedBox(height: 10),
         _RailButton(
@@ -184,15 +189,37 @@ class _ActionRail extends ConsumerWidget {
     );
   }
 
+  /// 字节:内存缓存优先,卸载/水合后按需读盘(读不到才是真无像素)。
+  Future<Uint8List?> _bytesOf(WidgetRef ref) async =>
+      result.bytes ??
+      await ref.read(appStoresProvider).gallery.readImage(result.id);
+
+  /// 参数快照:内存优先;盘上有(hasInput)则懒读,读失败/无快照为 null。
+  Future<GenerateState?> _inputOf(WidgetRef ref) async =>
+      result.input ??
+      (result.hasInput
+          ? await ref.read(appStoresProvider).gallery.readInput(result.id)
+          : null);
+
+  /// 生成中拦截会与生成管线冲突的操作(重绘提交/重新生成共用一条管线)。
+  bool _blockWhileBusy(BuildContext context, WidgetRef ref) {
+    if (!ref.read(generationProvider).busy) return false;
+    hintSnack(context, '生成中,请稍候', icon: Icons.hourglass_top);
+    return true;
+  }
+
   /// 重绘:图库画布原地切入涂抹编辑面板(非路由页)。参数快照缺失时
   /// 退回当前创作页状态,保证任何有像素的图都能重绘。
-  void _inpaint(BuildContext context, WidgetRef ref) {
-    final bytes = result.bytes;
+  Future<void> _inpaint(BuildContext context, WidgetRef ref) async {
+    if (_blockWhileBusy(context, ref)) return;
+    final bytes = await _bytesOf(ref);
+    if (!context.mounted) return;
     if (bytes == null) {
       hintSnack(context, '此图无像素数据', icon: Icons.error_outline);
       return;
     }
-    final snap = result.input;
+    final snap = await _inputOf(ref);
+    if (!context.mounted) return;
     final GenerateState input = snap ?? ref.read(generateProvider);
     ref
         .read(inpaintSessionProvider.notifier)
@@ -201,14 +228,15 @@ class _ActionRail extends ConsumerWidget {
 
   /// 放大:弹方式面板(本地快/质 · NAI)→ 分发本地 ncnn / NAI 远程 → 进度 → 入库。
   Future<void> _upscale(BuildContext context, WidgetRef ref) async {
-    final bytes = result.bytes;
+    final bytes = await _bytesOf(ref);
+    if (!context.mounted) return;
     if (bytes == null) {
       hintSnack(context, '此图无像素数据', icon: Icons.error_outline);
       return;
     }
     final w = result.width, h = result.height;
     final naiOk = naiUpscaleSupportsSize(w, h);
-    final redrawOk = result.input != null && redraw15xSupportsSize(w, h);
+    final redrawOk = result.hasInput && redraw15xSupportsSize(w, h);
 
     // 1. 选方式(默认上次;不可用的方式回退本地快速)
     var current =
@@ -224,7 +252,7 @@ class _ActionRail extends ConsumerWidget {
         current: current,
         naiEnabled: naiOk,
         redrawEnabled: redrawOk,
-        hasInput: result.input != null,
+        hasInput: result.hasInput,
         width: w,
         height: h,
       ),
@@ -235,7 +263,7 @@ class _ActionRail extends ConsumerWidget {
 
     // 1.5× 重绘:走生成管线(画布流式预览),不弹放大对话框
     if (method == UpscaleMethod.redraw15x) {
-      _redraw15x(context, ref);
+      await _redraw15x(context, ref, bytes);
       return;
     }
 
@@ -276,7 +304,8 @@ class _ActionRail extends ConsumerWidget {
         outW = r.width;
         outH = r.height;
       }
-      // 入库:新条目 + 4x 角标,沿用原图 seed/输入参数
+      // 入库:新条目 + 4x 角标,沿用原图 seed/输入参数(快照懒读补齐)
+      final input = await _inputOf(ref);
       ref
           .read(galleryProvider.notifier)
           .addResult(
@@ -285,7 +314,7 @@ class _ActionRail extends ConsumerWidget {
             height: outH,
             seed: result.seed,
             badge: ResultBadge.upscaled,
-            input: result.input,
+            input: input,
           );
       if (!method.local) ref.read(anlasProvider.notifier).refresh();
       if (context.mounted) Navigator.of(context).pop();
@@ -308,10 +337,15 @@ class _ActionRail extends ConsumerWidget {
   }
 
   /// 1.5× 重绘放大:以 1.5 倍尺寸 img2img 重新生成(走生成管线,结果画布流式 + 自动入库)。
-  void _redraw15x(BuildContext context, WidgetRef ref) {
-    final input = result.input;
-    final bytes = result.bytes;
-    if (input == null || bytes == null) {
+  Future<void> _redraw15x(
+    BuildContext context,
+    WidgetRef ref,
+    Uint8List bytes,
+  ) async {
+    if (_blockWhileBusy(context, ref)) return;
+    final input = await _inputOf(ref);
+    if (!context.mounted) return;
+    if (input == null) {
       hintSnack(context, '缺少参数快照,无法重绘放大', icon: Icons.error_outline);
       return;
     }
@@ -338,10 +372,25 @@ class _ActionRail extends ConsumerWidget {
     );
   }
 
-  /// 存当前图 PNG 到系统相册(gal;Android 10+ 免权限走 MediaStore)。
-  Future<void> _download(BuildContext context) async {
-    final bytes = result.bytes;
-    if (bytes == null) return;
+  /// 导入:当前图送进导入面板(解析内嵌元数据 / 用作参考),与创作页入口同一面板。
+  Future<void> _import(BuildContext context, WidgetRef ref) async {
+    final bytes = await _bytesOf(ref);
+    if (!context.mounted) return;
+    if (bytes == null) {
+      hintSnack(context, '图片尚未就绪', icon: Icons.hourglass_empty);
+      return;
+    }
+    Navigator.of(context).push(sharedAxisRoute(ImportImagePanel(
+      bytes: bytes,
+      fileName: 'plana_${result.seed}.png',
+      displayName: 'plana_${result.seed}',
+    )));
+  }
+
+  /// 点按保存:按默认保存设置处理后存相册(gal;Android 10+ 免权限走 MediaStore)。
+  Future<void> _download(BuildContext context, WidgetRef ref) async {
+    final bytes = await _bytesOf(ref);
+    if (!context.mounted || bytes == null) return;
     try {
       final ok = await Gal.hasAccess() || await Gal.requestAccess();
       if (!ok) {
@@ -350,7 +399,9 @@ class _ActionRail extends ConsumerWidget {
         }
         return;
       }
-      await Gal.putImageBytes(bytes, name: 'plana_${result.seed}');
+      final settings = await ref.read(saveSettingsProvider.future);
+      final out = await processForSave(bytes, settings);
+      await Gal.putImageBytes(out, name: 'plana_${result.seed}');
       if (context.mounted) {
         hintSnack(context, '已保存到相册', icon: Icons.check_circle_outline);
       }
@@ -358,12 +409,29 @@ class _ActionRail extends ConsumerWidget {
       if (context.mounted) {
         hintSnack(context, '保存失败', icon: Icons.error_outline);
       }
+    } catch (e) {
+      if (context.mounted) {
+        hintSnack(context, '保存失败: $e', icon: Icons.error_outline);
+      }
     }
   }
 
+  /// 长按保存:进保存设置面板(格式/质量/元数据/预估大小,单次或设为默认)。
+  Future<void> _openSaveSheet(BuildContext context, WidgetRef ref) async {
+    final bytes = await _bytesOf(ref);
+    if (!context.mounted) return;
+    if (bytes == null) {
+      hintSnack(context, '图片尚未就绪', icon: Icons.hourglass_empty);
+      return;
+    }
+    await showSaveSheet(context, bytes: bytes, seed: result.seed);
+  }
+
   /// 按本图参数、换随机种子出一张新图(不改用户当前编辑器状态)。
-  void _regenerate(BuildContext context, WidgetRef ref) {
-    final input = result.input;
+  Future<void> _regenerate(BuildContext context, WidgetRef ref) async {
+    if (_blockWhileBusy(context, ref)) return;
+    final input = await _inputOf(ref);
+    if (!context.mounted) return;
     if (input == null) {
       hintSnack(context, '缺少参数快照,无法重新生成', icon: Icons.error_outline);
       return;
@@ -381,15 +449,15 @@ class _RailButton extends StatelessWidget {
     required this.label,
     required this.icon,
     required this.onTap,
+    this.onLongPress,
     this.primary = false,
-    this.accent = false,
   });
 
   final String label;
   final IconData icon;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
   final bool primary;
-  final bool accent;
 
   @override
   Widget build(BuildContext context) {
@@ -397,14 +465,8 @@ class _RailButton extends StatelessWidget {
     final double d = primary ? 58 : 48;
     final Color circleColor = primary
         ? scheme.primary
-        : accent
-        ? scheme.secondaryContainer
         : scheme.surfaceContainerHighest;
-    final Color iconColor = primary
-        ? scheme.onPrimary
-        : accent
-        ? scheme.onSecondaryContainer
-        : scheme.onSurface;
+    final Color iconColor = primary ? scheme.onPrimary : scheme.onSurface;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -417,6 +479,7 @@ class _RailButton extends StatelessWidget {
           clipBehavior: Clip.antiAlias,
           child: InkWell(
             onTap: onTap,
+            onLongPress: onLongPress,
             child: SizedBox(
               width: d,
               height: d,
@@ -464,9 +527,7 @@ class _SeedChip extends StatelessWidget {
         onTap: () async {
           await Clipboard.setData(ClipboardData(text: '$seed'));
           if (!context.mounted) return;
-          ScaffoldMessenger.of(context)
-            ..clearSnackBars()
-            ..showSnackBar(SnackBar(content: Text('已复制种子 $seed')));
+          hintSnack(context, '已复制种子 $seed', icon: Icons.check);
         },
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),

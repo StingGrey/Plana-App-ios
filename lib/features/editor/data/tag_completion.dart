@@ -66,9 +66,17 @@ class TagCompletion {
   static const _timeout = Duration(seconds: 12);
   static const _limit = 12;
 
+  // 查询缓存(键=查询串)。超过阈值整表清空,防长会话无界增长——
+  // 清空只损失命中率,下次查询重新拉取。
+  static const _cacheCap = 500;
   final _cache = <String, SuggestResult>{};
   final _aiCache = <String, List<Suggestion>>{};
   final _relatedCache = <String, List<String>>{};
+
+  static void _capped<K, V>(Map<K, V> m, K k, V v) {
+    if (m.length > _cacheCap) m.clear();
+    m[k] = v;
+  }
 
   static bool _cjk(String s) => s.runes.any((r) => r >= 0x4E00 && r <= 0x9FFF);
 
@@ -94,7 +102,7 @@ class TagCompletion {
     } catch (_) {
       res = const SuggestResult();
     }
-    if (!res.isEmpty) _cache[key] = res;
+    if (!res.isEmpty) _capped(_cache, key, res);
     return res;
   }
 
@@ -137,7 +145,7 @@ class TagCompletion {
           if (cn is String && cn.isNotEmpty) cacheTagMeta(t, trans: cn);
         }
       }
-      _relatedCache[key] = out;
+      _capped(_relatedCache, key, out);
       return out;
     } catch (_) {
       return const [];
@@ -270,7 +278,7 @@ class TagCompletion {
         out.add(Suggestion(text: text, kind: SuggestionKind.tag));
       }
     }
-    _aiCache[zh] = out;
+    _capped(_aiCache, zh, out);
     return out;
   }
 

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/auth/auth_mode.dart';
 import '../../../core/net/anlas_provider.dart';
 import '../../../core/theme/app_theme.dart';
 import '../generate_state.dart';
@@ -19,6 +20,8 @@ class _GenerateTopBarState extends ConsumerState<GenerateTopBar> {
 
   Future<void> _pickModel() async {
     final current = ref.read(generateProvider).params.model;
+    // anima 走服务端 Modal 后端,仅 Bot 授权模式提供(对齐 web isAnimaAvailable)
+    final animaOk = ref.read(authModeProvider).value == AuthMode.bot;
     final picked = await showModalBottomSheet<String>(
       context: context,
       builder: (context) => SafeArea(
@@ -35,21 +38,30 @@ class _GenerateTopBarState extends ConsumerState<GenerateTopBar> {
                 ],
               ),
             ),
-            for (final model in m.models)
-              ListTile(
-                onTap: () => Navigator.pop(context, model),
-                title: Text(model, style: context.texts.bodyMedium),
-                trailing: model == current
-                    ? Icon(Icons.check, size: 18, color: context.scheme.primary)
-                    : null,
-                dense: true,
-              ),
+            _GroupLabel('NAI'),
+            for (final model in m.models) _modelTile(model, current),
+            if (animaOk) ...[
+              const SizedBox(height: 4),
+              _GroupLabel('Anima'),
+              for (final model in m.animaModels) _modelTile(model, current),
+            ],
             const SizedBox(height: 8),
           ],
         ),
       ),
     );
     if (picked != null) ref.read(generateProvider.notifier).setModel(picked);
+  }
+
+  Widget _modelTile(String model, String current) {
+    return ListTile(
+      onTap: () => Navigator.pop(context, model),
+      title: Text(model, style: context.texts.bodyMedium),
+      trailing: model == current
+          ? Icon(Icons.check, size: 18, color: context.scheme.primary)
+          : null,
+      dense: true,
+    );
   }
 
   @override
@@ -133,6 +145,31 @@ class _GenerateTopBarState extends ConsumerState<GenerateTopBar> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// 模型面板的分组小标签(NAI / Anima)。
+class _GroupLabel extends StatelessWidget {
+  const _GroupLabel(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 4, 20, 2),
+        child: Text(
+          text,
+          style: context.texts.labelSmall!.copyWith(
+            color: context.scheme.onSurfaceVariant,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 1.1,
+          ),
+        ),
       ),
     );
   }

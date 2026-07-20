@@ -7,6 +7,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../char_library/char_library.dart';
+import '../../char_library/char_library_page.dart';
 import '../generate_state.dart';
 import '../models.dart';
 import 'common.dart';
@@ -15,13 +17,12 @@ import 'section_card.dart';
 /// 后台 isolate 算图片内容哈希(sha256 hex)。
 String _sha256Hex(Uint8List bytes) => sha256.convert(bytes).toString();
 
-/// 当前模型是否支持角色参考(仅 4.5 full/curated;对齐 web 门槛)。
-bool _crSupported(String model) => model.startsWith('NAI 4.5');
-
 /// 角色参考卡:缩略图横条 + 选中详情(迁移模式 · Strength · Fidelity)。
 /// 参考图约束角色长相/风格;仅 4.5 模型下发,原图 contain 处理后随生成发送(无编码调用)。
 class CharRefCard extends ConsumerStatefulWidget {
-  const CharRefCard({super.key});
+  const CharRefCard({super.key, this.reorderIndex});
+
+  final int? reorderIndex;
 
   @override
   ConsumerState<CharRefCard> createState() => _CharRefCardState();
@@ -39,17 +40,34 @@ class _CharRefCardState extends ConsumerState<CharRefCard> {
     final hash = await compute(_sha256Hex, bytes); // 后台算内容哈希
     if (!mounted) return;
     final name = file.name.replaceAll(RegExp(r'\.[^.]+$'), '');
+    // 顺手入库(同图去重;下次可从角色参考图库找回)
+    try {
+      await ref
+          .read(charLibraryProvider.notifier)
+          .importImageBytes(bytes, name, knownHash: hash);
+    } catch (_) {
+      // 入库失败不影响本次使用
+    }
+    if (!mounted) return;
+    final hadVibes = ref.read(generateProvider).enabledVibes > 0;
     final id = ref
         .read(generateProvider.notifier)
         .addCharRef(image: bytes, name: name, imageHash: hash);
+    if (hadVibes) _mutexHint();
     setState(() => _selectedId = id);
   }
 
   void _toggle(String id, bool currentlyEnabled) {
+    final hadVibes = ref.read(generateProvider).enabledVibes > 0;
     ref
         .read(generateProvider.notifier)
         .setCharRefEnabled(id, !currentlyEnabled);
+    if (!currentlyEnabled && hadVibes) _mutexHint();
   }
+
+  /// 互斥切换提示:启用/加入角色参考导致 Vibe 被暂停时,弹一次 toast。
+  void _mutexHint() =>
+      hintSnack(context, '与 Vibe 互斥,已暂停 Vibe 参考', icon: Icons.swap_horiz);
 
   void _remove(String id) {
     final refs = ref.read(generateProvider).charRefs;
@@ -87,13 +105,16 @@ class _CharRefCardState extends ConsumerState<CharRefCard> {
     return SectionCard(
       icon: Icons.face_retouching_natural,
       title: '角色参考',
+      reorderIndex: widget.reorderIndex,
       badge: refs.isEmpty ? null : CountBadge('${refs.length}'),
       actions: [
         RoundIconBtn(
           Icons.grid_view,
           tooltip: '参考图库',
           color: scheme.onSurfaceVariant,
-          onTap: () => todoSnack(context, '角色参考图库'),
+          onTap: () => Navigator.of(
+            context,
+          ).push(sharedAxisRoute(const CharLibraryPage())),
         ),
         RoundIconBtn(
           Icons.add,
@@ -107,7 +128,7 @@ class _CharRefCardState extends ConsumerState<CharRefCard> {
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (refs.isNotEmpty && !_crSupported(state.params.model)) ...[
+          if (refs.isNotEmpty && !crSupportsModel(state.params.model)) ...[
             const InfoNote(
               '角色参考仅 4.5 模型支持,当前模型生成时不会发送。',
               icon: Icons.warning_amber_rounded,
@@ -189,18 +210,18 @@ class _CharRefDetail extends ConsumerWidget {
         ),
         const SizedBox(height: 14),
         // 保持最低 0(非负,不采用 web 的 −10..+1);step 0.01。
-        ParamSlider(
+        LiveParamSlider(
           label: 'Strength 参考强度',
           value: item.strength,
           divisions: 100,
-          onChanged: (v) => notifier.updateCharRef(item.id, strength: v),
+          onCommit: (v) => notifier.updateCharRef(item.id, strength: v),
         ),
         const SizedBox(height: 6),
-        ParamSlider(
+        LiveParamSlider(
           label: 'Fidelity 保真度',
           value: item.infoExtracted,
           divisions: 100,
-          onChanged: (v) => notifier.updateCharRef(item.id, infoExtracted: v),
+          onCommit: (v) => notifier.updateCharRef(item.id, infoExtracted: v),
         ),
       ],
     );

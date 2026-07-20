@@ -26,8 +26,9 @@ extension ResultBadgeX on ResultBadge {
       };
 }
 
-/// 一张生成结果。占位阶段无像素数据,画布与缩略图用斜纹占位呈现,
-/// 尺寸/种子/角标则真实驱动界面。
+/// 一张生成结果。bytes/input 只是**内存缓存**——重启水合或 RAM 减负后
+/// 为 null,像素与快照按 id 从 GalleryStore 懒读;hasInput 记录盘上
+/// 是否有参数快照(操作门禁用,与 input 是否驻留内存无关)。
 class ResultImage {
   const ResultImage({
     required this.id,
@@ -37,7 +38,8 @@ class ResultImage {
     this.badge = ResultBadge.none,
     this.bytes,
     this.input,
-  });
+    bool? hasInput,
+  }) : hasInput = hasInput ?? input != null;
 
   final String id;
   final int width;
@@ -45,11 +47,26 @@ class ResultImage {
   final int seed;
   final ResultBadge badge;
 
-  /// 真实 PNG 字节;占位历史为 null(用斜纹呈现)。
+  /// PNG 字节(内存缓存);null 时按需从盘读,读不到才是真无像素。
   final Uint8List? bytes;
 
   /// 生成时的输入快照(prompt/角色/参考/参数);供「重新生成」按本图参数复现。
   final GenerateState? input;
 
+  /// 本图有参数快照可用(内存或盘上)。
+  final bool hasInput;
+
   double get aspect => width / height;
+
+  /// 卸掉内存缓存的副本(字节/快照盘上都有,再用时懒读)。
+  ResultImage stripped() => (bytes == null && input == null)
+      ? this
+      : ResultImage(
+          id: id,
+          width: width,
+          height: height,
+          seed: seed,
+          badge: badge,
+          hasInput: hasInput,
+        );
 }

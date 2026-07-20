@@ -6,26 +6,16 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/net/anlas_provider.dart';
 import '../../core/theme/app_theme.dart';
 import '../generate/generate_state.dart';
-import '../generate/nai_request.dart' show naiModelId;
-import '../generate/vibe_encoder.dart';
 import '../generate/widgets/common.dart'
     show ParamSlider, confirmDialog, hintSnack;
-import 'naiv4vibe_codec.dart' show jsNum, kEncodingKeyLabel, kModelToEncodingKey;
 import 'vibe_library.dart';
 
-/// 预编码可选模型(与生成页模型集合一致)。
-const _precodeModels = [
-  ('nai-diffusion-4-5-full', 'NAI 4.5 Full'),
-  ('nai-diffusion-4-5-curated', 'NAI 4.5 Curated'),
-  ('nai-diffusion-4-full', 'NAI 4.0 Full'),
-  ('nai-diffusion-4-curated-preview', 'NAI 4.0 Curated'),
-];
+/// 「已编码」状态色(功能绿)。
+const _encOkColor = Color(0xFF2E9E44);
 
-/// 库条目详情:大图 + 名称/默认参数编辑 + 编码清单(显式化「哪些模型×IE
-/// 已有编码」)+ 预编码(明示 2 Anlas)+ 导出/删除/添加到生成。
+/// 库条目详情:大图 + 名称/默认参数编辑 + 编码状态(仅显示有无)+ 导出/删除/添加到生成。
 /// pop(true) = 已添加到生成(由库页收尾:snack + 返回生成页)。
 class VibeDetailSheet extends ConsumerStatefulWidget {
   const VibeDetailSheet({super.key, required this.entryId});
@@ -160,31 +150,6 @@ class _VibeDetailSheetState extends ConsumerState<VibeDetailSheet> {
       return;
     }
     if (mounted) Navigator.pop(context, true);
-  }
-
-  Future<void> _openPrecode(VibeEntry e) async {
-    final img = await _imageFuture;
-    if (!mounted) return;
-    if (img == null) {
-      hintSnack(context, '该 Vibe 无原图,无法编码新参数', icon: Icons.info_outline);
-      return;
-    }
-    final done = await showModalBottomSheet<bool>(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      builder: (_) => _PrecodeSheet(
-        entry: e,
-        image: img,
-        initialIe: _ie ?? e.defaultInfoExtracted ?? 1.0,
-      ),
-    );
-    if (done == true && mounted) {
-      // 刷新编码清单
-      setState(() {
-        _encFuture = ref.read(vibeLibraryProvider.notifier).encodingList(e);
-      });
-    }
   }
 
   @override
@@ -342,70 +307,57 @@ class _VibeDetailSheetState extends ConsumerState<VibeDetailSheet> {
     );
   }
 
+  /// 编码状态:只显示「有 / 无」,不再列每个模型×IE,也不提供预编码。
   Widget _encodings(VibeEntry e, ColorScheme scheme) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Text(
-              '已有编码',
-              style: context.texts.labelMedium!
-                  .copyWith(color: scheme.onSurfaceVariant),
-            ),
-            const Spacer(),
-            if (e.hasImage)
-              TextButton.icon(
-                onPressed: () => _openPrecode(e),
-                style: TextButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                ),
-                icon: const Icon(Icons.bolt_outlined, size: 16),
-                label: const Text('预编码'),
-              ),
-          ],
-        ),
-        const SizedBox(height: 4),
-        FutureBuilder(
-          future: _encFuture,
-          builder: (context, snap) {
-            final list = snap.data ?? const [];
-            if (list.isEmpty) {
-              return Text(
-                snap.connectionState == ConnectionState.waiting
-                    ? '加载中…'
-                    : '暂无编码,生成时将现场编码(2 Anlas/次,自动缓存)。',
-                style: context.texts.labelSmall!
-                    .copyWith(color: scheme.outline),
-              );
-            }
-            return Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: [
-                for (final it in list)
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: scheme.secondaryContainer.withValues(alpha: .6),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      '${kEncodingKeyLabel[it.modelKey] ?? it.modelKey}'
-                      ' · IE ${it.ie == null ? '?' : jsNum(it.ie!)}',
-                      style: context.texts.labelSmall!.copyWith(
-                        color: scheme.onSecondaryContainer,
-                        fontWeight: FontWeight.w600,
-                      ),
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHigh.withValues(alpha: .5),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.memory, size: 18, color: scheme.onSurfaceVariant),
+          const SizedBox(width: 8),
+          Text(
+            '编码',
+            style: context.texts.labelLarge!
+                .copyWith(color: scheme.onSurfaceVariant),
+          ),
+          const Spacer(),
+          FutureBuilder(
+            future: _encFuture,
+            builder: (context, snap) {
+              if (snap.connectionState == ConnectionState.waiting) {
+                return Text(
+                  '检查中…',
+                  style: context.texts.labelMedium!
+                      .copyWith(color: scheme.outline),
+                );
+              }
+              final has = (snap.data ?? const []).isNotEmpty;
+              return Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    has ? Icons.check_circle : Icons.remove_circle_outline,
+                    size: 16,
+                    color: has ? _encOkColor : scheme.outline,
+                  ),
+                  const SizedBox(width: 5),
+                  Text(
+                    has ? '已编码' : '未编码',
+                    style: context.texts.labelMedium!.copyWith(
+                      color: has ? _encOkColor : scheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
-              ],
-            );
-          },
-        ),
-      ],
+                ],
+              );
+            },
+          ),
+        ],
+      ),
     );
   }
 
@@ -414,159 +366,5 @@ class _VibeDetailSheetState extends ConsumerState<VibeDetailSheet> {
     final t = DateTime.fromMillisecondsSinceEpoch(ms);
     String two(int v) => v.toString().padLeft(2, '0');
     return '${t.year}-${two(t.month)}-${two(t.day)} ${two(t.hour)}:${two(t.minute)}';
-  }
-}
-
-/// 预编码二级 sheet:选模型 + IE,明示 Anlas 成本;命中缓存则免扣。
-class _PrecodeSheet extends ConsumerStatefulWidget {
-  const _PrecodeSheet({
-    required this.entry,
-    required this.image,
-    required this.initialIe,
-  });
-
-  final VibeEntry entry;
-  final Uint8List image;
-  final double initialIe;
-
-  @override
-  ConsumerState<_PrecodeSheet> createState() => _PrecodeSheetState();
-}
-
-class _PrecodeSheetState extends ConsumerState<_PrecodeSheet> {
-  // 默认选当前生成页的模型(编码通常是为它准备的)
-  late String _model = () {
-    final cur = naiModelId(ref.read(generateProvider).params.model);
-    return _precodeModels.any((m) => m.$1 == cur)
-        ? cur
-        : _precodeModels.first.$1;
-  }();
-  late double _ie = widget.initialIe;
-  bool _busy = false;
-
-  Future<void> _run() async {
-    final hash = widget.entry.imageHash;
-    if (hash == null) return;
-    setState(() => _busy = true);
-    final encoder = ref.read(vibeEncoderProvider);
-    try {
-      final hit = await encoder.cached(
-        imageHash: hash,
-        model: _model,
-        infoExtracted: _ie,
-      );
-      if (hit != null) {
-        if (mounted) {
-          hintSnack(context, '该参数已有编码,无需重复编码',
-              icon: Icons.check_circle_outline);
-          Navigator.pop(context, true);
-        }
-        return;
-      }
-      await encoder.encode(
-        image: widget.image,
-        imageHash: hash,
-        model: _model,
-        infoExtracted: _ie,
-      );
-      ref.read(anlasProvider.notifier).refresh(); // 编码扣了 2 Anlas
-      if (mounted) {
-        hintSnack(context, '编码完成(消耗 2 Anlas,已缓存)',
-            icon: Icons.check_circle_outline);
-        Navigator.pop(context, true);
-      }
-    } catch (err) {
-      if (mounted) {
-        setState(() => _busy = false);
-        hintSnack(context, '编码失败:$err', icon: Icons.error_outline);
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = context.scheme;
-    final modelKey = kModelToEncodingKey[_model] ?? _model;
-    return Padding(
-      padding: EdgeInsets.only(
-        left: 20,
-        right: 20,
-        bottom: MediaQuery.viewInsetsOf(context).bottom + 20,
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const SizedBox(height: 14),
-          Text(
-            '预编码',
-            style: context.texts.titleMedium!
-                .copyWith(fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            '提前为指定模型和 IE 生成编码并缓存;之后用该参数生成不再扣编码费。'
-            '新参数编码消耗 2 Anlas,已缓存的参数免费。',
-            style: context.texts.labelSmall!.copyWith(
-              color: scheme.onSurfaceVariant,
-              height: 1.5,
-            ),
-          ),
-          const SizedBox(height: 14),
-          InputDecorator(
-            decoration: const InputDecoration(
-              isDense: true,
-              labelText: '模型',
-              border: OutlineInputBorder(),
-              contentPadding:
-                  EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            ),
-            child: DropdownButtonHideUnderline(
-              child: DropdownButton<String>(
-                value: _model,
-                isExpanded: true,
-                isDense: true,
-                onChanged: _busy
-                    ? null
-                    : (v) => setState(() => _model = v ?? _model),
-                items: [
-                  for (final (id, label) in _precodeModels)
-                    DropdownMenuItem(
-                      value: id,
-                      child: Text('$label(${kEncodingKeyLabel[kModelToEncodingKey[id]] ?? id})'),
-                    ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 10),
-          ParamSlider(
-            label: 'Info Extracted',
-            value: _ie,
-            divisions: 100,
-            onChanged: _busy ? (_) {} : (v) => setState(() => _ie = v),
-          ),
-          const SizedBox(height: 14),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton.icon(
-              onPressed: _busy ? null : _run,
-              icon: _busy
-                  ? const SizedBox(
-                      width: 15,
-                      height: 15,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.bolt, size: 18),
-              label: Text(
-                _busy
-                    ? '编码中…'
-                    : '编码 ${kEncodingKeyLabel[modelKey] ?? modelKey} · IE ${jsNum(_ie)}',
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
   }
 }

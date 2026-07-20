@@ -2,26 +2,50 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/auth/auth_mode.dart';
+import 'core/store/app_stores.dart';
 import 'core/theme/app_theme.dart';
+import 'core/theme/theme_settings.dart';
 import 'features/onboarding/onboarding_page.dart';
 import 'features/shell/app_shell.dart';
 
-void main() {
-  runApp(const ProviderScope(child: PlanaApp()));
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // 启动装载持久化状态(工作台存档 + 图库索引;失败按首启空档降级)
+  final stores = await AppStores.open();
+  final themeInit = await loadThemeSettings(); // 预读外观,首帧不闪色
+  runApp(
+    ProviderScope(
+      overrides: [
+        appStoresProvider.overrideWithValue(stores),
+        themeInitProvider.overrideWithValue(themeInit),
+      ],
+      child: const PlanaApp(),
+    ),
+  );
+  // 注册即挂到 binding 观察者列表(强引用,不会被 GC):
+  // 退后台/失焦即刻把防抖窗口里的工作台/图库索引落盘,进程被杀不丢。
+  AppLifecycleListener(
+    onStateChange: (s) {
+      if (s == AppLifecycleState.inactive || s == AppLifecycleState.paused) {
+        stores.flushNow();
+      }
+    },
+  );
+  stores.postBootMaintenance(); // 选图器缓存清扫 + blob GC(延迟后台跑)
 }
 
-class PlanaApp extends StatelessWidget {
+class PlanaApp extends ConsumerWidget {
   const PlanaApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final ts = ref.watch(themeSettingsProvider);
     return MaterialApp(
       title: 'Plana',
       debugShowCheckedModeBanner: false,
-      theme: AppTheme.light(),
-      darkTheme: AppTheme.dark(),
-      // 先固定亮色预览;后续在「我的」页做 亮/暗/跟随系统 切换
-      themeMode: ThemeMode.light,
+      theme: AppTheme.light(ts.seed.color),
+      darkTheme: AppTheme.dark(ts.seed.color),
+      themeMode: ts.mode,
       home: const _AuthGate(),
     );
   }

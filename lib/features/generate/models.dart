@@ -277,6 +277,72 @@ const models = <String>[
   'NAI 4.0 Curated',
 ];
 
+/// 角色参考(Director/Precise Reference)仅 4.5 系模型支持(对齐 web 门槛)。
+/// 载荷构造 / 成本预估 / 卡片提示共用此判定,入参为 UI 展示名。
+bool crSupportsModel(String displayModel) => displayModel.startsWith('NAI 4.5');
+
+// ============================================================
+// 模型父类(provider)与 Anima(Modal ComfyUI 后端,仅 Bot 授权可用)
+// 与 NAI 是两套完全独立的采样枚举,不要混用(对齐 web animaOptions.ts)。
+// ============================================================
+
+/// 模型父类:决定功能模块可见集与出图后端。
+enum GenProvider { nai, anima }
+
+GenProvider providerOfModel(String displayModel) =>
+    displayModel.startsWith('Anima') ? GenProvider.anima : GenProvider.nai;
+
+bool isAnimaModel(String displayModel) =>
+    providerOfModel(displayModel) == GenProvider.anima;
+
+/// Anima 三档模型(展示名后缀即 anima_extra.model 档位)。
+const animaModels = <String>['Anima Turbo', 'Anima Aesthetic', 'Anima Base'];
+
+/// 展示名 → 档位串(turbo/aesthetic/base)。
+String animaTierOf(String displayModel) => switch (displayModel) {
+  'Anima Aesthetic' => 'aesthetic',
+  'Anima Base' => 'base',
+  _ => 'turbo',
+};
+
+/// 采样选项:id 直发服务端,label 供 UI。
+class AnimaOption {
+  const AnimaOption(this.id, this.label);
+
+  final String id;
+  final String label;
+}
+
+const animaSamplers = <AnimaOption>[
+  AnimaOption('euler', 'Euler'),
+  AnimaOption('euler_ancestral', 'Euler Ancestral'),
+  AnimaOption('er_sde', 'ER SDE'),
+  AnimaOption('dpmpp_2m_sde_gpu', 'DPM++ 2M SDE'),
+  AnimaOption('dpmpp_2m', 'DPM++ 2M'),
+  AnimaOption('dpmpp_sde_gpu', 'DPM++ SDE'),
+];
+
+const animaSchedulers = <AnimaOption>[
+  AnimaOption('simple', 'Simple'),
+  AnimaOption('karras', 'Karras'),
+  AnimaOption('normal', 'Normal'),
+  AnimaOption('sgm_uniform', 'SGM Uniform'),
+  AnimaOption('beta', 'Beta'),
+];
+
+/// 各档位推荐采样参数(切档时自动套用;须与服务端 _ANIMA_SLOW_DEFAULTS 一致)。
+({int steps, double cfg, String sampler, String scheduler}) animaTierDefaults(
+  String tier,
+) => switch (tier) {
+  'aesthetic' || 'base' => (
+    steps: 28,
+    cfg: 4.5,
+    sampler: 'er_sde',
+    scheduler: 'simple',
+  ),
+  _ => (steps: 12, cfg: 1.0, sampler: 'euler', scheduler: 'simple'),
+};
+
 const samplers = <String>[
   'Euler Ancestral',
   'Euler',
@@ -301,6 +367,10 @@ class GenParams {
     this.seed = '',
     this.cfgRescale = 0.0,
     this.loop = LoopCount.x8,
+    this.animaSteps = 12,
+    this.animaCfg = 1.0,
+    this.animaSampler = 'euler',
+    this.animaScheduler = 'simple',
   });
 
   final String model;
@@ -314,6 +384,12 @@ class GenParams {
   final String seed;
   final double cfgRescale;
   final LoopCount loop;
+
+  // Anima 专属采样参数(与 NAI 的 steps/cfg/sampler 独立,两套不混用)。
+  final int animaSteps;
+  final double animaCfg;
+  final String animaSampler;
+  final String animaScheduler;
 
   /// Opus 免费判定(像素 ≤ 免费阈值 + ≤28 步),按像素而非预设成员,兼容自定义尺寸。
   bool get isFree => steps <= 28 && width * height <= kFreePixelThreshold;
@@ -330,6 +406,10 @@ class GenParams {
     String? seed,
     double? cfgRescale,
     LoopCount? loop,
+    int? animaSteps,
+    double? animaCfg,
+    String? animaSampler,
+    String? animaScheduler,
   }) {
     return GenParams(
       model: model ?? this.model,
@@ -343,6 +423,10 @@ class GenParams {
       seed: seed ?? this.seed,
       cfgRescale: cfgRescale ?? this.cfgRescale,
       loop: loop ?? this.loop,
+      animaSteps: animaSteps ?? this.animaSteps,
+      animaCfg: animaCfg ?? this.animaCfg,
+      animaSampler: animaSampler ?? this.animaSampler,
+      animaScheduler: animaScheduler ?? this.animaScheduler,
     );
   }
 }

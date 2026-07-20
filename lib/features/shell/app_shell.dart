@@ -9,11 +9,13 @@ import '../gallery/gallery_page.dart';
 import '../gallery/gallery_state.dart';
 import '../generate/generate_page.dart';
 import '../generate/generation_controller.dart';
+import '../generate/widgets/common.dart' show hintSnack;
 import '../inpaint/inpaint_overlay.dart';
+import '../inspiration/inspiration_page.dart';
 import '../profile/profile_page.dart';
 import 'shell_state.dart';
 
-/// 全局骨架:3 tab 底部导航 + PageView 左右滑动切页(手势滑 + 点按/程序跳转都走同一索引)。
+/// 全局骨架:4 tab 底部导航 + PageView 左右滑动切页(手势滑 + 点按/程序跳转都走同一索引)。
 class AppShell extends ConsumerStatefulWidget {
   const AppShell({super.key});
 
@@ -26,7 +28,12 @@ class _AppShellState extends ConsumerState<AppShell> {
     initialPage: ref.read(shellIndexProvider),
   );
 
-  static const _pages = [GeneratePage(), GalleryPage(), ProfilePage()];
+  static const _pages = [
+    GeneratePage(),
+    GalleryPage(),
+    InspirationPage(),
+    ProfilePage(),
+  ];
 
   @override
   void initState() {
@@ -52,7 +59,7 @@ class _AppShellState extends ConsumerState<AppShell> {
     final lockSwipe =
         (ref.watch(inpaintSessionProvider) != null ||
             ref.watch(galleryZoomedProvider)) &&
-        index == 1;
+        index == kTabGallery;
 
     // 索引变化(导航点按 / 生成后跳图库)→ 滑到对应页(手势滑动来的已就位,跳过)。
     ref.listen<int>(shellIndexProvider, (prev, next) {
@@ -71,19 +78,17 @@ class _AppShellState extends ConsumerState<AppShell> {
     ref.listen<GenStatus>(generationProvider, (prev, next) {
       final err = next.error;
       if (err == null) return;
-      final messenger = ScaffoldMessenger.of(context)..clearSnackBars();
       if (next.noToken) {
-        messenger.showSnackBar(
-          SnackBar(
-            content: const Text('请先在「我的」页设置 NovelAI API Token'),
-            action: SnackBarAction(
-              label: '去设置',
-              onPressed: () => ref.read(shellIndexProvider.notifier).select(2),
-            ),
-          ),
+        hintSnack(
+          context,
+          '请先在「我的」页设置 NovelAI API Token',
+          icon: Icons.key_off_outlined,
+          actionLabel: '去设置',
+          onAction: () =>
+              ref.read(shellIndexProvider.notifier).select(kTabProfile),
         );
       } else {
-        messenger.showSnackBar(SnackBar(content: Text(err)));
+        hintSnack(context, err, icon: Icons.error_outline);
       }
       ref.read(generationProvider.notifier).clearError();
     });
@@ -114,6 +119,11 @@ class _AppShellState extends ConsumerState<AppShell> {
             icon: Icon(Icons.photo_library_outlined),
             selectedIcon: Icon(Icons.photo_library),
             label: '图库',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.lightbulb_outline),
+            selectedIcon: Icon(Icons.lightbulb),
+            label: '灵感',
           ),
           NavigationDestination(
             icon: Icon(Icons.person_outline),
