@@ -113,6 +113,6 @@ Flutter 实现:手写 `ColorScheme`(不用 `fromSeed`,品牌色要精确),文件
 
 ## 8. 视觉参考
 
-- 高保真 mockup:见会话内 widget `plana_app_v1_ui_mockups`(登录/创作/图库三屏)。
-- web 端 NAI 主题源:`Plana_Bot_Art/novelai_web_ui/tailwind.config.js`。
+- 高保真 mockup:登录/创作/图库三屏(设计阶段产物,未入库)。
+- 配色沿用 web 端的 NAI 主题(该项目不在本仓库内)。
 - 组件行为规范:m3.material.io。

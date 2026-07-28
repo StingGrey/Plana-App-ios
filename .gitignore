@@ -49,3 +49,8 @@ app.*.map.json
 /android/key.properties
 *.jks
 *.keystore
+
+# 内部审计文档:含安全弱点清单、计费内部逻辑与本地私有路径,不进公开仓库。
+# 文件仍保留在本地磁盘,只是不跟踪。
+docs/audit-findings.md
+docs/audit-plan.md
