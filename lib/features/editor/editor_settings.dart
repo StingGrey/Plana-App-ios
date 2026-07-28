@@ -1,9 +1,9 @@
 import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-import '../../core/auth/secure_storage.dart';
+import '../../core/store/app_stores.dart';
+import '../../core/store/prefs_store.dart';
 
 /// 编辑器行为开关(持久化),默认全开。
 class EditorSettings {
@@ -149,7 +149,7 @@ final editorSettingsProvider =
     );
 
 class EditorSettingsNotifier extends AsyncNotifier<EditorSettings> {
-  FlutterSecureStorage get _storage => ref.read(secureStorageProvider);
+  PrefsStore get _storage => ref.read(prefsStoreProvider);
 
   @override
   Future<EditorSettings> build() async {

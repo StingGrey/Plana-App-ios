@@ -1,3 +1,6 @@
+import 'dart:ui' show BoxHeightStyle;
+
+import 'package:flutter/foundation.dart' show mapEquals;
 import 'package:flutter/material.dart';
 
 import '../../../core/theme/app_theme.dart';
@@ -31,6 +34,7 @@ class AnnotatedField extends StatelessWidget {
     this.fontSize = 16,
     this.abnormalThreshold = 10,
     this.scrollController,
+    this.onFoldTap,
   });
 
   final RichTagController controller;
@@ -52,6 +56,9 @@ class AnnotatedField extends StatelessWidget {
 
   final ScrollController? scrollController;
 
+  /// 单击折叠标题 `#名字`:一次性解散(记号删掉、内容平铺)。
+  final void Function(String name)? onFoldTap;
+
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
@@ -70,7 +77,28 @@ class AnnotatedField extends StatelessWidget {
           final width = constraints.maxWidth;
           return Stack(
             children: [
-              // 权重底色层(最底):贴字形高度的圆角色带,范围含权重记号,
+              // 折叠底纹层(最底):标题 `#名字` 一颗药丸,点它即解散。
+              // 不受权重高亮开关影响:折叠是结构,不是权重。
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: AnimatedBuilder(
+                    animation: controller,
+                    builder: (_, _) => CustomPaint(
+                      painter: _FoldPainter(
+                        text: controller.text,
+                        bodies: controller.foldBodies,
+                        base: base,
+                        maxWidth: width - _kCaretMargin,
+                        scaler: scaler,
+                        withSpacing: showTrans,
+                        title: scheme.primary.withValues(alpha: .16),
+                        revision: transCacheRev,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              // 权重底色层:贴字形高度的圆角色带,范围含权重记号,
               // 组=开记号到闭记号整条;嵌套/叠加权重=多层半透明叠色。
               if (showWeightWash)
                 Positioned.fill(
@@ -138,6 +166,40 @@ class AnnotatedField extends StatelessWidget {
                   ),
                 ),
               ),
+              // 折叠标题点击层(最上):**只**覆盖 `#名字` 矩形,单击 = 一次性解散。
+              // 独立热区而不是靠光标落点驱动 —— 光标移动/方向键/选择经过折叠时
+              // 不再误触发;矩形之外没有 widget,点击照常穿透给 TextField 定位
+              // 光标。同一 controller 布局,矩形与绘制层严格对齐。
+              Positioned.fill(
+                child: AnimatedBuilder(
+                  animation: controller,
+                  builder: (_, _) {
+                    final rects = _foldTitleRects(
+                      controller.text,
+                      controller.foldBodies,
+                      base: base,
+                      maxWidth: width - _kCaretMargin,
+                      scaler: scaler,
+                    );
+                    if (rects.isEmpty) return const SizedBox.shrink();
+                    return Stack(
+                      children: [
+                        for (final (name, r) in rects)
+                          Positioned(
+                            left: r.left,
+                            top: r.top,
+                            width: r.width,
+                            height: r.height,
+                            child: GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onTap: () => onFoldTap?.call(name),
+                            ),
+                          ),
+                      ],
+                    );
+                  },
+                ),
+              ),
             ],
           );
         },
@@ -149,6 +211,110 @@ class AnnotatedField extends StatelessWidget {
 
   /// RenderEditable 的 _caretMargin = cursorWidth + _kCaretGap(1)。
   static const _kCaretMargin = _kCursorWidth + 1.0;
+}
+
+/// 折叠标题 `#名字` 的命中矩形(跨行则多条)→ (名字, 行盒)。与绘制层同一
+/// measureSpan 布局,盒子坐标与底纹/注音严格对齐;取 max 行盒(含行距)让
+/// 热区顶满整行,窄标题也好点。
+List<(String, Rect)> _foldTitleRects(
+  String text,
+  Map<String, String> bodies, {
+  required TextStyle base,
+  required double maxWidth,
+  required TextScaler scaler,
+}) {
+  final refs = parseFoldRefs(text, bodies);
+  if (refs.isEmpty || maxWidth <= 0) return const [];
+  final tp = TextPainter(
+    text: measureSpan(text, scaler, base: base),
+    textDirection: TextDirection.ltr,
+    textScaler: scaler,
+    textHeightBehavior: _kEvenLeading,
+    maxLines: null,
+  )..layout(maxWidth: maxWidth);
+  final out = <(String, Rect)>[];
+  for (final r0 in refs) {
+    final (a, b) = r0.titleRange;
+    for (final box in tp.getBoxesForSelection(
+      TextSelection(baseOffset: a, extentOffset: b),
+      boxHeightStyle: BoxHeightStyle.max,
+    )) {
+      final r = box.toRect();
+      if (r.width > 0.5) out.add((r0.name, r));
+    }
+  }
+  tp.dispose();
+  return out;
+}
+
+/// 折叠底纹层:占位符标题 `#名字` 范围一颗圆角药丸——「这是一枚折叠、点我
+/// 解散」全靠它(加 primary 字色)说清楚。占位符是真实正文字符,零布局技巧。
+class _FoldPainter extends CustomPainter {
+  _FoldPainter({
+    required this.text,
+    required this.bodies,
+    required this.base,
+    required this.maxWidth,
+    required this.scaler,
+    required this.withSpacing,
+    required this.title,
+    required this.revision,
+  });
+
+  final String text;
+  final Map<String, String> bodies;
+  final TextStyle base;
+  final double maxWidth;
+  final TextScaler scaler;
+  final bool withSpacing;
+  final Color title;
+  final int revision;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (text.isEmpty || maxWidth <= 0) return;
+    final refs = parseFoldRefs(text, bodies);
+    if (refs.isEmpty) return;
+
+    final layout = TextPainter(
+      text: withSpacing
+          ? measureSpan(text, scaler, base: base)
+          : TextSpan(text: text, style: base),
+      textDirection: TextDirection.ltr,
+      textScaler: scaler,
+      textHeightBehavior: _kEvenLeading,
+      maxLines: null,
+    )..layout(maxWidth: maxWidth);
+
+    final paint = Paint()..color = title;
+    for (final r0 in refs) {
+      final (a, b) = r0.titleRange; // `#名字`
+      for (final box in layout.getBoxesForSelection(
+        TextSelection(baseOffset: a, extentOffset: b),
+      )) {
+        final r = box.toRect();
+        if (r.width <= 0.5) continue;
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+            Rect.fromLTRB(r.left - 3, r.top - 1.5, r.right + 3, r.bottom + 1.5),
+            const Radius.circular(5),
+          ),
+          paint,
+        );
+      }
+    }
+    layout.dispose();
+  }
+
+  @override
+  bool shouldRepaint(covariant _FoldPainter old) =>
+      old.text != text ||
+      !mapEquals(old.bodies, bodies) ||
+      old.base != base ||
+      old.maxWidth != maxWidth ||
+      old.withSpacing != withSpacing ||
+      old.title != title ||
+      old.revision != revision;
 }
 
 /// 权重底色层(web WeightHighlightExtension 移植):
@@ -315,7 +481,7 @@ class _FuriganaPainter extends CustomPainter {
     if (text.isEmpty || maxWidth <= 0) return;
 
     final layout = TextPainter(
-      // measureSpan:与 TextField 同款字号 + 宽度补偿,布局同构
+      // measureSpan:与 TextField 同款字号 + 宽度补偿 + 折叠隐藏,布局同构
       text: measureSpan(text, scaler, base: base),
       textDirection: TextDirection.ltr,
       textScaler: scaler,

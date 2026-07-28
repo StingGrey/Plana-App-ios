@@ -139,9 +139,10 @@ Future<Uint8List> generateTagPreview(
     charRefs: const [],
   );
   Uint8List? last;
-  await for (final f in ref
-      .read(naiClientProvider)
-      .generateImageStream(token: token, body: built.body)) {
+  await for (final f
+      in ref
+          .read(naiClientProvider)
+          .generateImageStream(token: token, body: built.body)) {
     last = f.bytes;
     onStep?.call(f.isFinal ? s.params.steps : (f.step ?? 0), s.params.steps);
     if (f.isFinal) break;

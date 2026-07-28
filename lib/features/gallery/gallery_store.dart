@@ -1,10 +1,10 @@
+import '../../core/util/log.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show debugPrint;
-
+import '../../core/store/atomic_file.dart';
 import '../../core/store/blob_store.dart';
 import '../../core/util/image_ops.dart';
 import '../generate/models.dart' show GenerateState;
@@ -17,7 +17,7 @@ import 'models.dart';
 /// 按需懒读——重启不丢图,也不把整库塞回内存。
 class GalleryStore {
   GalleryStore(this._blobs, Directory supportRoot)
-      : _root = Directory('${supportRoot.path}/gallery');
+    : _root = Directory('${supportRoot.path}/gallery');
 
   final BlobStore _blobs;
   final Directory _root;
@@ -25,11 +25,17 @@ class GalleryStore {
   Directory get _imagesDir => Directory('${_root.path}/images');
   Directory get _thumbsDir => Directory('${_root.path}/thumbs');
   Directory get _inputsDir => Directory('${_root.path}/inputs');
+  Directory get _masksDir => Directory('${_root.path}/masks');
   File get _indexFile => File('${_root.path}/index.json');
 
   File _imageFile(String id) => File('${_imagesDir.path}/$id.png');
   File _thumbFile(String id) => File('${_thumbsDir.path}/$id.png');
   File _inputFile(String id) => File('${_inputsDir.path}/$id.json');
+  File _maskFile(String id) => File('${_masksDir.path}/$id.msk');
+
+  /// 重绘产物要继承的源图 id:发起重绘时置,落新图时**消费一次**后清空。
+  /// 「只继承一次」的语义就落在这里 —— 此后两张图的蒙版各自独立编辑保存。
+  String? pendingMaskInheritFrom;
 
   /// 启动读出的图库(字节/快照皆空壳,懒读);首启为空。
   List<ResultImage> initialResults = const [];
@@ -43,9 +49,16 @@ class GalleryStore {
       await _imagesDir.create(recursive: true);
       await _thumbsDir.create(recursive: true);
       await _inputsDir.create(recursive: true);
-      if (!await _indexFile.exists()) return;
+      await _masksDir.create(recursive: true);
+      if (!await _indexFile.exists()) {
+        await _rebuildFromDisk(); // 索引缺失但图还在(如首次升级/被误删)
+        return;
+      }
       final j = jsonDecode(await _indexFile.readAsString());
-      if (j is! Map) return;
+      if (j is! Map) {
+        await _rebuildFromDisk();
+        return;
+      }
       seq = (j['seq'] as num?)?.toInt() ?? 0;
       initialSelectedId = j['selectedId'] as String?;
       if (j['items'] is List) {
@@ -57,14 +70,16 @@ class GalleryStore {
           for (final b in ResultBadge.values) {
             if (b.name == e['badge']) badge = b;
           }
-          out.add(ResultImage(
-            id: id,
-            width: (e['w'] as num?)?.toInt() ?? 0,
-            height: (e['h'] as num?)?.toInt() ?? 0,
-            seed: (e['seed'] as num?)?.toInt() ?? 0,
-            badge: badge,
-            hasInput: e['hasInput'] == true,
-          ));
+          out.add(
+            ResultImage(
+              id: id,
+              width: (e['w'] as num?)?.toInt() ?? 0,
+              height: (e['h'] as num?)?.toInt() ?? 0,
+              seed: (e['seed'] as num?)?.toInt() ?? 0,
+              badge: badge,
+              hasInput: e['hasInput'] == true,
+            ),
+          );
           // 索引防抖窗口内被杀时 seq 可能落后于条目 id,取最大防撞车
           final m = _seqRe.firstMatch(id);
           if (m != null) {
@@ -75,9 +90,80 @@ class GalleryStore {
         initialResults = List.unmodifiable(out);
       }
     } catch (e) {
-      debugPrint('[gallery-store] 索引载入失败(按空库处理): $e');
-      initialResults = const [];
-      initialSelectedId = null;
+      logd('[gallery-store] 索引载入失败,改从目录重建: $e');
+      await _rebuildFromDisk();
+    }
+  }
+
+  /// 索引损坏 / 缺失时的兜底:扫 `images/` 重建条目并续上发号器。
+  ///
+  /// **为什么必须有**:原先失败路径直接把库当成空的,而 `seq` 的赋值在 try 内
+  /// 没跑到、停在初始值 `0` —— 下一张生成写 `images/gen0.png`,**覆盖盘上仍在
+  /// 的老图**,事后修好索引也回不来。`vibe_library` / `char_library` 早就有
+  /// 目录重建兜底,唯独图库没有,而图库存的恰恰是最不可再生的东西。见 S1C-01。
+  ///
+  /// **代价**:seed 与角标(`4x` / `重绘`)只存在索引里,重建取不回来,按
+  /// `0` / `none` 处理;原图与参数快照都还在,重新生成、参数导入照常可用。
+  Future<void> _rebuildFromDisk() async {
+    final out = <ResultImage>[];
+    var maxSeq = 0;
+    try {
+      final files = <File>[];
+      await for (final ent in _imagesDir.list()) {
+        if (ent is File && ent.path.endsWith('.png')) files.add(ent);
+      }
+      int numOf(File f) {
+        final m = _seqRe.firstMatch(_idOf(f));
+        return m == null ? -1 : int.parse(m.group(1)!);
+      }
+
+      files.sort((a, b) => numOf(a).compareTo(numOf(b))); // 还原生成先后
+      for (final f in files) {
+        final id = _idOf(f);
+        final (w, h) = await _pngSize(f);
+        out.add(
+          ResultImage(
+            id: id,
+            width: w,
+            height: h,
+            seed: 0,
+            badge: ResultBadge.none,
+            hasInput: await _inputFile(id).exists(),
+          ),
+        );
+        final n = numOf(f);
+        if (n + 1 > maxSeq) maxSeq = n + 1;
+      }
+    } catch (e) {
+      logd('[gallery-store] 目录重建失败: $e');
+    }
+    initialResults = List.unmodifiable(out);
+    initialSelectedId = out.isEmpty ? null : out.last.id;
+    // 关键一行:发号器只进不退,否则新图会覆盖盘上老图
+    if (maxSeq > seq) seq = maxSeq;
+    if (out.isNotEmpty) {
+      logd('[gallery-store] 已从目录重建 ${out.length} 条,发号器续到 $seq');
+    }
+  }
+
+  static String _idOf(File f) {
+    final n = f.uri.pathSegments.last;
+    return n.substring(0, n.length - 4); // 去 .png
+  }
+
+  /// 只读 PNG 头拿宽高(IHDR 里 offset 16/20),不解码整图。
+  static Future<(int, int)> _pngSize(File f) async {
+    try {
+      final head = <int>[];
+      await for (final chunk in f.openRead(0, 24)) {
+        head.addAll(chunk);
+        if (head.length >= 24) break;
+      }
+      if (head.length < 24) return (0, 0);
+      final bd = ByteData.sublistView(Uint8List.fromList(head));
+      return (bd.getUint32(16), bd.getUint32(20));
+    } catch (_) {
+      return (0, 0);
     }
   }
 
@@ -90,7 +176,7 @@ class GalleryStore {
 
   void _enqueue(Future<void> Function() job) {
     _chain = _chain.then((_) => job()).catchError((Object e) {
-      debugPrint('[gallery-store] 写入失败: $e');
+      logd('[gallery-store] 写入失败: $e');
     });
   }
 
@@ -101,18 +187,21 @@ class GalleryStore {
     if (bytes == null) return;
     final input = r.input;
     _enqueue(() async {
-      await _imageFile(r.id).writeAsBytes(bytes);
+      // 全部走原子写:半截 PNG 会变成永远打不开的坏图,半截快照 JSON 会让
+      // 「重新生成」读不出参数(见 atomic_file.dart)
+      await writeBytesAtomic(_imageFile(r.id), bytes);
       try {
-        await _thumbFile(r.id)
-            .writeAsBytes(await coverResizePng(bytes, 256, 256));
+        await writeBytesAtomic(
+          _thumbFile(r.id),
+          await coverResizePng(bytes, 256, 256),
+        );
       } catch (_) {} // 缩略图失败不阻断,读取端退回原图
       if (input != null) {
         final enc = await encodeGenerateState(input, _blobs);
-        await _inputFile(r.id).writeAsString(jsonEncode({
-          'v': 1,
-          'refs': enc.refs.toList(),
-          'state': enc.json,
-        }));
+        await writeStringAtomic(
+          _inputFile(r.id),
+          jsonEncode({'v': 1, 'refs': enc.refs.toList(), 'state': enc.json}),
+        );
       }
     });
   }
@@ -144,22 +233,26 @@ class GalleryStore {
     final selected = _idxSelected;
     final seq = _idxSeq;
     _enqueue(() async {
-      await _indexFile.writeAsString(jsonEncode({
-        'v': 1,
-        'seq': seq,
-        'selectedId': ?selected,
-        'items': [
-          for (final r in items)
-            {
-              'id': r.id,
-              'w': r.width,
-              'h': r.height,
-              'seed': r.seed,
-              'badge': r.badge.name,
-              'hasInput': r.hasInput,
-            },
-        ],
-      }));
+      // 索引是最不能半截的一个文件:坏了会让整库看起来是空的(见 S1C-01)
+      await writeStringAtomic(
+        _indexFile,
+        jsonEncode({
+          'v': 1,
+          'seq': seq,
+          'selectedId': ?selected,
+          'items': [
+            for (final r in items)
+              {
+                'id': r.id,
+                'w': r.width,
+                'h': r.height,
+                'seed': r.seed,
+                'badge': r.badge.name,
+                'hasInput': r.hasInput,
+              },
+          ],
+        }),
+      );
     });
   }
 
@@ -169,7 +262,12 @@ class GalleryStore {
     if (ids.isEmpty) return;
     _enqueue(() async {
       for (final id in ids) {
-        for (final f in [_imageFile(id), _thumbFile(id), _inputFile(id)]) {
+        for (final f in [
+          _imageFile(id),
+          _thumbFile(id),
+          _inputFile(id),
+          _maskFile(id),
+        ]) {
           try {
             if (await f.exists()) await f.delete();
           } catch (_) {}
@@ -185,7 +283,7 @@ class GalleryStore {
     _idxItems = null;
     _idxTimer?.cancel();
     _enqueue(() async {
-      for (final d in [_imagesDir, _thumbsDir, _inputsDir]) {
+      for (final d in [_imagesDir, _thumbsDir, _inputsDir, _masksDir]) {
         try {
           await for (final ent in d.list()) {
             try {
@@ -194,7 +292,8 @@ class GalleryStore {
           }
         } catch (_) {}
       }
-      await _indexFile.writeAsString(
+      await writeStringAtomic(
+        _indexFile,
         jsonEncode({'v': 1, 'seq': seq, 'items': const <Object>[]}),
       );
     });
@@ -221,6 +320,43 @@ class GalleryStore {
     return readImage(id);
   }
 
+  /// 每张图各自的重绘蒙版(`MaskGrid.encode()` 的字节);没有则 null。
+  Future<Uint8List?> readMask(String id) async {
+    try {
+      final f = _maskFile(id);
+      if (!await f.exists()) return null;
+      return await f.readAsBytes();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 保存/清除某张图的蒙版([bytes] 为 null 或空 = 清除)。
+  /// 蒙版是纯编辑态,写失败只影响下次打开时要重涂,不阻断任何流程。
+  void writeMask(String id, Uint8List? bytes) {
+    _enqueue(() async {
+      final f = _maskFile(id);
+      if (bytes == null || bytes.isEmpty) {
+        try {
+          if (await f.exists()) await f.delete();
+        } catch (_) {}
+        return;
+      }
+      await writeBytesAtomic(f, bytes);
+    });
+  }
+
+  /// 重绘产物继承源图蒙版(整份复制,之后各改各的)。
+  void copyMask(String fromId, String toId) {
+    _enqueue(() async {
+      try {
+        final src = _maskFile(fromId);
+        if (!await src.exists()) return;
+        await writeBytesAtomic(_maskFile(toId), await src.readAsBytes());
+      } catch (_) {}
+    });
+  }
+
   /// 参数快照(重新生成/重绘/导入用),blob 缺失字段按可用降级。
   Future<GenerateState?> readInput(String id) async {
     try {
@@ -233,7 +369,7 @@ class GalleryStore {
         _blobs,
       );
     } catch (e) {
-      debugPrint('[gallery-store] 快照读取失败 $id: $e');
+      logd('[gallery-store] 快照读取失败 $id: $e');
       return null;
     }
   }

@@ -1,9 +1,9 @@
 import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-import '../auth/secure_storage.dart';
+import 'app_stores.dart';
+import 'prefs_store.dart';
 
 /// 存储上限设置(持久化):各仓库超出上限自动删最旧
 /// (图库按入库顺序,库按最近使用)。上限由用户自由输入,0 = 无上限(默认)。
@@ -32,16 +32,16 @@ class StorageSettings {
   }
 
   factory StorageSettings.fromJson(Map<String, dynamic> j) => StorageSettings(
-        galleryCap: _nonNeg(j['galleryCap']),
-        vibeCap: _nonNeg(j['vibeCap']),
-        charRefCap: _nonNeg(j['charRefCap']),
-      );
+    galleryCap: _nonNeg(j['galleryCap']),
+    vibeCap: _nonNeg(j['vibeCap']),
+    charRefCap: _nonNeg(j['charRefCap']),
+  );
 
   Map<String, dynamic> toJson() => {
-        'galleryCap': galleryCap,
-        'vibeCap': vibeCap,
-        'charRefCap': charRefCap,
-      };
+    'galleryCap': galleryCap,
+    'vibeCap': vibeCap,
+    'charRefCap': charRefCap,
+  };
 
   @override
   bool operator ==(Object other) =>
@@ -58,11 +58,11 @@ const _key = 'storage_settings';
 
 final storageSettingsProvider =
     AsyncNotifierProvider<StorageSettingsNotifier, StorageSettings>(
-  StorageSettingsNotifier.new,
-);
+      StorageSettingsNotifier.new,
+    );
 
 class StorageSettingsNotifier extends AsyncNotifier<StorageSettings> {
-  FlutterSecureStorage get _storage => ref.read(secureStorageProvider);
+  PrefsStore get _storage => ref.read(prefsStoreProvider);
 
   @override
   Future<StorageSettings> build() async {

@@ -69,6 +69,10 @@ Future<EncodedState> encodeGenerateState(
   final json = <String, dynamic>{
     'prompt': s.prompt,
     'negativePrompt': s.negativePrompt,
+    // 编辑器原文草稿:与定稿无差别时为空,空就不写(绝大多数存档不带这两键)
+    if (s.promptRaw.isNotEmpty) 'promptRaw': s.promptRaw,
+    if (s.negativePromptRaw.isNotEmpty)
+      'negativePromptRaw': s.negativePromptRaw,
     'characters': [
       for (final c in s.characters)
         {
@@ -76,6 +80,8 @@ Future<EncodedState> encodeGenerateState(
           'name': c.name,
           'positive': c.positive,
           'negative': c.negative,
+          if (c.positiveRaw.isNotEmpty) 'positiveRaw': c.positiveRaw,
+          if (c.negativeRaw.isNotEmpty) 'negativeRaw': c.negativeRaw,
           'enabled': c.enabled,
           if (c.position != null) 'position': c.position,
           'activeTab': c.activeTab.name,
@@ -83,6 +89,20 @@ Future<EncodedState> encodeGenerateState(
     ],
     'vibes': vibes,
     'charRefs': charRefs,
+    // LoRA 无图片字节(previewUrl 是远端直链),整条直接进 JSON
+    if (s.loras.isNotEmpty)
+      'loras': [
+        for (final l in s.loras)
+          {
+            'name': l.name,
+            'displayName': l.displayName,
+            'weight': l.weight,
+            'enabled': l.enabled,
+            'triggerWords': l.triggerWords,
+            if (l.previewUrl.isNotEmpty) 'previewUrl': l.previewUrl,
+            'type': l.type,
+          },
+      ],
     if (i2i != null)
       'img2img': {
         'strength': i2i.strength,
@@ -100,6 +120,7 @@ Future<EncodedState> encodeGenerateState(
       'noiseSchedule': p.noiseSchedule,
       'seed': p.seed,
       'cfgRescale': p.cfgRescale,
+      'normalizeVibe': p.normalizeVibe,
       'loop': p.loop.name,
       'animaSteps': p.animaSteps,
       'animaCfg': p.animaCfg,
@@ -145,16 +166,24 @@ Future<GenerateState> decodeGenerateState(
       if (e is! Map) continue;
       final id = e['id'];
       if (id is! String) continue;
-      characters.add(CharacterPrompt(
-        id: id,
-        name: e['name'] is String ? e['name'] as String : '角色',
-        positive: e['positive'] is String ? e['positive'] as String : '',
-        negative: e['negative'] is String ? e['negative'] as String : '',
-        enabled: e['enabled'] != false,
-        position: e['position'] as String?,
-        activeTab:
-            _enumByName(CharTab.values, e['activeTab']) ?? CharTab.positive,
-      ));
+      characters.add(
+        CharacterPrompt(
+          id: id,
+          name: e['name'] is String ? e['name'] as String : '角色',
+          positive: e['positive'] is String ? e['positive'] as String : '',
+          negative: e['negative'] is String ? e['negative'] as String : '',
+          positiveRaw: e['positiveRaw'] is String
+              ? e['positiveRaw'] as String
+              : '',
+          negativeRaw: e['negativeRaw'] is String
+              ? e['negativeRaw'] as String
+              : '',
+          enabled: e['enabled'] != false,
+          position: e['position'] as String?,
+          activeTab:
+              _enumByName(CharTab.values, e['activeTab']) ?? CharTab.positive,
+        ),
+      );
     }
   }
 
@@ -172,17 +201,19 @@ Future<GenerateState> decodeGenerateState(
             )
           : null;
       if (bytes == null && (enc == null || enc.isEmpty)) continue; // 不可生成
-      vibes.add(VibeItem(
-        id: id,
-        name: e['name'] is String ? e['name'] as String : '',
-        enabled: e['enabled'] != false,
-        strength: (e['strength'] as num?)?.toDouble() ?? 0.6,
-        infoExtracted: (e['infoExtracted'] as num?)?.toDouble() ?? 1.0,
-        image: bytes,
-        imageHash: bytes != null ? hash : null,
-        encodedByModel: enc,
-        sourceId: e['sourceId'] as String?,
-      ));
+      vibes.add(
+        VibeItem(
+          id: id,
+          name: e['name'] is String ? e['name'] as String : '',
+          enabled: e['enabled'] != false,
+          strength: (e['strength'] as num?)?.toDouble() ?? 0.6,
+          infoExtracted: (e['infoExtracted'] as num?)?.toDouble() ?? 1.0,
+          image: bytes,
+          imageHash: bytes != null ? hash : null,
+          encodedByModel: enc,
+          sourceId: e['sourceId'] as String?,
+        ),
+      );
     }
   }
 
@@ -195,16 +226,47 @@ Future<GenerateState> decodeGenerateState(
       final hash = e['image'] as String?;
       final bytes = await img(hash);
       if (bytes == null) continue; // 无图的 CR 无法参与生成
-      charRefs.add(CharRefItem(
-        id: id,
-        name: e['name'] is String ? e['name'] as String : '',
-        enabled: e['enabled'] != false,
-        mode: _enumByName(CharRefMode.values, e['mode']) ?? CharRefMode.both,
-        strength: (e['strength'] as num?)?.toDouble() ?? 1.0,
-        infoExtracted: (e['infoExtracted'] as num?)?.toDouble() ?? 1.0,
-        image: bytes,
-        imageHash: hash,
-      ));
+      charRefs.add(
+        CharRefItem(
+          id: id,
+          name: e['name'] is String ? e['name'] as String : '',
+          enabled: e['enabled'] != false,
+          mode: _enumByName(CharRefMode.values, e['mode']) ?? CharRefMode.both,
+          strength: (e['strength'] as num?)?.toDouble() ?? 1.0,
+          infoExtracted: (e['infoExtracted'] as num?)?.toDouble() ?? 1.0,
+          image: bytes,
+          imageHash: hash,
+        ),
+      );
+    }
+  }
+
+  final loras = <ActiveLora>[];
+  if (j['loras'] is List) {
+    for (final e in j['loras'] as List) {
+      if (e is! Map) continue;
+      final name = e['name'];
+      if (name is! String || name.isEmpty) continue;
+      loras.add(
+        ActiveLora(
+          name: name,
+          displayName: e['displayName'] is String
+              ? e['displayName'] as String
+              : name,
+          weight: (e['weight'] as num?)?.toDouble() ?? 0.8,
+          enabled: e['enabled'] != false,
+          triggerWords: e['triggerWords'] is List
+              ? [
+                  for (final t in e['triggerWords'] as List)
+                    if (t is String && t.isNotEmpty) t,
+                ]
+              : const [],
+          previewUrl: e['previewUrl'] is String
+              ? e['previewUrl'] as String
+              : '',
+          type: e['type'] is String ? e['type'] as String : 'concept',
+        ),
+      );
     }
   }
 
@@ -237,6 +299,8 @@ Future<GenerateState> decodeGenerateState(
           : params.noiseSchedule,
       seed: e['seed'] is String ? e['seed'] as String : '',
       cfgRescale: (e['cfgRescale'] as num?)?.toDouble() ?? 0.0,
+      // 老存档没这个键 → 默认开(与此前恒开的行为一致)
+      normalizeVibe: e['normalizeVibe'] != false,
       loop: _enumByName(LoopCount.values, e['loop']) ?? LoopCount.x8,
       animaSteps: (e['animaSteps'] as num?)?.toInt() ?? params.animaSteps,
       animaCfg: (e['animaCfg'] as num?)?.toDouble() ?? params.animaCfg,
@@ -273,8 +337,12 @@ Future<GenerateState> decodeGenerateState(
           );
         }
       }
-      inpaint = InpaintJob(image: image, mask: mask,
-          strength: (e['strength'] as num?)?.toDouble() ?? 0.7, paste: paste);
+      inpaint = InpaintJob(
+        image: image,
+        mask: mask,
+        strength: (e['strength'] as num?)?.toDouble() ?? 0.7,
+        paste: paste,
+      );
     }
   }
 
@@ -288,8 +356,13 @@ Future<GenerateState> decodeGenerateState(
 
   return GenerateState(
     prompt: j['prompt'] is String ? j['prompt'] as String : '',
-    negativePrompt:
-        j['negativePrompt'] is String ? j['negativePrompt'] as String : '',
+    negativePrompt: j['negativePrompt'] is String
+        ? j['negativePrompt'] as String
+        : '',
+    promptRaw: j['promptRaw'] is String ? j['promptRaw'] as String : '',
+    negativePromptRaw: j['negativePromptRaw'] is String
+        ? j['negativePromptRaw'] as String
+        : '',
     characters: characters,
     vibes: vibes,
     charRefs: charRefs,
@@ -297,6 +370,7 @@ Future<GenerateState> decodeGenerateState(
     params: params,
     anlas: (j['anlas'] as num?)?.toInt() ?? 0,
     openPanels: openPanels,
+    loras: loras,
     inpaint: inpaint,
   );
 }

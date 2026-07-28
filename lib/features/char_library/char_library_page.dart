@@ -1,15 +1,17 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:image_picker/image_picker.dart';
 
 import '../../core/theme/app_theme.dart';
+import '../../core/ui/selection_bar.dart';
+import '../../core/util/image_pick.dart';
 import '../generate/generate_state.dart';
 import '../generate/models.dart';
 import '../generate/widgets/common.dart';
 import 'char_library.dart';
+import '../../core/util/haptics.dart';
 
 /// 角色参考图库(仅「我的」本地库)。交互对齐 Vibe 管理器:
 /// 点卡 = 加入/移出生成面板(勾选态),底栏「删除 / 清空 / 取消 / 确认选择」,
@@ -60,7 +62,7 @@ class _CharLibraryPageState extends ConsumerState<CharLibraryPage> {
       hintSnack(context, '无法读取该参考图', icon: Icons.error_outline);
       return;
     }
-    HapticFeedback.selectionClick();
+    Haptics.selection();
     final hadVibes = ref.read(generateProvider).enabledVibes > 0;
     ref
         .read(generateProvider.notifier)
@@ -73,8 +75,10 @@ class _CharLibraryPageState extends ConsumerState<CharLibraryPage> {
 
   // ---- 底部批量操作(作用于已勾选 = 已加入生成的库条目)----
 
-  List<CharRefEntry> _checkedEntries(List<CharRefEntry> all) =>
-      [for (final e in all) if (_activeItemId(e) != null) e];
+  List<CharRefEntry> _checkedEntries(List<CharRefEntry> all) => [
+    for (final e in all)
+      if (_activeItemId(e) != null) e,
+  ];
 
   Future<void> _deleteChecked(List<CharRefEntry> checked) async {
     final ok = await confirmDialog(
@@ -102,7 +106,8 @@ class _CharLibraryPageState extends ConsumerState<CharLibraryPage> {
     setState(() {});
   }
 
-  /// 取消:还原进入页面时的快照(放弃本次全部勾选增删,含被互斥停用的 Vibe),返回生成页。
+  /// 返回键的动作:还原进入页面时的快照(放弃本次全部勾选增删,含被互斥停用的
+  /// Vibe),回生成页。底栏那个键是「取消选择」——只清空,不退页,两回事。
   void _cancel() {
     ref.read(generateProvider.notifier)
       ..restoreCharRefs(_snapshot)
@@ -129,10 +134,13 @@ class _CharLibraryPageState extends ConsumerState<CharLibraryPage> {
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context), child: const Text('取消')),
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
           FilledButton(
-              onPressed: () => Navigator.pop(context, ctrl.text),
-              child: const Text('保存')),
+            onPressed: () => Navigator.pop(context, ctrl.text),
+            child: const Text('保存'),
+          ),
         ],
       ),
     );
@@ -160,14 +168,13 @@ class _CharLibraryPageState extends ConsumerState<CharLibraryPage> {
   // ---- 导入(右上角 +)----
 
   Future<void> _importImages() async {
-    final files = await ImagePicker().pickMultiImage();
+    final files = await pickImageFiles(context);
     if (files.isEmpty || !mounted) return;
     setState(() => _busy = true);
     var n = 0;
     for (final f in files) {
       try {
-        await _lib.importImageBytes(
-            await f.readAsBytes(), f.name.replaceAll(RegExp(r'\.[^.]+$'), ''));
+        await _lib.importImageBytes(f.bytes, f.baseName);
         n++;
       } catch (_) {}
     }
@@ -194,9 +201,27 @@ class _CharLibraryPageState extends ConsumerState<CharLibraryPage> {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final all = ref.watch(charLibraryProvider).value;
-    final activeCount = ref.watch(generateProvider).charRefs.length;
+    final refs = ref.watch(generateProvider).charRefs;
     final checked = all == null ? const <CharRefEntry>[] : _checkedEntries(all);
 
+    return PopScope(
+      // 返回 = 放弃本次全部增删(还原进入时的快照)。「确认选择」走的是
+      // Navigator.pop,不经 maybePop,不会被这里拦下。
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        _cancel();
+      },
+      child: _scaffold(scheme, all, refs, checked),
+    );
+  }
+
+  Widget _scaffold(
+    ColorScheme scheme,
+    List<CharRefEntry>? all,
+    List<CharRefItem> refs,
+    List<CharRefEntry> checked,
+  ) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('角色参考图库'),
@@ -248,7 +273,7 @@ class _CharLibraryPageState extends ConsumerState<CharLibraryPage> {
           ),
         ],
       ),
-      bottomNavigationBar: _bottomBar(scheme, checked, activeCount),
+      bottomNavigationBar: _bottomBar(scheme, checked, refs),
     );
   }
 
@@ -259,19 +284,26 @@ class _CharLibraryPageState extends ConsumerState<CharLibraryPage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.face_retouching_natural,
-                size: 44, color: scheme.outlineVariant),
+            Icon(
+              Icons.face_retouching_natural,
+              size: 44,
+              color: scheme.outlineVariant,
+            ),
             const SizedBox(height: 10),
             Text(
               _search.isEmpty ? '还没有角色参考图' : '没有匹配的参考图',
-              style: context.texts.bodySmall!
-                  .copyWith(color: scheme.onSurfaceVariant),
+              style: context.texts.bodySmall!.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
             ),
             if (_search.isEmpty) ...[
               const SizedBox(height: 4),
-              Text('在生成页导入参考图后会自动收藏到这里',
-                  style: context.texts.labelSmall!
-                      .copyWith(color: scheme.outline)),
+              Text(
+                '在生成页导入参考图后会自动收藏到这里',
+                style: context.texts.labelSmall!.copyWith(
+                  color: scheme.outline,
+                ),
+              ),
             ],
           ],
         ),
@@ -301,125 +333,40 @@ class _CharLibraryPageState extends ConsumerState<CharLibraryPage> {
   }
 
   Widget _bottomBar(
-      ColorScheme scheme, List<CharRefEntry> checked, int activeCount) {
-    return Material(
-      color: scheme.surfaceContainerLow,
-      child: SafeArea(
-        top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // 第一层:批量删除(左,勾选后浮现)+ 清空(右)
-              Row(
-                children: [
-                  if (checked.isNotEmpty)
-                    _pillBtn(
-                      icon: Icons.delete_outline,
-                      label: '删除',
-                      color: scheme.error,
-                      onTap: () => _deleteChecked(checked),
-                    ),
-                  const Spacer(),
-                  TextButton.icon(
-                    onPressed: activeCount == 0 ? null : _clearActive,
-                    style: TextButton.styleFrom(
-                      foregroundColor: scheme.error,
-                      visualDensity: VisualDensity.compact,
-                    ),
-                    icon: const Icon(Icons.refresh, size: 16),
-                    label: const Text('清空'),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
-              // 第二层:取消(还原快照)+ 确认选择
-              Row(
-                children: [
-                  OutlinedButton(
-                    onPressed: _cancel,
-                    style: OutlinedButton.styleFrom(
-                      minimumSize: const Size(0, 46),
-                      padding: const EdgeInsets.symmetric(horizontal: 22),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(23),
-                      ),
-                    ),
-                    child: const Text('取消'),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: FilledButton.icon(
-                      onPressed: _confirm,
-                      style: FilledButton.styleFrom(
-                        minimumSize: const Size.fromHeight(46),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(23),
-                        ),
-                        textStyle: const TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      icon: const Icon(Icons.check, size: 19),
-                      label: Text(
-                        activeCount > 0 ? '确认选择 ($activeCount)' : '确认选择',
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
+    ColorScheme scheme,
+    List<CharRefEntry> checked,
+    List<CharRefItem> refs,
+  ) {
+    final n = refs.length;
+    return SelectionBar(
+      // 全部移出后底栏也要留着:此时唯一的出口是返回键,而返回=还原快照,
+      // 刚做的移出会被一并撤销 —— 没有「确认」就没法把移出落地。
+      visible: n > 0 || _changedFromSnapshot(refs),
+      onClear: n == 0 ? null : _clearActive,
+      destructive: checked.isEmpty
+          ? null
+          : SelectionPill(
+              icon: Icons.delete_outline,
+              label: '删除',
+              color: scheme.error,
+              onTap: () => _deleteChecked(checked),
+            ),
+      primary: FilledButton.icon(
+        onPressed: _confirm,
+        style: selectionPrimaryStyle(),
+        icon: const Icon(Icons.check, size: 18),
+        label: Text(n > 0 ? '确认选择 ($n)' : '确认选择'),
       ),
     );
   }
 
-  /// 批量行的小描边按钮(图标 + 文字)。
-  Widget _pillBtn({
-    required IconData icon,
-    required String label,
-    Color? color,
-    VoidCallback? onTap,
-  }) {
-    final scheme = context.scheme;
-    final enabled = onTap != null;
-    final fg =
-        (color ?? scheme.onSurfaceVariant).withValues(alpha: enabled ? 1 : .45);
-    return Material(
-      color: Colors.transparent,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(11),
-        side: BorderSide(
-          color: color != null
-              ? color.withValues(alpha: .5)
-              : scheme.outlineVariant,
-        ),
-      ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(11),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 16, color: fg),
-              const SizedBox(width: 5),
-              Text(
-                label,
-                style: context.texts.labelMedium!.copyWith(
-                  color: fg,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
+  /// 相对进入页面时是否有增删(顺序也算)。
+  bool _changedFromSnapshot(List<CharRefItem> now) {
+    if (now.length != _snapshot.length) return true;
+    for (var i = 0; i < now.length; i++) {
+      if (now[i].id != _snapshot[i].id) return true;
+    }
+    return false;
   }
 }
 
@@ -478,8 +425,10 @@ class _CharCard extends StatelessWidget {
                     gaplessPlayback: true,
                     errorBuilder: (_, _, _) => ColoredBox(
                       color: scheme.surfaceContainerHigh,
-                      child: Icon(Icons.broken_image_outlined,
-                          color: scheme.outline),
+                      child: Icon(
+                        Icons.broken_image_outlined,
+                        color: scheme.outline,
+                      ),
                     ),
                   ),
                   if (checked)
@@ -570,7 +519,11 @@ class _CharMenuButton extends StatelessWidget {
             child: ListTile(
               dense: true,
               contentPadding: EdgeInsets.zero,
-              leading: Icon(Icons.delete_outline, size: 19, color: scheme.error),
+              leading: Icon(
+                Icons.delete_outline,
+                size: 19,
+                color: scheme.error,
+              ),
               title: Text('删除', style: TextStyle(color: scheme.error)),
             ),
           ),

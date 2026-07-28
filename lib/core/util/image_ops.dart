@@ -28,7 +28,11 @@ Future<(int, int)> decodeImageSize(Uint8List bytes) async {
 
 /// 把图 cover(填满,居中裁切)到目标尺寸、黑底兜底,输出 PNG 字节。
 /// 复刻 web `processImg2ImgImage` 的 canvas.drawImage 行为。
-Future<Uint8List> coverResizePng(Uint8List src, int targetW, int targetH) async {
+Future<Uint8List> coverResizePng(
+  Uint8List src,
+  int targetW,
+  int targetH,
+) async {
   final codec = await ui.instantiateImageCodec(src);
   final frame = await codec.getNextFrame();
   final img = frame.image;

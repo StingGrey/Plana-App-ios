@@ -6,8 +6,8 @@ import 'package:material_color_utilities/material_color_utilities.dart'
 /// 组件一律走语义角色(primary/surfaceContainer* 等),
 /// 将来切 NAI 品牌皮肤时只需替换这里的 ColorScheme。
 abstract final class AppTheme {
-  /// 默认种子色:NAI 淡金 #fceda4 的加深版(可在「外观」页切换其他种子)。
-  static const Color seed = Color(0xFFD4A72C);
+  /// 默认种子色:浅蓝(与「外观」页 sky 档一致,可在那里换其他种子)。
+  static const Color seed = Color(0xFF4FA3E3);
 
   static ThemeData light([Color? seedColor]) =>
       _build(Brightness.light, seedColor ?? seed);
@@ -40,7 +40,9 @@ abstract final class AppTheme {
           borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
         ),
       ),
-      snackBarTheme: const SnackBarThemeData(behavior: SnackBarBehavior.floating),
+      snackBarTheme: const SnackBarThemeData(
+        behavior: SnackBarBehavior.floating,
+      ),
     );
   }
 
@@ -79,6 +81,30 @@ abstract final class AppTheme {
   }
 }
 
+/// 固定语义色 —— **不跟随种子色**。
+///
+/// 何时用这里、何时用 `scheme.tertiary` / `scheme.error`:
+/// 元素若压在**图片或固定浅色背景**上(状态圆点、图库角标、可视化画布的
+/// 参考线),跟着种子色走会在某些配色下失去对比,必须用固定值;其余一律走
+/// M3 语义角色。
+///
+/// 集中在此的原因:审计前这些色散落在四个功能文件里各自 `const` 定义,
+/// 同一个「可用/免费」语义漂成了三个不同的绿(2E9E44 / 2E9E57 / 2E7D32),
+/// 用户在不同页面看到的是三种颜色。见 docs/audit-findings.md §4 S4-01。
+abstract final class FixedSemantic {
+  /// 可用 / 免费 / 已完成
+  static const ok = Color(0xFF2E9E57);
+
+  /// 缺条件 / 不可用(但非错误)
+  static const warn = Color(0xFFE8890C);
+
+  /// 超限 / 错误
+  static const danger = Color(0xFFE0413F);
+
+  /// 重绘(图库角标)
+  static const inpaint = Color(0xFF7E57C2);
+}
+
 /// 便捷访问
 extension ThemeX on BuildContext {
   ColorScheme get scheme => Theme.of(this).colorScheme;
@@ -86,8 +112,12 @@ extension ThemeX on BuildContext {
 }
 
 /// 等宽数字(参数读数、token 计数用)
-TextStyle mono(BuildContext context,
-    {double size = 12, FontWeight weight = FontWeight.w600, Color? color}) {
+TextStyle mono(
+  BuildContext context, {
+  double size = 12,
+  FontWeight weight = FontWeight.w600,
+  Color? color,
+}) {
   return TextStyle(
     fontFamily: 'monospace',
     fontFeatures: const [FontFeature.tabularFigures()],
@@ -96,6 +126,15 @@ TextStyle mono(BuildContext context,
     color: color ?? context.scheme.onSurface,
   );
 }
+
+/// 浮动药丸里的滑杆外观:细轨 + 小滑块 + 无水波。
+/// M3 默认的滑杆压在画布/列表上太抢戏,而这些地方读数才是主角。
+final compactSliderTheme = SliderThemeData(
+  padding: EdgeInsets.zero,
+  trackHeight: 3,
+  thumbSize: const WidgetStatePropertyAll(Size(14, 14)),
+  overlayShape: SliderComponentShape.noOverlay,
+);
 
 /// M3 动效时长/曲线的统一出口,页面内所有过渡保持一致节奏。
 abstract final class Motion {

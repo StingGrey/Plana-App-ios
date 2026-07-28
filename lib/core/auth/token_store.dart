@@ -1,19 +1,21 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import 'secure_storage.dart';
+
 /// 本机加密存储的 NovelAI 访问令牌(v1 直连 NAI 用)。
 /// 生成链路后续从 [tokenProvider] 读取此值作为 Authorization。
 const _tokenKey = 'nai_access_token';
 
-final _secureStorageProvider = Provider<FlutterSecureStorage>(
-  (ref) => const FlutterSecureStorage(),
+final tokenProvider = AsyncNotifierProvider<TokenNotifier, String?>(
+  TokenNotifier.new,
 );
 
-final tokenProvider =
-    AsyncNotifierProvider<TokenNotifier, String?>(TokenNotifier.new);
-
 class TokenNotifier extends AsyncNotifier<String?> {
-  FlutterSecureStorage get _storage => ref.read(_secureStorageProvider);
+  // 必须用共享的 secureStorageProvider,不能自建一个:两者当前配置相同,
+  // 但一旦给共享那个加上 AndroidOptions(resetOnError 等),自建的这份会是
+  // **唯一没跟上的**,而且编译器和 lint 都不会提醒。见 S1A-04。
+  FlutterSecureStorage get _storage => ref.read(secureStorageProvider);
 
   @override
   Future<String?> build() async {

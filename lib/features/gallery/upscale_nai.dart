@@ -8,6 +8,7 @@ import '../../core/auth/bot_session_store.dart';
 import '../../core/auth/token_store.dart';
 import '../../core/net/backend_client.dart';
 import '../../core/net/nai_client.dart';
+import '../../core/store/app_stores.dart';
 
 /// NAI 官方超分(远程 4×)。按当前授权模式分发:
 ///  - bot:走后端 `/api/upscale`(Bearer 会话)。
@@ -52,6 +53,10 @@ Future<({Uint8List png, int width, int height})> upscaleNai(
         .read(naiClientProvider)
         .upscale(token: token, imageBase64: b64, width: width, height: height);
     onStage?.call('接收结果…');
+    // 本机记账:NAI 4× 超分固定 7 点(用户实测确认;bot 模式由服务端记)
+    try {
+      ref.read(appStoresProvider).ledger.recordOp('upscale', 7);
+    } catch (_) {}
   }
 
   // NAI 固定 4×:结果尺寸即输入 ×4。

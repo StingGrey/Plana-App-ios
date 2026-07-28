@@ -39,7 +39,9 @@ class _QueueSheet extends ConsumerWidget {
                 ),
                 const SizedBox(width: 8),
                 Text(
-                  q.active ? '第 ${q.batch}/${q.total} 项' : '${q.items.length} 项',
+                  q.active
+                      ? '第 ${q.batch}/${q.total} 项'
+                      : '${q.items.length} 项',
                   style: context.texts.bodySmall!.copyWith(
                     color: scheme.onSurfaceVariant,
                   ),
@@ -87,8 +89,9 @@ class _QueueSheet extends ConsumerWidget {
                   itemBuilder: (_, i) => _TaskRow(
                     index: i + 1,
                     task: q.items[i],
-                    onRemove: () =>
-                        ref.read(genQueueProvider.notifier).remove(q.items[i].id),
+                    onRemove: () => ref
+                        .read(genQueueProvider.notifier)
+                        .remove(q.items[i].id),
                   ),
                 ),
               ),

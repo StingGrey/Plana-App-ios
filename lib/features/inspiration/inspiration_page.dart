@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -8,15 +9,19 @@ import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/ui/scroll_memory.dart';
+import '../../core/ui/selection_bar.dart';
+import '../editor/editor_models.dart' show draftOf, outputOf, pickEditorText;
 import '../generate/generate_state.dart';
 import '../generate/widgets/common.dart'
-    show ExpandBody, confirmDialog, hintSnack, sharedAxisRoute;
+    show confirmDialog, hintSnack, sharedAxisRoute;
 import '../shell/shell_state.dart';
+import 'codex/codex_view.dart';
 import 'public_tags.dart';
 import 'tag_editor_page.dart';
 import 'tag_library.dart';
 import 'tag_models.dart';
 import 'widgets/tag_sheets.dart';
+import '../../core/util/haptics.dart';
 
 /// 顶部各行统一的左右边距;行尾若是 IconButton,用 [_kIconEdge]
 /// (减去按钮 8px 内衬)让图标视觉边与其他行对齐。
@@ -42,6 +47,13 @@ class InspirationPage extends ConsumerStatefulWidget {
 class _InspirationPageState extends ConsumerState<InspirationPage>
     with AutomaticKeepAliveClientMixin, SingleTickerProviderStateMixin {
   TagCategory _cat = TagCategory.character;
+
+  /// 选中「法典」分类:正文切换为只读的法典浏览器 [CodexView],其余分类照旧。
+  /// 法典不属于 [TagCategory](无我的/公共库、无备份/新建),故独立成一个模式位,
+  /// 不污染四类标签库的分支逻辑。
+  bool _codex = false;
+  static const _kCodexSel = '__codex__';
+
   late final TabController _tab = TabController(length: 2, vsync: this);
   // 初始分类的记忆直接灌进 initialScrollOffset;换分类走 _switchCategory 落位。
   late final _mineScroll = ScrollController(
@@ -255,7 +267,7 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
         final client = ref.read(backendClientProvider);
         for (final e in used) {
           if (e.id.startsWith('pub_') && e.publicId != null) {
-            client.reportArtistUse(session.sessionId, e.publicId!);
+            unawaited(client.reportArtistUse(session.sessionId, e.publicId!));
           }
         }
       }
@@ -289,11 +301,20 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     final entries = _resolveSelected(lib);
     if (entries.isEmpty) return;
     final gen = ref.read(generateProvider);
+    // 追加到编辑器原文草稿(带回既有的禁用/折叠),每个条目自成一个折叠组;
+    // 定稿由 outputOf 从草稿导出 —— 两者必须同时写,只写定稿的话草稿会被
+    // 判过期作废,这次加进去的折叠(以及用户原有的禁用词)就一起没了。
+    final draft = appendTagPositivesFolded(
+      pickEditorText(gen.promptRaw, gen.prompt),
+      entries,
+    );
+    final positive = outputOf(draft);
     ref
         .read(generateProvider.notifier)
         .setPrompts(
-          positive: appendTagPositives(gen.prompt, entries),
+          positive: positive,
           negative: appendTagNegatives(gen.negativePrompt, entries),
+          positiveRaw: draftOf(draft, positive),
         );
     await _afterConfirm(entries, '已加入提示词');
   }
@@ -306,6 +327,19 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     final scheme = context.scheme;
     final lib = ref.watch(tagLibraryProvider).value ?? const TagLibraryState();
     final def = _def;
+
+    // 法典模式:只留分类胶囊的顶栏 + 只读浏览器,无搜索/分段/筛选/选择栏
+    // (法典自带选择器与搜索)。
+    if (_codex) {
+      return Scaffold(
+        body: Column(
+          children: [
+            _topBarCodex(scheme, lib),
+            const Expanded(child: CodexView()),
+          ],
+        ),
+      );
+    }
 
     return Scaffold(
       body: Column(
@@ -386,41 +420,63 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     );
   }
 
+  /// 法典模式顶栏:左分类胶囊 + 右侧「选择主法典」(占用原本的空位,
+  /// CodexView 不再自带头部整行)。
+  Widget _topBarCodex(ColorScheme scheme, TagLibraryState lib) => Padding(
+    padding: const EdgeInsets.fromLTRB(_kEdge, 6, _kEdge, 0),
+    // 定高 48 与标签页 _topBar 对齐(那边由 IconButton 撑到 48,胶囊居中留 2px
+    // 呼吸位)。否则本行仅胶囊高 44,整行偏矮、胶囊贴顶,比标签页明显偏上。
+    child: SizedBox(
+      height: 48,
+      child: Row(
+        children: [
+          _categoryPill(scheme, lib),
+          const SizedBox(width: 10),
+          // 靠右、按内容自适应宽度(不撑满);标题过长时才截断
+          const Expanded(
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: CodexPickerButton(),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+
+  /// 分类选择(四类标签库 + 法典)。法典是特殊项:切模式,不走 [_switchCategory]。
+  void _onPickCat(Object v) {
+    if (v == _kCodexSel) {
+      setState(() => _codex = true);
+    } else if (v is TagCategory) {
+      if (_codex) setState(() => _codex = false);
+      _switchCategory(v);
+    }
+  }
+
   /// 分类切换:整块 filled 胶囊(图标+名称+计数+▾),点开下拉选分类。
   Widget _categoryPill(ColorScheme scheme, TagLibraryState lib) {
-    return PopupMenuButton<TagCategory>(
+    return PopupMenuButton<Object>(
       tooltip: '切换分类',
       offset: const Offset(0, 50),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      onSelected: _switchCategory,
+      onSelected: _onPickCat,
       itemBuilder: (_) => [
         for (final d in kTagCategoryDefs)
           PopupMenuItem(
             value: d.key,
-            child: Row(
-              children: [
-                Icon(
-                  d.icon,
-                  size: 19,
-                  color: d.key == _cat
-                      ? scheme.primary
-                      : scheme.onSurfaceVariant,
-                ),
-                const SizedBox(width: 12),
-                Text(
-                  d.label,
-                  style: TextStyle(
-                    fontWeight: d.key == _cat
-                        ? FontWeight.w700
-                        : FontWeight.w500,
-                  ),
-                ),
-                const Spacer(),
-                if (d.key == _cat)
-                  Icon(Icons.check, size: 16, color: scheme.primary),
-              ],
+            child: _catMenuRow(
+              scheme,
+              d.icon,
+              d.label,
+              d.key == _cat && !_codex,
             ),
           ),
+        const PopupMenuDivider(),
+        PopupMenuItem(
+          value: _kCodexSel,
+          child: _catMenuRow(scheme, Icons.menu_book_outlined, '法典', _codex),
+        ),
       ],
       child: Container(
         height: 44,
@@ -431,41 +487,84 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(_def.icon, size: 19, color: scheme.primary),
-            const SizedBox(width: 8),
-            Text(
-              _def.label,
-              style: context.texts.titleMedium!.copyWith(
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-            const SizedBox(width: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1.5),
-              decoration: BoxDecoration(
-                color: scheme.primary,
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Text(
-                '${lib.of(_cat).length}',
-                style: context.texts.labelSmall!.copyWith(
-                  color: scheme.onPrimary,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-            ),
-            const SizedBox(width: 4),
-            Icon(
-              Icons.keyboard_arrow_down,
-              size: 20,
-              color: scheme.onSurfaceVariant,
-            ),
-          ],
+          children: _codex
+              ? [
+                  Icon(Icons.menu_book, size: 19, color: scheme.primary),
+                  const SizedBox(width: 8),
+                  Text(
+                    '法典',
+                    style: context.texts.titleMedium!.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Icon(
+                    Icons.keyboard_arrow_down,
+                    size: 20,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ]
+              : [
+                  Icon(_def.icon, size: 19, color: scheme.primary),
+                  const SizedBox(width: 8),
+                  Text(
+                    _def.label,
+                    style: context.texts.titleMedium!.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 1.5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: scheme.primary,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      '${lib.of(_cat).length}',
+                      style: context.texts.labelSmall!.copyWith(
+                        color: scheme.onPrimary,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Icon(
+                    Icons.keyboard_arrow_down,
+                    size: 20,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ],
         ),
       ),
     );
   }
+
+  /// 分类下拉的一行(图标 + 名称 + 选中勾)。
+  Widget _catMenuRow(
+    ColorScheme scheme,
+    IconData icon,
+    String label,
+    bool sel,
+  ) => Row(
+    children: [
+      Icon(
+        icon,
+        size: 19,
+        color: sel ? scheme.primary : scheme.onSurfaceVariant,
+      ),
+      const SizedBox(width: 12),
+      Text(
+        label,
+        style: TextStyle(fontWeight: sel ? FontWeight.w700 : FontWeight.w500),
+      ),
+      const Spacer(),
+      if (sel) Icon(Icons.check, size: 16, color: scheme.primary),
+    ],
+  );
 
   Widget _segTabs(ColorScheme scheme, int mineCount) {
     return SizedBox(
@@ -915,7 +1014,7 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
       children: [
         child,
         Positioned(
-          right: 0,
+          right: 4,
           top: 0,
           bottom: 0,
           child: _LetterRail(
@@ -958,46 +1057,6 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
 
   // ---- 批量操作(底栏第一层) ----
 
-  /// 批量行的小描边按钮(与 Vibe 管理器同款)。
-  Widget _pillBtn({
-    required IconData icon,
-    required String label,
-    Color? color,
-    VoidCallback? onTap,
-  }) {
-    final scheme = context.scheme;
-    final enabled = onTap != null;
-    final fg = (color ?? scheme.onSurfaceVariant).withValues(
-      alpha: enabled ? 1 : .45,
-    );
-    return Material(
-      color: Colors.transparent,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(11),
-        side: BorderSide(
-          color: color != null
-              ? color.withValues(alpha: .5)
-              : scheme.outlineVariant,
-        ),
-      ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(11),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 16, color: fg),
-              const SizedBox(width: 5),
-              Text(label, style: context.texts.labelLarge!.copyWith(color: fg)),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
   Future<void> _runBatch(Future<void> Function() op) async {
     if (_busy) return;
     setState(() => _busy = true);
@@ -1029,20 +1088,56 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     });
   }
 
-  /// 批量删除:已发布的连同公共库条目一并删。
-  Future<void> _batchDelete(TagLibraryState lib) async {
-    final entries = _resolveSelected(lib);
+  Future<void> _batchDelete(TagLibraryState lib) =>
+      _deleteEntries(_resolveSelected(lib));
+
+  /// 删除条目:已发布的(created + publicId)连同公共库条目一并删。
+  ///
+  /// 卡片菜单和多选底栏走同一条 —— 早先卡片菜单只删本地、文案还恒写「仅删除
+  /// 本地条目」,已发布的条目从库里消失、公共库那份却还挂着,之后连管理入口
+  /// 都没有了。
+  Future<void> _deleteEntries(List<TagEntry> entries) async {
     if (entries.isEmpty) return;
+    // 三种来源三种后果(对齐 web 桌面端管理器的单卡菜单):
+    //   created  发布过的 → 公共库条目 + 本地副本一起删
+    //   favorited 收藏来的 → 只丢自己这份副本,公共库原作不动
+    //   local     纯本地的 → 就是删本地
     final published = [
       for (final e in entries)
         if (e.origin == TagOrigin.created && e.publicId != null) e,
     ];
+    final favorited = [
+      for (final e in entries)
+        if (e.origin == TagOrigin.favorited) e,
+    ];
+    final localOnly = entries.length - published.length - favorited.length;
+    final one = entries.length == 1 ? entries.first : null;
+
+    final String title, message;
+    if (one != null) {
+      if (published.isNotEmpty) {
+        title = '删除「${one.name}」?';
+        message = '将彻底删除公共库条目与本地副本,不可恢复。';
+      } else if (favorited.isNotEmpty) {
+        title = '删除收藏?';
+        message = '将从本地移除「${one.name}」,公共库原作不受影响。';
+      } else {
+        title = '删除「${one.name}」?';
+        message = '仅删除本地条目,不可恢复。';
+      }
+    } else {
+      title = '删除 ${entries.length} 项?';
+      final lines = [
+        if (published.isNotEmpty) '· 你发布的 ${published.length} 项:连同公共库条目一起删',
+        if (favorited.isNotEmpty) '· 收藏的 ${favorited.length} 项:只移除本地副本,原作不动',
+        if (localOnly > 0) '· 本地的 $localOnly 项:仅删除本地',
+      ];
+      message = '${lines.join('\n')}\n\n不可恢复。';
+    }
     final ok = await confirmDialog(
       context,
-      title: '删除 ${entries.length} 项?',
-      message: published.isEmpty
-          ? '仅删除本地条目,不可恢复。'
-          : '其中 ${published.length} 项已发布,将同时从公共库删除。不可恢复。',
+      title: title,
+      message: message,
       confirmLabel: '删除',
     );
     if (!ok || !mounted) return;
@@ -1073,7 +1168,9 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
       setState(() => _sel.clear());
       hintSnack(
         context,
-        failed == 0 ? '已删除 $done 项' : '已删除 $done 项,$failed 项失败',
+        failed > 0
+            ? '已删除 $done 项,$failed 项失败'
+            : (one != null ? '已删除' : '已删除 $done 项'),
         icon: Icons.delete_outline,
       );
     });
@@ -1102,23 +1199,16 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   Future<void> _cardMenu(String action, TagEntry e) async {
     switch (action) {
       case 'edit':
-        Navigator.of(
-          context,
-        ).push(sharedAxisRoute(TagEditorPage(cat: _cat, edit: e)));
+        unawaited(
+          Navigator.of(
+            context,
+          ).push(sharedAxisRoute(TagEditorPage(cat: _cat, edit: e))),
+        );
       case 'copy':
         await Clipboard.setData(ClipboardData(text: e.positive));
         if (mounted) hintSnack(context, '已复制提示词', icon: Icons.copy);
       case 'delete':
-        final ok = await confirmDialog(
-          context,
-          title: '删除「${e.name}」?',
-          message: '仅删除本地条目,不可恢复。',
-          confirmLabel: '删除',
-        );
-        if (ok) {
-          _sel.remove(e.id);
-          await ref.read(tagLibraryProvider.notifier).remove(e.id);
-        }
+        await _deleteEntries([e]);
     }
   }
 
@@ -1165,9 +1255,9 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     );
 
     return SizedBox(
-      height: 48,
+      height: kSelectionActionHeight,
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(24),
+        borderRadius: BorderRadius.circular(kSelectionActionRadius),
         child: Row(
           children: [
             seg(
@@ -1192,78 +1282,42 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   Widget _selectionBar(ColorScheme scheme, TagLibraryState lib) {
     final n = _sel.length;
     final publicScope = _def.hasPublic && _tabIndex == 1;
-    return ExpandBody(
-      expanded: n > 0,
-      child: Material(
-        color: scheme.surfaceContainer,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // 第一层:批量操作(清空已并入第二层「取消选择」)
-              Row(
-                children: [
-                  if (publicScope)
-                    _pillBtn(
-                      icon: Icons.favorite_border,
-                      label: '收藏',
-                      onTap: _busy ? null : () => _batchCollect(lib),
-                    )
-                  else
-                    _pillBtn(
-                      icon: Icons.sell_outlined,
-                      label: '标签',
-                      onTap: _busy ? null : () => _batchTag(lib),
-                    ),
-                  const Spacer(),
-                  // 破坏性操作靠右,与其他批量项拉开距离
-                  if (!publicScope)
-                    _pillBtn(
-                      icon: Icons.delete_outline,
-                      label: '删除',
-                      color: scheme.error,
-                      onTap: _busy ? null : () => _batchDelete(lib),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 10),
-              // 第二层:取消选择(定宽)+ 右侧动作(角色=一体式分段按钮)
-              Row(
-                children: [
-                  OutlinedButton(
-                    onPressed: () => setState(() => _sel.clear()),
-                    style: OutlinedButton.styleFrom(
-                      minimumSize: const Size(112, 48),
-                      padding: const EdgeInsets.symmetric(horizontal: 20),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(24),
-                      ),
-                    ),
-                    child: const Text('取消选择'),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: _cat == TagCategory.character
-                        ? _splitAction(scheme, lib, n)
-                        : FilledButton.icon(
-                            onPressed: () => _confirmToPrompt(lib),
-                            icon: const Icon(Icons.check, size: 18),
-                            label: Text('确认选择 ($n)'),
-                            style: FilledButton.styleFrom(
-                              minimumSize: const Size(0, 48),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(24),
-                              ),
-                            ),
-                          ),
-                  ),
-                ],
-              ),
-            ],
+    return SelectionBar(
+      visible: n > 0,
+      // shell 里的 tab 页,底部安全区由导航栏兜着
+      safeArea: false,
+      onClear: () => setState(() => _sel.clear()),
+      actions: [
+        if (publicScope)
+          SelectionPill(
+            icon: Icons.favorite_border,
+            label: '收藏',
+            onTap: _busy ? null : () => _batchCollect(lib),
+          )
+        else
+          SelectionPill(
+            icon: Icons.sell_outlined,
+            label: '标签',
+            onTap: _busy ? null : () => _batchTag(lib),
           ),
-        ),
-      ),
+      ],
+      destructive: publicScope
+          ? null
+          : SelectionPill(
+              icon: Icons.delete_outline,
+              label: '删除',
+              color: scheme.error,
+              onTap: _busy ? null : () => _batchDelete(lib),
+            ),
+      // 角色分类有两个去处,主动作是一体式分段按钮
+      primary: _cat == TagCategory.character
+          ? _splitAction(scheme, lib, n)
+          : FilledButton.icon(
+              onPressed: () => _confirmToPrompt(lib),
+              icon: const Icon(Icons.check, size: 18),
+              label: Text('确认选择 ($n)'),
+              style: selectionPrimaryStyle(),
+            ),
     );
   }
 }
@@ -1621,7 +1675,8 @@ class _HueStripePainter extends CustomPainter {
   bool shouldRepaint(covariant _HueStripePainter old) => old.hue != hue;
 }
 
-/// 右缘字母导航条(画风):点按/竖向拖动跳转到该字母首个条目。
+/// 右缘字母导航条(画风):按住/竖向拖动跳转到该字母首个条目,
+/// 交互时左侧弹出当前字母气泡。触区即胶囊本身,不越界抢网格滚动。
 class _LetterRail extends StatefulWidget {
   const _LetterRail({required this.letters, required this.onSelect});
 
@@ -1632,63 +1687,197 @@ class _LetterRail extends StatefulWidget {
   State<_LetterRail> createState() => _LetterRailState();
 }
 
-class _LetterRailState extends State<_LetterRail> {
-  String? _last;
+class _LetterRailState extends State<_LetterRail>
+    with SingleTickerProviderStateMixin {
+  /// 胶囊 = 触摸宽度;气泡半径(高 46 的一半)。
+  static const _railW = 24.0;
+  static const _bubbleR = 23.0;
 
-  void _pick(Offset local, double height) {
-    final n = widget.letters.length;
-    if (n == 0 || height <= 0) return;
-    final i = (local.dy / height * n).clamp(0, n - 1).toInt();
-    final l = widget.letters[i];
-    if (l != _last) {
-      _last = l;
-      HapticFeedback.selectionClick();
-      widget.onSelect(l);
-    }
+  final _key = GlobalKey();
+  int _active = -1; // 当前命中字母下标;-1=未按住
+
+  /// 交互显隐:按住 forward、松手 reverse。驱动胶囊加深、字母放大波、
+  /// 气泡淡入淡出——让整条随手指"活"起来,而非硬切。
+  late final AnimationController _reveal =
+      AnimationController(
+        vsync: this,
+        duration: const Duration(milliseconds: 130),
+        reverseDuration: const Duration(milliseconds: 170),
+      )..addStatusListener((s) {
+        // 收完动画再清 _active,气泡/放大得以在原位平滑退场。
+        if (s == AnimationStatus.dismissed && _active != -1) {
+          setState(() => _active = -1);
+        }
+      });
+
+  @override
+  void dispose() {
+    _reveal.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    return Center(
-      child: Builder(
-        builder: (railCtx) => GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onVerticalDragUpdate: (d) {
-            final box = railCtx.findRenderObject() as RenderBox?;
-            if (box != null) {
-              _pick(box.globalToLocal(d.globalPosition), box.size.height);
+    final n = widget.letters.length;
+    return SizedBox(
+      width: _railW,
+      child: LayoutBuilder(
+        builder: (context, c) {
+          final h = c.maxHeight;
+          const vPad = 10.0;
+          // 字母多/屏矮时等比压缩槽高,band 竖向居中;命中与气泡都按同一几何算。
+          final slot = n == 0 ? 0.0 : ((h - vPad * 2) / n).clamp(0.0, 22.0);
+          final bandTop = (h - slot * n) / 2;
+
+          void update(Offset global) {
+            final box = _key.currentContext?.findRenderObject() as RenderBox?;
+            if (box == null || n == 0 || slot <= 0) return;
+            final dy = box.globalToLocal(global).dy;
+            final i = ((dy - bandTop) / slot).floor().clamp(0, n - 1);
+            if (i != _active) {
+              Haptics.selection();
+              widget.onSelect(widget.letters[i]);
+              setState(() => _active = i);
             }
-          },
-          onVerticalDragEnd: (_) => _last = null,
-          onTapDown: (d) {
-            final box = railCtx.findRenderObject() as RenderBox?;
-            if (box != null) {
-              _last = null;
-              _pick(box.globalToLocal(d.globalPosition), box.size.height);
-            }
-          },
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-            // 小屏/字母多时等比缩小,不溢出;命中映射按实际渲染高度线性算,不受影响
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  for (final l in widget.letters)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 1.5),
-                      child: Text(
-                        l,
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w800,
-                          color: scheme.onSurfaceVariant,
+            _reveal.forward();
+          }
+
+          void stop() => _reveal.reverse();
+
+          return GestureDetector(
+            key: _key,
+            behavior: HitTestBehavior.opaque,
+            onTapDown: (d) => update(d.globalPosition),
+            onTapUp: (_) => stop(),
+            onTapCancel: stop,
+            onVerticalDragStart: (d) => update(d.globalPosition),
+            onVerticalDragUpdate: (d) => update(d.globalPosition),
+            onVerticalDragEnd: (_) => stop(),
+            onVerticalDragCancel: stop,
+            child: AnimatedBuilder(
+              animation: _reveal,
+              builder: (context, _) {
+                final r = _reveal.value; // 0=静默 1=按住
+                final active = _active;
+                return Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    // 字母条胶囊:常态半透明可见(可发现),按住渐深。
+                    Positioned.fill(
+                      child: Center(
+                        child: Container(
+                          width: _railW,
+                          height: slot * n + vPad,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: scheme.surfaceContainerHigh.withValues(
+                              alpha: .55 + .41 * r,
+                            ),
+                            borderRadius: BorderRadius.circular(_railW / 2),
+                            border: Border.all(
+                              color: scheme.outlineVariant.withValues(
+                                alpha: .5 * (1 - r),
+                              ),
+                              width: .5,
+                            ),
+                          ),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              for (var i = 0; i < n; i++)
+                                SizedBox(
+                                  height: slot,
+                                  child: Center(
+                                    child: _letter(i, active, r, scheme),
+                                  ),
+                                ),
+                            ],
+                          ),
                         ),
                       ),
                     ),
-                ],
+                    // 气泡:向左弹出当前字母,尾巴指向字母条;
+                    // 竖向随命中槽滑动(AnimatedPositioned),按住/松手淡入淡出。
+                    if (active >= 0 && active < n)
+                      AnimatedPositioned(
+                        duration: const Duration(milliseconds: 65),
+                        curve: Curves.easeOut,
+                        right: _railW + 6,
+                        top: bandTop + (active + 0.5) * slot - _bubbleR,
+                        child: Opacity(
+                          opacity: r.clamp(0.0, 1.0),
+                          child: Transform.scale(
+                            scale:
+                                .6 +
+                                .4 *
+                                    Curves.easeOutBack.transform(
+                                      r.clamp(0.0, 1.0),
+                                    ),
+                            alignment: Alignment.centerRight,
+                            child: _LetterBubble(
+                              widget.letters[active],
+                              color: scheme.primary,
+                              fg: scheme.onPrimary,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// 单个字母:离命中点越近越大越亮(放大波),幅度乘 [r] 让它随按住淡入淡出。
+  Widget _letter(int i, int active, double r, ColorScheme scheme) {
+    final dist = active < 0 ? 999.0 : (i - active).abs().toDouble();
+    final prox = (1 - dist / 2.6).clamp(0.0, 1.0) * r; // 命中点 ±2~3 个字母的邻域
+    return Transform.scale(
+      scale: 1 + .5 * prox,
+      child: Text(
+        widget.letters[i],
+        style: TextStyle(
+          fontSize: 10.5,
+          height: 1,
+          fontWeight: FontWeight.w800,
+          color: Color.lerp(scheme.onSurfaceVariant, scheme.primary, prox),
+        ),
+      ),
+    );
+  }
+}
+
+/// 字母气泡:圆形 + 右向小尾巴(指向字母条),软阴影浮起。
+class _LetterBubble extends StatelessWidget {
+  const _LetterBubble(this.letter, {required this.color, required this.fg});
+
+  final String letter;
+  final Color color;
+  final Color fg;
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      painter: _BubblePainter(color),
+      child: SizedBox(
+        width: 54,
+        height: 46,
+        // 尾巴占右 8px,文字回退到圆心。
+        child: Padding(
+          padding: const EdgeInsets.only(right: 8),
+          child: Center(
+            child: Text(
+              letter,
+              style: TextStyle(
+                fontSize: 22,
+                height: 1,
+                fontWeight: FontWeight.w800,
+                color: fg,
               ),
             ),
           ),
@@ -1696,4 +1885,33 @@ class _LetterRailState extends State<_LetterRail> {
       ),
     );
   }
+}
+
+class _BubblePainter extends CustomPainter {
+  const _BubblePainter(this.color);
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final r = size.height / 2;
+    final center = Offset(r, r);
+    final body = Path()..addOval(Rect.fromCircle(center: center, radius: r));
+    final tail = Path()
+      ..moveTo(center.dx + r - 7, center.dy - 9)
+      ..lineTo(size.width, center.dy)
+      ..lineTo(center.dx + r - 7, center.dy + 9)
+      ..close();
+    final shape = Path.combine(PathOperation.union, body, tail);
+    canvas.drawShadow(shape, Colors.black.withValues(alpha: .4), 4, false);
+    canvas.drawPath(
+      shape,
+      Paint()
+        ..color = color
+        ..isAntiAlias = true,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _BubblePainter old) => old.color != color;
 }

@@ -75,6 +75,50 @@ class WeightSpan {
   final double mult;
 }
 
+/// 折叠组 `<#名字: a, b>` —— 把一串词条收成一个命名整体。**仅编辑期语法**:
+/// [outputOf] 剥掉记号只留内容,NAI 永远拿不到它;记号本身靠原文草稿持久化
+/// (见 [pickEditorText])。记号落在词条 seg 之外(属分隔区),故删词/改权重/
+/// 排序天然不碰折叠语法。
+///
+/// **恒为最外层且不嵌套**:批量加权包出来的是 `<#名字: {a, b}>` 而非
+/// `{<#名字: a, b}>`(见 [_rangeBounds] 的记号回避),解析顺序也据此固定
+/// 为「先剥折叠、再剥权重组」。
+///
+/// 开记号是 `<#` 两字符哨兵、名字后必须是**冒号加空格**,两道都满足才算
+/// 折叠。少一道都不行:早期用的 `<名字:` 会把 SD 生态的 `<lora:x:0.8>`、
+/// `<hypernet:f:1>` 误当折叠剥成 `x:0.8`,而本 app 带 SD→NAI 转换工具,
+/// 用户粘这类串是可预期的——那是把用户的提示词**静默改写后发给 NAI**。
+/// 颜文字 tag(`>_<`、`<o>_<o>`、`:<`、`<3`)本来就不含「冒号+空格」,
+/// 两版都安全,但哨兵让这条保证不再依赖巧合。见 fold_test.dart 的对抗用例。
+class FoldSpan {
+  const FoldSpan({
+    required this.start,
+    required this.end,
+    required this.nameStart,
+    required this.nameEnd,
+    required this.bodyStart,
+    required this.bodyEnd,
+    required this.name,
+  });
+
+  /// `<` 的下标 / `>` 之后(未闭合时兜到文末)
+  final int start;
+  final int end;
+
+  /// 名字段(不含 `<` 与 `:`)
+  final int nameStart;
+  final int nameEnd;
+
+  /// 内容段(不含记号):成员词条都落在这段里
+  final int bodyStart;
+  final int bodyEnd;
+
+  final String name;
+
+  /// 词条是否为本折叠的成员
+  bool holds(Tok t) => t.segStart >= bodyStart && t.segEnd <= bodyEnd;
+}
+
 /// 数值组/数值权重前缀 `N::`。
 final _numPrefixRe = RegExp(r'^(-?\d+(?:\.\d+)?)::');
 
@@ -92,10 +136,18 @@ class _Group {
 /// 不闭合的组容忍地延伸到文末;记号错配时只剥字符不计权(宽松解析)。
 /// 传入 [weightSpans] 时顺带收集权重可视化区间(单词条自身权重一条,
 /// 每层组一条,含记号;禁用词条不发自身区间)。
-List<Tok> parseToks(String text, {List<WeightSpan>? weightSpans}) {
+List<Tok> parseToks(
+  String text, {
+  List<WeightSpan>? weightSpans,
+  List<FoldSpan>? folds,
+}) {
   final res = <Tok>[];
   var start = 0;
   final groups = <_Group>[];
+
+  // 折叠不嵌套,同时最多一个开着;-1 = 当前不在折叠内
+  var foldOpen = -1;
+  var foldNameS = 0, foldNameE = 0, foldBodyS = 0;
 
   int trimL(int a, int b) {
     while (a < b && _isSpace(text[a])) {
@@ -191,11 +243,38 @@ List<Tok> parseToks(String text, {List<WeightSpan>? weightSpans}) {
     }
   }
 
-  /// 一段逗号/换行间的 span:先剥跨词条组记号(空 span 也要记账,
-  /// `{` 或 `1.2::` 可独占一段),剩余交给 seg 按单词条解析。
+  /// 一段逗号/换行间的 span:先剥折叠记号、再剥跨词条组记号(空 span 也要
+  /// 记账,`{` 或 `1.2::` 可独占一段),剩余交给 seg 按单词条解析。
   void span(int rawStart, int rawEnd) {
     var a = trimL(rawStart, rawEnd);
     var b = trimR(a, rawEnd);
+
+    // 折叠记号 `<#名字: … >` 在最外层,先剥;剥完的区间再走权重组/词条解析,
+    // 所以折叠与权重可以叠加互不干扰。已在折叠内就不再认新的开记号(不嵌套)。
+    // 认定要同时满足 `<#` 哨兵与「冒号+空格」——放宽任一道都会误伤真实提示词。
+    if (a + 1 < b && text[a] == '<' && text[a + 1] == '#' && foldOpen < 0) {
+      var colon = -1;
+      for (var k = a + 2; k + 1 < b; k++) {
+        if (text[k] == ':' && text[k + 1] == ' ') {
+          colon = k;
+          break;
+        }
+      }
+      if (colon > a + 1) {
+        foldOpen = a;
+        foldNameS = trimL(a + 2, colon);
+        foldNameE = trimR(foldNameS, colon);
+        a = trimL(colon + 1, b);
+        foldBodyS = a;
+      }
+    }
+    // 闭记号要在权重组收口**之前**量 body 右界:组的 `}`/`]` 属于 body 内容
+    var foldEnd = -1, foldBodyE = -1;
+    if (b > a && text[b - 1] == '>' && foldOpen >= 0) {
+      foldEnd = b;
+      b = trimR(a, b - 1);
+      foldBodyE = b;
+    }
 
     // 括号净差:>0 = 本段有未闭合的组开,<0 = 有替前文收口的组闭。
     // (标签名不含花/方括号,直接计数即可;单词条权重 `{a}` 差为 0 不受扰)
@@ -259,6 +338,21 @@ List<Tok> parseToks(String text, {List<WeightSpan>? weightSpans}) {
         break;
       }
     }
+
+    if (foldEnd > 0) {
+      folds?.add(
+        FoldSpan(
+          start: foldOpen,
+          end: foldEnd,
+          nameStart: foldNameS,
+          nameEnd: foldNameE,
+          bodyStart: foldBodyS,
+          bodyEnd: foldBodyE,
+          name: text.substring(foldNameS, foldNameE),
+        ),
+      );
+      foldOpen = -1;
+    }
   }
 
   for (var k = 0; k < text.length; k++) {
@@ -276,7 +370,28 @@ List<Tok> parseToks(String text, {List<WeightSpan>? weightSpans}) {
       weightSpans.add(WeightSpan(g.openPos, text.length, g.mult));
     }
   }
+  // 未闭合的折叠同样兜到文末(边打字边成组时不闪断)
+  if (foldOpen >= 0) {
+    folds?.add(
+      FoldSpan(
+        start: foldOpen,
+        end: text.length,
+        nameStart: foldNameS,
+        nameEnd: foldNameE,
+        bodyStart: foldBodyS,
+        bodyEnd: text.length,
+        name: text.substring(foldNameS, foldNameE),
+      ),
+    );
+  }
   return res;
+}
+
+/// 折叠列表(按出现顺序,不嵌套故互不重叠)。
+List<FoldSpan> parseFolds(String text) {
+  final out = <FoldSpan>[];
+  parseToks(text, folds: out);
+  return out;
 }
 
 /// 光标偏移 → 所在标签下标(区间含端点),无则 -1
@@ -358,6 +473,13 @@ String toggleTokDisabled(String text, Tok t) => t.disabled
   }
   while (b > last.segEnd && (text[b - 1] == ' ' || text[b - 1] == '\t')) {
     b--;
+  }
+  // 折叠记号不进批量范围:折叠恒为最外层,批量加权/清除只作用于成员,
+  // 包出来是 `<#名字: {a, b}>`;若把 `<#名字:` 卷进去会得到 `{<#名字: a, b}>`,
+  // 记号错位、折叠再也解析不出来。
+  for (final f in parseFolds(text)) {
+    if (a >= f.start && a < f.bodyStart) a = f.bodyStart;
+    if (b > f.bodyEnd && b <= f.end) b = f.bodyEnd;
   }
   return (a, b);
 }
@@ -541,8 +663,385 @@ String reorderToks(String text, int from, int to) {
   return out;
 }
 
-/// 输出串:**原样保留**(换行/间距/权重语法都不动),仅剔除禁用项
-/// (连同邻近逗号,同 deleteTok)。回写生成页 + 计 token。
+// ---- 折叠的增删改 ----
+
+/// 区间 [a,b) 连一侧分隔一起吞(同 deleteTok:优先右侧逗号,否则左侧)。
+(int, int) _withSeparator(String text, int a, int b) {
+  var e = b;
+  while (e < text.length && (text[e] == ' ' || text[e] == '\t')) {
+    e++;
+  }
+  if (e < text.length && (text[e] == ',' || text[e] == '，')) {
+    e++;
+    while (e < text.length && text[e] == ' ') {
+      e++;
+    }
+    return (a, e);
+  }
+  var st = a;
+  while (st > 0 && text[st - 1] == ' ') {
+    st--;
+  }
+  if (st > 0 && (text[st - 1] == ',' || text[st - 1] == '，')) {
+    st--;
+    while (st > 0 && text[st - 1] == ' ') {
+      st--;
+    }
+    return (st, b);
+  }
+  return (a, b);
+}
+
+/// 剥掉折叠记号,内容原样保留(含分隔与换行)。[outputOf] 的一环。
+/// 内容被剔空的折叠(成员全被禁用)整只删掉并吞一侧逗号——否则
+/// `a, <n: ~b~>, c` 会留下 `a, , c` 这样的空段发给 NAI。
+String stripFolds(String text) {
+  final folds = parseFolds(text);
+  if (folds.isEmpty) return text;
+  var out = text;
+  // 倒序改写(折叠互不重叠且从左到右收集),前面的下标不漂移;
+  // 单只折叠内先删尾记号再删头记号,同理。
+  for (final f in folds.reversed) {
+    if (out.substring(f.bodyStart, f.bodyEnd).trim().isEmpty) {
+      final (a, b) = _withSeparator(out, f.start, f.end);
+      out = out.replaceRange(a, b, '');
+      continue;
+    }
+    if (f.end > f.bodyEnd) out = out.replaceRange(f.bodyEnd, f.end, '');
+    out = out.replaceRange(f.start, f.bodyStart, '');
+  }
+  return out;
+}
+
+/// 折叠名里不能出现分隔与记号字符,否则解析必错位。空名兜底为「折叠」。
+String sanitizeFoldName(String s) {
+  final out = s
+      .replaceAll(kFoldZw, '') // 零宽空格是占位符边界,名字里混入会毁掉解析
+      .replaceAll(RegExp(r'[,，:<>\r\n\t]'), ' ')
+      .trim();
+  return out.isEmpty ? '折叠' : out;
+}
+
+/// 区间能否折叠:与任何既有折叠交叠则不行(折叠不嵌套)。
+/// 按解析结果判而不是扫 `<`/`>` 字符——`>_<`、`<3` 这类颜文字 tag 是
+/// 合法内容,不该因为长得像记号就被拦住。
+/// 按钮可用态与 [foldRange] 的拒绝条件同源,不会出现「点了没反应」。
+bool canFoldRange(String text, int first, int last) {
+  final toks = parseToks(text);
+  if (toks.isEmpty || first >= toks.length) return false;
+  final l = _clampLast(toks, last);
+  final (a, b) = _rangeBounds(text, toks[first], toks[l]);
+  for (final f in parseFolds(text)) {
+    if (a < f.end && b > f.start) return false;
+  }
+  return true;
+}
+
+/// 把词条区间 [first, last] 包成命名折叠。不可折时原样返回。
+String foldRange(String text, int first, int last, String name) {
+  if (!canFoldRange(text, first, last)) return text;
+  final toks = parseToks(text);
+  final l = _clampLast(toks, last);
+  final (a, b) = _rangeBounds(text, toks[first], toks[l]);
+  final sub = text.substring(a, b);
+  return text.replaceRange(a, b, '<#${sanitizeFoldName(name)}: $sub>');
+}
+
+/// 把一串标签包成命名折叠,供**批量加入**的来源调用(补全的画师串 / OC
+/// 标签组、灵感的条目)。折叠是 app 内部产物,名字即来源,用户不再手工建组。
+///
+/// 三种情况原样返回不折:
+/// - 空串;
+/// - 只有一枚标签 —— 折一枚没有意义,徒增记号;
+/// - 串里已经有折叠 —— 折叠不嵌套。
+String foldWrap(String name, String tags) {
+  final t = tags.trim();
+  if (t.isEmpty) return t;
+  if (parseToks(t).length < 2) return t;
+  if (parseFolds(t).isNotEmpty) return t;
+  return '<#${sanitizeFoldName(name)}: $t>';
+}
+
+// ---- 折叠占位符(编辑器会话内的表现形式)----
+//
+// 折叠体**不进 TextField**:正文里只放短占位符 `​#名字​`(外观即
+// `#名字`,边界是零宽空格),折叠体存在编辑器
+// 会话的旁路表(名字 → 内容)里;载入时 [collapseFolds] 把草稿的完整语法拆成
+// 「占位符 + 表」,回写时 [expandFolds] 拼回完整语法落草稿。
+//
+// 为什么绕这一道:此前把完整语法留在正文、靠渲染层把折叠体「藏」起来
+// (fontSize 0.01 → 真机字形引擎 clamp 亚像素字号,长折叠体累积撑爆行宽;
+// 负 letterSpacing 收零 → 真机断行器算出鬼缩进)。任何在 EditableText 里藏字
+// 的手段都是在跟字形引擎搏斗,测试环境(Ahem 字体)全过、真机接连翻车。
+// 占位符方案下 **TextField 里没有任何不显示的字符**——正文所见即所有,
+// 这类 bug 从机制上消失。消息 app 的 @mention chip 同款架构。
+
+/// 占位符边界:零宽空格(U+200B)。**字体层面**无宽度——不是样式技巧,
+/// 与此前翻车的 fontSize/letterSpacing 藏字是两回事;肉眼只看到 `#名字`。
+/// 键盘打不出它,占位符因此**不可能**与用户手打的文本相撞,比 `<#…>`
+/// 字面边界更稳(那版外观带尖括号,也可能被手打字符误触)。
+const String kFoldZw = '​';
+
+/// 占位符:`​#名字​`(两侧零宽空格)。名字沿用 [sanitizeFoldName] 的字符集。
+final _foldRefRe = RegExp('$kFoldZw#([^$kFoldZw<>:,，\r\n]+)$kFoldZw');
+
+/// 拼一枚占位符字面量。
+String foldRefLiteral(String name) => '$kFoldZw#$name$kFoldZw';
+
+/// 正文里的一枚折叠占位符。
+class FoldRef {
+  const FoldRef(this.start, this.end, this.name);
+
+  /// 前导零宽空格下标 / 尾随零宽空格之后。
+  final int start;
+  final int end;
+  final String name;
+
+  /// 标题可见段 `#名字`(去掉两侧零宽空格),药丸底纹与点击热区用。
+  (int, int) get titleRange => (start + 1, end - 1);
+}
+
+/// 扫出正文里的全部占位符(名字必须在 [bodies] 里挂了号才算折叠——
+/// 用户手打的 `<#xx>` 不认,当普通文本走)。
+List<FoldRef> parseFoldRefs(String text, Map<String, String> bodies) => [
+  for (final m in _foldRefRe.allMatches(text))
+    if (bodies.containsKey(m.group(1)!)) FoldRef(m.start, m.end, m.group(1)!),
+];
+
+/// 草稿(完整语法)→ (正文, 折叠表)。完整折叠 `<#名字: 内容>` 收成 `<#名字>`,
+/// 内容进表;重名且内容不同 → 追加「 2」「 3」去重(名字是表键,必须唯一)。
+/// [seed] 是已占用的名字表(正/负两侧共用一张表时,后收的一侧要避开先收的)。
+(String, Map<String, String>) collapseFolds(
+  String draft, {
+  Map<String, String> seed = const {},
+}) {
+  final folds = parseFolds(draft);
+  if (folds.isEmpty) return (draft, const {});
+  final bodies = <String, String>{};
+  var out = draft;
+  for (final f in folds.reversed) {
+    final body = draft.substring(f.bodyStart, f.bodyEnd).trim();
+    var name = f.name;
+    var n = 2;
+    bool taken(String s) =>
+        (bodies.containsKey(s) && bodies[s] != body) ||
+        (seed.containsKey(s) && seed[s] != body);
+    while (taken(name)) {
+      name = '${f.name} ${n++}';
+    }
+    bodies[name] = body;
+    out = out.replaceRange(f.start, f.end, foldRefLiteral(name));
+  }
+  return (out, bodies);
+}
+
+/// 给 [name] 找一个在 [taken] 里未占用(或同体可复用)的名字。
+/// 插入路径(补全的画师串 / OC)注册折叠体时用。
+String uniqueFoldName(String name, String body, Map<String, String> taken) {
+  final base = sanitizeFoldName(name);
+  var out = base;
+  var n = 2;
+  while (taken.containsKey(out) && taken[out] != body) {
+    out = '$base ${n++}';
+  }
+  return out;
+}
+
+/// (正文, 折叠表)→ 草稿(完整语法)。按占位符所处的逗号段分三种情况:
+/// - 段恰为占位符自身 → 还原完整折叠 `<#名字: 内容>`(下次载入原样收回);
+/// - 段为 `~<#名字>~`(折叠被整只禁用)→ 内容逐成员套 `~`(折叠随之解散);
+/// - 其余(被 `{}` / `N::` 组语法包住等)→ 内容裸铺进去(组权重照常作用于
+///   成员,折叠解散)——完整语法塞在组记号里会错位解析不出,宁可降级也
+///   绝不让记号漏给 NAI。
+String expandFolds(String text, Map<String, String> bodies) {
+  final refs = parseFoldRefs(text, bodies);
+  var out = text;
+  for (final r in refs.reversed) {
+    final body = bodies[r.name]!;
+    // 占位符所处逗号段
+    var a = r.start;
+    while (a > 0 &&
+        out[a - 1] != ',' &&
+        out[a - 1] != '，' &&
+        out[a - 1] != '\n') {
+      a--;
+    }
+    var b = r.end;
+    while (b < out.length && out[b] != ',' && out[b] != '，' && out[b] != '\n') {
+      b++;
+    }
+    final seg = out.substring(a, b).trim();
+    final String ins;
+    if (seg == foldRefLiteral(r.name)) {
+      ins = '<#${r.name}: $body>';
+    } else if (seg == '~${foldRefLiteral(r.name)}~') {
+      final toks = parseToks(body);
+      ins = toks.isEmpty
+          ? ''
+          : batchSetDisabled(body, 0, toks.length - 1, true);
+      // 替换含两侧 ~(整段重写)
+      out = out.replaceRange(
+        out.indexOf('~', a),
+        out.indexOf('~', r.end) + 1,
+        ins,
+      );
+      continue;
+    } else {
+      ins = body;
+    }
+    out = out.replaceRange(r.start, r.end, ins);
+  }
+  return out;
+}
+
+/// 顶层单元:排序视图的基本单位——一枚散标签,或一枚折叠占位符。
+/// 折叠作为**一个整体**移动,绝不会被拆散或让别的标签卷进去。
+class TopUnit {
+  const TopUnit(this.start, this.end, this.fold, this.tok);
+  final int start;
+  final int end;
+
+  /// 折叠单元:非空;散标签单元:null。
+  final FoldRef? fold;
+
+  /// 散标签单元:非空;折叠单元:null。
+  final Tok? tok;
+
+  bool get isFold => fold != null;
+}
+
+/// 把正文切成顶层单元序列。占位符必须独占一个逗号段(tok 与 ref 区间恰好
+/// 重合)才算折叠单元;被杂字符粘连(`x<#n>`)的降级为普通标签,不误伤。
+List<TopUnit> topLevelUnits(String text, Map<String, String> bodies) {
+  final refs = parseFoldRefs(text, bodies);
+  final toks = parseToks(text);
+  final units = <TopUnit>[];
+  for (final t in toks) {
+    FoldRef? hit;
+    for (final r in refs) {
+      if (r.start == t.segStart && r.end == t.segEnd) {
+        hit = r;
+        break;
+      }
+    }
+    units.add(
+      hit != null
+          ? TopUnit(t.segStart, t.segEnd, hit, null)
+          : TopUnit(t.segStart, t.segEnd, null, t),
+    );
+  }
+  return units;
+}
+
+/// 顶层单元重排:把第 [from] 个单元移到 [to](移除后下标)。槽位法——各单元
+/// 原文按新序填回原有槽,槽间分隔(逗号/换行)原样保留。
+String reorderUnits(String text, Map<String, String> bodies, int from, int to) {
+  final units = topLevelUnits(text, bodies);
+  if (from < 0 || from >= units.length || from == to) return text;
+  final segs = [for (final u in units) text.substring(u.start, u.end)];
+  final moved = segs.removeAt(from);
+  segs.insert(to.clamp(0, segs.length), moved);
+  var out = text;
+  for (var i = units.length - 1; i >= 0; i--) {
+    out = out.replaceRange(units[i].start, units[i].end, segs[i]);
+  }
+  return out;
+}
+
+/// 顶层单元多选移动:把 [from] 里的若干单元整体搬到间隙 [to](原序下标,
+/// 0..n 表示"插到第 to 个单元之前")。被选中的单元保持彼此原有相对顺序。
+///
+/// 与 [reorderUnits] 同一套槽位法:各单元原文按新序填回原槽,槽间分隔
+/// (逗号/换行)原样留在原地,不会因为搬动而多出或吃掉逗号。
+String moveUnits(
+  String text,
+  Map<String, String> bodies,
+  Iterable<int> from,
+  int to,
+) {
+  final units = topLevelUnits(text, bodies);
+  final n = units.length;
+  final sel = {for (final i in from) if (i >= 0 && i < n) i}.toList()..sort();
+  if (sel.isEmpty || sel.length == n) return text;
+  final segs = [for (final u in units) text.substring(u.start, u.end)];
+  final picked = [for (final i in sel) segs[i]];
+  // 目标位置换算到"剔除选中项之后"的下标:数一数 to 左边还剩几个没被选中的。
+  var at = 0;
+  for (var i = 0; i < to && i < n; i++) {
+    if (!sel.contains(i)) at++;
+  }
+  final rest = [
+    for (var i = 0; i < n; i++)
+      if (!sel.contains(i)) segs[i],
+  ]..insertAll(at.clamp(0, n - sel.length), picked);
+  var out = text;
+  for (var i = n - 1; i >= 0; i--) {
+    out = out.replaceRange(units[i].start, units[i].end, rest[i]);
+  }
+  return out;
+}
+
+/// 顶层单元多选设禁用。**折叠单元跳过** —— 给占位符套上 `~` 会让它的区间
+/// 不再与 tok 段重合,[topLevelUnits] 当场把它降级成普通标签,折叠就散了。
+///
+/// 倒序逐个应用,前面的下标不漂移(同 [_batchEach])。
+String setUnitsDisabled(
+  String text,
+  Map<String, String> bodies,
+  Iterable<int> idx,
+  bool disabled,
+) {
+  final sel = idx.toList()..sort();
+  var out = text;
+  for (var k = sel.length - 1; k >= 0; k--) {
+    final units = topLevelUnits(out, bodies);
+    final i = sel[k];
+    if (i < 0 || i >= units.length) continue;
+    final t = units[i].tok;
+    if (t == null || t.disabled == disabled) continue;
+    out = toggleTokDisabled(out, t);
+  }
+  return out;
+}
+
+/// 顶层单元多选删除 → (新文本, 光标)。折叠走 [deleteFoldRef](整只删,
+/// 不啃出残渣),散标签走 [deleteTok];同样倒序,下标不漂移。
+(String, int) deleteUnits(
+  String text,
+  Map<String, String> bodies,
+  Iterable<int> idx,
+) {
+  final sel = idx.toList()..sort();
+  var out = text;
+  var cursor = 0;
+  for (var k = sel.length - 1; k >= 0; k--) {
+    final units = topLevelUnits(out, bodies);
+    final i = sel[k];
+    if (i < 0 || i >= units.length) continue;
+    final u = units[i];
+    final (next, c) = u.isFold
+        ? deleteFoldRef(out, u.fold!)
+        : deleteTok(out, u.tok!);
+    out = next;
+    cursor = c;
+  }
+  return (out, cursor.clamp(0, out.length));
+}
+
+/// 整只删除折叠占位符(连同一侧分隔)→ (新文本, 光标)。折叠是 app 造的整体,
+/// 正文里不给逐字啃——啃烂占位符会留下解析不出的残渣。
+(String, int) deleteFoldRef(String text, FoldRef r) {
+  final (a, b) = _withSeparator(text, r.start, r.end);
+  final out = text.replaceRange(a, b, '');
+  return (out, a.clamp(0, out.length));
+}
+
+/// 解散折叠(一次性):占位符原地替换为内容,标题消失、成员平铺。
+String unfoldRef(String text, FoldRef r, Map<String, String> bodies) =>
+    text.replaceRange(r.start, r.end, bodies[r.name] ?? '');
+
+/// 输出串:**原样保留**(换行/间距/权重语法都不动),剔除禁用项
+/// (连同邻近逗号,同 deleteTok)并剥掉折叠记号。回写生成页 + 计 token。
 /// 早期按段 join(', ') 重组会抹掉用户换行,故改为原文剔除式。
 String outputOf(String text) {
   var out = text;
@@ -558,8 +1057,24 @@ String outputOf(String text) {
     final (next, _) = deleteTok(out, victim);
     out = next; // deleteTok 必删非空段,长度严格递减,不会死循环
   }
-  return out.trim();
+  // 零宽空格是占位符边界(仅编辑期),孤儿占位符降级直传时把它滤干净
+  return stripFolds(out).replaceAll(kFoldZw, '').trim();
 }
 
 int estimateTokens(String output) =>
     (output.length / 2.2).round().clamp(0, 999);
+
+// ---- 编辑器原文草稿 ----
+// 禁用 `~tag~` 与折叠 `<#名字: …>` 是**仅编辑期**的语法:[outputOf] 会把它们
+// 剥掉,所以定稿里没有它们,只回写定稿的话退出编辑器就丢。故定稿旁另存一份
+// 原文草稿。有效性**只在读取侧判定**——草稿剔除编辑期语法后必须等于定稿,
+// 否则说明提示词被编辑器之外改过(导入/灵感追加/清空/权重工具),草稿已过期。
+// 这样写入方一个都不用改,也不会出现陈年草稿顶掉用户新提示词的鬼故事。
+
+/// 取编辑器该载入的文本:草稿有效则用草稿(带回禁用/折叠),否则用定稿。
+String pickEditorText(String raw, String finalText) =>
+    raw.isNotEmpty && outputOf(raw) == finalText ? raw : finalText;
+
+/// 取该落盘的草稿:与定稿无差别时返回空串,不在存档里存两份一样的串。
+String draftOf(String raw, String finalText) =>
+    raw.trim() == finalText ? '' : raw;

@@ -46,7 +46,7 @@ static void progress_trampoline(int cur, int total, void* ud) {
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL
-Java_com_plana_plana_1app_UpscaleNative_upscale(
+Java_com_sora214_plana_app_UpscaleNative_upscale(
         JNIEnv* env, jobject /*self*/, // Kotlin object 实例方法:第二参是 INSTANCE,非 jclass
         jbyteArray pngIn, jstring paramPath, jstring binPath,
         jint scale, jint tilesize, jint prepadding) {
@@ -77,7 +77,7 @@ Java_com_plana_plana_1app_UpscaleNative_upscale(
 
         // 装配进度回调:每完成一个 tile → Kotlin UpscaleNative.onProgress(cur,total)。
         // 用 FindClass 取真 jclass(不能用第二参,它是 object 实例 jobject)。取不到就不报进度、不崩。
-        jclass upscaleCls = env->FindClass("com/plana/plana_app/UpscaleNative");
+        jclass upscaleCls = env->FindClass("com/sora214/plana/app/UpscaleNative");
         if (env->ExceptionCheck()) env->ExceptionClear();
         jmethodID onProg = upscaleCls
                 ? env->GetStaticMethodID(upscaleCls, "onProgress", "(II)V")

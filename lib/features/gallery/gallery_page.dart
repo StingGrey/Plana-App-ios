@@ -3,8 +3,10 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/store/app_stores.dart';
 import '../../core/theme/app_theme.dart';
 import '../generate/generation_controller.dart';
+import '../generate/widgets/common.dart' show hintSnack;
 import '../inpaint/inpaint_overlay.dart';
 import 'gallery_state.dart';
 import 'widgets/film_strip.dart';
@@ -20,12 +22,36 @@ class GalleryPage extends ConsumerStatefulWidget {
   ConsumerState<GalleryPage> createState() => _GalleryPageState();
 }
 
+/// 「保存」长按入口的一次性引导:提示过就记在 `settings.json`,不再打扰。
+const _kSaveHintKey = 'hint_save_longpress';
+
 class _GalleryPageState extends ConsumerState<GalleryPage>
     with AutomaticKeepAliveClientMixin {
   bool _keep = false;
+  bool _hintChecked = false;
+
+  /// 最近一次成功显示的原图字节。切到尚未读盘的老图时先继续画它,
+  /// 避免空窗期露占位;新图解码完由 gaplessPlayback 无缝换掉。
+  Uint8List? _lastShown;
 
   @override
   bool get wantKeepAlive => _keep;
+
+  /// 图库里有图了 → 提一次「保存」的长按入口。长按藏得深,不说没人发现。
+  /// 每进程只判一次(_hintChecked),真正的"提过没"以落盘的标记为准。
+  void _maybeSaveHint(bool hasImage) {
+    if (_hintChecked || !hasImage) return;
+    _hintChecked = true;
+    final prefs = ref.read(prefsStoreProvider);
+    if (prefs.get(_kSaveHintKey) != null) return;
+    prefs.write(key: _kSaveHintKey, value: '1');
+    // build 里不能直接弹 overlay,推到帧后
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        hintSnack(context, '长按「保存」可进入下载设置', icon: Icons.download_outlined);
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -41,6 +67,8 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
       _keep = keep;
       updateKeepAlive();
     }
+
+    _maybeSaveHint(!state.isEmpty);
 
     if (!gen.busy && state.isEmpty && inpaint == null) {
       return const _EmptyGallery();
@@ -59,7 +87,14 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
     if (selBytes == null && selected != null) {
       selBytes = ref.watch(galleryImageProvider(selected.id)).value;
     }
-    final bytes = showGen ? (gen.preview ?? selBytes) : selBytes;
+    // 老图重启后 bytes 不在内存,要异步读原图;这段空窗以前掉回斜纹网格,
+    // 就是「老图切换闪一下」的来源。**不能垫缩略图** —— 缩略图是 cover 方形
+    // 裁切(256²),拉到全画布会变形又变回去,比斜纹更晃眼(实测反馈)。
+    // 改为留住上一张已显示的原图,直到新图解码完成,视觉上完全无缝。
+    if (selBytes != null) _lastShown = selBytes;
+    final bytes = showGen
+        ? (gen.preview ?? selBytes ?? _lastShown)
+        : (selBytes ?? _lastShown);
     final w = showGen ? gen.width : (selected?.width ?? 0);
     final h = showGen ? gen.height : (selected?.height ?? 0);
     final showChrome = !showGen && selected != null;
@@ -73,13 +108,17 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  // 大图支持双指缩放/拖动 + 双击放大还原;
-                  // 切图(key 变)自动回到 fit,生成流式期间不重置。
+                  // 大图支持双指缩放/拖动 + 双击放大还原;换图回到 fit,
+                  // 生成流式期间不重置。
+                  //
+                  // imageKey **不能当 widget key 用**:那样「生成中 → 出图」
+                  // 会把整棵子树连同 Image 的 State 一起换掉,gaplessPlayback
+                  // 失去上一帧,末帧到终图之间空一帧 —— 就是那下闪。改成把它当
+                  // 普通字段传下去,在 didUpdateWidget 里重置缩放,widget 原地
+                  // 存活,画面连续。
                   if (bytes != null)
                     _ZoomableImage(
-                      key: ValueKey(
-                        showGen ? 'busy' : (state.selectedId ?? ''),
-                      ),
+                      imageKey: showGen ? 'busy' : (state.selectedId ?? ''),
                       bytes: bytes,
                       width: w,
                       height: h,
@@ -160,11 +199,15 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
 /// 横滑,避免拖动手势被翻页抢走(不跟手的根源)。
 class _ZoomableImage extends ConsumerStatefulWidget {
   const _ZoomableImage({
-    super.key,
+    required this.imageKey,
     required this.bytes,
     required this.width,
     required this.height,
   });
+
+  /// 当前显示的是哪一张(生成中恒为 'busy',否则是结果 id)。
+  /// 变了就把缩放还原到 fit;字节本身逐帧变(流式预览)不算换图。
+  final String imageKey;
 
   final Uint8List bytes;
   final int width;
@@ -216,6 +259,22 @@ class _ZoomableImageState extends ConsumerState<_ZoomableImage>
     _ac.addStatusListener((s) {
       if (s == AnimationStatus.completed) _maybeUnlock();
     });
+  }
+
+  /// 换图:缩放回 fit。以前靠换 widget key 整棵重建来达到同样效果,代价是
+  /// 出图那一下会闪(见调用点注释)。
+  @override
+  void didUpdateWidget(_ZoomableImage old) {
+    super.didUpdateWidget(old);
+    if (old.imageKey == widget.imageKey) return;
+    _ac.stop();
+    _zoomAnim = null;
+    _tc.value = Matrix4.identity();
+    _pointers = 0;
+    // didUpdateWidget 在构建期内,同步改 provider 会被 Riverpod 拒掉 ——
+    // 与 dispose 同样的理由,推到 microtask。
+    final notifier = ref.read(galleryZoomedProvider.notifier);
+    Future.microtask(() => notifier.set(false));
   }
 
   @override

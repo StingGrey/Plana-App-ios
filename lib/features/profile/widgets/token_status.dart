@@ -1,0 +1,43 @@
+import 'package:flutter/material.dart';
+
+import '../../../core/auth/token_probe.dart';
+import '../../../core/net/nai_client.dart';
+import '../../../core/theme/app_theme.dart';
+import '../../stats/stats_providers.dart' show fmtInt;
+
+/// 令牌在线校验的状态行(引导页与「账号与接入」共用)。
+/// 四态同高:档位+点数 / 查询中 / 失败可重试 / 空占位——出现或消失都不改版高。
+Widget tokenStatusLine(
+  BuildContext context,
+  TokenProbe probe, {
+  required VoidCallback onRetry,
+}) {
+  final scheme = context.scheme;
+  if (probe.loading) {
+    return Text(
+      '查询账户状态…',
+      style: context.texts.labelSmall!.copyWith(color: scheme.outline),
+    );
+  }
+  final s = probe.sub;
+  if (s != null) {
+    return Text(
+      '${naiTierName(s.tier)} · Anlas ${fmtInt(s.anlas)}',
+      style: context.texts.bodySmall!.copyWith(
+        color: scheme.onSurfaceVariant,
+        fontWeight: FontWeight.w600,
+      ),
+    );
+  }
+  if (probe.failed) {
+    return InkWell(
+      onTap: onRetry,
+      borderRadius: BorderRadius.circular(6),
+      child: Text(
+        '账户状态查询失败,点按重试',
+        style: context.texts.labelSmall!.copyWith(color: scheme.error),
+      ),
+    );
+  }
+  return Text('', style: context.texts.labelSmall);
+}

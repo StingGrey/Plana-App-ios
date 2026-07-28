@@ -13,16 +13,16 @@ final galleryProvider = NotifierProvider<GalleryNotifier, GalleryState>(
 
 /// 结果原图懒读(重启水合/RAM 减负后 bytes 不在内存时用)。
 /// autoDispose:画布/操作层不看了就释放,不在内存里囤整库。
-final galleryImageProvider =
-    FutureProvider.autoDispose.family<Uint8List?, String>(
-  (ref, id) => ref.watch(appStoresProvider).gallery.readImage(id),
-);
+final galleryImageProvider = FutureProvider.autoDispose
+    .family<Uint8List?, String>(
+      (ref, id) => ref.watch(appStoresProvider).gallery.readImage(id),
+    );
 
 /// 结果缩略图懒读(胶片条/网格用,缺缩略图时店内退回原图)。
-final galleryThumbProvider =
-    FutureProvider.autoDispose.family<Uint8List?, String>(
-  (ref, id) => ref.watch(appStoresProvider).gallery.readThumb(id),
-);
+final galleryThumbProvider = FutureProvider.autoDispose
+    .family<Uint8List?, String>(
+      (ref, id) => ref.watch(appStoresProvider).gallery.readThumb(id),
+    );
 
 /// 图库大图是否处于缩放/双指交互态;shell 据此锁 PageView 横滑,
 /// 避免缩放拖动被翻页手势抢走。
@@ -101,8 +101,7 @@ class GalleryNotifier extends Notifier<GalleryState> {
 
   /// 图库上限裁剪:超出上限删最旧(列表尾部),文件一并删。
   void enforceCap() {
-    final cap =
-        ref.read(storageSettingsProvider).value?.galleryCap ?? 0;
+    final cap = ref.read(storageSettingsProvider).value?.galleryCap ?? 0;
     if (cap <= 0 || state.results.length <= cap) return;
     final keep = state.results.sublist(0, cap);
     final drop = state.results.sublist(cap);
@@ -111,15 +110,17 @@ class GalleryNotifier extends Notifier<GalleryState> {
         ? state.selectedId
         : (keep.isEmpty ? null : keep.first.id);
     state = GalleryState(results: keep, selectedId: sel);
-    ref
-        .read(appStoresProvider)
-        .gallery
-        .deleteResultFiles([for (final r in drop) r.id]);
+    ref.read(appStoresProvider).gallery.deleteResultFiles([
+      for (final r in drop) r.id,
+    ]);
     _persistIndex();
   }
 
   void _persistIndex() {
-    ref.read(appStoresProvider).gallery.scheduleIndex(
+    ref
+        .read(appStoresProvider)
+        .gallery
+        .scheduleIndex(
           results: state.results,
           selectedId: state.selectedId,
           seq: _seq,
@@ -158,7 +159,14 @@ class GalleryNotifier extends Notifier<GalleryState> {
       ];
     }
     state = state.copyWith(results: list, selectedId: r.id);
-    ref.read(appStoresProvider).gallery.persistResult(r);
+    final store = ref.read(appStoresProvider).gallery;
+    store.persistResult(r);
+    // 重绘产物继承源图蒙版:消费一次即清空,之后两张各自独立编辑保存。
+    final from = store.pendingMaskInheritFrom;
+    if (from != null) {
+      store.pendingMaskInheritFrom = null;
+      if (badge == ResultBadge.inpaint) store.copyMask(from, r.id);
+    }
     _persistIndex();
     enforceCap();
     return r;

@@ -10,12 +10,16 @@ final editorProvider = NotifierProvider<EditorNotifier, EditorState>(
 );
 
 /// 光标驱动定稿:字符串就是真相,正/负各一条(含原样权重语法)。
+/// 折叠体不在正文里(正文只有 `<#名字>` 占位符),存 [foldBodies];
+/// 会话内只增不删(解散/删除只动正文,表项留着给撤销兜底),
+/// 定稿与草稿都经 [expandFolds] 拼回完整语法后再算。
 class EditorState {
   const EditorState({
     this.positiveText = '',
     this.negativeText = '',
     this.activePositive = true,
     this.canUndo = false,
+    this.foldBodies = const {},
   });
 
   final String positiveText;
@@ -23,19 +27,27 @@ class EditorState {
   final bool activePositive;
   final bool canUndo;
 
+  /// 折叠表:占位符名字 → 折叠体(正/负两侧共用,载入时已跨侧去重)。
+  final Map<String, String> foldBodies;
+
   String get activeText => activePositive ? positiveText : negativeText;
-  int get activeTokens => estimateTokens(outputOf(activeText));
+
+  /// 当前段定稿(占位符展开 + 剔除编辑期语法)。token 读数用。
+  String get activeOutput => outputOf(expandFolds(activeText, foldBodies));
+  int get activeTokens => estimateTokens(activeOutput);
 
   EditorState copyWith({
     String? positiveText,
     String? negativeText,
     bool? activePositive,
     bool? canUndo,
+    Map<String, String>? foldBodies,
   }) => EditorState(
     positiveText: positiveText ?? this.positiveText,
     negativeText: negativeText ?? this.negativeText,
     activePositive: activePositive ?? this.activePositive,
     canUndo: canUndo ?? this.canUndo,
+    foldBodies: foldBodies ?? this.foldBodies,
   );
 }
 
@@ -69,12 +81,25 @@ class EditorNotifier extends Notifier<EditorState> {
     _history.clear();
     _lastPushMs = 0;
     _charId = charId;
+    // 草稿(完整折叠语法)→ 正文占位符 + 折叠表;负面侧避开正面已占的名字
+    final (posText, posBodies) = collapseFolds(positive);
+    final (negText, negBodies) = collapseFolds(negative, seed: posBodies);
     state = EditorState(
-      positiveText: positive,
-      negativeText: negative,
+      positiveText: posText,
+      negativeText: negText,
       activePositive: startPositive,
       canUndo: false,
+      foldBodies: {...posBodies, ...negBodies},
     );
+  }
+
+  /// 注册一个折叠体(补全插入画师串 / OC 标签组时),返回占位符该用的名字
+  /// (重名且内容不同时自动加序号)。表只增不删——撤销回带占位符的旧文本时
+  /// 仍能解析。
+  String registerFold(String name, String body) {
+    final n = uniqueFoldName(name, body, state.foldBodies);
+    state = state.copyWith(foldBodies: {...state.foldBodies, n: body});
+    return n;
   }
 
   void _scheduleWriteBack() {
@@ -89,20 +114,41 @@ class EditorNotifier extends Notifier<EditorState> {
     _writeBack?.cancel();
     final gen = ref.read(generateProvider.notifier);
     final id = _charId;
+    // 草稿 = 占位符展开回完整折叠语法(下次载入原样收回);定稿再剔编辑期语法
+    final posDraft = expandFolds(state.positiveText, state.foldBodies);
+    final negDraft = expandFolds(state.negativeText, state.foldBodies);
+    final pos = outputOf(posDraft);
+    final neg = outputOf(negDraft);
+    final posRaw = draftOf(posDraft, pos);
+    final negRaw = draftOf(negDraft, neg);
     if (id == null) {
-      gen.setPrompts(positive: outputPositive(), negative: outputNegative());
+      gen.setPrompts(
+        positive: pos,
+        negative: neg,
+        positiveRaw: posRaw,
+        negativeRaw: negRaw,
+      );
       return;
     }
-    final pos = outputPositive();
-    final neg = outputNegative();
     // updateCharacter 没有 setPrompts 那样的同值短路,这里自己挡一道:
     // 防抖回写高频触发,内容没变不该惊动创作页重建与落盘。
     for (final c in ref.read(generateProvider).characters) {
       if (c.id != id) continue;
-      if (c.positive == pos && c.negative == neg) return;
+      if (c.positive == pos &&
+          c.negative == neg &&
+          c.positiveRaw == posRaw &&
+          c.negativeRaw == negRaw) {
+        return;
+      }
       break;
     }
-    gen.updateCharacter(id, positive: pos, negative: neg);
+    gen.updateCharacter(
+      id,
+      positive: pos,
+      negative: neg,
+      positiveRaw: posRaw,
+      negativeRaw: negRaw,
+    );
   }
 
   /// 写入当前段。structural=true(删/插/改权重等)必入撤销栈,打字按 700ms 合并。
@@ -136,6 +182,8 @@ class EditorNotifier extends Notifier<EditorState> {
     _scheduleWriteBack();
   }
 
-  String outputPositive() => outputOf(state.positiveText);
-  String outputNegative() => outputOf(state.negativeText);
+  String outputPositive() =>
+      outputOf(expandFolds(state.positiveText, state.foldBodies));
+  String outputNegative() =>
+      outputOf(expandFolds(state.negativeText, state.foldBodies));
 }

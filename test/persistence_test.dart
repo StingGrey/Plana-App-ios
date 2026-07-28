@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/core/store/storage_settings.dart';
+import 'package:plana_app/features/editor/editor_models.dart';
 import 'package:plana_app/features/editor/editor_state.dart';
 import 'package:plana_app/features/gallery/gallery_state.dart';
 import 'package:plana_app/features/generate/generate_state.dart';
@@ -79,10 +80,12 @@ void main() {
     final stateFile = File('${root.path}/workspace/state.json');
     final indexFile = File('${root.path}/gallery/index.json');
     final imageFile = File('${root.path}/gallery/images/${added.id}.png');
-    await _until(() async =>
-        await stateFile.exists() &&
-        await indexFile.exists() &&
-        await imageFile.exists());
+    await _until(
+      () async =>
+          await stateFile.exists() &&
+          await indexFile.exists() &&
+          await imageFile.exists(),
+    );
 
     // ---- 会话 2:重新装载,断言全部回来 ----
     final stores2 = await AppStores.open(rootOverride: root);
@@ -124,12 +127,9 @@ void main() {
       overrides: [appStoresProvider.overrideWithValue(stores2)],
     );
     addTearDown(c2.dispose);
-    final again = c2.read(galleryProvider.notifier).addResult(
-          bytes: _png,
-          width: 64,
-          height: 64,
-          seed: 7,
-        );
+    final again = c2
+        .read(galleryProvider.notifier)
+        .addResult(bytes: _png, width: 64, height: 64, seed: 7);
     expect(again.id, isNot(added.id));
     expect(c2.read(galleryProvider).results, hasLength(2));
 
@@ -173,6 +173,59 @@ void main() {
     expect(c.read(generateProvider).prompt, 'old');
     stores.flushNow();
     await Future<void>.delayed(const Duration(milliseconds: 300));
+  });
+
+  test('禁用词跨会话存活:原文草稿随定稿落盘,外部改写即失效', () async {
+    final root = Directory.systemTemp.createTempSync('plana_draft');
+    addTearDown(() async {
+      for (var i = 0; i < 10; i++) {
+        try {
+          root.deleteSync(recursive: true);
+          return;
+        } catch (_) {
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+        }
+      }
+    });
+
+    final stores1 = await AppStores.open(rootOverride: root);
+    final c1 = ProviderContainer(
+      overrides: [appStoresProvider.overrideWithValue(stores1)],
+    );
+    final gen1 = c1.read(generateProvider.notifier);
+    gen1.setPrompts(positive: 'a, b');
+    final ed = c1.read(editorProvider.notifier);
+    ed.load(positive: 'a, b', negative: '', startPositive: true);
+    ed.editActive('a, ~b~');
+    ed.flushWriteBack();
+
+    final s1 = c1.read(generateProvider);
+    expect(s1.prompt, 'a'); // 定稿剔除禁用词,发给 NAI 的干净
+    expect(s1.promptRaw, 'a, ~b~'); // 草稿保住记号
+    expect(pickEditorText(s1.promptRaw, s1.prompt), 'a, ~b~');
+
+    stores1.flushNow();
+    final stateFile = File('${root.path}/workspace/state.json');
+    await _until(() async => stateFile.exists());
+    c1.dispose();
+
+    // 重启:草稿从存档回来,重进编辑器仍看得到禁用词
+    final stores2 = await AppStores.open(rootOverride: root);
+    final ws = stores2.workspace.initial;
+    expect(ws, isNotNull);
+    expect(ws!.prompt, 'a');
+    expect(pickEditorText(ws.promptRaw, ws.prompt), 'a, ~b~');
+
+    // 编辑器之外改写提示词(导入/灵感追加/清空)→ 草稿即刻作废,
+    // 不会用陈年草稿顶掉用户的新内容
+    final c2 = ProviderContainer(
+      overrides: [appStoresProvider.overrideWithValue(stores2)],
+    );
+    addTearDown(c2.dispose);
+    c2.read(generateProvider.notifier).setPrompts(positive: 'a, c');
+    final s2 = c2.read(generateProvider);
+    expect(s2.promptRaw, '');
+    expect(pickEditorText(s2.promptRaw, s2.prompt), 'a, c');
   });
 
   test('编辑器角色路由:角色会话只写该角色,不碰主提示词', () async {

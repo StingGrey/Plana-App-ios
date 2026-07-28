@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gal/gal.dart';
 
@@ -12,6 +11,7 @@ import '../save_pipeline.dart';
 import '../save_settings.dart';
 import 'result_badge_chip.dart';
 import 'result_thumb.dart';
+import '../../../core/util/haptics.dart';
 
 /// 「›」展开:全部作品网格弹层。点选一张即回填画布并关闭;
 /// 长按缩略图或点「多选」进入多选,底部批量保存相册 / 批量删除。
@@ -183,13 +183,13 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
                       children: [
                         Text(
                           '已选 ${_picked.length} 张',
-                          style: context.texts.titleMedium!
-                              .copyWith(fontWeight: FontWeight.w700),
+                          style: context.texts.titleMedium!.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
                         const Spacer(),
                         TextButton(
-                          onPressed:
-                              _saving ? null : () => _toggleAll(results),
+                          onPressed: _saving ? null : () => _toggleAll(results),
                           child: Text(
                             _picked.length == results.length ? '全不选' : '全选',
                           ),
@@ -204,14 +204,16 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
                       children: [
                         Text(
                           '全部作品',
-                          style: context.texts.titleMedium!
-                              .copyWith(fontWeight: FontWeight.w700),
+                          style: context.texts.titleMedium!.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
                         const SizedBox(width: 8),
                         Text(
                           '${results.length} 张',
-                          style: context.texts.bodySmall!
-                              .copyWith(color: scheme.onSurfaceVariant),
+                          style: context.texts.bodySmall!.copyWith(
+                            color: scheme.onSurfaceVariant,
+                          ),
                         ),
                         const Spacer(),
                         TextButton(
@@ -249,7 +251,7 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
                   onLongPress: _selecting
                       ? null
                       : () {
-                          HapticFeedback.mediumImpact();
+                          Haptics.medium();
                           _enterSelect(r.id);
                         },
                 );
@@ -379,8 +381,7 @@ class _GridThumb extends StatelessWidget {
                         ],
                       ),
                       child: picked
-                          ? Icon(Icons.check,
-                              size: 15, color: scheme.onPrimary)
+                          ? Icon(Icons.check, size: 15, color: scheme.onPrimary)
                           : null,
                     ),
                   )

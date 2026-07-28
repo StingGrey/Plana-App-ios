@@ -171,14 +171,8 @@ class _SaveSheetState extends ConsumerState<_SaveSheet> {
               const SizedBox(height: 14),
               SegmentedButton<SaveFormat>(
                 segments: const [
-                  ButtonSegment(
-                    value: SaveFormat.png,
-                    label: Text('PNG 无损'),
-                  ),
-                  ButtonSegment(
-                    value: SaveFormat.jpg,
-                    label: Text('JPG 有损'),
-                  ),
+                  ButtonSegment(value: SaveFormat.png, label: Text('PNG 无损')),
+                  ButtonSegment(value: SaveFormat.jpg, label: Text('JPG 有损')),
                 ],
                 selected: {_s.format},
                 onSelectionChanged: (v) => _set(_s.copyWith(format: v.first)),
@@ -200,8 +194,10 @@ class _SaveSheetState extends ConsumerState<_SaveSheet> {
                   value: (_s.quality * 100).roundToDouble().clamp(10, 100),
                   min: 10,
                   max: 100,
-                  divisions: 90,
-                  onChanged: (v) => _set(_s.copyWith(quality: v / 100)),
+                  // 不传 divisions:离散 Slider 会用 75ms 曲线把滑块吸到刻度,
+                  // 拖起来黏手。步长(1,与原 divisions: 90 等价)就地取整。
+                  onChanged: (v) =>
+                      _set(_s.copyWith(quality: v.roundToDouble() / 100)),
                 ),
                 Text(
                   'JPG 不保留元数据',
@@ -223,14 +219,11 @@ class _SaveSheetState extends ConsumerState<_SaveSheet> {
                           value: m,
                           dense: true,
                           contentPadding: EdgeInsets.zero,
-                          title: Text(
-                            switch (m) {
-                              SaveMeta.original => '保留原始元数据',
-                              SaveMeta.clean => '清除元数据',
-                              SaveMeta.custom => '自定义提示词',
-                            },
-                            style: context.texts.bodyMedium,
-                          ),
+                          title: Text(switch (m) {
+                            SaveMeta.original => '保留原始元数据',
+                            SaveMeta.clean => '清除元数据',
+                            SaveMeta.custom => '自定义提示词',
+                          }, style: context.texts.bodyMedium),
                         ),
                     ],
                   ),
@@ -246,8 +239,7 @@ class _SaveSheetState extends ConsumerState<_SaveSheet> {
                       filled: true,
                       fillColor: scheme.surfaceContainerHigh,
                       hintText: '写入图片的提示词(其余参数清除)…',
-                      hintStyle:
-                          TextStyle(color: scheme.outline, fontSize: 12),
+                      hintStyle: TextStyle(color: scheme.outline, fontSize: 12),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
                         borderSide: BorderSide.none,
@@ -266,8 +258,7 @@ class _SaveSheetState extends ConsumerState<_SaveSheet> {
                           ? const SizedBox(
                               width: 15,
                               height: 15,
-                              child:
-                                  CircularProgressIndicator(strokeWidth: 2),
+                              child: CircularProgressIndicator(strokeWidth: 2),
                             )
                           : const Icon(Icons.save_alt, size: 18),
                       label: const Text('单次保存'),

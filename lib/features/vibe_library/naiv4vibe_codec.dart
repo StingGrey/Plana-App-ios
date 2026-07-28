@@ -54,7 +54,11 @@ String naiVibeIdOfBase64(String imageBase64) =>
     sha256.convert(utf8.encode(imageBase64)).toString();
 
 /// 文件里的一条编码(拍扁后):模型键 + IE(params 缺失为 null)+ 编码串。
-typedef VibeEncodingItem = ({String modelKey, double? infoExtracted, String encoding});
+typedef VibeEncodingItem = ({
+  String modelKey,
+  double? infoExtracted,
+  String encoding,
+});
 
 /// 一条已解析的 vibe。持有原始 JSON([raw]),读字段全走 getter——
 /// 回写/导出时序列化 raw,第三方文件里的未知字段原样保留(文件即真相)。
@@ -77,10 +81,12 @@ class ParsedVibe {
     return v is String && v.startsWith('data:') ? v : null;
   }
 
-  int get createdAt => raw['createdAt'] is num ? (raw['createdAt'] as num).toInt() : 0;
+  int get createdAt =>
+      raw['createdAt'] is num ? (raw['createdAt'] as num).toInt() : 0;
 
-  Map<String, dynamic>? get _importInfo =>
-      raw['importInfo'] is Map ? (raw['importInfo'] as Map).cast<String, dynamic>() : null;
+  Map<String, dynamic>? get _importInfo => raw['importInfo'] is Map
+      ? (raw['importInfo'] as Map).cast<String, dynamic>()
+      : null;
 
   double? get defaultStrength => (_importInfo?['strength'] as num?)?.toDouble();
 
@@ -88,12 +94,16 @@ class ParsedVibe {
       (_importInfo?['information_extracted'] as num?)?.toDouble();
 
   List<String> get tags => raw['tags'] is List
-      ? [for (final t in raw['tags'] as List) if (t is String) t]
+      ? [
+          for (final t in raw['tags'] as List)
+            if (t is String) t,
+        ]
       : const [];
 
   /// encodings 里出现过的模型键(展示「支持的模型」)。
-  List<String> get supportedModelKeys =>
-      raw['encodings'] is Map ? (raw['encodings'] as Map).keys.cast<String>().toList() : const [];
+  List<String> get supportedModelKeys => raw['encodings'] is Map
+      ? (raw['encodings'] as Map).keys.cast<String>().toList()
+      : const [];
 
   /// 拍扁全部编码条目。
   List<VibeEncodingItem> get encodingItems {
@@ -109,7 +119,9 @@ class ParsedVibe {
         final enc = g['encoding'];
         if (enc is! String || enc.isEmpty) continue;
         final params = g['params'];
-        final ie = params is Map ? (params['information_extracted'] as num?)?.toDouble() : null;
+        final ie = params is Map
+            ? (params['information_extracted'] as num?)?.toDouble()
+            : null;
         out.add((modelKey: modelKey, infoExtracted: ie, encoding: enc));
       }
     }
@@ -135,7 +147,8 @@ List<ParsedVibe> parseVibeFileText(String text) {
       if (vibes is! List) return const [];
       return [
         for (final v in vibes)
-          if (v is Map<String, dynamic> && v['identifier'] == 'novelai-vibe-transfer')
+          if (v is Map<String, dynamic> &&
+              v['identifier'] == 'novelai-vibe-transfer')
             ParsedVibe(v),
       ];
     default:
@@ -150,18 +163,17 @@ Map<String, dynamic> newImageVibeRaw({
   required String name,
   required String thumbnailDataUrl,
   required int createdAtMs,
-}) =>
-    {
-      'identifier': 'novelai-vibe-transfer',
-      'version': 1,
-      'type': 'image',
-      'image': imageBase64,
-      'id': naiVibeIdOfBase64(imageBase64),
-      'encodings': <String, dynamic>{},
-      'name': name,
-      'thumbnail': thumbnailDataUrl,
-      'createdAt': createdAtMs,
-    };
+}) => {
+  'identifier': 'novelai-vibe-transfer',
+  'version': 1,
+  'type': 'image',
+  'image': imageBase64,
+  'id': naiVibeIdOfBase64(imageBase64),
+  'encodings': <String, dynamic>{},
+  'name': name,
+  'thumbnail': thumbnailDataUrl,
+  'createdAt': createdAtMs,
+};
 
 /// 把一条编码合并进 raw 的 encodings(导出/回写用)。就地修改。
 void mergeEncodingIntoRaw(
@@ -186,7 +198,7 @@ void mergeEncodingIntoRaw(
 
 /// 组装 .naiv4vibebundle 文本。
 String buildBundleText(List<Map<String, dynamic>> vibeRaws) => jsonEncode({
-      'identifier': 'novelai-vibe-transfer-bundle',
-      'version': 1,
-      'vibes': vibeRaws,
-    });
+  'identifier': 'novelai-vibe-transfer-bundle',
+  'version': 1,
+  'vibes': vibeRaws,
+});

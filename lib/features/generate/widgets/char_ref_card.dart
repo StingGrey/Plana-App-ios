@@ -4,9 +4,9 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:image_picker/image_picker.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../../core/util/image_pick.dart';
 import '../../char_library/char_library.dart';
 import '../../char_library/char_library_page.dart';
 import '../generate_state.dart';
@@ -32,29 +32,31 @@ class _CharRefCardState extends ConsumerState<CharRefCard> {
   String? _selectedId;
 
   Future<void> _onAdd() async {
-    final XFile? file = await ImagePicker().pickImage(
-      source: ImageSource.gallery,
-    );
-    if (file == null || !mounted) return;
-    final bytes = await file.readAsBytes();
-    final hash = await compute(_sha256Hex, bytes); // 后台算内容哈希
-    if (!mounted) return;
-    final name = file.name.replaceAll(RegExp(r'\.[^.]+$'), '');
-    // 顺手入库(同图去重;下次可从角色参考图库找回)
-    try {
-      await ref
-          .read(charLibraryProvider.notifier)
-          .importImageBytes(bytes, name, knownHash: hash);
-    } catch (_) {
-      // 入库失败不影响本次使用
-    }
-    if (!mounted) return;
+    final files = await pickImageFiles(context);
+    if (files.isEmpty || !mounted) return;
+    // 互斥态在加图前取一次:加角色参考会顺手停掉 Vibe
     final hadVibes = ref.read(generateProvider).enabledVibes > 0;
-    final id = ref
-        .read(generateProvider.notifier)
-        .addCharRef(image: bytes, name: name, imageHash: hash);
-    if (hadVibes) _mutexHint();
-    setState(() => _selectedId = id);
+    String? lastId;
+    for (final f in files) {
+      final bytes = f.bytes;
+      final hash = await compute(_sha256Hex, bytes); // 后台算内容哈希
+      if (!mounted) return;
+      // 顺手入库(同图去重;下次可从角色参考图库找回)
+      try {
+        await ref
+            .read(charLibraryProvider.notifier)
+            .importImageBytes(bytes, f.baseName, knownHash: hash);
+      } catch (_) {
+        // 入库失败不影响本次使用
+      }
+      if (!mounted) return;
+      lastId = ref
+          .read(generateProvider.notifier)
+          .addCharRef(image: bytes, name: f.baseName, imageHash: hash);
+    }
+    if (lastId == null) return;
+    if (hadVibes) _mutexHint(); // 整批只提示一次
+    setState(() => _selectedId = lastId);
   }
 
   void _toggle(String id, bool currentlyEnabled) {
@@ -118,7 +120,8 @@ class _CharRefCardState extends ConsumerState<CharRefCard> {
         ),
         RoundIconBtn(
           Icons.add,
-          tooltip: '导入参考图',
+          // 与 Vibe 卡的同位按钮区分:两者互斥,tooltip 一样会让人分不清点了哪个
+          tooltip: '导入角色参考图',
           color: scheme.primary,
           onTap: _onAdd,
         ),
@@ -212,6 +215,7 @@ class _CharRefDetail extends ConsumerWidget {
         // 保持最低 0(非负,不采用 web 的 −10..+1);step 0.01。
         LiveParamSlider(
           label: 'Strength 参考强度',
+          help: Help.charRefStrength,
           value: item.strength,
           divisions: 100,
           onCommit: (v) => notifier.updateCharRef(item.id, strength: v),
@@ -219,6 +223,7 @@ class _CharRefDetail extends ConsumerWidget {
         const SizedBox(height: 6),
         LiveParamSlider(
           label: 'Fidelity 保真度',
+          help: Help.fidelity,
           value: item.infoExtracted,
           divisions: 100,
           onCommit: (v) => notifier.updateCharRef(item.id, infoExtracted: v),

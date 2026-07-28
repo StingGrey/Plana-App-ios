@@ -19,6 +19,7 @@ class SectionCard extends StatelessWidget {
     this.body,
     this.muted = false,
     this.reorderIndex,
+    this.chevronPlaceholder = false,
   });
 
   final IconData icon;
@@ -37,6 +38,10 @@ class SectionCard extends StatelessWidget {
 
   /// 非空时卡头可长按拖拽调序(挂头部不挂展开体,避免抢输入框/滑杆手势)。
   final int? reorderIndex;
+
+  /// 不可展开(onHeaderTap 为空)时,仍画一个静态 chevron 占位,
+  /// 让卡头与其它可展开卡在视觉上对齐(如空角色卡)。不接手势、不旋转。
+  final bool chevronPlaceholder;
 
   @override
   Widget build(BuildContext context) {
@@ -74,7 +79,9 @@ class SectionCard extends StatelessWidget {
                 duration: Motion.medium,
                 curve: Motion.emphasized,
                 child: Icon(Icons.expand_more, size: 22, color: scheme.outline),
-              ),
+              )
+            else if (chevronPlaceholder)
+              Icon(Icons.expand_more, size: 22, color: scheme.outline),
           ],
         ),
       ),

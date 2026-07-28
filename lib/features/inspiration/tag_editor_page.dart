@@ -4,11 +4,11 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:image_picker/image_picker.dart';
 
 import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/util/image_pick.dart';
 import '../gallery/gallery_state.dart';
 import '../generate/generate_state.dart';
 import '../generate/widgets/common.dart'
@@ -64,8 +64,8 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
   late final int _slotCount = !_hasPreview
       ? 0
       : widget.cat == TagCategory.artist
-          ? 4
-          : 1;
+      ? 4
+      : 1;
   late final List<_Slot> _slots = List.generate(_slotCount, (i) {
     final s = _Slot();
     final prev = _edit?.previews ?? const [];
@@ -232,11 +232,11 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
   }
 
   Future<bool> _publishGuidelines() => confirmDialog(
-        context,
-        title: '发布到公共库',
-        message: '· 内容为本人创作/整理,可公开分享\n· 提示词与预览图不含违规内容\n· 发布后所有用户可见、可收藏',
-        confirmLabel: '同意并发布',
-      );
+    context,
+    title: '发布到公共库',
+    message: '· 内容为本人创作/整理,可公开分享\n· 提示词与预览图不含违规内容\n· 发布后所有用户可见、可收藏',
+    confirmLabel: '同意并发布',
+  );
 
   /// 创建态「保存并发布」:发布成功后本地落 created 副本(对齐 web)。
   Future<void> _publish() async {
@@ -278,11 +278,15 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
         publicId = r.id;
         finalName = r.name;
       }
-      await ref.read(tagLibraryProvider.notifier).upsert(await _buildEntry(
-            name: finalName,
-            origin: TagOrigin.created,
-            publicId: publicId,
-          ));
+      await ref
+          .read(tagLibraryProvider.notifier)
+          .upsert(
+            await _buildEntry(
+              name: finalName,
+              origin: TagOrigin.created,
+              publicId: publicId,
+            ),
+          );
       ref.invalidate(publicTagsProvider(widget.cat));
       if (!mounted) return;
       Navigator.pop(context);
@@ -304,8 +308,9 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
       final coverSlot = _slots.isNotEmpty
           ? _slots[_cover < _slots.length ? _cover : 0]
           : null;
-      final preview =
-          coverSlot?.bytes != null ? base64Encode(coverSlot!.bytes!) : null;
+      final preview = coverSlot?.bytes != null
+          ? base64Encode(coverSlot!.bytes!)
+          : null;
       if (widget.cat == TagCategory.character) {
         await client.updatePublicOc(
           sessionId: session.sessionId,
@@ -370,10 +375,14 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
       } else {
         await client.deletePublicArtist(session.sessionId, edit.publicId!);
       }
-      await ref.read(tagLibraryProvider.notifier).upsert(edit.copyWith(
-            origin: TagOrigin.local,
-            publicId: TagEntry.clearPublicId,
-          ));
+      await ref
+          .read(tagLibraryProvider.notifier)
+          .upsert(
+            edit.copyWith(
+              origin: TagOrigin.local,
+              publicId: TagEntry.clearPublicId,
+            ),
+          );
       ref.invalidate(publicTagsProvider(widget.cat));
       if (!mounted) return;
       Navigator.pop(context);
@@ -574,23 +583,19 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
   // ---- 预览图操作 ----
 
   Future<void> _pickImages({int? into}) async {
-    final picker = ImagePicker();
     if (_slotCount == 1 || into != null) {
-      final f = await picker.pickImage(source: ImageSource.gallery);
-      if (f == null) return;
-      final bytes = await f.readAsBytes();
+      final f = await pickImageFile(context);
+      if (f == null || !mounted) return;
       setState(() {
         final s = _slots[into ?? 0];
-        s.bytes = bytes;
+        s.bytes = f.bytes;
         s.ref = null;
       });
       return;
     }
-    final files = await picker.pickMultiImage();
-    if (files.isEmpty) return;
-    final list = [
-      for (final f in files.take(_slotCount)) await f.readAsBytes(),
-    ];
+    final files = await pickImageFiles(context);
+    if (files.isEmpty || !mounted) return;
+    final list = [for (final f in files.take(_slotCount)) f.bytes];
     setState(() {
       var idx = 0;
       for (final b in list) {
@@ -628,14 +633,16 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
                   const SizedBox(width: 8),
                   Text(
                     '从图库选取',
-                    style: context.texts.titleMedium!
-                        .copyWith(fontWeight: FontWeight.w700),
+                    style: context.texts.titleMedium!.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                   const Spacer(),
                   Text(
                     '共 ${results.length} 张',
-                    style: context.texts.labelSmall!
-                        .copyWith(color: context.scheme.onSurfaceVariant),
+                    style: context.texts.labelSmall!.copyWith(
+                      color: context.scheme.onSurfaceVariant,
+                    ),
                   ),
                 ],
               ),
@@ -660,7 +667,8 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
       ),
     );
     if (picked == null || !mounted) return;
-    final bytes = ref
+    final bytes =
+        ref
             .read(galleryProvider)
             .results
             .where((r) => r.id == picked)
@@ -802,8 +810,9 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
                     title: '名称',
                     required: true,
                     filled: _nameOk,
-                    collapsedValue:
-                        _name.text.trim().isEmpty ? null : _name.text.trim(),
+                    collapsedValue: _name.text.trim().isEmpty
+                        ? null
+                        : _name.text.trim(),
                     body: _nameBody(scheme),
                   ),
                   _section(
@@ -944,8 +953,8 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
           color: errored
               ? scheme.error.withValues(alpha: .55)
               : expanded
-                  ? scheme.primary.withValues(alpha: .45)
-                  : scheme.outlineVariant,
+              ? scheme.primary.withValues(alpha: .45)
+              : scheme.outlineVariant,
         ),
       ),
       child: Column(
@@ -1057,15 +1066,15 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
   }
 
   InputDecoration _fieldDeco(String hint) => InputDecoration(
-        isDense: true,
-        hintText: hint,
-        filled: true,
-        fillColor: context.scheme.surfaceContainerHigh,
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide.none,
-        ),
-      );
+    isDense: true,
+    hintText: hint,
+    filled: true,
+    fillColor: context.scheme.surfaceContainerHigh,
+    border: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: BorderSide.none,
+    ),
+  );
 
   Widget _tokenPill(int n) {
     final scheme = context.scheme;
@@ -1165,9 +1174,7 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
         TextField(
           controller: _name,
           readOnly: _locked,
-          style: context.texts.bodyLarge!.copyWith(
-            fontWeight: FontWeight.w700,
-          ),
+          style: context.texts.bodyLarge!.copyWith(fontWeight: FontWeight.w700),
           decoration: _fieldDeco('给${_def.label}起个名字').copyWith(
             contentPadding: const EdgeInsets.symmetric(
               horizontal: 14,
@@ -1187,8 +1194,10 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
                     ),
                   )
                 : null,
-            suffixIconConstraints:
-                const BoxConstraints(minHeight: 32, minWidth: 40),
+            suffixIconConstraints: const BoxConstraints(
+              minHeight: 32,
+              minWidth: 40,
+            ),
           ),
         ),
         if (widget.cat == TagCategory.character) ...[
@@ -1261,11 +1270,7 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
               if (_negative.text.trim().isNotEmpty)
                 _tokenPill(_tokens(_negative.text)),
               if (_showNegative && !_locked)
-                _miniAction(
-                  Icons.content_paste,
-                  '粘贴',
-                  () => _paste(_negative),
-                ),
+                _miniAction(Icons.content_paste, '粘贴', () => _paste(_negative)),
             ],
           ),
           ExpandBody(
@@ -1354,9 +1359,9 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
                   child: FilledButton.icon(
                     onPressed: _generating || _positive.text.trim().isEmpty
                         ? null
-                        : () => _generateInto(
-                              [for (var i = 0; i < _slotCount; i++) i],
-                            ),
+                        : () => _generateInto([
+                            for (var i = 0; i < _slotCount; i++) i,
+                          ]),
                     icon: _generating
                         ? const SizedBox(
                             width: 14,
@@ -1397,10 +1402,16 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
     } else if (s.ref?.isNotEmpty ?? false) {
       final r = s.ref!;
       content = r.startsWith('http')
-          ? Image.network(r, fit: BoxFit.cover,
-              errorBuilder: (_, _, _) => _emptySlotIcon(scheme))
-          : Image.file(File(r), fit: BoxFit.cover,
-              errorBuilder: (_, _, _) => _emptySlotIcon(scheme));
+          ? Image.network(
+              r,
+              fit: BoxFit.cover,
+              errorBuilder: (_, _, _) => _emptySlotIcon(scheme),
+            )
+          : Image.file(
+              File(r),
+              fit: BoxFit.cover,
+              errorBuilder: (_, _, _) => _emptySlotIcon(scheme),
+            );
     } else {
       content = _emptySlotIcon(scheme);
     }
@@ -1477,30 +1488,30 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
   }
 
   Widget _emptySlotIcon(ColorScheme scheme) => Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.add_photo_alternate_outlined,
-              size: 26,
-              color: scheme.outline,
-            ),
-            const SizedBox(height: 3),
-            Text(
-              '点击上传',
-              style: context.texts.labelSmall!.copyWith(
-                color: scheme.outline,
-                fontSize: 10,
-              ),
-            ),
-          ],
+    child: Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(
+          Icons.add_photo_alternate_outlined,
+          size: 26,
+          color: scheme.outline,
         ),
-      );
+        const SizedBox(height: 3),
+        Text(
+          '点击上传',
+          style: context.texts.labelSmall!.copyWith(
+            color: scheme.outline,
+            fontSize: 10,
+          ),
+        ),
+      ],
+    ),
+  );
 
   Widget _tagsBody(ColorScheme scheme) {
     final known =
         ref.watch(tagLibraryProvider).value?.knownTags(widget.cat) ??
-            const <String>[];
+        const <String>[];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1568,11 +1579,9 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
   // ---- Footer ----
 
   ButtonStyle _outStyle() => OutlinedButton.styleFrom(
-        minimumSize: const Size(0, 52),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-        ),
-      );
+    minimumSize: const Size(0, 52),
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+  );
 
   Widget _footer(ColorScheme scheme) {
     final origin = _edit?.origin;
@@ -1617,7 +1626,6 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
         ),
         const SizedBox(width: 10),
         Expanded(
-          flex: 2,
           child: _primaryBtn(
             icon: Icons.cloud_sync_outlined,
             label: '保存并同步',
@@ -1668,10 +1676,7 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
                 child: CircularProgressIndicator(strokeWidth: 2),
               )
             : Icon(icon, size: 17),
-        label: Text(
-          label,
-          style: const TextStyle(fontWeight: FontWeight.w800),
-        ),
+        label: Text(label, style: const TextStyle(fontWeight: FontWeight.w800)),
       ),
     );
   }
@@ -1796,7 +1801,11 @@ class _ChipPickerState extends State<_ChipPicker> {
                         ),
                         IconButton(
                           visualDensity: VisualDensity.compact,
-                          icon: Icon(Icons.add, size: 17, color: scheme.primary),
+                          icon: Icon(
+                            Icons.add,
+                            size: 17,
+                            color: scheme.primary,
+                          ),
                           onPressed: _submit,
                         ),
                       ],

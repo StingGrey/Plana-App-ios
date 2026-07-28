@@ -10,10 +10,11 @@ import '../../core/theme/app_theme.dart';
 import '../generate/generate_state.dart';
 import '../generate/widgets/common.dart'
     show ParamSlider, confirmDialog, hintSnack;
+import 'naiv4vibe_codec.dart' show kEncodingKeyLabel;
 import 'vibe_library.dart';
 
-/// 「已编码」状态色(功能绿)。
-const _encOkColor = Color(0xFF2E9E44);
+/// 「已编码」状态色(功能绿)—— 单一来源见 [FixedSemantic]。
+const _encOkColor = FixedSemantic.ok;
 
 /// 库条目详情:大图 + 名称/默认参数编辑 + 编码状态(仅显示有无)+ 导出/删除/添加到生成。
 /// pop(true) = 已添加到生成(由库页收尾:snack + 返回生成页)。
@@ -51,7 +52,9 @@ class _VibeDetailSheetState extends ConsumerState<VibeDetailSheet> {
   void _scheduleSave(VibeEntry e) {
     _saveTimer?.cancel();
     _saveTimer = Timer(const Duration(milliseconds: 450), () {
-      ref.read(vibeLibraryProvider.notifier).updateMeta(
+      ref
+          .read(vibeLibraryProvider.notifier)
+          .updateMeta(
             e.id,
             defaultStrength: _strength,
             defaultInfoExtracted: _ie,
@@ -96,8 +99,11 @@ class _VibeDetailSheetState extends ConsumerState<VibeDetailSheet> {
         bytes: utf8.encode(text),
       );
       if (path != null && mounted) {
-        hintSnack(context, '已导出 $safe.naiv4vibe',
-            icon: Icons.check_circle_outline);
+        hintSnack(
+          context,
+          '已导出 $safe.naiv4vibe',
+          icon: Icons.check_circle_outline,
+        );
       }
     } catch (err) {
       if (mounted) hintSnack(context, '导出失败:$err', icon: Icons.error_outline);
@@ -127,14 +133,17 @@ class _VibeDetailSheetState extends ConsumerState<VibeDetailSheet> {
       hintSnack(context, '已在生成面板中', icon: Icons.info_outline);
       return;
     }
-    final data =
-        await ref.read(vibeLibraryProvider.notifier).loadForGenerate(e);
+    final data = await ref
+        .read(vibeLibraryProvider.notifier)
+        .loadForGenerate(e);
     if (!mounted) return;
     if (data == null) {
       hintSnack(context, '无法读取该 Vibe 文件', icon: Icons.error_outline);
       return;
     }
-    final id = ref.read(generateProvider.notifier).addVibe(
+    final id = ref
+        .read(generateProvider.notifier)
+        .addVibe(
           image: data.image,
           name: e.name,
           imageHash: data.imageHash,
@@ -166,9 +175,7 @@ class _VibeDetailSheetState extends ConsumerState<VibeDetailSheet> {
     _encFuture ??= ref.read(vibeLibraryProvider.notifier).encodingList(e);
 
     return Padding(
-      padding: EdgeInsets.only(
-        bottom: MediaQuery.viewInsetsOf(context).bottom,
-      ),
+      padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
       child: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(20, 14, 20, 20),
         child: Column(
@@ -184,16 +191,20 @@ class _VibeDetailSheetState extends ConsumerState<VibeDetailSheet> {
                     e.name,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: context.texts.titleMedium!
-                        .copyWith(fontWeight: FontWeight.w700),
+                    style: context.texts.titleMedium!.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
                 IconButton(
                   tooltip: '重命名',
                   visualDensity: VisualDensity.compact,
                   onPressed: () => _rename(e),
-                  icon: Icon(Icons.edit_outlined,
-                      size: 19, color: scheme.onSurfaceVariant),
+                  icon: Icon(
+                    Icons.edit_outlined,
+                    size: 19,
+                    color: scheme.onSurfaceVariant,
+                  ),
                 ),
               ],
             ),
@@ -204,8 +215,7 @@ class _VibeDetailSheetState extends ConsumerState<VibeDetailSheet> {
                   '${(e.sizeBytes / 1024 / 1024).toStringAsFixed(2)} MB',
                 if (!e.hasImage) '仅编码(无原图)',
               ].join(' · '),
-              style:
-                  context.texts.labelSmall!.copyWith(color: scheme.outline),
+              style: context.texts.labelSmall!.copyWith(color: scheme.outline),
             ),
             const SizedBox(height: 14),
             ParamSlider(
@@ -233,8 +243,9 @@ class _VibeDetailSheetState extends ConsumerState<VibeDetailSheet> {
                 padding: const EdgeInsets.symmetric(vertical: 6),
                 child: Text(
                   'Info Extracted 随编码固定,无原图不可调整。',
-                  style: context.texts.labelSmall!
-                      .copyWith(color: scheme.onSurfaceVariant),
+                  style: context.texts.labelSmall!.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
                 ),
               ),
             const SizedBox(height: 12),
@@ -295,8 +306,11 @@ class _VibeDetailSheetState extends ConsumerState<VibeDetailSheet> {
                           height: 22,
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
-                      : Icon(Icons.data_object,
-                          size: 34, color: scheme.outline),
+                      : Icon(
+                          Icons.data_object,
+                          size: 34,
+                          color: scheme.outline,
+                        ),
                 ),
               );
             }
@@ -307,7 +321,9 @@ class _VibeDetailSheetState extends ConsumerState<VibeDetailSheet> {
     );
   }
 
-  /// 编码状态:只显示「有 / 无」,不再列每个模型×IE,也不提供预编码。
+  /// 编码状态:有无 + 已编码则逐条列出「模型 · 信息提取值」。
+  /// 清单 = 文件自带 ∪ 内容寻址缓存(见 `encodingList`),所以用过之后新编出
+  /// 来的也算数 —— 库列表那边走同一口径合并,两处不会再对不上。
   Widget _encodings(VibeEntry e, ColorScheme scheme) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
@@ -315,46 +331,75 @@ class _VibeDetailSheetState extends ConsumerState<VibeDetailSheet> {
         color: scheme.surfaceContainerHigh.withValues(alpha: .5),
         borderRadius: BorderRadius.circular(10),
       ),
-      child: Row(
-        children: [
-          Icon(Icons.memory, size: 18, color: scheme.onSurfaceVariant),
-          const SizedBox(width: 8),
-          Text(
-            '编码',
-            style: context.texts.labelLarge!
-                .copyWith(color: scheme.onSurfaceVariant),
-          ),
-          const Spacer(),
-          FutureBuilder(
-            future: _encFuture,
-            builder: (context, snap) {
-              if (snap.connectionState == ConnectionState.waiting) {
-                return Text(
-                  '检查中…',
-                  style: context.texts.labelMedium!
-                      .copyWith(color: scheme.outline),
-                );
-              }
-              final has = (snap.data ?? const []).isNotEmpty;
-              return Row(
-                mainAxisSize: MainAxisSize.min,
+      child: FutureBuilder(
+        future: _encFuture,
+        builder: (context, snap) {
+          final waiting = snap.connectionState == ConnectionState.waiting;
+          final list = snap.data ?? const <({String modelKey, double? ie})>[];
+          final has = list.isNotEmpty;
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
                 children: [
-                  Icon(
-                    has ? Icons.check_circle : Icons.remove_circle_outline,
-                    size: 16,
-                    color: has ? _encOkColor : scheme.outline,
-                  ),
-                  const SizedBox(width: 5),
+                  Icon(Icons.memory, size: 18, color: scheme.onSurfaceVariant),
+                  const SizedBox(width: 8),
                   Text(
-                    has ? '已编码' : '未编码',
-                    style: context.texts.labelMedium!.copyWith(
-                      color: has ? _encOkColor : scheme.onSurfaceVariant,
-                      fontWeight: FontWeight.w700,
+                    '编码',
+                    style: context.texts.labelLarge!.copyWith(
+                      color: scheme.onSurfaceVariant,
                     ),
                   ),
+                  const Spacer(),
+                  if (waiting)
+                    Text(
+                      '检查中…',
+                      style: context.texts.labelMedium!.copyWith(
+                        color: scheme.outline,
+                      ),
+                    )
+                  else ...[
+                    Icon(
+                      has ? Icons.check_circle : Icons.remove_circle_outline,
+                      size: 16,
+                      color: has ? _encOkColor : scheme.outline,
+                    ),
+                    const SizedBox(width: 5),
+                    Text(
+                      has ? '已编码 ${list.length}' : '未编码',
+                      style: context.texts.labelMedium!.copyWith(
+                        color: has ? _encOkColor : scheme.onSurfaceVariant,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
                 ],
-              );
-            },
+              ),
+              // 每条编码一行:左边模型,右边它当时的信息提取值
+              for (final it in list) _encRow(it, scheme),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _encRow(({String modelKey, double? ie}) it, ColorScheme scheme) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 7),
+      child: Row(
+        children: [
+          const SizedBox(width: 26),
+          Text(
+            kEncodingKeyLabel[it.modelKey] ?? it.modelKey,
+            style: context.texts.labelMedium!.copyWith(color: scheme.onSurface),
+          ),
+          const Spacer(),
+          Text(
+            // 文件里的老编码可能没记 params,IE 就是未知
+            it.ie == null ? 'IE —' : 'IE ${it.ie!.toStringAsFixed(2)}',
+            style: mono(context, size: 12, color: scheme.onSurfaceVariant),
           ),
         ],
       ),

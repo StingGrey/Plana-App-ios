@@ -20,8 +20,10 @@ class TagLibraryState {
   final Map<TagCategory, List<String>> pools;
   final Map<TagCategory, List<String>> usage;
 
-  List<TagEntry> of(TagCategory c) =>
-      [for (final e in entries) if (e.category == c) e];
+  List<TagEntry> of(TagCategory c) => [
+    for (final e in entries)
+      if (e.category == c) e,
+  ];
 
   List<String> poolOf(TagCategory c) => pools[c] ?? const [];
 
@@ -46,8 +48,9 @@ class TagLibraryState {
   );
 }
 
-final tagLibraryProvider =
-    AsyncNotifierProvider<TagLibrary, TagLibraryState>(TagLibrary.new);
+final tagLibraryProvider = AsyncNotifierProvider<TagLibrary, TagLibraryState>(
+  TagLibrary.new,
+);
 
 /// 本地库:单文件 `<support>/tag_library.json`(条目轻量纯文本,整文件
 /// 读写;损坏时回空库)。所有变更先改状态再尽力落盘。
@@ -99,18 +102,20 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
   Future<void> _set(TagLibraryState next) async {
     state = AsyncData(next);
     try {
-      await _file.writeAsString(jsonEncode({
-        'version': 1,
-        'entries': [for (final e in next.entries) e.toJson()],
-        'pools': {
-          for (final en in next.pools.entries)
-            tagCategoryDef(en.key).webId: en.value,
-        },
-        'usage': {
-          for (final en in next.usage.entries)
-            tagCategoryDef(en.key).webId: en.value,
-        },
-      }));
+      await _file.writeAsString(
+        jsonEncode({
+          'version': 1,
+          'entries': [for (final e in next.entries) e.toJson()],
+          'pools': {
+            for (final en in next.pools.entries)
+              tagCategoryDef(en.key).webId: en.value,
+          },
+          'usage': {
+            for (final en in next.usage.entries)
+              tagCategoryDef(en.key).webId: en.value,
+          },
+        }),
+      );
     } catch (_) {}
   }
 
@@ -138,9 +143,14 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
     for (final e in _s.entries) {
       if (e.id == id) _gcPreviewFiles(e.previews);
     }
-    await _set(_s.copyWith(
-      entries: [for (final e in _s.entries) if (e.id != id) e],
-    ));
+    await _set(
+      _s.copyWith(
+        entries: [
+          for (final e in _s.entries)
+            if (e.id != id) e,
+        ],
+      ),
+    );
   }
 
   /// 编辑器把内存里的预览字节落成文件,返回路径(存进 entry.previews)。
@@ -171,7 +181,10 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
 
   /// 分类内唯一名:重名依次试「x (副本)」「x (副本 2)」…(对齐 web fork)。
   String uniqueName(TagCategory c, String base) {
-    final names = {for (final e in _s.entries) if (e.category == c) e.name};
+    final names = {
+      for (final e in _s.entries)
+        if (e.category == c) e.name,
+    };
     if (!names.contains(base)) return base;
     for (var n = 1; ; n++) {
       final candidate = n == 1 ? '$base (副本)' : '$base (副本 $n)';
@@ -195,31 +208,36 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
   Future<bool> collect(TagEntry publicEntry) async {
     for (final e in _s.entries) {
       if (e.category != publicEntry.category) continue;
-      final hit = (publicEntry.publicId != null &&
+      final hit =
+          (publicEntry.publicId != null &&
               e.publicId == publicEntry.publicId) ||
           e.name == publicEntry.name;
       if (!hit) continue;
       if (e.publicId == null && publicEntry.publicId != null) {
-        await upsert(e.copyWith(
-          publicId: publicEntry.publicId,
-          origin: TagOrigin.favorited,
-        ));
+        await upsert(
+          e.copyWith(
+            publicId: publicEntry.publicId,
+            origin: TagOrigin.favorited,
+          ),
+        );
       }
       return false;
     }
-    await upsert(TagEntry(
-      id: 'fav_${DateTime.now().millisecondsSinceEpoch}',
-      category: publicEntry.category,
-      name: publicEntry.name,
-      positive: publicEntry.positive,
-      negative: publicEntry.negative,
-      aliases: publicEntry.aliases,
-      origin: TagOrigin.favorited,
-      publicId: publicEntry.publicId,
-      previews: publicEntry.previews,
-      createdAt: DateTime.now().millisecondsSinceEpoch,
-      createdBy: publicEntry.createdBy,
-    ));
+    await upsert(
+      TagEntry(
+        id: 'fav_${DateTime.now().millisecondsSinceEpoch}',
+        category: publicEntry.category,
+        name: publicEntry.name,
+        positive: publicEntry.positive,
+        negative: publicEntry.negative,
+        aliases: publicEntry.aliases,
+        origin: TagOrigin.favorited,
+        publicId: publicEntry.publicId,
+        previews: publicEntry.previews,
+        createdAt: DateTime.now().millisecondsSinceEpoch,
+        createdBy: publicEntry.createdBy,
+      ),
+    );
     return true;
   }
 
@@ -228,26 +246,41 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
   Future<bool> addPoolTag(TagCategory c, String tag) async {
     final t = tag.trim();
     if (t.isEmpty || _s.knownTags(c).contains(t)) return false;
-    await _set(_s.copyWith(
-      pools: {..._s.pools, c: [..._s.poolOf(c), t]..sort()},
-    ));
+    await _set(
+      _s.copyWith(
+        pools: {
+          ..._s.pools,
+          c: [..._s.poolOf(c), t]..sort(),
+        },
+      ),
+    );
     return true;
   }
 
   /// 删池中标签,并从该分类所有条目上剥离(对齐 web handleSavePool)。
   Future<void> removePoolTag(TagCategory c, String tag) async {
-    await _set(_s.copyWith(
-      pools: {
-        ..._s.pools,
-        c: [for (final t in _s.poolOf(c)) if (t != tag) t],
-      },
-      entries: [
-        for (final e in _s.entries)
-          e.category == c && e.tags.contains(tag)
-              ? e.copyWith(tags: [for (final t in e.tags) if (t != tag) t])
-              : e,
-      ],
-    ));
+    await _set(
+      _s.copyWith(
+        pools: {
+          ..._s.pools,
+          c: [
+            for (final t in _s.poolOf(c))
+              if (t != tag) t,
+          ],
+        },
+        entries: [
+          for (final e in _s.entries)
+            e.category == c && e.tags.contains(tag)
+                ? e.copyWith(
+                    tags: [
+                      for (final t in e.tags)
+                        if (t != tag) t,
+                    ],
+                  )
+                : e,
+        ],
+      ),
+    );
   }
 
   int poolTagUsage(TagCategory c, String tag) {
@@ -262,10 +295,12 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
 
   Future<void> markUsed(TagCategory c, List<String> ids) async {
     final old = _s.usage[c] ?? const <String>[];
-    final next = [...ids, for (final id in old) if (!ids.contains(id)) id];
-    await _set(_s.copyWith(
-      usage: {..._s.usage, c: next.take(50).toList()},
-    ));
+    final next = [
+      ...ids,
+      for (final id in old)
+        if (!ids.contains(id)) id,
+    ];
+    await _set(_s.copyWith(usage: {..._s.usage, c: next.take(50).toList()}));
   }
 
   // ---- 云备份 ----

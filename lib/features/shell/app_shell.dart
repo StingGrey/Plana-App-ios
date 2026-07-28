@@ -1,9 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/auth/bot_session_store.dart';
 import '../../core/auth/token_store.dart';
 import '../../core/net/backend_config.dart';
+import '../../core/store/app_stores.dart';
+import '../../core/store/prefs_store.dart';
 import '../../core/theme/app_theme.dart';
 import '../gallery/gallery_page.dart';
 import '../gallery/gallery_state.dart';
@@ -13,6 +17,8 @@ import '../generate/widgets/common.dart' show hintSnack;
 import '../inpaint/inpaint_overlay.dart';
 import '../inspiration/inspiration_page.dart';
 import '../profile/profile_page.dart';
+import '../update/update_service.dart';
+import '../update/update_sheet.dart' show showUpdateSheet;
 import 'shell_state.dart';
 
 /// 全局骨架:4 tab 底部导航 + PageView 左右滑动切页(手势滑 + 点按/程序跳转都走同一索引)。
@@ -35,6 +41,8 @@ class _AppShellState extends ConsumerState<AppShell> {
     ProfilePage(),
   ];
 
+  Timer? _updateTimer;
+
   @override
   void initState() {
     super.initState();
@@ -43,10 +51,45 @@ class _AppShellState extends ConsumerState<AppShell> {
     ref.read(tokenProvider);
     ref.read(botSessionProvider);
     ref.read(backendBaseProvider);
+    _scheduleAutoCheck();
+  }
+
+  /// 冷启动静默查一次更新(24h 节流)。
+  ///
+  /// 延后 3 秒:启动那几帧要留给首页和鉴权预热,更新弹层不是急事。计时器**必须
+  /// 存下来并在 dispose 取消** —— 裸 `Future.delayed` 在页面提前销毁后照样会醒,
+  /// 属于真实泄漏(widget 冒烟测试会直接报 pending timer)。
+  void _scheduleAutoCheck() {
+    final prefs = ref.read(prefsStoreProvider);
+    if (!shouldAutoCheck(prefs)) return;
+    _updateTimer = Timer(
+      const Duration(seconds: 3),
+      () => _autoCheckUpdate(prefs),
+    );
+  }
+
+  /// **只在真有新版时弹**,查不到/网络不通一律无声吞掉 —— 用户没主动要求检查,
+  /// 不该为此看到任何失败提示。
+  Future<void> _autoCheckUpdate(PrefsStore prefs) async {
+    if (!mounted) return;
+    try {
+      final installed = await installedInfo();
+      if (!installed.isKnown) return; // 非 Android / 通道缺失
+      final release = await fetchLatestRelease(installed.versionName);
+      await markUpdateChecked(prefs);
+      if (release == null || !mounted) return;
+      await showUpdateSheet(
+        context,
+        UpdateCheck(installed: installed, release: release),
+      );
+    } catch (_) {
+      // 静默:后台检查失败不打扰
+    }
   }
 
   @override
   void dispose() {
+    _updateTimer?.cancel();
     _pc.dispose();
     super.dispose();
   }

@@ -21,8 +21,11 @@ linter:
   # `// ignore_for_file: name_of_lint` syntax on the line or in the file
   # producing the lint.
   rules:
-    # avoid_print: false  # Uncomment to disable the `avoid_print` rule
-    # prefer_single_quotes: true  # Uncomment to enable the `prefer_single_quotes` rule
+    # 「发射后不管」的 Future 必须显式 unawaited() 标注。
+    # 目的不是禁止 fire-and-forget(项目里有 26 处是刻意的),而是让**漏写
+    # await** 无处藏身 —— 二者在代码里长得一模一样,不标注就永远分不出来。
+    # 见 docs/audit-findings.md §2 S2-05。
+    - unawaited_futures
 
 # Additional information about this file can be found at
 # https://dart.dev/guides/language/analysis-options

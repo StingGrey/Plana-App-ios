@@ -14,8 +14,9 @@ import '../vibe_library/naiv4vibe_codec.dart' show jsNum, kModelToEncodingKey;
 ///
 /// 模型段统一存 encodings 键(v4-5full 等),curated 与 curated-preview 归并。
 /// 旧版单 JSON(vibe_encode_cache.json,LRU 48 条)首次加载时自动迁移。
-final vibeCacheProvider =
-    FutureProvider<VibeEncodeCache>((ref) => VibeEncodeCache.load());
+final vibeCacheProvider = FutureProvider<VibeEncodeCache>(
+  (ref) => VibeEncodeCache.load(),
+);
 
 class VibeEncodeCache {
   VibeEncodeCache._(this._dir, this._names);
@@ -53,8 +54,9 @@ class VibeEncodeCache {
               if (parts.length != 3) continue;
               final ie = double.tryParse(parts[2]);
               if (ie == null) continue;
-              await File('${dir.path}/${_fileName(parts[0], parts[1], ie)}')
-                  .writeAsString(v);
+              await File(
+                '${dir.path}/${_fileName(parts[0], parts[1], ie)}',
+              ).writeAsString(v);
             }
           }
           await legacy.delete();
@@ -87,7 +89,12 @@ class VibeEncodeCache {
     }
   }
 
-  Future<void> put(String imageHash, String model, double ie, String encoding) async {
+  Future<void> put(
+    String imageHash,
+    String model,
+    double ie,
+    String encoding,
+  ) async {
     final n = _fileName(imageHash, model, ie);
     try {
       await File('${_dir.path}/$n').writeAsString(encoding);
@@ -115,6 +122,23 @@ class VibeEncodeCache {
     } catch (_) {}
     _names.clear();
     _mem.clear();
+  }
+
+  /// 图字节哈希 → 已缓存的模型键集合。库列表一次建表用:每张卡各扫一遍全表
+  /// 是 O(卡数 × 缓存条数)。
+  Map<String, Set<String>> modelKeysByImage() {
+    final out = <String, Set<String>>{};
+    for (final n in {..._names, ..._mem.keys}) {
+      if (!n.endsWith('.enc')) continue;
+      // 文件名 {哈希}_{模型键}_{IE}.enc:哈希是十六进制不含 _,
+      // 模型键含 - 不含 _,所以首尾两个 _ 就是分界。
+      final rest = n.substring(0, n.length - 4);
+      final i = rest.indexOf('_');
+      final j = rest.lastIndexOf('_');
+      if (i <= 0 || j <= i) continue;
+      (out[rest.substring(0, i)] ??= <String>{}).add(rest.substring(i + 1, j));
+    }
+    return out;
   }
 
   /// 某张图已缓存的编码清单(modelKey + IE)——编码清单展示与导出收集用。

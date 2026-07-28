@@ -9,8 +9,9 @@ enum AuthMode { token, bot }
 const _modeKey = 'auth_mode';
 
 /// 当前接入方式;`null` = 尚未选择(首启走引导页)。
-final authModeProvider =
-    AsyncNotifierProvider<AuthModeNotifier, AuthMode?>(AuthModeNotifier.new);
+final authModeProvider = AsyncNotifierProvider<AuthModeNotifier, AuthMode?>(
+  AuthModeNotifier.new,
+);
 
 class AuthModeNotifier extends AsyncNotifier<AuthMode?> {
   FlutterSecureStorage get _storage => ref.read(secureStorageProvider);

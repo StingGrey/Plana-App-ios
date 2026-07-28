@@ -1,0 +1,990 @@
+import 'dart:async';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../core/auth/auth_mode.dart';
+import '../../core/auth/bot_session_store.dart';
+import '../../core/auth/token_probe.dart';
+import '../../core/auth/token_store.dart';
+import '../../core/live_progress/live_progress.dart';
+import '../../core/net/nai_client.dart';
+import '../../core/store/gen_settings.dart';
+import '../../core/theme/app_theme.dart';
+import '../../core/theme/theme_settings.dart';
+import '../profile/widgets/token_status.dart';
+import 'bot_auth_panel.dart';
+import '../../core/util/haptics.dart';
+
+/// 首启欢迎流程:欢迎 → 外观 → 接入 → 通知,共 4 页。
+/// 内容居中,页间横滑,元素错峰浮现;凭据在本页内就地配完,不再跳出去。
+class WelcomePage extends ConsumerStatefulWidget {
+  const WelcomePage({super.key});
+
+  @override
+  ConsumerState<WelcomePage> createState() => _WelcomePageState();
+}
+
+class _WelcomePageState extends ConsumerState<WelcomePage> {
+  static const _pageCount = 6;
+
+  final _pager = PageController();
+  int _index = 0;
+  bool _finishing = false;
+
+  /// 当前「算作激活」的页:滑过半程就翻牌,入场动画在拖动途中就开始演,
+  /// 而不是等停稳(PageView 会提前建好各页,不这样每页的入场都在看不见时演完)。
+  final _active = ValueNotifier<int>(0);
+
+  @override
+  void initState() {
+    super.initState();
+    _pager.addListener(_onScroll);
+  }
+
+  void _onScroll() {
+    final p = (_pager.page ?? 0).round();
+    if (p != _active.value) _active.value = p;
+  }
+
+  @override
+  void dispose() {
+    _pager
+      ..removeListener(_onScroll)
+      ..dispose();
+    _active.dispose();
+    super.dispose();
+  }
+
+  /// 每页外面套一层:激活状态变化时,页内元素重放错峰入场。
+  Widget _page(int index, Widget Function(bool active) build) =>
+      ValueListenableBuilder<int>(
+        valueListenable: _active,
+        builder: (_, a, _) => build(a == index),
+      );
+
+  void _next() {
+    if (_index >= _pageCount - 1) return;
+    _pager.nextPage(duration: Motion.medium, curve: Motion.emphasized);
+  }
+
+  /// 通知那页的选择:开则拉系统权限,记下开关,进完成页。
+  /// 不等落盘——patch 会先同步改状态,落盘是尽力而为,等它反而卡住翻页。
+  void _notifyChoice(bool on) {
+    if (on) LiveProgress.instance.ensurePermission();
+    ref
+        .read(genSettingsProvider.notifier)
+        .patch((s) => s.copyWith(genNotify: on));
+    _next();
+  }
+
+  /// 收尾:兜底接入方式 → 记「引导已过」→ gate 换主界面。
+  /// 全程没选接入方式的按直连处理,否则 gate 会把人又弹回来。
+  void _finish() {
+    if (_finishing) return;
+    setState(() => _finishing = true);
+    if (ref.read(authModeProvider).value == null) {
+      ref.read(authModeProvider.notifier).set(AuthMode.token);
+    }
+    ref
+        .read(genSettingsProvider.notifier)
+        .patch((s) => s.copyWith(notifyPrimed: true));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    final last = _index == _pageCount - 1;
+    final mode = ref.watch(authModeProvider).value;
+    final hasToken = (ref.watch(tokenProvider).value ?? '').isNotEmpty;
+    final hasBot = ref.watch(botSessionProvider).value != null;
+
+    // 接入页要「配好」才放行:选直连得真存了令牌,选 Bot 则下一页去授权。
+    // 光点中直连却没填令牌,等于什么都没配,只能走「暂时跳过」。
+    final needPick =
+        _index == 2 && (mode == null || (mode == AuthMode.token && !hasToken));
+    // Bot 授权页:选了 Bot 生成就非授权不可(不然根本生成不了),不给跳过;
+    // 只为增强功能来的(生成走直连)则主按钮直接叫「跳过」。
+    final botPage = _index == 3 && !hasBot;
+    final mustAuth = botPage && mode == AuthMode.bot;
+    final skipBot = botPage && !mustAuth;
+    final notifyPage = _index == 4;
+
+    return Scaffold(
+      body: SafeArea(
+        child: Column(
+          children: [
+            Expanded(
+              child: PageView(
+                controller: _pager,
+                onPageChanged: (i) => setState(() => _index = i),
+                children: [
+                  _page(0, (a) => _IntroStep(active: a)),
+                  _page(1, (a) => _AppearanceStep(active: a)),
+                  _page(2, (a) => _AccessStep(active: a)),
+                  _page(3, (a) => _BotStep(active: a)),
+                  _page(4, (a) => _NotifyStep(active: a)),
+                  _page(5, (a) => _DoneStep(active: a)),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 8, 24, 12),
+              child: Column(
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      for (var i = 0; i < _pageCount; i++)
+                        AnimatedContainer(
+                          duration: Motion.fast,
+                          curve: Motion.standard,
+                          margin: const EdgeInsets.symmetric(horizontal: 3),
+                          width: i == _index ? 20 : 7,
+                          height: 7,
+                          decoration: BoxDecoration(
+                            color: i == _index
+                                ? scheme.primary
+                                : scheme.outlineVariant,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  FilledButton(
+                    onPressed: last
+                        ? (_finishing ? null : _finish)
+                        : notifyPage
+                        ? () => _notifyChoice(true)
+                        : (needPick || mustAuth ? null : _next),
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size.fromHeight(50),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(25),
+                      ),
+                    ),
+                    child: Text(
+                      last
+                          ? '开始使用'
+                          : notifyPage
+                          ? '开启通知'
+                          : skipBot
+                          ? '跳过'
+                          : '下一步',
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                  // 次要出口:通知页「暂不开启」,接入页「暂时跳过」(按直连处理)
+                  SizedBox(
+                    height: 40,
+                    child: notifyPage
+                        ? TextButton(
+                            onPressed: () => _notifyChoice(false),
+                            child: const Text('暂不开启'),
+                          )
+                        : needPick
+                        ? TextButton(
+                            onPressed: () {
+                              ref
+                                  .read(authModeProvider.notifier)
+                                  .set(AuthMode.token);
+                              _next();
+                            },
+                            child: const Text('暂时跳过'),
+                          )
+                        : null,
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 每页统一骨架:内容整体居中,翻到本页时元素自下而上错峰淡入。
+class _Step extends StatelessWidget {
+  const _Step({
+    required this.icon,
+    required this.title,
+    required this.active,
+    this.desc,
+    this.child,
+  });
+
+  final IconData icon;
+  final String title;
+
+  /// 是否为当前页;转 true 时重放入场。
+  final bool active;
+  final String? desc;
+  final Widget? child;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(26, 20, 26, 12),
+      child: ConstrainedBox(
+        // 撑满可视高度才能真正居中,内容超高时退化为可滚
+        constraints: BoxConstraints(
+          minHeight:
+              MediaQuery.sizeOf(context).height -
+              MediaQuery.paddingOf(context).vertical -
+              200,
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            _Rise(
+              active: active,
+              delayMs: 0,
+              child: Container(
+                width: 68,
+                height: 68,
+                decoration: BoxDecoration(
+                  color: scheme.primaryContainer,
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(icon, size: 32, color: scheme.onPrimaryContainer),
+              ),
+            ),
+            const SizedBox(height: 20),
+            _Rise(
+              active: active,
+              delayMs: 90,
+              child: Text(
+                title,
+                textAlign: TextAlign.center,
+                style: context.texts.headlineSmall!.copyWith(
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+            if (desc != null) ...[
+              const SizedBox(height: 8),
+              _Rise(
+                active: active,
+                delayMs: 160,
+                child: Text(
+                  desc!,
+                  textAlign: TextAlign.center,
+                  style: context.texts.bodyMedium!.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
+            if (child != null) ...[
+              const SizedBox(height: 26),
+              _Rise(active: active, delayMs: 230, child: child!),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 自下而上淡入(延时错峰)。每次所在页被激活都重放,
+/// 离开则复位——否则 PageView 预建各页,入场全在看不见时演完了。
+class _Rise extends StatefulWidget {
+  const _Rise({required this.child, required this.active, this.delayMs = 0});
+
+  final Widget child;
+  final bool active;
+  final int delayMs;
+
+  @override
+  State<_Rise> createState() => _RiseState();
+}
+
+class _RiseState extends State<_Rise> with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: Motion.slow,
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.active) _play();
+  }
+
+  @override
+  void didUpdateWidget(_Rise old) {
+    super.didUpdateWidget(old);
+    if (widget.active && !old.active) {
+      _play();
+    } else if (!widget.active && old.active) {
+      _c.value = 0; // 复位,下次进来重演
+    }
+  }
+
+  void _play() {
+    Future<void>.delayed(Duration(milliseconds: widget.delayMs), () {
+      if (mounted && widget.active) _c.forward(from: 0);
+    });
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final curved = CurvedAnimation(parent: _c, curve: Motion.emphasized);
+    return FadeTransition(
+      opacity: curved,
+      child: SlideTransition(
+        position: Tween(
+          begin: const Offset(0, .1),
+          end: Offset.zero,
+        ).animate(curved),
+        child: widget.child,
+      ),
+    );
+  }
+}
+
+// ── 1 欢迎 ────────────────
+
+class _IntroStep extends StatelessWidget {
+  const _IntroStep({required this.active});
+
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return _Step(
+      active: active,
+      icon: Icons.auto_awesome,
+      title: '欢迎使用 Plana',
+      desc: 'NovelAI 移动创作端',
+      child: Column(
+        children: [
+          for (final f in const [
+            (Icons.edit_note, '全屏提示词编辑器'),
+            (Icons.photo_library_outlined, '图库留参数,随时复现'),
+            (Icons.auto_fix_high, 'Vibe · 参考 · 重绘 · 超分'),
+          ])
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(f.$1, size: 17, color: scheme.onSurfaceVariant),
+                  const SizedBox(width: 9),
+                  Text(
+                    f.$2,
+                    style: context.texts.bodySmall!.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── 2 外观(选中即时换肤) ────────────────
+
+class _AppearanceStep extends ConsumerWidget {
+  const _AppearanceStep({required this.active});
+
+  final bool active;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final ts = ref.watch(themeSettingsProvider);
+    final notifier = ref.read(themeSettingsProvider.notifier);
+    final scheme = context.scheme;
+    return _Step(
+      active: active,
+      icon: Icons.color_lens_outlined,
+      title: '外观配色',
+      child: Column(
+        children: [
+          SizedBox(
+            width: double.infinity,
+            child: SegmentedButton<ThemeMode>(
+              segments: const [
+                ButtonSegment(value: ThemeMode.system, label: Text('跟随系统')),
+                ButtonSegment(value: ThemeMode.light, label: Text('浅色')),
+                ButtonSegment(value: ThemeMode.dark, label: Text('深色')),
+              ],
+              selected: {ts.mode},
+              onSelectionChanged: (s) =>
+                  notifier.patch((x) => x.copyWith(mode: s.first)),
+              showSelectedIcon: false,
+            ),
+          ),
+          const SizedBox(height: 24),
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            alignment: WrapAlignment.center,
+            children: [
+              for (final s in themeSeeds)
+                InkWell(
+                  onTap: () =>
+                      notifier.patch((x) => x.copyWith(seedKey: s.key)),
+                  customBorder: const CircleBorder(),
+                  child: AnimatedContainer(
+                    duration: Motion.fast,
+                    width: 42,
+                    height: 42,
+                    padding: const EdgeInsets.all(3),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        width: 2,
+                        color: s.key == ts.seed.key
+                            ? scheme.onSurface
+                            : Colors.transparent,
+                      ),
+                    ),
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: s.color,
+                        shape: BoxShape.circle,
+                      ),
+                      child: s.key == ts.seed.key
+                          ? Icon(
+                              Icons.check,
+                              size: 17,
+                              color:
+                                  ThemeData.estimateBrightnessForColor(
+                                        s.color,
+                                      ) ==
+                                      Brightness.dark
+                                  ? Colors.white
+                                  : Colors.black87,
+                            )
+                          : null,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── 3 接入(就地配完,不跳页) ────────────────
+
+class _AccessStep extends ConsumerStatefulWidget {
+  const _AccessStep({required this.active});
+
+  final bool active;
+
+  @override
+  ConsumerState<_AccessStep> createState() => _AccessStepState();
+}
+
+class _AccessStepState extends ConsumerState<_AccessStep>
+    with SingleTickerProviderStateMixin {
+  final _tokenCtrl = TextEditingController();
+  bool _obscure = true;
+  bool _saving = false;
+
+  /// 两张卡共用的切换动画:0 = 直连展开,1 = Bot 展开。
+  /// 一条补间此消彼长,总高度单调变化,页面居中也不会被顶得一晃。
+  late final AnimationController _swap = AnimationController(
+    vsync: this,
+    duration: Motion.medium,
+    value: ref.read(authModeProvider).value == AuthMode.bot ? 1 : 0,
+  );
+
+  late final Animation<double> _botExpand = CurvedAnimation(
+    parent: _swap,
+    curve: Motion.emphasized,
+    reverseCurve: Motion.emphasized.flipped,
+  );
+
+  late final Animation<double> _tokenExpand = ReverseAnimation(_botExpand);
+
+  late final TokenProbe _probe = TokenProbe(
+    (t) => ref.read(naiClientProvider).subscription(t),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    _tokenCtrl.addListener(_onInput);
+    _probe.addListener(_onProbe);
+  }
+
+  void _onProbe() {
+    if (mounted) setState(() {});
+  }
+
+  void _onInput() {
+    setState(() {});
+    _probe.input(_tokenCtrl.text);
+  }
+
+  @override
+  void dispose() {
+    _swap.dispose();
+    _probe
+      ..removeListener(_onProbe)
+      ..dispose();
+    _tokenCtrl
+      ..removeListener(_onInput)
+      ..dispose();
+    super.dispose();
+  }
+
+  Future<void> _paste() async {
+    final d = await Clipboard.getData(Clipboard.kTextPlain);
+    final t = d?.text?.trim();
+    if (t == null || t.isEmpty) return;
+    _tokenCtrl.text = t;
+    _tokenCtrl.selection = TextSelection.collapsed(
+      offset: _tokenCtrl.text.length,
+    );
+  }
+
+  Future<void> _saveToken() async {
+    final t = _tokenCtrl.text.trim();
+    if (t.isEmpty) return;
+    setState(() => _saving = true);
+    await ref.read(tokenProvider.notifier).save(t);
+    if (!mounted) return;
+    setState(() => _saving = false);
+    await ref.read(authModeProvider.notifier).set(AuthMode.token);
+    if (mounted) Haptics.selection();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final mode = ref.watch(authModeProvider).value;
+    final savedToken = (ref.watch(tokenProvider).value ?? '').isNotEmpty;
+    final hasBot = ref.watch(botSessionProvider).value != null;
+    final scheme = context.scheme;
+
+    // 模式变化(含外部改动)驱动共享补间;没选过时两张卡都收着
+    final bot = mode == AuthMode.bot;
+    ref.listen(authModeProvider, (_, next) {
+      final toBot = next.value == AuthMode.bot;
+      if (toBot && _swap.status != AnimationStatus.forward) {
+        _swap.forward();
+      } else if (!toBot && _swap.status != AnimationStatus.reverse) {
+        _swap.reverse();
+      }
+    });
+
+    return _Step(
+      active: widget.active,
+      icon: Icons.key,
+      title: '生成接入方式',
+      desc: '之后可在「我的」里改',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _AccessCard(
+            icon: Icons.vpn_key,
+            title: '直连 NovelAI Token',
+            note: savedToken ? '已保存' : null,
+            selected: !bot,
+            expand: _tokenExpand,
+            onSelect: () =>
+                ref.read(authModeProvider.notifier).set(AuthMode.token),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                TextField(
+                  controller: _tokenCtrl,
+                  obscureText: _obscure,
+                  autocorrect: false,
+                  enableSuggestions: false,
+                  keyboardType: TextInputType.visiblePassword,
+                  style: mono(context, size: 12),
+                  decoration: InputDecoration(
+                    isDense: true,
+                    filled: true,
+                    fillColor: scheme.surfaceContainerHigh,
+                    hintText: 'pst-…',
+                    hintStyle: TextStyle(color: scheme.outline),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide.none,
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 12,
+                    ),
+                    suffixIcon: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          onPressed: _paste,
+                          icon: const Icon(Icons.content_paste, size: 18),
+                          color: scheme.onSurfaceVariant,
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        IconButton(
+                          onPressed: () => setState(() => _obscure = !_obscure),
+                          icon: Icon(
+                            _obscure ? Icons.visibility : Icons.visibility_off,
+                            size: 18,
+                          ),
+                          color: scheme.onSurfaceVariant,
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: tokenStatusLine(
+                        context,
+                        _probe,
+                        onRetry: () => _probe.run(_tokenCtrl.text),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    FilledButton.tonal(
+                      onPressed: _tokenCtrl.text.trim().isEmpty || _saving
+                          ? null
+                          : _saveToken,
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size(72, 38),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      child: Text(_saving ? '保存中' : '保存'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          _AccessCard(
+            icon: Icons.smart_toy_outlined,
+            title: '用 Bot 账户生成',
+            note: hasBot ? '已授权' : null,
+            selected: bot,
+            expand: _botExpand,
+            onSelect: () =>
+                ref.read(authModeProvider.notifier).set(AuthMode.bot),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 接入卡(轻量描边式):不填底色,选中只加主色描边 + 对勾,
+/// 表单直接排在卡内、不再套第二层容器。
+/// 展开高度由外部传入的 [expand] 驱动(两张卡共用一条补间)。
+class _AccessCard extends StatelessWidget {
+  const _AccessCard({
+    required this.icon,
+    required this.title,
+    required this.selected,
+    required this.expand,
+    required this.onSelect,
+    this.child,
+    this.note,
+  });
+
+  final IconData icon;
+  final String title;
+  final bool selected;
+  final Animation<double> expand;
+  final VoidCallback onSelect;
+
+  /// 选中后展开的表单;null = 这张卡没有可配的东西(选中只是选中)。
+  final Widget? child;
+
+  /// 右侧状态角标(已保存 / 已授权)。
+  final String? note;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return AnimatedContainer(
+      duration: Motion.fast,
+      curve: Motion.standard,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          width: selected ? 2 : 1.5,
+          color: selected ? scheme.primary : scheme.outlineVariant,
+        ),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Material(
+        color: Colors.transparent,
+        child: Column(
+          children: [
+            InkWell(
+              onTap: onSelect,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(13, 12, 13, 12),
+                child: Row(
+                  children: [
+                    Icon(
+                      icon,
+                      size: 18,
+                      color: selected
+                          ? scheme.primary
+                          : scheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 9),
+                    Expanded(
+                      child: Text(
+                        title,
+                        style: context.texts.titleSmall!.copyWith(
+                          fontWeight: FontWeight.w600,
+                          color: selected
+                              ? scheme.onSurface
+                              : scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                    if (note != null)
+                      Text(
+                        note!,
+                        style: context.texts.labelSmall!.copyWith(
+                          color: scheme.tertiary,
+                        ),
+                      ),
+                    if (selected) ...[
+                      const SizedBox(width: 6),
+                      Icon(Icons.check_circle, size: 16, color: scheme.primary),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            if (child != null)
+              SizeTransition(
+                sizeFactor: expand,
+                alignment: Alignment.topCenter,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(13, 0, 13, 13),
+                  child: child,
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── 4 Bot 授权(与生成方式解耦:选 Key 的人也能授权拿增强功能) ────────────────
+
+class _BotStep extends ConsumerWidget {
+  const _BotStep({required this.active});
+
+  final bool active;
+
+  /// 授权后解锁的东西。只列「没会话就真的用不了」的:
+  /// 翻译、统计这类离线本来就有,不算解锁项。
+  static const _perks = <(IconData, String)>[
+    (Icons.model_training, '额外模型:Anima'),
+    (Icons.auto_awesome, '增强标签补全'),
+    (Icons.travel_explore, '公共库:Vibe · 画师串 · 角色 OC'),
+    (Icons.cloud_upload_outlined, '云备份:Vibe 库与标签库跨设备同步'),
+    (Icons.image_search, '图片反推标签(WD Tagger)'),
+  ];
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final scheme = context.scheme;
+    final hasBot = ref.watch(botSessionProvider).value != null;
+    final needForGen = ref.watch(authModeProvider).value == AuthMode.bot;
+
+    return _Step(
+      active: active,
+      icon: Icons.smart_toy_outlined,
+      title: 'Bot 授权',
+      desc: needForGen
+          ? '你选了用 Bot 账户生成,需要先授权'
+          : hasBot
+          ? ''
+          : '授权后解锁这些功能',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (final p in _perks)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 9),
+              child: Row(
+                children: [
+                  Icon(
+                    hasBot ? Icons.check : p.$1,
+                    size: 16,
+                    color: hasBot ? scheme.tertiary : scheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      p.$2,
+                      style: context.texts.bodySmall!.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          const SizedBox(height: 12),
+          if (hasBot)
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.verified_outlined, size: 17, color: scheme.tertiary),
+                const SizedBox(width: 6),
+                Text(
+                  '已授权',
+                  style: context.texts.bodyMedium!.copyWith(
+                    color: scheme.tertiary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            )
+          else
+            const BotAuthPanel(compact: true),
+        ],
+      ),
+    );
+  }
+}
+
+// ── 5 通知 ────────────────
+
+class _NotifyStep extends StatelessWidget {
+  const _NotifyStep({required this.active});
+
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    return _Step(
+      active: active,
+      icon: Icons.notifications_active_outlined,
+      title: '生成进度通知',
+      desc: '开启后可接收生成进度及完成通知,Android 16+ 支持灵动岛显示',
+    );
+  }
+}
+
+// ── 6 完成 ────────────────
+
+/// 庆祝页:一个放大浮现的对勾 + 一句「全部完成」,再无别的。
+class _DoneStep extends StatelessWidget {
+  const _DoneStep({required this.active});
+
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _Pop(
+            active: active,
+            child: Container(
+              width: 108,
+              height: 108,
+              decoration: BoxDecoration(
+                color: scheme.primaryContainer,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                Icons.check_rounded,
+                size: 58,
+                color: scheme.onPrimaryContainer,
+              ),
+            ),
+          ),
+          const SizedBox(height: 26),
+          _Rise(
+            active: active,
+            delayMs: 220,
+            child: Text(
+              '全部完成',
+              style: context.texts.headlineSmall!.copyWith(
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 弹入:回弹式放大 + 淡入(庆祝页的对勾用)。
+class _Pop extends StatefulWidget {
+  const _Pop({required this.child, required this.active});
+
+  final Widget child;
+  final bool active;
+
+  @override
+  State<_Pop> createState() => _PopState();
+}
+
+class _PopState extends State<_Pop> with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 620),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.active) _c.forward();
+  }
+
+  @override
+  void didUpdateWidget(_Pop old) {
+    super.didUpdateWidget(old);
+    if (widget.active && !old.active) {
+      _c.forward(from: 0);
+    } else if (!widget.active && old.active) {
+      _c.value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => ScaleTransition(
+    scale: CurvedAnimation(parent: _c, curve: Curves.elasticOut),
+    child: FadeTransition(
+      opacity: CurvedAnimation(
+        parent: _c,
+        curve: const Interval(0, .35, curve: Curves.easeOut),
+      ),
+      child: widget.child,
+    ),
+  );
+}

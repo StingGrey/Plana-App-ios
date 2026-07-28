@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -6,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/net/anlas_provider.dart';
+import '../../core/store/app_stores.dart';
 import '../../core/theme/app_theme.dart';
 import '../gallery/gallery_state.dart';
 import '../generate/cost.dart';
@@ -15,6 +17,7 @@ import '../generate/res_rules.dart' show kFreePixelThreshold;
 import '../generate/widgets/common.dart' show hintSnack;
 import '../shell/shell_state.dart';
 import 'inpaint_ops.dart';
+import '../../core/util/haptics.dart';
 
 /// 内容层功能色(画在图片上,与 app 主题无关):
 /// 遮罩紫与 web 一致;裁切青取深档保证浅色底上可读。
@@ -27,12 +30,20 @@ const _maxSendPixels = 1024 * 3072;
 
 /// 一次重绘编辑会话:进入编辑器所需的图与参数快照。
 class InpaintSession {
-  const InpaintSession({required this.imageBytes, required this.input});
+  const InpaintSession({
+    required this.imageBytes,
+    required this.input,
+    this.sourceId,
+  });
 
   final Uint8List imageBytes;
 
   /// 参数快照(原图快照或当前创作页状态),重绘沿用其 prompt/角色/vibe 等。
   final GenerateState input;
+
+  /// 源图的图库 id。非空时蒙版按这张图记忆:进来恢复、离开保存。
+  /// 从创作页等无图库归属的入口进来时为 null,蒙版仅本次会话有效。
+  final String? sourceId;
 }
 
 /// 当前重绘会话;非空时图库页原地切入编辑面板(shell 同时锁 tab 切换)。
@@ -45,8 +56,16 @@ class InpaintSessionNotifier extends Notifier<InpaintSession?> {
   @override
   InpaintSession? build() => null;
 
-  void open({required Uint8List imageBytes, required GenerateState input}) {
-    state = InpaintSession(imageBytes: imageBytes, input: input);
+  void open({
+    required Uint8List imageBytes,
+    required GenerateState input,
+    String? sourceId,
+  }) {
+    state = InpaintSession(
+      imageBytes: imageBytes,
+      input: input,
+      sourceId: sourceId,
+    );
   }
 
   void close() => state = null;
@@ -59,7 +78,7 @@ const _assistGapPx = 110.0;
 
 enum _SliderTarget { brush, strength }
 
-enum _CropHandle { move, nw, ne, sw, se }
+enum _CropEdge { left, top, right, bottom }
 
 enum _ExpandHandle { top, bottom, left, right }
 
@@ -103,6 +122,16 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   bool _assist = false; // 偏位套杆:光标偏于触点上方,手指不挡涂抹点
   Offset? _fingerAt; // 偏位模式下手指把手位置(图坐标),painter 画杆用
   bool _cropMode = false;
+
+  /// 用户手动关掉过局部框 —— 之后不再自作主张替他打开。
+  bool _cropOptOut = false;
+
+  /// 用户拉过边 —— 之后 [_autoCrop] 只扩不缩,不再把框收回遮罩大小。
+  bool _cropResized = false;
+
+  _CropEdge? _cropDrag;
+  IntRect? _cropStart;
+  Offset? _cropDragFrom;
   IntRect? _crop; // 发送框(w/h 恒 64 倍数)
   double _brush = 50; // 笔刷直径(图像素),对齐 web 默认
   double _strength = 0.7;
@@ -139,13 +168,19 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   Offset? _pzOffset0;
   Offset? _pzFocal0;
   double _pzGesture0 = 1;
-  _CropHandle? _cropDrag;
-  IntRect? _cropStart;
-  Offset? _dragStart; // 拖拽起点(图坐标)
 
   int _rev = 0; // 遮罩版本号(驱动重绘与 rects 缓存)
   List<ui.Rect>? _rectsCache;
   int _rectsRev = -1;
+  ui.Path? _outlineCache;
+  int _outlineRev = -1;
+
+  /// 遮罩只画轮廓、不铺实心。重绘完成时置位,再次动笔(涂/擦/撤销/清空)复位。
+  ///
+  /// 55% 实心紫盖住的正是唯一变化的那块 —— 出图后不摘掉就没法看结果,
+  /// 「按住对比」也只有"前"那半是干净的。桌面端靠鼠标悬停临时摘遮罩,
+  /// 触屏没有悬停,索性让它在该看结果的时候自己让开。
+  bool _maskAsOutline = false;
 
   // 会话内当前底图:每次重绘完成后替换为新结果(遮罩保留,可连环重抽)
   late Uint8List _currentBytes = widget.session.imageBytes;
@@ -179,16 +214,34 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
       setState(() {
         _img = frame.image;
         _grid = MaskGrid(frame.image.width, frame.image.height);
-        // 超出免费分辨率阈值默认开局部,省点数(对齐 web 桌面端)
-        if (frame.image.width * frame.image.height > kFreePixelThreshold) {
-          _cropMode = true;
-          _crop = _defaultCrop(frame.image.width, frame.image.height);
-        }
       });
-      _ac.forward();
+      await _restoreMask();
+      unawaited(_ac.forward());
     } catch (_) {
       if (mounted) ref.read(inpaintSessionProvider.notifier).close();
     }
+  }
+
+  /// 恢复这张图上次留下的蒙版(按图库 id 记忆)。
+  /// 尺寸对不上(扩过图/裁过)时 [MaskGrid.decodeInto] 会拒绝,保持空白重涂。
+  Future<void> _restoreMask() async {
+    final id = widget.session.sourceId;
+    final grid = _grid;
+    if (id == null || grid == null) return;
+    final data = await ref.read(appStoresProvider).gallery.readMask(id);
+    if (data == null || !mounted) return;
+    if (grid.decodeInto(data)) setState(() => _rev++);
+  }
+
+  /// 把当前蒙版存回这张图(空蒙版=清除记录)。离开面板与发起重绘时各调一次。
+  void _saveMask() {
+    final id = widget.session.sourceId;
+    final grid = _grid;
+    if (id == null || grid == null) return;
+    ref
+        .read(appStoresProvider)
+        .gallery
+        .writeMask(id, grid.isEmpty ? null : grid.encode());
   }
 
   @override
@@ -237,6 +290,8 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
         _prevImgOffset = _pendingPrevOffset; // 扩图时旧图对位 (padL, padT)
         _img = frame.image;
         _currentBytes = bytes;
+        // 结果落地 → 遮罩退成轮廓,把刚重绘出来的像素完整露出来(动笔即恢复实心)
+        _maskAsOutline = true;
         // 尺寸变化(扩图完成/异常):重建遮罩,扩展与裁切框归零,视图重新适配
         if (_grid == null ||
             _grid!.imgW != frame.image.width ||
@@ -247,6 +302,8 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
           _resetPad();
           _crop = null;
           _cropMode = false;
+          _cropOptOut = false; // 尺寸变了等于重开一张,自动跟随重新生效
+          _cropResized = false;
           _fitKey = null;
           _viewport = Size.zero;
         }
@@ -267,6 +324,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
 
   /// 反向收起后卸载(会话置空)。连点关闭安全:reverse 幂等。
   Future<void> _close() async {
+    _saveMask(); // 涂了没生成也留着,下次打开接着改
     await _ac.reverse();
     if (mounted) ref.read(inpaintSessionProvider.notifier).close();
   }
@@ -281,6 +339,19 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     }
     return _rectsCache!;
   }
+
+  ui.Path? get _maskOutline {
+    final g = _grid;
+    if (g == null) return null;
+    if (_outlineRev != _rev || _outlineCache == null) {
+      _outlineCache = g.outlinePath();
+      _outlineRev = _rev;
+    }
+    return _outlineCache;
+  }
+
+  /// 用户又动遮罩了 → 回到实心(正在涂哪儿要看得清清楚楚)。
+  void _maskTouched() => _maskAsOutline = false;
 
   // ---------- 视图 ----------
 
@@ -328,6 +399,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     setState(() {
       _lastPaint = p;
       _rev++;
+      _maskTouched();
       _slider = null; // 落笔即收浮动滑杆,给画布让位
     });
   }
@@ -350,7 +422,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
       return;
     }
     if (t != _Tool.brush) return;
-    HapticFeedback.selectionClick();
+    Haptics.selection();
     setState(() => _assist = !_assist);
   }
 
@@ -361,20 +433,62 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   void _endStroke() {
     if (!_stroking) return;
     _stroking = false;
-    setState(() => _lastPaint = null);
+    setState(() {
+      _lastPaint = null;
+      _autoCrop();
+    });
+  }
+
+  /// 局部框全自动:框的大小位置永远等于「遮罩 + 一圈留白」,每一笔都重算。
+  ///
+  /// 大图省点数要走局部框,但**等落笔之后**才开 —— 原来是一进来就按分辨率
+  /// 开,还没画就先框住半张图挡视线,框的位置跟你要改的地方也毫无关系。
+  /// 按遮罩算,位置天然是对的,也不会出现"第二笔画到框外被静默丢掉"。
+  void _autoCrop() {
+    if (_expandMode) return;
+    final img = _img, grid = _grid;
+    if (img == null || grid == null) return;
+    final tight = tightCropRect(grid);
+    if (tight == null) return; // 擦空了:框留在原处,别闪
+    final want = alignSendRect(tight, img.width, img.height);
+    if (!_cropMode) {
+      // 还没开:小图本来就不用开,手动关过的也不再替他打开
+      if (_cropOptOut || img.width * img.height <= kFreePixelThreshold) return;
+      _cropMode = true;
+      _crop = want;
+      return;
+    }
+    final cur = _crop;
+    if (cur == null || !_cropResized) {
+      _crop = want;
+      return;
+    }
+    // 拉过边的框归用户:只扩不缩 —— 尊重他要的留白,同时保证涂到框外的
+    // 地方不会被静默丢掉(发送时按框裁遮罩,框外那部分等于没画)。
+    final x = math.min(cur.x, want.x);
+    final y = math.min(cur.y, want.y);
+    final r = math.max(cur.x + cur.w, want.x + want.w);
+    final b = math.max(cur.y + cur.h, want.y + want.h);
+    _crop = (x: x, y: y, w: r - x, h: b - y);
   }
 
   void _undoOnce() {
     if (_undo.isEmpty) return;
     _grid!.restore(_undo.removeLast());
-    setState(() => _rev++);
+    setState(() {
+      _rev++;
+      _maskTouched();
+    });
   }
 
   void _clearAll() {
     if (_grid!.isEmpty) return;
     _pushUndo();
     _grid!.clear();
-    setState(() => _rev++);
+    setState(() {
+      _rev++;
+      _maskTouched();
+    });
   }
 
   // ---------- 扩图 ----------
@@ -517,14 +631,18 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
       setState(() {
         _cropMode = false;
         _crop = null;
+        _cropOptOut = true; // 关过就别再自动开
+        _cropResized = false;
       });
       return;
     }
     final img = _img!;
     final tight = tightCropRect(_grid!);
     setState(() {
+      _cropOptOut = false;
+      _cropResized = false;
       _cropMode = true;
-      // 有涂抹按遮罩算框;否则给居中默认框,用户自行调整
+      // 有涂抹按遮罩算框;还没涂就先给个居中框占位,落笔后自动跟上
       _crop = tight != null
           ? alignSendRect(tight, img.width, img.height)
           : _defaultCrop(img.width, img.height);
@@ -543,87 +661,65 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     );
   }
 
-  /// 命中检测:角柄(屏幕 28px)优先,框内为移动;未命中返回 false(落笔涂抹)。
-  bool _hitCrop(Offset imgPoint) {
+  /// 边缘拉杆命中:只认贴着四条边的一条窄带(屏幕 26px),框内一律落笔。
+  /// 整框移动没有 —— 框跟着遮罩走,移开就失去意义,而且会把"框内能涂"吃掉。
+  bool _hitCropEdge(Offset imgPoint) {
     final c = _crop;
     if (c == null) return false;
-    final r = 28 / _scale;
-    final corners = <_CropHandle, Offset>{
-      _CropHandle.nw: Offset(c.x.toDouble(), c.y.toDouble()),
-      _CropHandle.ne: Offset((c.x + c.w).toDouble(), c.y.toDouble()),
-      _CropHandle.sw: Offset(c.x.toDouble(), (c.y + c.h).toDouble()),
-      _CropHandle.se: Offset((c.x + c.w).toDouble(), (c.y + c.h).toDouble()),
+    final band = 26 / _scale;
+    final l = c.x.toDouble(), t = c.y.toDouble();
+    final r = (c.x + c.w).toDouble(), b = (c.y + c.h).toDouble();
+    // 落在框外一个带宽以上就不算(框外是压暗区,那里点了也该涂)
+    if (imgPoint.dx < l - band ||
+        imgPoint.dx > r + band ||
+        imgPoint.dy < t - band ||
+        imgPoint.dy > b + band) {
+      return false;
+    }
+    final d = <_CropEdge, double>{
+      _CropEdge.left: (imgPoint.dx - l).abs(),
+      _CropEdge.right: (imgPoint.dx - r).abs(),
+      _CropEdge.top: (imgPoint.dy - t).abs(),
+      _CropEdge.bottom: (imgPoint.dy - b).abs(),
     };
-    for (final e in corners.entries) {
-      if ((imgPoint - e.value).distance <= r) {
-        _cropDrag = e.key;
-        _cropStart = c;
-        _dragStart = imgPoint;
-        return true;
-      }
+    var best = _CropEdge.left;
+    for (final e in d.entries) {
+      if (e.value < d[best]!) best = e.key;
     }
-    final rect = ui.Rect.fromLTWH(
-      c.x.toDouble(),
-      c.y.toDouble(),
-      c.w.toDouble(),
-      c.h.toDouble(),
-    );
-    if (rect.contains(imgPoint)) {
-      _cropDrag = _CropHandle.move;
-      _cropStart = c;
-      _dragStart = imgPoint;
-      return true;
-    }
-    return false;
+    if (d[best]! > band) return false;
+    _cropDrag = best;
+    _cropStart = c;
+    _cropDragFrom = imgPoint;
+    return true;
   }
 
   void _updateCropDrag(Offset imgPoint) {
-    final start = _cropStart;
-    final from = _dragStart;
-    final img = _img;
+    final start = _cropStart, from = _cropDragFrom, img = _img;
     if (start == null || from == null || img == null) return;
     final dx = imgPoint.dx - from.dx;
     final dy = imgPoint.dy - from.dy;
-
-    IntRect next;
+    // 对边固定,拖的那条边动;宽高 64 步进、最小 256
+    final IntRect next;
     switch (_cropDrag!) {
-      case _CropHandle.move:
-        // 原点吸附 64 网格:发送框 x/y 不对齐会让子图内遮罩相对
-        // VAE 网格相位错位,产生块状伪影(web maskCrop 修复同款约束)
-        int snapPos(double v, int max) =>
-            ((v / 64).round() * 64).clamp(0, math.max(0, max));
-        next = (
-          x: snapPos(start.x + dx, img.width - start.w),
-          y: snapPos(start.y + dy, img.height - start.h),
-          w: start.w,
-          h: start.h,
-        );
-      case _CropHandle.nw:
-      case _CropHandle.ne:
-      case _CropHandle.sw:
-      case _CropHandle.se:
-        final west = _cropDrag == _CropHandle.nw || _cropDrag == _CropHandle.sw;
-        final north =
-            _cropDrag == _CropHandle.nw || _cropDrag == _CropHandle.ne;
-        // 对角固定:拖动角改变宽高(64 步进),原点随之调整并 clamp。
-        final anchorX = west ? start.x + start.w : start.x;
-        final anchorY = north ? start.y + start.h : start.y;
-        final rawW = west
-            ? (anchorX - (start.x + dx))
-            : (start.x + start.w + dx - anchorX);
-        final rawH = north
-            ? (anchorY - (start.y + dy))
-            : (start.y + start.h + dy - anchorY);
-        final w = _snap64(rawW, max: west ? anchorX : img.width - anchorX);
-        final h = _snap64(rawH, max: north ? anchorY : img.height - anchorY);
-        next = (
-          x: west ? anchorX - w : anchorX,
-          y: north ? anchorY - h : anchorY,
-          w: w,
-          h: h,
-        );
+      case _CropEdge.left:
+        final anchor = start.x + start.w;
+        final w = _snap64(anchor - (start.x + dx), max: anchor);
+        next = (x: anchor - w, y: start.y, w: w, h: start.h);
+      case _CropEdge.right:
+        final w = _snap64(start.w + dx, max: img.width - start.x);
+        next = (x: start.x, y: start.y, w: w, h: start.h);
+      case _CropEdge.top:
+        final anchor = start.y + start.h;
+        final h = _snap64(anchor - (start.y + dy), max: anchor);
+        next = (x: start.x, y: anchor - h, w: start.w, h: h);
+      case _CropEdge.bottom:
+        final h = _snap64(start.h + dy, max: img.height - start.y);
+        next = (x: start.x, y: start.y, w: start.w, h: h);
     }
-    if (next != _crop) setState(() => _crop = next);
+    if (next != _crop) {
+      _cropResized = true;
+      setState(() => _crop = next);
+    }
   }
 
   // ---------- 手势 ----------
@@ -640,7 +736,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
         return;
       }
       final p = _toImg(d.localFocalPoint);
-      if (_cropMode && _hitCrop(p)) return;
+      if (_cropMode && _hitCropEdge(p)) return;
       // 不立即落笔:双指缩放时第一指总会先到一拍,等移动/抬手再确认涂抹
       _pendingStroke = _cursorFor(p);
       if (_assist) setState(() => _fingerAt = p); // 立即显示把手与偏位光标
@@ -674,13 +770,13 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
       });
     } else if (_expandDrag != null) {
       _updateExpandDrag(d.localFocalPoint);
+    } else if (_cropDrag != null) {
+      _updateCropDrag(_toImg(d.localFocalPoint));
     } else if (_expandMode) {
       // 扩图模式单指未命中把手:平移画布
       if (d.focalPointDelta != Offset.zero) {
         setState(() => _offset += d.focalPointDelta);
       }
-    } else if (_cropDrag != null) {
-      _updateCropDrag(_toImg(d.localFocalPoint));
     } else {
       final touch = _toImg(d.localFocalPoint);
       if (_assist) _fingerAt = touch; // 把手随指(strokeTo 的 setState 一并刷新)
@@ -708,7 +804,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     // 点按把手(按下未拖动即抬手):该向 +64 一个单位
     final tapDir = _expandDrag;
     if (tapDir != null && !_expandDragMoved && d.pointerCount == 0) {
-      HapticFeedback.selectionClick();
+      Haptics.selection();
       setState(() => _setPadOf(tapDir, _padOf(tapDir) + 64));
     }
     _expandDrag = null;
@@ -779,7 +875,9 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
         );
         _previewClip = null;
       });
-      ref.read(generationProvider.notifier).generate(using: snapshot);
+      unawaited(
+        ref.read(generationProvider.notifier).generate(using: snapshot),
+      );
     } finally {
       if (mounted) setState(() => _firing = false);
     }
@@ -882,7 +980,15 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
               );
         _previewClip = List.of(_maskRects);
       });
-      ref.read(generationProvider.notifier).generate(using: snapshot);
+      // 蒙版记忆:本图存一份,并让这次重绘的产物继承一次(落新图时消费)
+      _saveMask();
+      final srcId = widget.session.sourceId;
+      if (srcId != null) {
+        ref.read(appStoresProvider).gallery.pendingMaskInheritFrom = srcId;
+      }
+      unawaited(
+        ref.read(generationProvider.notifier).generate(using: snapshot),
+      );
     } finally {
       if (mounted) setState(() => _firing = false);
     }
@@ -1021,6 +1127,10 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
                                             rects: _showOriginal
                                                 ? const []
                                                 : _maskRects,
+                                            maskOutline:
+                                                _showOriginal || !_maskAsOutline
+                                                ? null
+                                                : _maskOutline,
                                             rev: _rev,
                                             scale: _scale,
                                             offset: _offset,
@@ -1124,23 +1234,53 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
         borderRadius: BorderRadius.circular(14),
       ),
       padding: const EdgeInsets.all(4),
-      child: Row(
+      // 一块会平移的实心色块 + 触感,不做任何"这边灭那边亮"。
+      // 也不用 InkWell —— 点在未选中那格上会先泛一圈水波,看着就是"闪选中态"。
+      child: Stack(
         children: [
-          _SegTab(
-            icon: Icons.brush,
-            label: '涂抹',
-            active: !_expandMode,
-            onTap: () => _setExpandMode(false),
+          AnimatedAlign(
+            duration: Motion.medium,
+            curve: Motion.emphasized,
+            alignment: _expandMode
+                ? Alignment.centerRight
+                : Alignment.centerLeft,
+            child: FractionallySizedBox(
+              widthFactor: .5,
+              heightFactor: 1,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  // secondaryContainer 太浅,压在同色系底上几乎看不出选中
+                  color: scheme.primary,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+            ),
           ),
-          _SegTab(
-            icon: Icons.open_in_full,
-            label: '扩图',
-            active: _expandMode,
-            onTap: () => _setExpandMode(true),
+          Row(
+            children: [
+              _SegTab(
+                icon: Icons.brush,
+                label: '涂抹',
+                active: !_expandMode,
+                onTap: () => _tapSeg(false),
+              ),
+              _SegTab(
+                icon: Icons.open_in_full,
+                label: '扩图',
+                active: _expandMode,
+                onTap: () => _tapSeg(true),
+              ),
+            ],
           ),
         ],
       ),
     );
+  }
+
+  void _tapSeg(bool expand) {
+    if (_expandMode == expand) return;
+    Haptics.selection();
+    _setExpandMode(expand);
   }
 
   Widget _buildBottomPanel(GenStatus gen, int cost) {
@@ -1315,6 +1455,17 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   }) {
     final scheme = context.scheme;
     if (gen.busy) {
+      final readout = gen.progress != null
+          ? '${gen.step} / ${gen.total}'
+          : (gen.note ?? '生成中…');
+      final style = TextStyle(
+        fontSize: 13.5,
+        fontWeight: FontWeight.w800,
+        color: scheme.onSurface,
+        fontFeatures: const [ui.FontFeature.tabularFigures()],
+      );
+      // 整条可点取消(与创作页吸底栏同款)。原先这里只有进度条、没有任何点击
+      // 入口 —— 重绘一旦发起就只能等到底,断网时更是干等超时。实测反馈。
       return ClipRRect(
         borderRadius: BorderRadius.circular(23),
         child: Stack(
@@ -1325,16 +1476,32 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
               backgroundColor: scheme.surfaceContainerHigh,
               color: scheme.primary.withValues(alpha: .38),
             ),
-            Center(
-              child: Text(
-                gen.progress != null
-                    ? '${gen.step} / ${gen.total}'
-                    : (gen.note ?? '生成中…'),
-                style: TextStyle(
-                  fontSize: 13.5,
-                  fontWeight: FontWeight.w800,
-                  color: scheme.onSurface,
-                  fontFeatures: const [ui.FontFeature.tabularFigures()],
+            Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: () => ref.read(generationProvider.notifier).cancel(),
+                // 重绘 CTA 比创作页窄:只留 ✕ 图标不写「取消」,省出的宽度
+                // 给读数(排队文案最长)。图标紧挨进度条,语义已经够清楚。
+                child: Center(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.close_rounded,
+                        size: 19,
+                        color: scheme.onSurface,
+                      ),
+                      const SizedBox(width: 7),
+                      Flexible(
+                        child: Text(
+                          readout,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: style,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -1348,44 +1515,50 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(23)),
       ),
       onPressed: _firing || disabled ? null : _fire,
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          if (_firing)
-            SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: scheme.onPrimary.withValues(alpha: .8),
-              ),
-            )
-          else
-            const Icon(Icons.auto_awesome, size: 18),
-          const SizedBox(width: 7),
-          Text(
-            _firing ? '准备中…' : label,
-            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
-          ),
-          if (!_firing) ...[
-            const SizedBox(width: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-              decoration: BoxDecoration(
-                color: scheme.onPrimary.withValues(alpha: .16),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                cost == 0 ? '免费' : '$cost Anlas',
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  color: scheme.onPrimary,
+      // 整块等比缩,不让任何一段省略号:窄屏 + 四位数点数时,原先是标签和
+      // 点数各自 Flexible 平分,谁都装不下,双双被截。
+      child: FittedBox(
+        fit: BoxFit.scaleDown,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            if (_firing)
+              SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: scheme.onPrimary.withValues(alpha: .8),
+                ),
+              )
+            else
+              const Icon(Icons.auto_awesome, size: 18),
+            const SizedBox(width: 7),
+            Text(
+              _firing ? '准备中…' : label,
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+            ),
+            if (!_firing) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                decoration: BoxDecoration(
+                  color: scheme.onPrimary.withValues(alpha: .16),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  cost == 0 ? '免费' : '$cost Anlas',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: scheme.onPrimary,
+                  ),
                 ),
               ),
-            ),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }
@@ -1444,20 +1617,28 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
             style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
           ),
           Expanded(
-            child: isBrush
-                ? Slider(
-                    value: _brush,
-                    min: 5, // 对齐 web 桌面端(5–200)
-                    max: 200,
-                    onChanged: (v) => setState(() => _brush = v),
-                  )
-                : Slider(
-                    value: _strength,
-                    min: 0.1,
-                    max: 1.0,
-                    divisions: 90,
-                    onChanged: (v) => setState(() => _strength = v),
-                  ),
+            child: SliderTheme(
+              data: compactSliderTheme,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: isBrush
+                    ? Slider(
+                        value: _brush,
+                        min: 5, // 对齐 web 桌面端(5–200)
+                        max: 200,
+                        onChanged: (v) => setState(() => _brush = v),
+                      )
+                    : Slider(
+                        value: _strength,
+                        min: 0.1,
+                        max: 1.0,
+                        // 不传 divisions:离散 Slider 会用 75ms 曲线把滑块吸到
+                        // 刻度,拖起来黏手。步长(0.01)就地量化。
+                        onChanged: (v) =>
+                            setState(() => _strength = (v * 100).round() / 100),
+                      ),
+              ),
+            ),
           ),
           SizedBox(
             width: 40,
@@ -1483,6 +1664,7 @@ class _CanvasPainter extends CustomPainter {
   const _CanvasPainter({
     required this.image,
     required this.rects,
+    required this.maskOutline,
     required this.rev,
     required this.scale,
     required this.offset,
@@ -1507,6 +1689,9 @@ class _CanvasPainter extends CustomPainter {
 
   final ui.Image image;
   final List<ui.Rect> rects;
+
+  /// 非空 = 遮罩画轮廓而非实心([rects] 此时不用)。见 `_maskAsOutline`。
+  final ui.Path? maskOutline;
   final int rev;
   final double scale;
   final Offset offset;
@@ -1574,6 +1759,15 @@ class _CanvasPainter extends CustomPainter {
         Paint()..filterQuality = FilterQuality.medium,
       );
       canvas.restore();
+    } else if (maskOutline != null) {
+      // 出图后:只描并集外轮廓,不铺实心 —— 结果像素一点不挡
+      canvas.drawPath(
+        maskOutline!,
+        Paint()
+          ..color = _maskPurple
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.6 / scale,
+      );
     } else if (rects.isNotEmpty) {
       // 遮罩(紫,50%+)
       final p = Paint()..color = _maskFill;
@@ -1605,60 +1799,52 @@ class _CanvasPainter extends CustomPainter {
         dim,
       );
 
-      // 三分构图辅助线(主题色低透明)
-      final third = Paint()
-        ..color = accent.withValues(alpha: .22)
-        ..strokeWidth = 1 / scale;
-      for (var i = 1; i <= 2; i++) {
-        final lx = rect.left + rect.width * i / 3;
-        final ly = rect.top + rect.height * i / 3;
-        canvas.drawLine(Offset(lx, rect.top), Offset(lx, rect.bottom), third);
-        canvas.drawLine(Offset(rect.left, ly), Offset(rect.right, ly), third);
-      }
-
-      // 框:外缘黑 + 内层主题金(实线,层次同 web)
-      canvas.drawRect(
-        rect,
+      // 框身:一圈虚线,不画角柄也不画三分线 —— 框已经全自动跟着遮罩走,
+      // 画上手柄等于邀请用户去拖一个拖不动的东西。
+      final dashed = _dashPath(Path()..addRect(rect), 7 / scale, 5 / scale);
+      canvas.drawPath(
+        dashed,
         Paint()
           ..style = PaintingStyle.stroke
-          ..color = const Color(0x99000000)
-          ..strokeWidth = 5 / scale,
+          ..color = Colors.black.withValues(alpha: .45)
+          ..strokeWidth = 3.4 / scale,
       );
-      canvas.drawRect(
-        rect,
+      canvas.drawPath(
+        dashed,
         Paint()
           ..style = PaintingStyle.stroke
           ..color = accent
-          ..strokeWidth = 2.4 / scale,
+          ..strokeWidth = 1.8 / scale,
       );
 
-      // 四角 L 柄:黑影垫底 + 主题黄
-      final len = 15 / scale;
-      void corners(Paint p) {
-        void corner(Offset at, double sx, double sy) {
-          canvas.drawLine(at, at + Offset(len * sx, 0), p);
-          canvas.drawLine(at, at + Offset(0, len * sy), p);
-        }
-
-        corner(rect.topLeft, 1, 1);
-        corner(rect.topRight, -1, 1);
-        corner(rect.bottomLeft, 1, -1);
-        corner(rect.bottomRight, -1, -1);
-      }
-
-      corners(
-        Paint()
-          ..color = Colors.black.withValues(alpha: .55)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 6.5 / scale
-          ..strokeCap = StrokeCap.round,
+      // 四条边的中点各一根短杠:告诉用户这四条边能拉。
+      // 不画角柄 —— 只支持单边拉伸,画了角就是许了做不到的事。
+      final barLen = 22 / scale;
+      final bar = Paint()
+        ..color = accent
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 4 / scale
+        ..strokeCap = StrokeCap.round;
+      final cx = rect.center.dx, cy = rect.center.dy;
+      canvas.drawLine(
+        Offset(cx - barLen / 2, rect.top),
+        Offset(cx + barLen / 2, rect.top),
+        bar,
       );
-      corners(
-        Paint()
-          ..color = accent
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 4 / scale
-          ..strokeCap = StrokeCap.round,
+      canvas.drawLine(
+        Offset(cx - barLen / 2, rect.bottom),
+        Offset(cx + barLen / 2, rect.bottom),
+        bar,
+      );
+      canvas.drawLine(
+        Offset(rect.left, cy - barLen / 2),
+        Offset(rect.left, cy + barLen / 2),
+        bar,
+      );
+      canvas.drawLine(
+        Offset(rect.right, cy - barLen / 2),
+        Offset(rect.right, cy + barLen / 2),
+        bar,
       );
     }
 
@@ -1722,7 +1908,7 @@ class _CanvasPainter extends CustomPainter {
     if (c != null && cropActive) {
       _screenLabel(
         canvas,
-        '裁切  ${c.w}×${c.h}',
+        '${c.w}×${c.h}',
         Offset(offset.dx + c.x * scale, offset.dy + c.y * scale - 26),
       );
     }
@@ -1875,6 +2061,8 @@ class _CanvasPainter extends CustomPainter {
   bool shouldRepaint(covariant _CanvasPainter old) =>
       old.image != image ||
       old.imageOffset != imageOffset ||
+      // 实心⇄轮廓的切换不改 rev,得单独比
+      (old.maskOutline == null) != (maskOutline == null) ||
       old.rev != rev ||
       old.scale != scale ||
       old.offset != offset ||
@@ -1969,31 +2157,37 @@ class _SegTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    final fg = active ? scheme.onSecondaryContainer : scheme.onSurfaceVariant;
+    final fg = active ? scheme.onPrimary : scheme.onSurfaceVariant;
+    // 底色由外面那枚滑动色块负责,这里只剩文字/图标。用 GestureDetector 不用
+    // InkWell:水波会在色块滑过来之前先亮一下,那正是"闪选中态"。
     return Expanded(
-      child: Material(
-        color: active ? scheme.secondaryContainer : Colors.transparent,
-        borderRadius: BorderRadius.circular(10),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: onTap,
-          // 撑满分段槽高度:选中底色才是完整色块,而非缩成文本行高
-          child: SizedBox.expand(
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(icon, size: 15, color: fg),
-                const SizedBox(width: 6),
-                Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: active ? FontWeight.w700 : FontWeight.w500,
-                    color: fg,
-                  ),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        // 撑满分段槽高度:整格可点,而非只有文本行高那一条
+        child: SizedBox.expand(
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              // 前景色跟着药丸一起过渡,不然药丸滑到一半字还是旧颜色
+              TweenAnimationBuilder<Color?>(
+                duration: Motion.medium,
+                curve: Motion.emphasized,
+                tween: ColorTween(end: fg),
+                builder: (_, c, _) => Icon(icon, size: 15, color: c),
+              ),
+              const SizedBox(width: 6),
+              AnimatedDefaultTextStyle(
+                duration: Motion.medium,
+                curve: Motion.emphasized,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+                  color: fg,
                 ),
-              ],
-            ),
+                child: Text(label),
+              ),
+            ],
           ),
         ),
       ),
@@ -2078,7 +2272,9 @@ class _ParamChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     return Material(
-      color: scheme.surfaceContainerHigh,
+      // 与创作页吸底栏的读数按钮(_ReadoutChip)同色。原先用浅一档的
+      // surfaceContainerHigh,和画布底色几乎分不开,看着发灰。
+      color: scheme.surfaceContainerHighest,
       borderRadius: BorderRadius.circular(13),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
@@ -2086,14 +2282,16 @@ class _ParamChip extends StatelessWidget {
         child: Container(
           height: 46,
           padding: const EdgeInsets.symmetric(horizontal: 12),
-          decoration: active
-              ? BoxDecoration(
-                  borderRadius: BorderRadius.circular(13),
-                  border: Border.all(
-                    color: scheme.primary.withValues(alpha: .6),
-                  ),
-                )
-              : null,
+          // 边框常在(不选中时透明):BoxDecoration 的边框会算进内边距,
+          // 有无之间差 2px —— 只在选中时给,整行按钮会跟着抖。
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(13),
+            border: Border.all(
+              color: active
+                  ? scheme.primary.withValues(alpha: .6)
+                  : Colors.transparent,
+            ),
+          ),
           child: Row(
             children: [
               Icon(icon, size: 15, color: scheme.onSurfaceVariant),

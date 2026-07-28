@@ -1,8 +1,8 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../../../core/auth/bot_session_store.dart';
-import '../../../core/auth/secure_storage.dart';
+import '../../../core/store/app_stores.dart';
+import '../../../core/store/prefs_store.dart';
 
 /// 补全来源。
 ///  - `enhanced`:走后端 `/api/tags/*`(Danbooru 代理 + 中文翻译 + 中文搜词),需 Bot 授权。
@@ -18,7 +18,7 @@ final completionSourcePrefProvider =
     );
 
 class CompletionSourcePrefNotifier extends AsyncNotifier<CompletionSource?> {
-  FlutterSecureStorage get _storage => ref.read(secureStorageProvider);
+  PrefsStore get _storage => ref.read(prefsStoreProvider);
 
   @override
   Future<CompletionSource?> build() async {

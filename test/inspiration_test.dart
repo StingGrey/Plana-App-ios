@@ -39,14 +39,16 @@ void main() {
 
     // 收藏来的画师串带 URL 预览:备份往返不能丢
     // 备份只带可跨端的 http 预览,本机文件路径不外发
-    final fav = encodeBackupEntry(TagEntry(
-      id: 'f1',
-      category: TagCategory.artist,
-      name: 'B3',
-      positive: 'x',
-      previews: const ['http://h/p.jpg', '/data/local/tag_previews/a.jpg'],
-      createdAt: 1,
-    ));
+    final fav = encodeBackupEntry(
+      TagEntry(
+        id: 'f1',
+        category: TagCategory.artist,
+        name: 'B3',
+        positive: 'x',
+        previews: const ['http://h/p.jpg', '/data/local/tag_previews/a.jpg'],
+        createdAt: 1,
+      ),
+    );
     expect(fav['previews'], ['http://h/p.jpg']);
 
     final c = encodeBackupEntry(_e(TagCategory.character, positive: '1girl'));
@@ -163,13 +165,9 @@ void main() {
   });
 
   test('导出文件格式与 web 一致,解析校验分类与标识', () {
-    final file = buildBackupFile(
-      TagCategory.scene,
-      [
-        {'id': 's1', 'name': '雨夜'},
-      ],
-      exportedAt: '2026-07-19T10:00:00.000',
-    );
+    final file = buildBackupFile(TagCategory.scene, [
+      {'id': 's1', 'name': '雨夜'},
+    ], exportedAt: '2026-07-19T10:00:00.000');
     expect(file['identifier'], 'tag-manager-backup');
     expect(file['version'], 1);
     expect(file['category'], 'scene');
@@ -204,19 +202,46 @@ void main() {
     expect(letterOfName('赛璐璐'), '#');
   });
 
-  test('正向追加:整条命中跳过,否则整串追加(权重语法不拆)', () {
-    final a = _e(TagCategory.artist, positive: '{{wlop}}, thick paint');
-    // 空提示词直接放入
-    expect(appendTagPositives('', [a]), '{{wlop}}, thick paint');
+  test('正向追加:整条命中跳过,否则整串追加并自动成组折叠', () {
+    final a = _e(
+      TagCategory.artist,
+      name: 'wlop厚涂',
+      positive: '{{wlop}}, thick paint',
+    );
+    // 空提示词直接放入,多枚标签包成以条目名命名的折叠
+    expect(
+      appendTagPositivesFolded('', [a]),
+      '<#wlop厚涂: {{wlop}}, thick paint>',
+    );
     // token 已全命中(权重/下划线归一后)→ 跳过
-    expect(appendTagPositives('wlop, thick_paint, 1girl', [a]),
-        'wlop, thick_paint, 1girl');
+    expect(
+      appendTagPositivesFolded('wlop, thick_paint, 1girl', [a]),
+      'wlop, thick_paint, 1girl',
+    );
     // 部分命中 → 整串追加
-    expect(appendTagPositives('wlop', [a]), 'wlop, {{wlop}}, thick paint');
+    expect(
+      appendTagPositivesFolded('wlop', [a]),
+      'wlop, <#wlop厚涂: {{wlop}}, thick paint>',
+    );
     // 同批内两条目重复也去重
     expect(
-      appendTagPositives('', [a, _e(TagCategory.artist, positive: 'wlop')]),
-      '{{wlop}}, thick paint',
+      appendTagPositivesFolded('', [
+        a,
+        _e(TagCategory.artist, positive: 'wlop'),
+      ]),
+      '<#wlop厚涂: {{wlop}}, thick paint>',
+    );
+    // 单枚标签不折(折一枚只是徒增记号)
+    expect(
+      appendTagPositivesFolded('', [
+        _e(TagCategory.artist, name: 'x', positive: 'wlop'),
+      ]),
+      'wlop',
+    );
+    // 去重按**定稿**判:草稿里已有的折叠成员照样算命中
+    expect(
+      appendTagPositivesFolded('<#wlop厚涂: {{wlop}}, thick paint>', [a]),
+      '<#wlop厚涂: {{wlop}}, thick paint>',
     );
   });
 

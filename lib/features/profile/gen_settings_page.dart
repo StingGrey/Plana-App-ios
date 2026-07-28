@@ -25,6 +25,17 @@ class GenSettingsPage extends ConsumerWidget {
           SettingsCard(
             children: [
               SwitchListTile(
+                value: s.genNotify,
+                onChanged: (v) => patch((x) => x.copyWith(genNotify: v)),
+                title: Text(
+                  '生成通知',
+                  style: context.texts.bodyMedium!.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                contentPadding: const EdgeInsets.fromLTRB(16, 2, 10, 2),
+              ),
+              SwitchListTile(
                 value: s.retryOn429,
                 onChanged: (v) => patch((x) => x.copyWith(retryOn429: v)),
                 title: Text(
@@ -45,8 +56,7 @@ class GenSettingsPage extends ConsumerWidget {
                   zeroLabel: '立即',
                   min: 0,
                   max: 600,
-                  onChanged: (v) =>
-                      patch((x) => x.copyWith(retryDelaySecs: v)),
+                  onChanged: (v) => patch((x) => x.copyWith(retryDelaySecs: v)),
                 ),
                 _ValueRow(
                   label: '重试次数',
@@ -63,7 +73,10 @@ class GenSettingsPage extends ConsumerWidget {
           ),
           const SizedBox(height: 16),
           const SettingsLabel('创作页模块'),
-          const _ModulesCard(),
+          const _ModulesCard(GenProvider.nai),
+          const SizedBox(height: 16),
+          const SettingsLabel('Anima 模块'),
+          const _ModulesCard(GenProvider.anima),
           const SizedBox(height: 16),
           const SettingsLabel('图库默认保存'),
           const _SaveDefaultsCard(),
@@ -74,16 +87,19 @@ class GenSettingsPage extends ConsumerWidget {
 }
 
 /// 创作页功能模块:开关控制显隐,长按拖动调顺序(与主页卡片即时同步)。
+/// 按模型父类分组各渲染一张卡(nai 四件套 / anima 的 LoRA)。
 class _ModulesCard extends ConsumerWidget {
-  const _ModulesCard();
+  const _ModulesCard(this.provider);
+
+  final GenProvider provider;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final s = ref.watch(genModulesProvider).value ?? const GenModuleSettings();
     final notifier = ref.read(genModulesProvider.notifier);
     final scheme = context.scheme;
-    // 管理页列 nai 组全部模块(型号能力门槛只影响主页显隐,偏好在此常驻可调)
-    final order = s.orderOf(GenProvider.nai);
+    // 管理页列该组全部模块(型号能力门槛只影响主页显隐,偏好在此常驻可调)
+    final order = s.orderOf(provider);
 
     return SettingsCard(
       children: [
@@ -99,9 +115,9 @@ class _ModulesCard extends ConsumerWidget {
           ),
           onReorderItem: (from, to) {
             notifier.patch((x) {
-              final next = [...x.orderOf(GenProvider.nai)];
+              final next = [...x.orderOf(provider)];
               next.insert(to, next.removeAt(from));
-              return x.copyWith(order: {...x.order, GenProvider.nai: next});
+              return x.copyWith(order: {...x.order, provider: next});
             });
           },
           children: [
@@ -198,14 +214,8 @@ class _SaveDefaultsCard extends ConsumerWidget {
             children: [
               SegmentedButton<SaveFormat>(
                 segments: const [
-                  ButtonSegment(
-                    value: SaveFormat.png,
-                    label: Text('PNG 无损'),
-                  ),
-                  ButtonSegment(
-                    value: SaveFormat.jpg,
-                    label: Text('JPG 有损'),
-                  ),
+                  ButtonSegment(value: SaveFormat.png, label: Text('PNG 无损')),
+                  ButtonSegment(value: SaveFormat.jpg, label: Text('JPG 有损')),
                 ],
                 selected: {s.format},
                 onSelectionChanged: (v) =>
@@ -220,14 +230,8 @@ class _SaveDefaultsCard extends ConsumerWidget {
                       value: SaveMeta.original,
                       label: Text('原始元数据'),
                     ),
-                    ButtonSegment(
-                      value: SaveMeta.clean,
-                      label: Text('清除'),
-                    ),
-                    ButtonSegment(
-                      value: SaveMeta.custom,
-                      label: Text('自定义'),
-                    ),
+                    ButtonSegment(value: SaveMeta.clean, label: Text('清除')),
+                    ButtonSegment(value: SaveMeta.custom, label: Text('自定义')),
                   ],
                   selected: {s.meta},
                   onSelectionChanged: (v) =>
@@ -280,9 +284,7 @@ class _PromptRow extends StatelessWidget {
           autofocus: true,
           minLines: 2,
           maxLines: 6,
-          decoration: const InputDecoration(
-            hintText: '写入图片的提示词(其余参数清除)…',
-          ),
+          decoration: const InputDecoration(hintText: '写入图片的提示词(其余参数清除)…'),
         ),
         actions: [
           TextButton(

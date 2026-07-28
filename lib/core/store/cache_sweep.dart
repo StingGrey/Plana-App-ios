@@ -1,4 +1,4 @@
-import 'package:flutter/foundation.dart' show debugPrint;
+import '../util/log.dart';
 import 'package:path_provider/path_provider.dart';
 
 // file_picker 建的 UUID 目录 / image_picker 落的 UUID 文件
@@ -25,7 +25,8 @@ Future<void> sweepPickerCache({
     var deleted = 0, kept = 0;
     await for (final ent in dir.list()) {
       final name = _baseName(ent.path);
-      final junk = _uuidLike.hasMatch(name) ||
+      final junk =
+          _uuidLike.hasMatch(name) ||
           name.endsWith('.onnx') ||
           name.startsWith('image_picker') ||
           name.startsWith('scaled_');
@@ -41,11 +42,11 @@ Future<void> sweepPickerCache({
         await ent.delete(recursive: true);
         deleted++;
       } catch (e) {
-        debugPrint('[cache-sweep] 删不掉 $name: $e');
+        logd('[cache-sweep] 删不掉 $name: $e');
       }
     }
-    debugPrint('[cache-sweep] 清掉 $deleted 项,保留 $kept 项');
+    logd('[cache-sweep] 清掉 $deleted 项,保留 $kept 项');
   } catch (e) {
-    debugPrint('[cache-sweep] 失败: $e');
+    logd('[cache-sweep] 失败: $e');
   }
 }

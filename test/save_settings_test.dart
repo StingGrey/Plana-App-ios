@@ -20,10 +20,7 @@ void main() {
     );
     expect(SaveSettings.fromJson(s.toJson()), s);
     expect(SaveSettings.fromJson({}), const SaveSettings());
-    expect(
-      SaveSettings.fromJson({'meta': 'nope', 'quality': 99}).quality,
-      1.0,
-    );
+    expect(SaveSettings.fromJson({'meta': 'nope', 'quality': 99}).quality, 1.0);
     expect(SaveSettings.fromJson({'meta': 'nope'}).meta, SaveMeta.original);
   });
 
@@ -37,8 +34,7 @@ void main() {
     }
     final png = await encodePngFromRgba(rgba, 64, 64);
 
-    final original =
-        await processForSave(png, const SaveSettings());
+    final original = await processForSave(png, const SaveSettings());
     expect(identical(original, png), isTrue); // 原始 = 零拷贝直出
 
     final jpg = await processForSave(

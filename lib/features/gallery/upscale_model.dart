@@ -1,7 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-import '../../core/auth/secure_storage.dart';
+import '../../core/store/app_stores.dart';
+import '../../core/store/prefs_store.dart';
 
 /// 超分方式:本地两档(ncnn-vulkan,免费/不限尺寸/离线)+ NAI 官方(远程,扣点/限尺寸)。
 enum UpscaleMethod {
@@ -23,10 +23,10 @@ enum UpscaleMethod {
     badge: '8.5MB',
   ),
 
-  /// NAI 官方超分(远程 4×,仅限固定尺寸,扣约 6 点)。
+  /// NAI 官方超分(远程 4×,仅限固定尺寸,固定扣 7 点——用户实测确认)。
   nai(
     label: 'NAI 超分',
-    desc: '官方模型 · 约 6 点',
+    desc: '官方模型 · 7 点',
     local: false,
     asset: null,
     badge: '4×',
@@ -55,10 +55,11 @@ enum UpscaleMethod {
   /// true=本地 ncnn-vulkan;false=NAI 远程。
   final bool local;
 
-  /// 本地模型 asset 名(`assets/models/<asset>.param/.bin`);NAI 为 null。
+  /// 本地模型名(见 `upscale_model_store.dart` 的清单);NAI 为 null。
+  /// 模型不随包分发,首次使用时下载。
   final String? asset;
 
-  /// 角标:本地显示模型大小,NAI 显示倍率。
+  /// 角标:本地显示模型的下载体积,NAI 显示倍率。
   final String badge;
 }
 
@@ -92,10 +93,11 @@ const _key = 'upscale_method';
 /// 用户选择的超分方式(持久化);默认 [UpscaleMethod.localFast]。
 final upscaleMethodProvider =
     AsyncNotifierProvider<UpscaleMethodNotifier, UpscaleMethod>(
-        UpscaleMethodNotifier.new);
+      UpscaleMethodNotifier.new,
+    );
 
 class UpscaleMethodNotifier extends AsyncNotifier<UpscaleMethod> {
-  FlutterSecureStorage get _storage => ref.read(secureStorageProvider);
+  PrefsStore get _storage => ref.read(prefsStoreProvider);
 
   @override
   Future<UpscaleMethod> build() async {

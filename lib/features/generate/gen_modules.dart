@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart' show IconData, Icons;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/auth/secure_storage.dart';
+import '../../core/store/app_stores.dart';
 import 'models.dart';
 
 export 'models.dart' show GenProvider, isAnimaModel, providerOfModel;
@@ -15,9 +15,8 @@ export 'models.dart' show GenProvider, isAnimaModel, providerOfModel;
 /// - 主页可见 = 归属当前父类 + 已启用 + 当前型号支持,不满足的整卡不渲染,
 ///   面板发起的生成也不发其数据(工作区数据保留,条件恢复即回来);
 /// - 图库快照按剥离后状态入库,「重新生成」忠实复现。
-/// anima 组当前无可管理模块(LoRA 为 web 桌面端专属,移动端未提供);
 /// 新增模块 = 注册表加行(标 provider)+ 主页 `_moduleCard` 加卡。
-enum GenModule { character, vibe, charRef, img2img }
+enum GenModule { character, vibe, charRef, img2img, lora }
 
 /// 注册表条目:图标与名称同主页卡片,管理页与卡片一眼对上。
 class GenModuleDef {
@@ -52,6 +51,12 @@ const kGenModuleDefs = <GenModuleDef>[
     supports: crSupportsModel,
   ),
   GenModuleDef(GenModule.img2img, Icons.image_outlined, '图生图'),
+  GenModuleDef(
+    GenModule.lora,
+    Icons.auto_awesome_outlined,
+    'LoRA',
+    provider: GenProvider.anima,
+  ),
 ];
 
 GenModuleDef genModuleDef(GenModule m) =>
@@ -65,7 +70,7 @@ const kDefaultOrderByProvider = <GenProvider, List<GenModule>>{
     GenModule.charRef,
     GenModule.img2img,
   ],
-  GenProvider.anima: [],
+  GenProvider.anima: [GenModule.lora],
 };
 
 class GenModuleSettings {
@@ -127,9 +132,7 @@ class GenModuleSettings {
       if (raw is List) {
         for (final name in raw) {
           final m = byName[name];
-          if (m != null &&
-              genModuleDef(m).provider == p &&
-              !out.contains(m)) {
+          if (m != null && genModuleDef(m).provider == p && !out.contains(m)) {
             out.add(m);
           }
         }
@@ -182,6 +185,9 @@ GenerateState stripHiddenModules(GenerateState s, GenModuleSettings ms) {
   if (!on(GenModule.img2img) && out.img2img != null) {
     out = out.copyWith(img2img: null);
   }
+  if (!on(GenModule.lora) && out.loras.isNotEmpty) {
+    out = out.copyWith(loras: const []);
+  }
   return out;
 }
 
@@ -196,7 +202,7 @@ class GenModulesNotifier extends AsyncNotifier<GenModuleSettings> {
   @override
   Future<GenModuleSettings> build() async {
     try {
-      final raw = await ref.read(secureStorageProvider).read(key: _key);
+      final raw = await ref.read(prefsStoreProvider).read(key: _key);
       if (raw == null || raw.isEmpty) return const GenModuleSettings();
       return GenModuleSettings.fromJson(
         jsonDecode(raw) as Map<String, dynamic>,
@@ -214,7 +220,7 @@ class GenModulesNotifier extends AsyncNotifier<GenModuleSettings> {
     state = AsyncData(next);
     try {
       await ref
-          .read(secureStorageProvider)
+          .read(prefsStoreProvider)
           .write(key: _key, value: jsonEncode(next.toJson()));
     } catch (_) {}
   }

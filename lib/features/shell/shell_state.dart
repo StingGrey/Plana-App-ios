@@ -8,8 +8,9 @@ const kTabProfile = 3;
 
 /// 当前底部 tab 索引。
 /// 独立成 Provider,好让「生成完成跳图库」「缺 token 跳我的」等跨页切换。
-final shellIndexProvider =
-    NotifierProvider<ShellIndexNotifier, int>(ShellIndexNotifier.new);
+final shellIndexProvider = NotifierProvider<ShellIndexNotifier, int>(
+  ShellIndexNotifier.new,
+);
 
 class ShellIndexNotifier extends Notifier<int> {
   @override

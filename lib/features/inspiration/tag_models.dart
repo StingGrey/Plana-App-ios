@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart' show IconData, Icons;
 
 import '../../core/util/prompt_tokens.dart';
+import '../editor/editor_models.dart' show foldWrap, outputOf;
 
 /// 灵感页(Tag 管理器)数据模型,对齐 web tag-manager 的注册表与条目结构。
 /// 分类 id 沿用 web(character/artist-style/scene/other),云备份四类键
@@ -260,24 +261,34 @@ Map<String, dynamic> buildBackupFile(
 }
 
 /// 备份/发布只带可跨端使用的 http(s) 预览,本机文件路径不外发。
-List<String> portablePreviews(List<String> previews) =>
-    [for (final p in previews) if (p.startsWith('http')) p];
+List<String> portablePreviews(List<String> previews) => [
+  for (final p in previews)
+    if (p.startsWith('http')) p,
+];
 
-List<String> _strList(Object? v) =>
-    v is List ? [for (final e in v) if (e is String) e] : const [];
+List<String> _strList(Object? v) => v is List
+    ? [
+        for (final e in v)
+          if (e is String) e,
+      ]
+    : const [];
 
-/// 追加正向:整条已在提示词里(token 全命中)的条目跳过,其余整串追加
-/// (不拆条目——拆了会毁权重语法)。
-String appendTagPositives(String prompt, Iterable<TagEntry> entries) {
-  var out = prompt.trim();
-  final have = tokenizeSet(out);
+/// 追加正向到**编辑器原文草稿**:每个条目各自包成一个命名折叠(名字取条目名,
+/// 单枚标签不折),加入后在编辑器里就是一个可收起的整体。
+///
+/// 去重按**定稿**判定:草稿里有折叠/禁用记号,直接分词会把记号当成标签,
+/// 既漏判也可能误判。
+String appendTagPositivesFolded(String draft, Iterable<TagEntry> entries) {
+  var out = draft.trim();
+  final have = tokenizeSet(outputOf(out));
   for (final e in entries) {
     final p = e.positive.trim();
     if (p.isEmpty) continue;
     final toks = tokenizeSet(p);
     if (toks.isNotEmpty && have.containsAll(toks)) continue;
     have.addAll(toks);
-    out = out.isEmpty ? p : '$out, $p';
+    final piece = foldWrap(e.name, p);
+    out = out.isEmpty ? piece : '$out, $piece';
   }
   return out;
 }
@@ -390,9 +401,22 @@ TagEntry? decodeBackupEntry(TagCategory cat, Map<String, dynamic> j) {
   final extra = <String, dynamic>{
     for (final en in j.entries)
       if (!const {
-        'id', 'name', 'positive', 'prompt', 'tag_group', 'negative',
-        'negative_prompt', 'aliases', 'tags', 'origin', 'publicId',
-        'createdAt', 'isLocal', 'subtypeId', 'preview', 'previews',
+        'id',
+        'name',
+        'positive',
+        'prompt',
+        'tag_group',
+        'negative',
+        'negative_prompt',
+        'aliases',
+        'tags',
+        'origin',
+        'publicId',
+        'createdAt',
+        'isLocal',
+        'subtypeId',
+        'preview',
+        'previews',
       }.contains(en.key))
         en.key: en.value,
   };

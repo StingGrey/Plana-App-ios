@@ -1,9 +1,34 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'suggestions.dart';
+
+/// 顶层函数(compute 要求):在后台 isolate 解析整份 TSV。
+/// 行格式 `tag<TAB>post_count<TAB>中文<TAB>alias1,alias2`。
+List<_Entry> _parseTsv(String raw) {
+  final list = <_Entry>[];
+  for (final line in const LineSplitter().convert(raw)) {
+    if (line.isEmpty) continue;
+    final f = line.split('\t');
+    if (f.length < 2) continue;
+    final count = int.tryParse(f[1]) ?? 0;
+    if (count < 50) continue; // 滤冷门,减内存(与 web <50 剔除一致)
+    final zh = LocalTagDb.firstZh(
+      (f.length > 2 && f[2].isNotEmpty) ? f[2] : null,
+    );
+    final aliases = (f.length > 3 && f[3].isNotEmpty)
+        ? [
+            for (final s in f[3].split(','))
+              if (s.isNotEmpty && !s.startsWith('/')) s, // 去掉 /lh 之类快捷别名
+          ]
+        : const <String>[];
+    list.add(_Entry(f[0], count, zh, aliases));
+  }
+  return list;
+}
 
 /// 离线 Danbooru 标签库(`assets/danbooru.tsv`,**含中文翻译**,已按热度降序)。
 /// token / 未授权模式的英文补全走这里——**完全离线**,不碰网络,天然绕开 Cloudflare。
@@ -38,7 +63,8 @@ class LocalTagDb {
   }
 
   /// 社区词库常一格多译(逗号/顿号/斜杠分隔),注音只取第一个,避免过长。
-  static String? _firstZh(String? zh) {
+  /// 非私有:后台解析的顶层函数 [_parseTsv] 要用。
+  static String? firstZh(String? zh) {
     if (zh == null) return null;
     var cut = zh.length;
     for (final s in const [',', '，', '、', '/', ';', '；']) {
@@ -50,24 +76,11 @@ class LocalTagDb {
   }
 
   Future<void> _load() async {
+    // rootBundle 是平台通道,只能在主 isolate 读;解析(9 万行、几十万次字符串
+    // 分配)扔进后台 isolate。原先整段在主 isolate 同步跑完、一帧都不让,
+    // 而触发时机正是用户在编辑器里打字 —— 最在意流畅的场景。见 S3-02。
     final raw = await rootBundle.loadString('assets/danbooru.tsv');
-    final list = <_Entry>[];
-    for (final line in const LineSplitter().convert(raw)) {
-      if (line.isEmpty) continue;
-      final f = line.split('\t');
-      if (f.length < 2) continue;
-      final count = int.tryParse(f[1]) ?? 0;
-      if (count < 50) continue; // 滤冷门,减内存(与 web <50 剔除一致)
-      final zh = _firstZh((f.length > 2 && f[2].isNotEmpty) ? f[2] : null);
-      final aliases = (f.length > 3 && f[3].isNotEmpty)
-          ? [
-              for (final s in f[3].split(','))
-                if (s.isNotEmpty && !s.startsWith('/')) s, // 去掉 /lh 之类快捷别名
-            ]
-          : const <String>[];
-      list.add(_Entry(f[0], count, zh, aliases));
-    }
-    _entries = list;
+    _entries = await compute(_parseTsv, raw);
   }
 
   /// 前缀匹配:标签名命中优先、别名命中次之(各自因源已按热度降序)。取前 [limit] 条。

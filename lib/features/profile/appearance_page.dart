@@ -13,7 +13,7 @@ class AppearancePage extends ConsumerWidget {
     final ts = ref.watch(themeSettingsProvider);
     final notifier = ref.read(themeSettingsProvider.notifier);
     return Scaffold(
-      appBar: AppBar(title: const Text('外观')),
+      appBar: AppBar(title: const Text('外观与触感')),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(14, 8, 14, 24),
         children: [
@@ -64,6 +64,38 @@ class AppearancePage extends ConsumerWidget {
               ),
             ],
           ),
+          const SizedBox(height: 16),
+          const SettingsLabel('触感'),
+          SettingsCard(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 8, 4),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.vibration,
+                      size: 20,
+                      color: context.scheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        '振动反馈',
+                        style: context.texts.bodyMedium!.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    Switch(
+                      value: ts.haptics,
+                      onChanged: (v) =>
+                          notifier.patch((x) => x.copyWith(haptics: v)),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ],
       ),
     );
@@ -86,8 +118,8 @@ class _Swatch extends StatelessWidget {
     final scheme = context.scheme;
     final onColor =
         ThemeData.estimateBrightnessForColor(seed.color) == Brightness.dark
-            ? Colors.white
-            : Colors.black87;
+        ? Colors.white
+        : Colors.black87;
     return Tooltip(
       message: seed.label,
       child: InkWell(
@@ -106,7 +138,10 @@ class _Swatch extends StatelessWidget {
             ),
           ),
           child: DecoratedBox(
-            decoration: BoxDecoration(color: seed.color, shape: BoxShape.circle),
+            decoration: BoxDecoration(
+              color: seed.color,
+              shape: BoxShape.circle,
+            ),
             child: selected
                 ? Icon(Icons.check, size: 18, color: onColor)
                 : null,

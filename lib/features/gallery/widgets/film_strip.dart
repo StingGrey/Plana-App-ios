@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../generate/generation_controller.dart' show GenStatus;
@@ -8,6 +7,7 @@ import '../models.dart';
 import 'gallery_grid_sheet.dart';
 import 'result_badge_chip.dart';
 import 'result_thumb.dart';
+import '../../../core/util/haptics.dart';
 
 /// 底部历史胶片条:横向缩略图(选中环 + 角标)+ 尾部「›」展开全部网格。
 /// 生成中头部插一张占位卡(逐帧预览 + 进度条),点它回到生成视角,
@@ -69,7 +69,7 @@ class FilmStrip extends StatelessWidget {
                       onTap: () => onSelect(r.id),
                       // 长按:直达网格多选并预选此张(快速删除/批量保存入口)
                       onLongPress: () {
-                        HapticFeedback.mediumImpact();
+                        Haptics.medium();
                         showGalleryGrid(context, selectId: r.id);
                       },
                     );
@@ -88,8 +88,11 @@ class FilmStrip extends StatelessWidget {
                     child: SizedBox(
                       width: 44,
                       height: 44,
-                      child: Icon(Icons.chevron_right,
-                          size: 24, color: scheme.onSurfaceVariant),
+                      child: Icon(
+                        Icons.chevron_right,
+                        size: 24,
+                        color: scheme.onSurfaceVariant,
+                      ),
                     ),
                   ),
                 ),
@@ -115,8 +118,9 @@ class _GenThumb extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     const h = 62.0;
-    final aspect =
-        (gen.width > 0 && gen.height > 0) ? gen.width / gen.height : 1.0;
+    final aspect = (gen.width > 0 && gen.height > 0)
+        ? gen.width / gen.height
+        : 1.0;
     final w = (h * aspect).clamp(40.0, 116.0);
     final preview = gen.preview;
     return GestureDetector(

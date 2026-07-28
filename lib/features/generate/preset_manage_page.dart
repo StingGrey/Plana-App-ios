@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/theme/app_theme.dart';
 import 'prompt_presets.dart';
 import 'widgets/common.dart';
+import '../../core/util/haptics.dart';
 
 /// 提示词预设管理页:激活切换 + 自定义增删改;默认预设只读可查看。
 /// 入口:高级设置「管理预设」/ 我的页卡片。
@@ -90,7 +90,7 @@ class PromptPresetManagePage extends ConsumerWidget {
                     preset: p,
                     active: p.id == s.activeId,
                     onTap: () {
-                      HapticFeedback.selectionClick();
+                      Haptics.selection();
                       ref.read(promptPresetsProvider.notifier).setActive(p.id);
                     },
                     onEdit: () => _edit(context, ref, preset: p),

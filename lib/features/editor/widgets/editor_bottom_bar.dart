@@ -5,7 +5,7 @@ import '../../../core/theme/app_theme.dart';
 import '../editor_models.dart';
 import '../editor_state.dart';
 
-/// 编辑器底栏:正/负 tab(左)+ 排序 + 撤销(右)。
+/// 编辑器底栏:正/负 tab(左)+ 多选 + 撤销(右)。
 /// 从顶栏下放到拇指易达的底部,吸在补全栏 / 键盘之上。
 class EditorBottomBar extends ConsumerWidget {
   const EditorBottomBar({
@@ -14,7 +14,7 @@ class EditorBottomBar extends ConsumerWidget {
     required this.sortActive,
   });
 
-  /// 排序模式开关;词条 <2 且未在模式中时禁用。
+  /// 多选模式开关;词条 <2 且未在模式中时禁用。
   final VoidCallback onSort;
   final bool sortActive;
 
@@ -37,8 +37,8 @@ class EditorBottomBar extends ConsumerWidget {
             ),
             const Spacer(),
             _Pill(
-              icon: Icons.swap_horiz,
-              label: sortActive ? '完成' : '排序',
+              icon: Icons.checklist,
+              label: sortActive ? '完成' : '多选',
               enabled: sortable,
               selected: sortActive,
               onTap: onSort,
@@ -57,7 +57,7 @@ class EditorBottomBar extends ConsumerWidget {
   }
 }
 
-/// 操作药丸:图标 + 文案,禁用置灰,选中高亮(撤销/排序共用)。
+/// 操作药丸:图标 + 文案,禁用置灰,选中高亮(撤销/多选共用)。
 class _Pill extends StatelessWidget {
   const _Pill({
     required this.icon,

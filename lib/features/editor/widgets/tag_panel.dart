@@ -9,6 +9,7 @@ import '../../../core/theme/editor_theme.dart';
 import '../../generate/widgets/common.dart' show hintSnack;
 import '../data/suggestions.dart' show translationOf;
 import '../editor_models.dart';
+import '../../../core/util/haptics.dart';
 
 /// 词条栏 / 权重面板 —— 光标右邻是本标签正文时吸在键盘上方。
 /// 头部(名字·热度·翻译·复制·关闭)+ 权重(括号快捷键 · 数值加减,长按持续)
@@ -807,6 +808,101 @@ class MultiTagPanel extends StatelessWidget {
   }
 }
 
+/// 多选模式(chip 流)的批量操作条:已选数 + 禁用 + 删除。
+///
+/// 移动不在这里 —— 那是点 chip 间隙的 ⊕,在画布上就地完成。这条只放"选完
+/// 之后对这一批做什么"。未选中时按钮全灰,但条本身留着占位,不让画布高度
+/// 在选/不选之间来回跳。
+class SortBatchBar extends StatelessWidget {
+  const SortBatchBar({
+    super.key,
+    required this.count,
+    required this.canDisable,
+    required this.anyEnabled,
+    required this.onToggleDisabled,
+    required this.onDelete,
+    required this.onClear,
+  });
+
+  final int count;
+
+  /// 所选里有散标签(折叠单元不能禁用)。
+  final bool canDisable;
+
+  /// 所选里还有启用的 → 动作为「全部禁用」;全禁 → 「全部启用」。
+  final bool anyEnabled;
+
+  final VoidCallback onToggleDisabled;
+  final VoidCallback onDelete;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    final has = count > 0;
+    return Material(
+      color: scheme.surfaceContainer,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 12, 12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.select_all,
+                  size: 18,
+                  color: has ? scheme.primary : scheme.outlineVariant,
+                ),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: Text(
+                    has ? '已选 $count 项' : '点词条可多选',
+                    style: context.texts.titleMedium!.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: has ? scheme.onSurface : scheme.outline,
+                    ),
+                  ),
+                ),
+                if (has)
+                  _circleIcon(context, icon: Icons.close, onTap: onClear),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: _action(
+                    context,
+                    anyEnabled || !canDisable ? '全部禁用' : '全部启用',
+                    icon: anyEnabled || !canDisable
+                        ? Icons.visibility_off
+                        : Icons.visibility,
+                    enabled: has && canDisable,
+                    onTap: onToggleDisabled,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _action(
+                    context,
+                    '删除',
+                    icon: Icons.delete_outline,
+                    danger: true,
+                    enabled: has,
+                    onTap: onDelete,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 /// 按住持续步进按钮:点=一步;按住≥350ms 后每 90ms 触发一次 [step],
 /// 越按越快(每 5 步周期 −15ms,下限 40ms)。松手或超出按钮范围停止。
 class _RepeatBtn extends StatefulWidget {
@@ -833,7 +929,7 @@ class _RepeatBtnState extends State<_RepeatBtn> {
     _hold?.cancel();
     _tick?.cancel();
     _hold = Timer(const Duration(milliseconds: 350), () {
-      HapticFeedback.selectionClick();
+      Haptics.selection();
       _scheduleNext();
     });
   }

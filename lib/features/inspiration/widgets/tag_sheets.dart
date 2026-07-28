@@ -143,10 +143,7 @@ class _DetailSheet extends StatelessWidget {
             color: scheme.surfaceContainerHigh,
             borderRadius: BorderRadius.circular(12),
           ),
-          child: SelectableText(
-            text,
-            style: mono(context, size: 12),
-          ),
+          child: SelectableText(text, style: mono(context, size: 12)),
         ),
       ],
     );
@@ -182,8 +179,9 @@ class _PoolSheetState extends ConsumerState<_PoolSheet> {
   Future<void> _add() async {
     final t = _input.text.trim();
     if (t.isEmpty) return;
-    final ok =
-        await ref.read(tagLibraryProvider.notifier).addPoolTag(widget.cat, t);
+    final ok = await ref
+        .read(tagLibraryProvider.notifier)
+        .addPoolTag(widget.cat, t);
     if (!mounted) return;
     if (ok) {
       _input.clear();
@@ -269,9 +267,7 @@ class _PoolSheetState extends ConsumerState<_PoolSheet> {
                               style: mono(
                                 context,
                                 size: 12,
-                                color: n > 0
-                                    ? scheme.primary
-                                    : scheme.outline,
+                                color: n > 0 ? scheme.primary : scheme.outline,
                               ),
                             ),
                             IconButton(
@@ -281,7 +277,8 @@ class _PoolSheetState extends ConsumerState<_PoolSheet> {
                                 color: scheme.error,
                               ),
                               onPressed: () async {
-                                final ok = n == 0 ||
+                                final ok =
+                                    n == 0 ||
                                     await confirmDialog(
                                       context,
                                       title: '删除标签「$t」?',
@@ -337,7 +334,7 @@ class _TagPickSheetState extends ConsumerState<_TagPickSheet> {
     final scheme = context.scheme;
     final tags =
         ref.watch(tagLibraryProvider).value?.knownTags(widget.cat) ??
-            const <String>[];
+        const <String>[];
     return Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
       child: Column(
@@ -442,8 +439,9 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
       return;
     }
     try {
-      final r =
-          await ref.read(backendClientProvider).getTagBackup(session.sessionId);
+      final r = await ref
+          .read(backendClientProvider)
+          .getTagBackup(session.sessionId);
       if (!mounted) return;
       setState(() {
         _cloudCounts = r.counts;
@@ -473,89 +471,90 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
   }
 
   String _detailLine(Map<TagCategory, String> parts) => [
-        for (final d in kTagCategoryDefs)
-          if (parts[d.key] case final String s) '${d.label} $s',
-      ].join(' · ');
+    for (final d in kTagCategoryDefs)
+      if (parts[d.key] case final String s) '${d.label} $s',
+  ].join(' · ');
 
   Future<void> _upload() => _run('backup', (sid) async {
-        final lib = ref.read(tagLibraryProvider.notifier);
-        final categories = lib.encodeBackup();
-        final n = categories.values.fold(0, (a, l) => a + l.length);
-        final cloudTotal = _cloudCounts.values.fold(0, (a, b) => a + b);
-        final ok = await confirmDialog(
-          context,
-          title: '上传备份?',
-          message: cloudTotal > 0
-              ? '本地 $n 个条目将整体覆盖云端现有的 $cloudTotal 个(本机预览图不随备份上传)。'
-              : '本地 $n 个条目将上传为云端备份(本机预览图不随备份上传)。',
-          confirmLabel: '上传',
-        );
-        if (!ok) return;
-        final client = ref.read(backendClientProvider);
-        await client.uploadTagBackup(sessionId: sid, categories: categories);
-        final detail = _detailLine({
-          for (final d in kTagCategoryDefs)
-            d.key: '${categories[d.webId]?.length ?? 0}',
-        });
-        await client.recordBackupLog(
-          sessionId: sid,
-          device: 'Plana App',
-          action: 'backup',
-          count: n,
-          detail: 'tag-manager 备份 $detail',
-        );
-        await _loadCloud();
-        if (mounted) {
-          hintSnack(context, '已上传 $n 个条目', icon: Icons.cloud_done_outlined);
-        }
-      });
+    final lib = ref.read(tagLibraryProvider.notifier);
+    final categories = lib.encodeBackup();
+    final n = categories.values.fold(0, (a, l) => a + l.length);
+    final cloudTotal = _cloudCounts.values.fold(0, (a, b) => a + b);
+    final ok = await confirmDialog(
+      context,
+      title: '上传备份?',
+      message: cloudTotal > 0
+          ? '本地 $n 个条目将整体覆盖云端现有的 $cloudTotal 个(本机预览图不随备份上传)。'
+          : '本地 $n 个条目将上传为云端备份(本机预览图不随备份上传)。',
+      confirmLabel: '上传',
+    );
+    if (!ok) return;
+    final client = ref.read(backendClientProvider);
+    await client.uploadTagBackup(sessionId: sid, categories: categories);
+    final detail = _detailLine({
+      for (final d in kTagCategoryDefs)
+        d.key: '${categories[d.webId]?.length ?? 0}',
+    });
+    await client.recordBackupLog(
+      sessionId: sid,
+      device: 'Plana App',
+      action: 'backup',
+      count: n,
+      detail: 'tag-manager 备份 $detail',
+    );
+    await _loadCloud();
+    if (mounted) {
+      hintSnack(context, '已上传 $n 个条目', icon: Icons.cloud_done_outlined);
+    }
+  });
 
   Future<void> _restore() => _run('restore', (sid) async {
-        final client = ref.read(backendClientProvider);
-        final r = await client.getTagBackup(sid);
-        var n = 0;
-        for (final v in r.categories.values) {
-          if (v is List) n += v.length;
-        }
-        if (n == 0) {
-          if (mounted) {
-            hintSnack(context, '云端暂无备份', icon: Icons.cloud_off_outlined);
-          }
-          return;
-        }
-        if (!mounted) return;
-        final lib = ref.read(tagLibraryProvider.notifier);
-        // 恢复前算清「覆盖 / 新增」,别让人在不知情下被整包盖掉
-        final pre = lib.previewMerge(r.categories);
-        final ok = await confirmDialog(
-          context,
-          title: pre.overwrite > 0 ? '恢复将覆盖本地数据' : '恢复备份?',
-          message: '将覆盖本地 ${pre.overwrite} 个,新增 ${pre.add} 个'
-              '(按 id 合并,本地独有的条目保留)。',
-          confirmLabel: '继续恢复',
-        );
-        if (!ok) return;
-        final stat = await lib.mergeBackup(r.categories);
-        final detail = _detailLine({
-          for (final e in stat.entries)
-            e.key: '+${e.value.added}/✎${e.value.updated}',
-        });
-        await client.recordBackupLog(
-          sessionId: sid,
-          device: 'Plana App',
-          action: 'restore',
-          count: n,
-          detail: 'tag-manager 恢复 $detail',
-        );
-        await _loadCloud();
-        if (mounted) {
-          hintSnack(
-            context,
-            '已恢复:新增 ${pre.add} 个 · 覆盖 ${pre.overwrite} 个',
-            icon: Icons.cloud_done_outlined,
-          );
-        }
-      });
+    final client = ref.read(backendClientProvider);
+    final r = await client.getTagBackup(sid);
+    var n = 0;
+    for (final v in r.categories.values) {
+      if (v is List) n += v.length;
+    }
+    if (n == 0) {
+      if (mounted) {
+        hintSnack(context, '云端暂无备份', icon: Icons.cloud_off_outlined);
+      }
+      return;
+    }
+    if (!mounted) return;
+    final lib = ref.read(tagLibraryProvider.notifier);
+    // 恢复前算清「覆盖 / 新增」,别让人在不知情下被整包盖掉
+    final pre = lib.previewMerge(r.categories);
+    final ok = await confirmDialog(
+      context,
+      title: pre.overwrite > 0 ? '恢复将覆盖本地数据' : '恢复备份?',
+      message:
+          '将覆盖本地 ${pre.overwrite} 个,新增 ${pre.add} 个'
+          '(按 id 合并,本地独有的条目保留)。',
+      confirmLabel: '继续恢复',
+    );
+    if (!ok) return;
+    final stat = await lib.mergeBackup(r.categories);
+    final detail = _detailLine({
+      for (final e in stat.entries)
+        e.key: '+${e.value.added}/✎${e.value.updated}',
+    });
+    await client.recordBackupLog(
+      sessionId: sid,
+      device: 'Plana App',
+      action: 'restore',
+      count: n,
+      detail: 'tag-manager 恢复 $detail',
+    );
+    await _loadCloud();
+    if (mounted) {
+      hintSnack(
+        context,
+        '已恢复:新增 ${pre.add} 个 · 覆盖 ${pre.overwrite} 个',
+        icon: Icons.cloud_done_outlined,
+      );
+    }
+  });
 
   // ---- 本地 JSON 导出 / 导入(格式与 web 一致,可双端互导) ----
 
@@ -565,7 +564,8 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
     try {
       final items = ref.read(tagLibraryProvider.notifier).encodeCategory(d.key);
       final now = DateTime.now();
-      final date = '${now.year}-${now.month.toString().padLeft(2, '0')}-'
+      final date =
+          '${now.year}-${now.month.toString().padLeft(2, '0')}-'
           '${now.day.toString().padLeft(2, '0')}';
       final text = const JsonEncoder.withIndent('  ').convert(
         buildBackupFile(d.key, items, exportedAt: now.toIso8601String()),
@@ -618,8 +618,11 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
       if (!mounted) return;
       final ok = await confirmDialog(
         context,
-        title: pre.overwrite > 0 ? '导入将覆盖本地数据' : '导入 ${parsed.items.length} 个条目?',
-        message: '将覆盖本地 ${pre.overwrite} 个,新增 ${pre.add} 个'
+        title: pre.overwrite > 0
+            ? '导入将覆盖本地数据'
+            : '导入 ${parsed.items.length} 个条目?',
+        message:
+            '将覆盖本地 ${pre.overwrite} 个,新增 ${pre.add} 个'
             '(按 id 合并,本地独有的条目保留)。',
         confirmLabel: '导入',
       );
@@ -648,13 +651,13 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
     final when = d.inMinutes < 1
         ? '刚刚'
         : d.inHours < 1
-            ? '${d.inMinutes} 分钟前'
-            : d.inDays < 1
-                ? '${d.inHours} 小时前'
-                : d.inDays < 30
-                    ? '${d.inDays} 天前'
-                    : '${t.year}-${t.month.toString().padLeft(2, '0')}-'
-                        '${t.day.toString().padLeft(2, '0')}';
+        ? '${d.inMinutes} 分钟前'
+        : d.inDays < 1
+        ? '${d.inHours} 小时前'
+        : d.inDays < 30
+        ? '${d.inDays} 天前'
+        : '${t.year}-${t.month.toString().padLeft(2, '0')}-'
+              '${t.day.toString().padLeft(2, '0')}';
     return '云端备份于 $when';
   }
 
@@ -750,7 +753,11 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
             const SizedBox(height: 8),
             // 每类一张卡:本地/云端计数 + 明确的导出/导入按钮
             for (final d in kTagCategoryDefs) ...[
-              _categoryCard(d, lib?.of(d.key).length ?? 0, _cloudCounts[d.webId]),
+              _categoryCard(
+                d,
+                lib?.of(d.key).length ?? 0,
+                _cloudCounts[d.webId],
+              ),
               const SizedBox(height: 8),
             ],
           ],
@@ -844,4 +851,3 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
     );
   }
 }
-

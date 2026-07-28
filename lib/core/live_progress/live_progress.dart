@@ -24,6 +24,11 @@ class LiveProgress {
 
   bool get _on => Platform.isAndroid;
   bool _permAsked = false;
+  bool _started = false;
+
+  /// 前台服务/通知是否已在。循环、队列续张时据此就地 [update],而不是再 [start]
+  /// ——重复 start 会 startForegroundService 重拉,让灵动岛胶囊消失再弹出。
+  bool get active => _started;
 
   /// 首次使用前拉起通知权限(API 33+),幂等;失败静默。
   Future<void> ensurePermission() async {
@@ -45,11 +50,21 @@ class LiveProgress {
     }
   }
 
-  /// 开启前台服务 + 初始(不确定态)通知。
-  Future<void> start({String title = 'Plana', String text = '准备生成…'}) =>
-      _quiet('start', {'title': title, 'text': text});
+  /// 开启前台服务 + 初始通知。[total]>0 时用确定态进度条(0/total),这样从
+  /// 「准备」起就走可上岛的 ProgressStyle(而非等有步数才提升,单图会错过整段)。
+  ///
+  /// [title] 是通知的主行,**要带状态**:通知头已经写着应用名了,主行再写一遍
+  /// 「Plana」等于白占一行。[text] 是副行,没有可留空(留空则不渲染那一行)。
+  Future<void> start({
+    String title = '准备生成…',
+    String text = '',
+    int total = 0,
+  }) {
+    _started = true;
+    return _quiet('start', {'title': title, 'text': text, 'total': total});
+  }
 
-  /// 刷新进度。[step]<=0 或 [indeterminate] 走转圈;否则 step/total 进度条。
+  /// 刷新进度。[step]<=0 或 [indeterminate] 走不确定态;否则 step/total 进度条。
   /// [short] 是状态栏胶囊文案(≤7 字符最稳,如 "14/28")。
   Future<void> update({
     int step = 0,
@@ -58,22 +73,39 @@ class LiveProgress {
     String title = 'Plana',
     String text = '',
     String short = '',
-  }) =>
-      _quiet('update', {
-        'cur': step,
-        'total': total,
-        'indeterminate': indeterminate,
-        'title': title,
-        'text': text,
-        'short': short,
-      });
+  }) => _quiet('update', {
+    'cur': step,
+    'total': total,
+    'indeterminate': indeterminate,
+    'title': title,
+    'text': text,
+    'short': short,
+  });
 
-  /// 收尾:留一条非常驻、可点开的完成/失败通知(后台时用)。
-  Future<void> finish({String title = 'Plana', String text = '生成完成'}) =>
-      _quiet('finish', {'title': title, 'text': text});
+  /// 收尾。能上岛时先把岛改成完成态停留几秒(否则岛是直接消失的,没有完成反馈),
+  /// 再按 [keep] 落地:
+  ///  - [keep] true(应用在后台):留一条非常驻、可点开的通知当回来的入口;
+  ///  - [keep] false(应用在前台):通知一并撤掉,结果本来就在眼前。
+  Future<void> finish({
+    String title = '生成完成',
+    String text = '',
+    String short = '完成',
+    bool keep = true,
+  }) {
+    _started = false;
+    return _quiet('finish', {
+      'title': title,
+      'text': text,
+      'short': short,
+      'keep': keep,
+    });
+  }
 
   /// 静默撤掉通知与服务(前台时用)。
-  Future<void> stop() => _quiet('stop');
+  Future<void> stop() {
+    _started = false;
+    return _quiet('stop');
+  }
 
   Future<void> _quiet(String method, [Object? args]) async {
     if (!_on) return;

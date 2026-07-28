@@ -46,9 +46,6 @@ void main() {
 
   test('图太小放不下时明确报错', () async {
     final tiny = await makePng(16, 16);
-    expect(
-      () => writeCustomMetadataPng(tiny, 'x'),
-      throwsA(isA<StateError>()),
-    );
+    expect(() => writeCustomMetadataPng(tiny, 'x'), throwsA(isA<StateError>()));
   });
 }

@@ -13,8 +13,8 @@ const _customTab = '自定义';
 final double _axisMax = kMaxDim.toDouble();
 
 // 可视化配色(在浅色画布上可读,语义同 web:绿=免费线,红=上限线)。
-const _vizFree = Color(0xFF2E9E57);
-const _vizOver = Color(0xFFE0413F);
+const _vizFree = FixedSemantic.ok;
+const _vizOver = FixedSemantic.danger;
 
 /// 分辨率 Sheet:预设三档(小图免费/大图/壁纸)+ 自定义档(拖拽画布)
 /// + 统一档位状态条(MP·比例·免费/付费/超限)+ 确认生效。数值/交互对齐 web 桌面端。
@@ -71,9 +71,9 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
   int get _effH => _isCustom ? customH : selected.height;
 
   void _setCustom(int w, int h) => setState(() {
-        customW = w.clamp(kMinDim, kMaxDim);
-        customH = h.clamp(kMinDim, kMaxDim);
-      });
+    customW = w.clamp(kMinDim, kMaxDim);
+    customH = h.clamp(kMinDim, kMaxDim);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -89,9 +89,12 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
           Row(
             children: [
               Expanded(
-                child: Text('分辨率',
-                    style: context.texts.titleMedium!
-                        .copyWith(fontWeight: FontWeight.w700)),
+                child: Text(
+                  '分辨率',
+                  style: context.texts.titleMedium!.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
               ),
               IconButton(
                 onPressed: () => Navigator.pop(context),
@@ -158,15 +161,14 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
             onPressed: over
                 ? null
                 : () {
-                    ref
-                        .read(generateProvider.notifier)
-                        .setSize(_effW, _effH);
+                    ref.read(generateProvider.notifier).setSize(_effW, _effH);
                     Navigator.pop(context);
                   },
             style: FilledButton.styleFrom(
               minimumSize: const Size.fromHeight(48),
               shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(24)),
+                borderRadius: BorderRadius.circular(24),
+              ),
             ),
             child: Text(
               over ? '超出像素上限' : '确认 · $_effW×$_effH',
@@ -197,15 +199,23 @@ class _StatusStrip extends StatelessWidget {
     };
     return Row(
       children: [
-        Text('${megapixels(width, height).toStringAsFixed(2)} MP',
-            style: mono(context, size: 12.5)
-                .copyWith(color: scheme.onSurfaceVariant)),
+        Text(
+          '${megapixels(width, height).toStringAsFixed(2)} MP',
+          style: mono(
+            context,
+            size: 12.5,
+          ).copyWith(color: scheme.onSurfaceVariant),
+        ),
         const SizedBox(width: 8),
         Text('·', style: TextStyle(color: scheme.outline)),
         const SizedBox(width: 8),
-        Text(formatAspectRatio(width, height),
-            style: mono(context, size: 12.5)
-                .copyWith(color: scheme.onSurfaceVariant)),
+        Text(
+          formatAspectRatio(width, height),
+          style: mono(
+            context,
+            size: 12.5,
+          ).copyWith(color: scheme.onSurfaceVariant),
+        ),
         const Spacer(),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
@@ -213,9 +223,14 @@ class _StatusStrip extends StatelessWidget {
             color: color.withValues(alpha: .14),
             borderRadius: BorderRadius.circular(9),
           ),
-          child: Text(label,
-              style: TextStyle(
-                  fontSize: 11.5, fontWeight: FontWeight.w700, color: color)),
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 11.5,
+              fontWeight: FontWeight.w700,
+              color: color,
+            ),
+          ),
         ),
       ],
     );
@@ -253,10 +268,9 @@ class _CanvasEditor extends StatelessWidget {
         Center(
           child: LayoutBuilder(
             builder: (context, cons) {
-              final side =
-                  (cons.maxWidth.isFinite ? cons.maxWidth : 280.0)
-                      .clamp(0.0, 300.0)
-                      .toDouble();
+              final side = (cons.maxWidth.isFinite ? cons.maxWidth : 280.0)
+                  .clamp(0.0, 300.0)
+                  .toDouble();
               return SizedBox(
                 width: side,
                 height: side,
@@ -278,36 +292,59 @@ class _CanvasEditor extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 10),
-        Row(
+        // 读数 + 动作:交换钮挪到长宽之间(替代 ×)省出横向空间;动作组用 Wrap,
+        // 数值很大又同时出两个 chip 时整组自动换行,不再把「缩到免费」挤出界。
+        Wrap(
+          alignment: WrapAlignment.spaceBetween,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 10,
+          runSpacing: 8,
           children: [
-            Text('$width × $height',
-                style: mono(context, size: 16)
-                    .copyWith(fontWeight: FontWeight.w700)),
-            const SizedBox(width: 4),
-            _MiniBtn(
-              icon: Icons.swap_horiz,
-              tooltip: '交换宽高',
-              onTap: () => onChanged(height, width),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '$width',
+                  style: mono(
+                    context,
+                    size: 16,
+                  ).copyWith(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(width: 6),
+                _SwapBtn(onTap: () => onChanged(height, width)),
+                const SizedBox(width: 6),
+                Text(
+                  '$height',
+                  style: mono(
+                    context,
+                    size: 16,
+                  ).copyWith(fontWeight: FontWeight.w700),
+                ),
+              ],
             ),
-            const Spacer(),
-            if (tier == PixelTier.over) ...[
-              _QuickChip(
-                '缩到上限',
-                onTap: () {
-                  final r = clampToMaxPixels(width, height);
-                  onChanged(r.w, r.h);
-                },
-              ),
-              const SizedBox(width: 8),
-            ],
-            if (tier != PixelTier.free)
-              _QuickChip(
-                '缩到免费',
-                onTap: () {
-                  final r = scaleToFree(width, height);
-                  onChanged(r.w, r.h);
-                },
-              ),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (tier == PixelTier.over) ...[
+                  _QuickChip(
+                    '缩到上限',
+                    onTap: () {
+                      final r = clampToMaxPixels(width, height);
+                      onChanged(r.w, r.h);
+                    },
+                  ),
+                  const SizedBox(width: 8),
+                ],
+                if (tier != PixelTier.free)
+                  _QuickChip(
+                    '缩到免费',
+                    onTap: () {
+                      final r = scaleToFree(width, height);
+                      onChanged(r.w, r.h);
+                    },
+                  ),
+              ],
+            ),
           ],
         ),
       ],
@@ -327,16 +364,18 @@ class _ResCanvasPainter extends CustomPainter {
   final ColorScheme scheme;
 
   Color _tierColor(PixelTier t) => switch (t) {
-        PixelTier.free => _vizFree,
-        PixelTier.paid => scheme.primary,
-        PixelTier.over => _vizOver,
-      };
+    PixelTier.free => _vizFree,
+    PixelTier.paid => scheme.primary,
+    PixelTier.over => _vizOver,
+  };
 
   @override
   void paint(Canvas canvas, Size size) {
     final s = size.width;
     final rrect = RRect.fromRectAndRadius(
-        Offset.zero & size, const Radius.circular(10));
+      Offset.zero & size,
+      const Radius.circular(10),
+    );
 
     // 底 + 圆角裁剪
     canvas.drawRRect(rrect, Paint()..color = scheme.surfaceContainerHigh);
@@ -365,17 +404,19 @@ class _ResCanvasPainter extends CustomPainter {
     final rect = Rect.fromLTWH(0, 0, rw, rh);
     canvas.drawRect(rect, Paint()..color = col.withValues(alpha: .18));
     canvas.drawRect(
-        rect,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.4
-          ..color = col);
+      rect,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4
+        ..color = col,
+    );
 
     // 右下角把手 + 抓握斜线
     final hc = Offset(rw, rh);
     final handle = RRect.fromRectAndRadius(
-        Rect.fromCenter(center: hc, width: 22, height: 22),
-        const Radius.circular(5));
+      Rect.fromCenter(center: hc, width: 22, height: 22),
+      const Radius.circular(5),
+    );
     canvas.drawRRect(handle, Paint()..color = col);
     final grip = Paint()
       ..style = PaintingStyle.stroke
@@ -384,25 +425,39 @@ class _ResCanvasPainter extends CustomPainter {
       ..color = Colors.white;
     for (final d in const [-4.0, 0.0, 4.0]) {
       canvas.drawLine(
-          Offset(hc.dx + d, hc.dy + 4), Offset(hc.dx + 4, hc.dy + d), grip);
+        Offset(hc.dx + d, hc.dy + 4),
+        Offset(hc.dx + 4, hc.dy + d),
+        grip,
+      );
     }
 
     canvas.restore();
     // 外描边
     canvas.drawRRect(
-        rrect,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1
-          ..color = scheme.outlineVariant);
+      rrect,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1
+        ..color = scheme.outlineVariant,
+    );
   }
 
   /// w×h=pixels 的等像素线,离散成虚线路径(与 web buildHyperbolaPath 同构)。
   void _hyperbola(
-      Canvas canvas, double s, int pixels, Color color, double on, double off) {
+    Canvas canvas,
+    double s,
+    int pixels,
+    Color color,
+    double on,
+    double off,
+  ) {
     final path = Path();
     var started = false;
-    for (double xpx = kResSnapStep.toDouble(); xpx <= _axisMax; xpx += kResSnapStep) {
+    for (
+      double xpx = kResSnapStep.toDouble();
+      xpx <= _axisMax;
+      xpx += kResSnapStep
+    ) {
       final ypx = pixels / xpx;
       if (ypx > _axisMax) continue;
       final cx = xpx / _axisMax * s;
@@ -439,18 +494,17 @@ class _ResCanvasPainter extends CustomPainter {
       old.width != width || old.height != height || old.scheme != scheme;
 }
 
-class _MiniBtn extends StatelessWidget {
-  const _MiniBtn({required this.icon, required this.tooltip, required this.onTap});
+/// 长宽之间的交换钮:小巧圆钮,替代 ×,省出横向空间。
+class _SwapBtn extends StatelessWidget {
+  const _SwapBtn({required this.onTap});
 
-  final IconData icon;
-  final String tooltip;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     return Tooltip(
-      message: tooltip,
+      message: '交换宽高',
       child: Material(
         color: scheme.surfaceContainerHigh,
         shape: const CircleBorder(),
@@ -458,9 +512,13 @@ class _MiniBtn extends StatelessWidget {
         child: InkWell(
           onTap: onTap,
           child: SizedBox(
-            width: 34,
-            height: 34,
-            child: Icon(icon, size: 17, color: scheme.onSurfaceVariant),
+            width: 30,
+            height: 30,
+            child: Icon(
+              Icons.swap_horiz,
+              size: 16,
+              color: scheme.onSurfaceVariant,
+            ),
           ),
         ),
       ),
@@ -488,12 +546,19 @@ class _QuickChip extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.compress, size: 15, color: scheme.onSecondaryContainer),
+              Icon(
+                Icons.compress,
+                size: 15,
+                color: scheme.onSecondaryContainer,
+              ),
               const SizedBox(width: 5),
-              Text(label,
-                  style: context.texts.bodySmall!.copyWith(
-                      fontWeight: FontWeight.w600,
-                      color: scheme.onSecondaryContainer)),
+              Text(
+                label,
+                style: context.texts.bodySmall!.copyWith(
+                  fontWeight: FontWeight.w600,
+                  color: scheme.onSecondaryContainer,
+                ),
+              ),
             ],
           ),
         ),
@@ -523,7 +588,9 @@ class _PresetCard extends StatelessWidget {
     return AnimatedContainer(
       duration: Motion.fast,
       decoration: BoxDecoration(
-        color: selected ? scheme.secondaryContainer : scheme.surfaceContainerHigh,
+        color: selected
+            ? scheme.secondaryContainer
+            : scheme.surfaceContainerHigh,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
           color: selected ? scheme.primary : Colors.transparent,
@@ -559,18 +626,30 @@ class _PresetCard extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 8),
-                Text(preset.name,
-                    style: context.texts.bodySmall!.copyWith(
-                        fontWeight: FontWeight.w600,
-                        color: selected
-                            ? scheme.onSecondaryContainer
-                            : scheme.onSurface)),
-                Text(preset.ratio,
-                    style: TextStyle(
-                        fontSize: 10, color: scheme.onSurfaceVariant)),
-                Text('${preset.width}×${preset.height}',
-                    style: mono(context, size: 9.5, weight: FontWeight.w500)
-                        .copyWith(color: scheme.outline)),
+                Text(
+                  preset.name,
+                  style: context.texts.bodySmall!.copyWith(
+                    fontWeight: FontWeight.w600,
+                    color: selected
+                        ? scheme.onSecondaryContainer
+                        : scheme.onSurface,
+                  ),
+                ),
+                Text(
+                  preset.ratio,
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+                Text(
+                  '${preset.width}×${preset.height}',
+                  style: mono(
+                    context,
+                    size: 9.5,
+                    weight: FontWeight.w500,
+                  ).copyWith(color: scheme.outline),
+                ),
               ],
             ),
           ),

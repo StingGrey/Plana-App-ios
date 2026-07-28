@@ -3,7 +3,9 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import '../util/log.dart';
 import 'backend_client.dart';
+import 'gen_abort.dart';
 
 /// 跑一个 bot 生成任务的实时链路:WebSocket `/ws/bot`(逐步进度 + 中间预览图)
 /// 为主,HTTP 轮询 `GET /api/bot/task/{id}` 为兜底(防 WS 丢消息/连不上)。
@@ -20,20 +22,34 @@ Future<Uint8List> streamBotTask({
   void Function(int step, int total, Uint8List? preview)? onProgress,
   void Function(int queuePos)? onQueue,
   void Function(String note)? onStage,
+  GenAbort? abort,
   Duration timeout = const Duration(minutes: 5),
 }) async {
   final completer = Completer<Uint8List>();
   var lastStep = -1;
 
   void done(Uint8List bytes) {
-    if (!completer.isCompleted) completer.complete(bytes);
+    if (!completer.isCompleted) {
+      logi('[bot] $taskId done: ${bytes.length}B');
+      completer.complete(bytes);
+    }
   }
 
   void fail(Object e) {
     if (!completer.isCompleted) {
-      completer.completeError(e is BackendException ? e : BackendException('$e'));
+      logi('[bot] $taskId fail: $e');
+      completer.completeError(
+        e is BackendException ? e : BackendException('$e'),
+      );
     }
   }
+
+  // 取消:停止等待(WS/轮询在 finally 里一并收);后端任务由控制器据 aborted
+  // 判定为取消,不入库。服务端没有取消接口,只能客户端收手。
+  abort?.whenAbort(() {
+    logi('[bot] $taskId abort hook fired');
+    fail(BackendException('已取消生成'));
+  });
 
   // 单调递增守卫:防 WS/轮询交错导致进度回退。
   void progress(int step, int total, Uint8List? preview) {
@@ -64,10 +80,14 @@ Future<Uint8List> streamBotTask({
             pv = base64Decode(p);
           } catch (_) {}
         }
-        progress((m['step'] as num?)?.toInt() ?? 0,
-            (m['total_steps'] as num?)?.toInt() ?? 0, pv);
+        progress(
+          (m['step'] as num?)?.toInt() ?? 0,
+          (m['total_steps'] as num?)?.toInt() ?? 0,
+          pv,
+        );
         break;
       case 'task_update':
+        logi('[bot] $taskId ws: status=${m['status']}');
         switch (m['status']) {
           case 'completed':
             final r = m['result'];
@@ -78,6 +98,9 @@ Future<Uint8List> streamBotTask({
               } catch (_) {
                 fail(BackendException('结果解码失败'));
               }
+            } else {
+              // completed 但没带图:不能吞掉,否则会一直卡在最后一步等结果
+              logi('[bot] $taskId ws completed 无图,等轮询取结果');
             }
             break;
           case 'failed':
@@ -112,14 +135,28 @@ Future<Uint8List> streamBotTask({
   }
 
   // —— HTTP 轮询兜底(每 2.5s)——
+  // 连续失败计数:断网时 WS 已死、轮询静默空转,原先只能干等满 [timeout](5 分钟)。
+  // 20 秒内一次都联系不上后端就判定断链 —— 此时 WS 走的是同一条网络,不可能还活着。
+  var pollFails = 0;
+  const maxPollFails = 8; // × 2.5s = 20s
+  String? lastPolled; // 状态转移才记日志,避免 2.5s 一条刷屏
   final poll = Timer.periodic(const Duration(milliseconds: 2500), (_) async {
     if (completer.isCompleted) return;
     try {
       final t = await client.getTask(sessionId: sessionId, taskId: taskId);
+      pollFails = 0; // 联系上了就清零
+      if (t.status != lastPolled) {
+        lastPolled = t.status;
+        logi('[bot] $taskId poll: status=${t.status} ${t.step}/${t.totalSteps}');
+      }
       if (!t.success) return; // 尚未可见,继续
       if (t.completed) {
         final b64 = t.imageBase64;
-        if (b64 != null && b64.isNotEmpty) done(base64Decode(b64));
+        if (b64 != null && b64.isNotEmpty) {
+          done(base64Decode(b64));
+        } else {
+          logi('[bot] $taskId poll completed 但 result 无图');
+        }
       } else if (t.failed) {
         fail(BackendException(t.error ?? '生成失败'));
       } else if (t.status == 'queued') {
@@ -130,8 +167,16 @@ Future<Uint8List> streamBotTask({
         progress(t.step, t.totalSteps, null);
       }
     } on BackendException catch (e) {
-      if (e.status == 401) fail(e); // 会话失效直接终止
-    } catch (_) {}
+      if (e.status == 401) {
+        fail(e); // 会话失效直接终止
+      } else if (++pollFails >= maxPollFails) {
+        fail(BackendException('与后端失去连接,请检查网络'));
+      }
+    } catch (_) {
+      if (++pollFails >= maxPollFails) {
+        fail(BackendException('与后端失去连接,请检查网络'));
+      }
+    }
   });
 
   try {

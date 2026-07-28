@@ -5,6 +5,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../../core/ui/param_help.dart';
+import '../../../core/util/haptics.dart';
+
+// ExpandBody 已挪到 core/ui(多选底栏等非 generate 的地方也在用)。
+// 这里转出去,老的 `show ExpandBody` 导入照常可用。
+export '../../../core/ui/expand_body.dart';
+// 参数说明:滑杆的 help 参数收 ParamHelp,顺手把 Help 表转出去,
+// 调用点 `import 'common.dart'` 就能写 `help: Help.steps`。
+export '../../../core/ui/param_help.dart';
 
 /// 拖动排序的浮起样式:替换 ReorderableListView 默认代理
 /// (Material 白底 + 阴影),改为微放大、无底色 —— 圆角卡片/缩略图不穿帮。
@@ -18,73 +27,10 @@ Widget dragProxy(Widget child, int index, Animation<double> animation) =>
     );
 
 /// 拖动排序开始的触感反馈(长按拾起)。
-void dragStartHaptic(int _) => HapticFeedback.mediumImpact();
+void dragStartHaptic(int _) => Haptics.medium();
 
 /// 拖动排序落定的触感反馈。
-void dragEndHaptic(int _) => HapticFeedback.selectionClick();
-
-/// 平滑展开/收起容器:高度用 SizeTransition,内容用 FadeTransition,
-/// 展开时先长高再淡入、收起时先淡出再收拢 —— 避免内容"瞬间弹出"。
-class ExpandBody extends StatefulWidget {
-  const ExpandBody({super.key, required this.expanded, required this.child});
-
-  final bool expanded;
-  final Widget child;
-
-  @override
-  State<ExpandBody> createState() => _ExpandBodyState();
-}
-
-class _ExpandBodyState extends State<ExpandBody>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _c = AnimationController(
-    vsync: this,
-    duration: Motion.medium,
-    value: widget.expanded ? 1 : 0,
-  );
-
-  late final Animation<double> _size = CurvedAnimation(
-    parent: _c,
-    curve: Motion.emphasized,
-    reverseCurve: Easing.emphasizedAccelerate,
-  );
-
-  // 展开:内容在 30%~100% 淡入;收起:0%~55% 先淡出
-  late final Animation<double> _fade = CurvedAnimation(
-    parent: _c,
-    curve: const Interval(.3, 1, curve: Curves.easeOut),
-    reverseCurve: const Interval(.45, 1, curve: Curves.easeIn),
-  );
-
-  @override
-  void didUpdateWidget(covariant ExpandBody old) {
-    super.didUpdateWidget(old);
-    if (widget.expanded != old.expanded) {
-      widget.expanded ? _c.forward() : _c.reverse();
-    }
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return ClipRect(
-      child: SizeTransition(
-        sizeFactor: _size,
-        alignment: Alignment.topCenter,
-        // RepaintBoundary:动画期间内容不重绘,缓存为纹理,只做裁剪+透明合成
-        child: FadeTransition(
-          opacity: _fade,
-          child: RepaintBoundary(child: widget.child),
-        ),
-      ),
-    );
-  }
-}
+void dragEndHaptic(int _) => Haptics.selection();
 
 /// 圆形图标按钮(卡片头部的 + / 管理器等)
 class RoundIconBtn extends StatelessWidget {
@@ -116,7 +62,11 @@ class RoundIconBtn extends StatelessWidget {
         child: SizedBox(
           width: size,
           height: size,
-          child: Icon(icon, size: iconSize, color: color ?? context.scheme.primary),
+          child: Icon(
+            icon,
+            size: iconSize,
+            color: color ?? context.scheme.primary,
+          ),
         ),
       ),
     );
@@ -150,7 +100,24 @@ class CountBadge extends StatelessWidget {
   }
 }
 
+/// 把 [v] 量化到 [divisions] 等分的刻度上。算法与 Flutter 自己的 `_discretize`
+/// 一致(归一化 → 取整 → 插值回去),换掉离散 Slider 后取值分毫不差。
+double quantizeToDivisions(
+  double v, {
+  required double min,
+  required double max,
+  int? divisions,
+}) {
+  if (divisions == null || divisions <= 0 || max <= min) return v;
+  final t = ((v - min) / (max - min)).clamp(0.0, 1.0);
+  return min + (t * divisions).round() / divisions * (max - min);
+}
+
 /// 参数滑杆:标签 + 数值读数 + Slider,展开卡与 Sheet 通用
+///
+/// [divisions] 只定步长,**绝不下传给底层 Slider**:离散 Slider 每次都用 75ms
+/// easeInOut 把滑块「吸」到刻度上,手指已经走了滑块还在追,就是那股阻尼感。
+/// 这里改为拖动连续、就地量化——滑块永远贴着手指,数值照样落在步长上。
 class ParamSlider extends StatelessWidget {
   const ParamSlider({
     super.key,
@@ -165,11 +132,14 @@ class ParamSlider extends StatelessWidget {
     this.caption,
     this.trailing,
     this.dense = false,
+    this.help,
   });
 
   final String label;
   final double value;
-  final ValueChanged<double> onChanged;
+
+  /// null = 只读(滑杆走 M3 禁用态);标签上的说明照样能点开。
+  final ValueChanged<double>? onChanged;
   final ValueChanged<double>? onChangeEnd;
   final double min;
   final double max;
@@ -179,10 +149,18 @@ class ParamSlider extends StatelessWidget {
   final Widget? trailing;
   final bool dense;
 
+  /// 给上则参数说明:标签变成可点的「标签 + 问号」。
+  final ParamHelp? help;
+
+  double _snap(double v) =>
+      quantizeToDivisions(v, min: min, max: max, divisions: divisions);
+
   @override
   Widget build(BuildContext context) {
     final labelStyle = dense
-        ? context.texts.labelSmall!.copyWith(color: context.scheme.onSurfaceVariant)
+        ? context.texts.labelSmall!.copyWith(
+            color: context.scheme.onSurfaceVariant,
+          )
         : context.texts.bodySmall!.copyWith(color: context.scheme.onSurface);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -190,11 +168,19 @@ class ParamSlider extends StatelessWidget {
       children: [
         Row(
           children: [
-            Expanded(child: Text(label, style: labelStyle)),
+            Expanded(
+              child: help == null
+                  ? Text(label, style: labelStyle)
+                  : HelpLabel(text: label, help: help!, style: labelStyle),
+            ),
             if (trailing != null) ...[trailing!, const SizedBox(width: 8)],
             Text(
               valueText ?? value.toStringAsFixed(2),
-              style: mono(context, size: dense ? 11 : 13, color: context.scheme.primary),
+              style: mono(
+                context,
+                size: dense ? 11 : 13,
+                color: context.scheme.primary,
+              ),
             ),
           ],
         ),
@@ -211,15 +197,20 @@ class ParamSlider extends StatelessWidget {
               value: value.clamp(min, max),
               min: min,
               max: max,
-              divisions: divisions,
-              onChanged: onChanged,
-              onChangeEnd: onChangeEnd,
+              onChanged: onChanged == null ? null : (v) => onChanged!(_snap(v)),
+              onChangeEnd: onChangeEnd == null
+                  ? null
+                  : (v) => onChangeEnd!(_snap(v)),
             ),
           ),
         ),
         if (caption != null)
-          Text(caption!,
-              style: context.texts.labelSmall!.copyWith(color: context.scheme.outline)),
+          Text(
+            caption!,
+            style: context.texts.labelSmall!.copyWith(
+              color: context.scheme.outline,
+            ),
+          ),
       ],
     );
   }
@@ -238,6 +229,7 @@ class LiveParamSlider extends StatefulWidget {
     this.divisions,
     this.caption,
     this.dense = false,
+    this.help,
   });
 
   final String label;
@@ -248,6 +240,7 @@ class LiveParamSlider extends StatefulWidget {
   final int? divisions;
   final String? caption;
   final bool dense;
+  final ParamHelp? help;
 
   @override
   State<LiveParamSlider> createState() => _LiveParamSliderState();
@@ -256,14 +249,6 @@ class LiveParamSlider extends StatefulWidget {
 class _LiveParamSliderState extends State<LiveParamSlider> {
   double? _drag; // 拖动中的本地值;null = 用 widget.value
 
-  // divisions 只用于「松手时量化」,拖动本身连续 —— 避免离散滑杆的吸附动画/数值气泡带来的延迟感。
-  double _quantize(double v) {
-    final d = widget.divisions;
-    if (d == null || d <= 0) return v;
-    final step = (widget.max - widget.min) / d;
-    return ((v - widget.min) / step).round() * step + widget.min;
-  }
-
   @override
   Widget build(BuildContext context) {
     return ParamSlider(
@@ -271,12 +256,20 @@ class _LiveParamSliderState extends State<LiveParamSlider> {
       value: _drag ?? widget.value,
       min: widget.min,
       max: widget.max,
-      // 不给底层 Slider 传 divisions:连续拖动、无吸附动画、跟手无延迟。
+      // 拖动时连读数都不量化(本地值,不外发);松手才按步长落位
       caption: widget.caption,
       dense: widget.dense,
+      help: widget.help,
       onChanged: (v) => setState(() => _drag = v),
       onChangeEnd: (v) {
-        widget.onCommit(_quantize(v));
+        widget.onCommit(
+          quantizeToDivisions(
+            v,
+            min: widget.min,
+            max: widget.max,
+            divisions: widget.divisions,
+          ),
+        );
         setState(() => _drag = null); // 同帧父级会带新值下来,不闪
       },
     );
@@ -320,6 +313,11 @@ class StripeThumb extends StatelessWidget {
                     height: height,
                     fit: BoxFit.cover,
                     gaplessPlayback: true,
+                    // 只给 cacheWidth(保比例):图像缓存存的是**解码后的位图**,
+                    // 不限制的话一张 1536×1024 原图要占 6.3MB,而这里只画 72dp。
+                    // 参考图条同屏可有 6 vibe + 6 CR,不限就是几十 MB 白烧。
+                    cacheWidth: (width * MediaQuery.devicePixelRatioOf(context))
+                        .round(),
                   )
                 : CustomPaint(
                     size: Size(width, height),
@@ -342,7 +340,11 @@ class StripeThumb extends StatelessWidget {
                   child: SizedBox(
                     width: 18,
                     height: 18,
-                    child: Icon(Icons.close, size: 12, color: context.scheme.onSurface),
+                    child: Icon(
+                      Icons.close,
+                      size: 12,
+                      color: context.scheme.onSurface,
+                    ),
                   ),
                 ),
               ),
@@ -361,7 +363,11 @@ class StripeThumb extends StatelessWidget {
                 child: Text(
                   label!,
                   textAlign: TextAlign.center,
-                  style: mono(context, size: 9, color: context.scheme.onSurface),
+                  style: mono(
+                    context,
+                    size: 9,
+                    color: context.scheme.onSurface,
+                  ),
                 ),
               ),
             ),
@@ -379,6 +385,10 @@ class _StripePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    // 斜纹是平行四边形,右端会伸出画布 size.height 那么远,而 CustomPaint 默认
+    // **不裁剪** —— 现有调用点都套着 ClipRRect 才没出事。自己兜住,免得哪天有人
+    // 不加裁剪就用(图库大图占位就这么把条纹糊到隔壁页去过)。
+    canvas.clipRect(Offset.zero & size);
     final paintA = Paint()..color = a;
     final paintB = Paint()..color = b;
     canvas.drawRect(Offset.zero & size, paintB);
@@ -400,7 +410,12 @@ class _StripePainter extends CustomPainter {
 
 /// 卡片底部的说明行
 class InfoNote extends StatelessWidget {
-  const InfoNote(this.text, {super.key, this.icon = Icons.info_outline, this.color});
+  const InfoNote(
+    this.text, {
+    super.key,
+    this.icon = Icons.info_outline,
+    this.color,
+  });
 
   final String text;
   final IconData icon;
@@ -415,9 +430,13 @@ class InfoNote extends StatelessWidget {
         Icon(icon, size: 14, color: c),
         const SizedBox(width: 6),
         Expanded(
-          child: Text(text,
-              style: context.texts.labelSmall!
-                  .copyWith(color: context.scheme.outline, height: 1.4)),
+          child: Text(
+            text,
+            style: context.texts.labelSmall!.copyWith(
+              color: context.scheme.outline,
+              height: 1.4,
+            ),
+          ),
         ),
       ],
     );
@@ -425,20 +444,24 @@ class InfoNote extends StatelessWidget {
 }
 
 /// M3 shared-axis 全屏路由(编辑器等二级全屏页)
-Route<T> sharedAxisRoute<T>(
+///
+/// 不做成泛型:15 个调用点都不接收返回值,带上 `<T>` 只会让每处推断失败退化成
+/// dynamic。将来真有页面要回传结果,再单独加一个泛型版本。
+Route<void> sharedAxisRoute(
   Widget page, {
   SharedAxisTransitionType type = SharedAxisTransitionType.vertical,
 }) {
-  return PageRouteBuilder<T>(
+  return PageRouteBuilder<void>(
     transitionDuration: Motion.slow,
     reverseTransitionDuration: Motion.medium,
     pageBuilder: (_, _, _) => page,
-    transitionsBuilder: (_, animation, secondary, child) => SharedAxisTransition(
-      animation: animation,
-      secondaryAnimation: secondary,
-      transitionType: type,
-      child: child,
-    ),
+    transitionsBuilder: (_, animation, secondary, child) =>
+        SharedAxisTransition(
+          animation: animation,
+          secondaryAnimation: secondary,
+          transitionType: type,
+          child: child,
+        ),
   );
 }
 
@@ -484,15 +507,21 @@ class RefThumb extends StatelessWidget {
               duration: Motion.fast,
               opacity: enabled ? 1 : .35,
               child: StripeThumb(
-                  width: width, height: height, radius: 11, image: image),
+                width: width,
+                height: height,
+                radius: 11,
+                image: image,
+              ),
             ),
             if (!enabled)
               Positioned.fill(
                 child: IgnorePointer(
                   child: Center(
-                    child: Icon(Icons.visibility_off,
-                        size: 22,
-                        color: scheme.onSurface.withValues(alpha: .8)),
+                    child: Icon(
+                      Icons.visibility_off,
+                      size: 22,
+                      color: scheme.onSurface.withValues(alpha: .8),
+                    ),
                   ),
                 ),
               ),
@@ -505,7 +534,11 @@ class RefThumb extends StatelessWidget {
 
 /// 参考图启用/停用开关(裸电源图标)—— Vibe / 角色参考 共用
 class RefEnableToggle extends StatelessWidget {
-  const RefEnableToggle({super.key, required this.enabled, required this.onTap});
+  const RefEnableToggle({
+    super.key,
+    required this.enabled,
+    required this.onTap,
+  });
 
   final bool enabled;
   final VoidCallback onTap;
@@ -514,12 +547,21 @@ class RefEnableToggle extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     return SizedBox(
-      width: 34,
-      height: 34,
+      width: 38,
+      height: 38,
       child: IconButton(
         onPressed: onTap,
-        icon: Icon(Icons.power_settings_new,
-            size: 20, color: enabled ? scheme.tertiary : scheme.outline),
+        icon: Icon(
+          Icons.power_settings_new,
+          size: 24,
+          color: enabled ? scheme.primary : scheme.outline,
+        ),
+        // 图标字体只有一档笔画,「加粗」只能靠字号 + 启用时的主色底托
+        style: IconButton.styleFrom(
+          backgroundColor: enabled
+              ? scheme.primary.withValues(alpha: .12)
+              : Colors.transparent,
+        ),
         tooltip: enabled ? '停用此参考图' : '启用',
         padding: EdgeInsets.zero,
         visualDensity: VisualDensity.compact,
@@ -530,7 +572,12 @@ class RefEnableToggle extends StatelessWidget {
 
 /// 虚线「添加」格 —— Vibe / 角色参考 共用
 class AddTile extends StatelessWidget {
-  const AddTile({super.key, required this.onTap, this.width = 60, this.height = 60});
+  const AddTile({
+    super.key,
+    required this.onTap,
+    this.width = 60,
+    this.height = 60,
+  });
 
   final VoidCallback onTap;
   final double width;
@@ -553,9 +600,12 @@ class AddTile extends StatelessWidget {
               children: [
                 Icon(Icons.add, size: 22, color: scheme.primary),
                 const SizedBox(height: 2),
-                Text('添加',
-                    style: context.texts.labelSmall!
-                        .copyWith(color: scheme.onSurfaceVariant)),
+                Text(
+                  '添加',
+                  style: context.texts.labelSmall!.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
               ],
             ),
           ),
@@ -592,19 +642,26 @@ class RefDetailHeader extends StatelessWidget {
     return Row(
       children: [
         if (enableToggle != null) ...[enableToggle!, const SizedBox(width: 4)],
-        Text('参考图 $index',
-            style:
-                context.texts.bodyLarge!.copyWith(fontWeight: FontWeight.w700)),
+        Text(
+          '参考图 $index',
+          style: context.texts.bodyLarge!.copyWith(fontWeight: FontWeight.w700),
+        ),
         const SizedBox(width: 8),
         // Expanded 占满中段,把尾部(切换 + 移除)顶到最右
         Expanded(
-          child: Text(name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: context.texts.bodySmall!
-                  .copyWith(color: scheme.onSurfaceVariant)),
+          child: Text(
+            name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: context.texts.bodySmall!.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
         ),
-        if (leadingAction != null) ...[leadingAction!, const SizedBox(width: 8)],
+        if (leadingAction != null) ...[
+          leadingAction!,
+          const SizedBox(width: 8),
+        ],
         Material(
           color: scheme.surfaceContainerHigh,
           borderRadius: BorderRadius.circular(20),
@@ -618,9 +675,12 @@ class RefDetailHeader extends StatelessWidget {
                 children: [
                   Icon(Icons.delete_outline, size: 18, color: scheme.error),
                   const SizedBox(width: 6),
-                  Text('移除',
-                      style: context.texts.bodyMedium!
-                          .copyWith(color: scheme.onSurface)),
+                  Text(
+                    '移除',
+                    style: context.texts.bodyMedium!.copyWith(
+                      color: scheme.onSurface,
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -645,8 +705,12 @@ class DashedBorderPainter extends CustomPainter {
       ..strokeWidth = 1.5
       ..color = color;
     final path = Path()
-      ..addRRect(RRect.fromRectAndRadius(
-          Offset.zero & size, const Radius.circular(radius)));
+      ..addRRect(
+        RRect.fromRectAndRadius(
+          Offset.zero & size,
+          const Radius.circular(radius),
+        ),
+      );
     const dash = 5.0, gap = 4.0;
     for (final metric in path.computeMetrics()) {
       var d = 0.0;
@@ -690,11 +754,11 @@ class SwipeToDelete extends StatelessWidget {
       onUpdate: (details) {
         // 越过阈值瞬间给一次轻触感,预告"松手即删"
         if (details.reached && !details.previousReached) {
-          HapticFeedback.selectionClick();
+          Haptics.selection();
         }
       },
       onDismissed: (_) {
-        HapticFeedback.mediumImpact();
+        Haptics.medium();
         onDelete();
       },
       background: Container(
@@ -704,7 +768,11 @@ class SwipeToDelete extends StatelessWidget {
           color: scheme.errorContainer,
           borderRadius: BorderRadius.circular(borderRadius),
         ),
-        child: Icon(Icons.delete_outline, size: 22, color: scheme.onErrorContainer),
+        child: Icon(
+          Icons.delete_outline,
+          size: 22,
+          color: scheme.onErrorContainer,
+        ),
       ),
       child: child,
     );
@@ -811,8 +879,10 @@ class _TopToast extends StatefulWidget {
 
 class _TopToastState extends State<_TopToast>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _c =
-      AnimationController(vsync: this, duration: Motion.medium);
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: Motion.medium,
+  );
   Timer? _timer;
   bool _closing = false;
 
@@ -846,14 +916,13 @@ class _TopToastState extends State<_TopToast>
       left: 16,
       right: 16,
       child: SlideTransition(
-        position: Tween(
-          begin: const Offset(0, -0.8),
-          end: Offset.zero,
-        ).animate(CurvedAnimation(
-          parent: _c,
-          curve: Motion.emphasized,
-          reverseCurve: Motion.standard,
-        )),
+        position: Tween(begin: const Offset(0, -0.8), end: Offset.zero).animate(
+          CurvedAnimation(
+            parent: _c,
+            curve: Motion.emphasized,
+            reverseCurve: Motion.standard,
+          ),
+        ),
         child: FadeTransition(
           opacity: _c,
           child: Center(
@@ -867,12 +936,19 @@ class _TopToastState extends State<_TopToast>
                 onTap: _close,
                 child: Padding(
                   padding: EdgeInsets.fromLTRB(
-                      17, 11, widget.actionLabel != null ? 8 : 17, 11),
+                    17,
+                    11,
+                    widget.actionLabel != null ? 8 : 17,
+                    11,
+                  ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(widget.icon,
-                          size: 19, color: scheme.onInverseSurface),
+                      Icon(
+                        widget.icon,
+                        size: 19,
+                        color: scheme.onInverseSurface,
+                      ),
                       const SizedBox(width: 10),
                       Flexible(
                         child: Text(
@@ -891,8 +967,7 @@ class _TopToastState extends State<_TopToast>
                             visualDensity: VisualDensity.compact,
                             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                             minimumSize: const Size(0, 34),
-                            padding:
-                                const EdgeInsets.symmetric(horizontal: 12),
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
                           ),
                           onPressed: () {
                             widget.onAction?.call();

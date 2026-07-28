@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -60,25 +61,25 @@ class LoopNotifier extends Notifier<LoopStatus> {
     var ok = true;
     while (!state.stopping && (total == 0 || done < total)) {
       state = state.copyWith(batch: done + 1);
-      ok = await ref.read(generationProvider.notifier).generate();
+      // 非 ok 一律停(含用户取消):挂机连续失败无意义,也不该替用户决定重试
+      ok =
+          await ref.read(generationProvider.notifier).generate() ==
+          GenOutcome.ok;
       if (!ok) break;
       done++;
     }
     state = const LoopStatus();
 
     // 循环期间单张不撤/不留通知(见 generation_controller._inLoop),
-    // 统一在此收尾:前台静默撤;后台留一条汇总,可点回应用。
-    if (_appForeground) {
-      await LiveProgress.instance.stop();
-    } else {
-      await LiveProgress.instance.finish(
-        text: ok
-            ? '循环完成 · 共 $done 张'
-            : (done > 0 ? '循环中止 · 已出 $done 张' : '生成失败'),
-      );
-    }
+    // 统一在此收尾:岛上先显示完成态;前台不留通知,后台留一条汇总可点回应用。
+    await LiveProgress.instance.finish(
+      title: ok ? '循环完成' : (done > 0 ? '循环中止' : '生成失败'),
+      text: _appForeground ? '' : (done > 0 ? '已出 $done 张 · 点按查看' : '点按回到应用'),
+      short: ok ? '完成' : '中止',
+      keep: !_appForeground,
+    );
     // 循环收尾后放行排队任务(失败中止时不放行,先让用户处理错误)
-    if (ok) ref.read(genQueueProvider.notifier).maybeStart();
+    if (ok) unawaited(ref.read(genQueueProvider.notifier).maybeStart());
   }
 
   /// 请求停止:当前张跑完后不再续(不打断进行中的生成)。

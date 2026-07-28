@@ -111,12 +111,24 @@ void main() {
       thumbnailDataUrl: 'data:image/png;base64,xx',
       createdAtMs: 1,
     );
-    mergeEncodingIntoRaw(raw,
-        modelKey: 'v4-5full', infoExtracted: 1.0, encoding: 'E1');
-    mergeEncodingIntoRaw(raw,
-        modelKey: 'v4-5full', infoExtracted: 0.8, encoding: 'E2');
-    mergeEncodingIntoRaw(raw,
-        modelKey: 'v4full', infoExtracted: 1.0, encoding: 'E3');
+    mergeEncodingIntoRaw(
+      raw,
+      modelKey: 'v4-5full',
+      infoExtracted: 1.0,
+      encoding: 'E1',
+    );
+    mergeEncodingIntoRaw(
+      raw,
+      modelKey: 'v4-5full',
+      infoExtracted: 0.8,
+      encoding: 'E2',
+    );
+    mergeEncodingIntoRaw(
+      raw,
+      modelKey: 'v4full',
+      infoExtracted: 1.0,
+      encoding: 'E3',
+    );
     final p = parseVibeFileText(jsonEncode(raw)).single;
     expect(p.id, naiVibeIdOfBase64('AAAA'));
     expect(p.supportedModelKeys.toSet(), {'v4-5full', 'v4full'});

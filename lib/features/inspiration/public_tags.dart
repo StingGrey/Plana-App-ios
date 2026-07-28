@@ -7,8 +7,10 @@ import 'tag_models.dart';
 /// 公共库列表(角色=OC、画风=画师串),映射为统一 [TagEntry] 供页面渲染。
 /// 依赖 bot 会话:未授权抛 [StateError]('need-bot'),UI 据此显示授权提示
 /// (范式同 publicVibesProvider)。场景/其他无公共库。
-final publicTagsProvider =
-    FutureProvider.family<List<TagEntry>, TagCategory>((ref, cat) async {
+final publicTagsProvider = FutureProvider.family<List<TagEntry>, TagCategory>((
+  ref,
+  cat,
+) async {
   final session = await ref.watch(botSessionProvider.future);
   if (session == null) throw StateError('need-bot');
   final client = ref.read(backendClientProvider);

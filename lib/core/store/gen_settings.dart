@@ -2,32 +2,41 @@ import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../auth/secure_storage.dart';
+import 'app_stores.dart';
 
 /// 生成设置(持久化)。
 /// [retryOn429]:被限流(HTTP 429)时自动重试当张,默认开;
 /// 固定间隔 [retryDelaySecs] 秒(0 = 立即),最多 [retryCount] 次。
+/// [genNotify]:生成进度前台通知(可上灵动岛/状态栏胶囊),默认开。
+/// [notifyPrimed]:首启的通知说明页是否已过(过了就不再挡在进主界面之前)。
 class GenSettings {
   const GenSettings({
     this.retryOn429 = true,
     this.retryDelaySecs = 1,
     this.retryCount = 3,
+    this.genNotify = true,
+    this.notifyPrimed = false,
   });
 
   final bool retryOn429;
   final int retryDelaySecs;
   final int retryCount;
+  final bool genNotify;
+  final bool notifyPrimed;
 
   GenSettings copyWith({
     bool? retryOn429,
     int? retryDelaySecs,
     int? retryCount,
-  }) =>
-      GenSettings(
-        retryOn429: retryOn429 ?? this.retryOn429,
-        retryDelaySecs: retryDelaySecs ?? this.retryDelaySecs,
-        retryCount: retryCount ?? this.retryCount,
-      );
+    bool? genNotify,
+    bool? notifyPrimed,
+  }) => GenSettings(
+    retryOn429: retryOn429 ?? this.retryOn429,
+    retryDelaySecs: retryDelaySecs ?? this.retryDelaySecs,
+    retryCount: retryCount ?? this.retryCount,
+    genNotify: genNotify ?? this.genNotify,
+    notifyPrimed: notifyPrimed ?? this.notifyPrimed,
+  );
 
   static int _intIn(Object? v, int fallback, int min, int max) {
     final n = (v as num?)?.toInt() ?? fallback;
@@ -35,40 +44,52 @@ class GenSettings {
   }
 
   factory GenSettings.fromJson(Map<String, dynamic> j) => GenSettings(
-        retryOn429: j['retryOn429'] is bool ? j['retryOn429'] as bool : true,
-        retryDelaySecs: _intIn(j['retryDelaySecs'], 1, 0, 600),
-        retryCount: _intIn(j['retryCount'], 3, 1, 99),
-      );
+    retryOn429: j['retryOn429'] is bool ? j['retryOn429'] as bool : true,
+    retryDelaySecs: _intIn(j['retryDelaySecs'], 1, 0, 600),
+    retryCount: _intIn(j['retryCount'], 3, 1, 99),
+    genNotify: j['genNotify'] is bool ? j['genNotify'] as bool : true,
+    notifyPrimed: j['notifyPrimed'] == true,
+  );
 
   Map<String, dynamic> toJson() => {
-        'retryOn429': retryOn429,
-        'retryDelaySecs': retryDelaySecs,
-        'retryCount': retryCount,
-      };
+    'retryOn429': retryOn429,
+    'retryDelaySecs': retryDelaySecs,
+    'retryCount': retryCount,
+    'genNotify': genNotify,
+    'notifyPrimed': notifyPrimed,
+  };
 
   @override
   bool operator ==(Object other) =>
       other is GenSettings &&
       other.retryOn429 == retryOn429 &&
       other.retryDelaySecs == retryDelaySecs &&
-      other.retryCount == retryCount;
+      other.retryCount == retryCount &&
+      other.genNotify == genNotify &&
+      other.notifyPrimed == notifyPrimed;
 
   @override
-  int get hashCode => Object.hash(retryOn429, retryDelaySecs, retryCount);
+  int get hashCode => Object.hash(
+    retryOn429,
+    retryDelaySecs,
+    retryCount,
+    genNotify,
+    notifyPrimed,
+  );
 }
 
 const _key = 'gen_settings';
 
 final genSettingsProvider =
     AsyncNotifierProvider<GenSettingsNotifier, GenSettings>(
-  GenSettingsNotifier.new,
-);
+      GenSettingsNotifier.new,
+    );
 
 class GenSettingsNotifier extends AsyncNotifier<GenSettings> {
   @override
   Future<GenSettings> build() async {
     try {
-      final raw = await ref.read(secureStorageProvider).read(key: _key);
+      final raw = await ref.read(prefsStoreProvider).read(key: _key);
       if (raw == null || raw.isEmpty) return const GenSettings();
       return GenSettings.fromJson(jsonDecode(raw) as Map<String, dynamic>);
     } catch (_) {
@@ -82,7 +103,7 @@ class GenSettingsNotifier extends AsyncNotifier<GenSettings> {
     state = AsyncData(next);
     try {
       await ref
-          .read(secureStorageProvider)
+          .read(prefsStoreProvider)
           .write(key: _key, value: jsonEncode(next.toJson()));
     } catch (_) {}
   }

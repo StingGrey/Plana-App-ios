@@ -5,7 +5,9 @@ import '../../core/theme/app_theme.dart';
 import '../../core/ui/scroll_memory.dart';
 import '../generate/preset_manage_page.dart';
 import '../generate/widgets/common.dart' show sharedAxisRoute;
+import '../stats/stats_page.dart';
 import '../tools/tools_page.dart';
+import 'about_page.dart';
 import 'account_page.dart';
 import 'appearance_page.dart';
 import 'gen_settings_page.dart';
@@ -22,12 +24,25 @@ class ProfilePage extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
-          child: Text(
-            '我的',
-            style: context.texts.headlineSmall!.copyWith(
-              fontWeight: FontWeight.w700,
-            ),
+          // 右侧留 8:IconButton 自带内衬,合起来与左侧 20 视觉对齐
+          padding: const EdgeInsets.fromLTRB(20, 16, 8, 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '我的',
+                  style: context.texts.headlineSmall!.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              // 关于不是"设置项",不值得在列表里占一张与存储管理等宽的卡
+              IconButton(
+                onPressed: () => push(const AboutPage()),
+                icon: const Icon(Icons.info_outline, size: 22),
+                tooltip: '关于',
+              ),
+            ],
           ),
         ),
         Expanded(
@@ -42,6 +57,13 @@ class ProfilePage extends ConsumerWidget {
                   title: '账号与接入',
                   subtitle: 'Token 与 Bot 授权',
                   onTap: () => push(const AccountPage()),
+                ),
+                const SizedBox(height: 10),
+                _EntryCard(
+                  icon: Icons.query_stats,
+                  title: '统计',
+                  subtitle: '用量 · 账单 · 全平台统计',
+                  onTap: () => push(const StatsPage()),
                 ),
                 const SizedBox(height: 10),
                 _EntryCard(
@@ -67,8 +89,8 @@ class ProfilePage extends ConsumerWidget {
                 const SizedBox(height: 10),
                 _EntryCard(
                   icon: Icons.color_lens_outlined,
-                  title: '外观',
-                  subtitle: '主题与配色',
+                  title: '外观与触感',
+                  subtitle: '主题配色 · 振动反馈',
                   onTap: () => push(const AppearancePage()),
                 ),
                 const SizedBox(height: 10),

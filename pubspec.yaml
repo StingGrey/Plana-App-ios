@@ -16,7 +16,14 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+1
+# 构建号(+N)是 Android 的 versionCode,**只能单调递增** —— 已分发过的包依次是
+# +1(1.0.0-beta.1 前)、+2(1.0.0-beta.1),所以正式版从 +3 起。降级会被系统拒,
+# 老用户直接装不上。
+#
+# 改这里必须同步改 lib/core/app_info.dart 的 kAppVersion / kAppBuild
+# (test/app_info_test.dart 会钉住,对不上直接红)。
+# GitHub 上打的 tag 用 `v1.0.0` —— 检查更新按语义化版本比 tag 与本机 versionName。
+version: 1.0.0+3
 
 environment:
   sdk: ^3.12.2
@@ -40,9 +47,10 @@ dependencies:
   http: ^1.6.0
   archive: ^4.0.9
   msgpack_dart: ^1.0.1
-  image_picker: ^1.2.3
   file_picker: ^10.1.0
   crypto: ^3.0.7
+  photo_manager: ^3.7.0
+  photo_manager_image_provider: ^2.2.0
   path_provider: ^2.1.6
   gal: ^2.3.2
   url_launcher: ^6.3.2
@@ -59,6 +67,28 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  # 仅用于生成启动图标(dev-only,不进 APK)。改图后重跑:
+  #   dart run flutter_launcher_icons
+  flutter_launcher_icons: ^0.14.4
+
+# 启动图标。
+#
+# **inset 必须留着,不能设 0。** 自适应图标的前景层是 108dp,但系统只显示
+# **中心 72dp** —— 等于把前景放大 1.5× 再裁。inset=0(满幅)的结果是用户
+# 只看到原图正中间那 66.7%,"NAI" 整个在框外(实机验证过)。
+# 16% 时图占 68%、可见区占 66.7%,构图全在,且原图边界正好落在可见区之外,
+# 底边切断角色的那条线不会露出来。
+#
+# 背景层的橙取自原图四角,只在 inset 留白和视差动效边缘露出。
+# 不提供 monochrome:全彩插画降不成有意义的剪影,Android 13+ 主题图标模式下
+# 该图标不跟随壁纸取色,已知并接受。
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: "icons/app_icon.png"
+  adaptive_icon_background: "#FBC14A"
+  adaptive_icon_foreground: "icons/app_icon.png"
+  adaptive_icon_foreground_inset: 16
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -71,9 +101,16 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
+  # 超分模型**不在这里** —— 它们首次使用时从 Upscayl 官方仓下载
+  # (见 lib/features/gallery/upscale_model_store.dart)。内置会让 APK
+  # 多 10.9 MB,更重要的是那等于由本应用再分发授权条款不明的权重。
   assets:
     - assets/danbooru.tsv
-    - assets/models/
+    # 关于页那颗图标(77 KB)。**不是** icons/app_icon.png —— 那张是给
+    # flutter_launcher_icons 用的 1024² 原图,不进包。这张是按自适应图标
+    # 的真实几何(背景色 + inset 16% 前景 + 裁到中心 72dp)预合成好的
+    # 256²,画出来与桌面图标一致。改图标后重跑 scratchpad/mkasset.py。
+    - assets/app_icon.png
 
   # To add assets to your application, add an assets section, like this:
   # assets:

@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../generate/prompt_presets.dart';
-import '../editor_models.dart';
 import '../editor_state.dart';
 
 /// 编辑器顶栏(精简):返回(=保存并退出)+ token 读数 + 设置 + 满宽进度条。
@@ -35,10 +34,9 @@ class EditorTopBar extends ConsumerWidget {
     final presetSide = preset == null
         ? ''
         : (st.activePositive ? preset.positive : preset.negative);
-    final tokens = estimateTokensWithPreset(
-      outputOf(st.activeText),
-      presetSide,
-    );
+    // activeOutput 而非 outputOf(activeText):正文里折叠只是占位符 `#名字`,
+    // 直接算会把整段折叠体漏掉——读数得按占位符展开后的真实定稿来。
+    final tokens = estimateTokensWithPreset(st.activeOutput, presetSide);
     final over = tokens > 512;
     final ratio = (tokens / 512).clamp(0.0, 1.0);
     final barColor = over ? scheme.error : scheme.primary;

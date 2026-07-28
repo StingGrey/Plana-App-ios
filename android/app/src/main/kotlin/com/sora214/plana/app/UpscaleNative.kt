@@ -1,4 +1,4 @@
-package com.plana.plana_app
+package com.sora214.plana.app
 
 /// Real-ESRGAN ncnn-vulkan 本地超分的 native 入口(libplana_upscale.so)。
 object UpscaleNative {

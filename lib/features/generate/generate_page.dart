@@ -8,6 +8,7 @@ import 'widgets/bottom_action_bar.dart';
 import 'widgets/char_ref_card.dart';
 import 'widgets/character_card.dart';
 import 'widgets/img2img_card.dart';
+import 'widgets/lora_card.dart';
 import 'widgets/prompt_card.dart';
 import 'widgets/top_bar.dart';
 import 'widgets/vibe_card.dart';
@@ -28,37 +29,48 @@ class GeneratePage extends ConsumerWidget {
       children: [
         const GenerateTopBar(),
         Expanded(
-          child: ScrollMemo(
-            memoKey: 'generate',
-            builder: (context, scrollCtrl) => CustomScrollView(
-              controller: scrollCtrl,
-              slivers: [
-                const SliverPadding(
-                  padding: EdgeInsets.fromLTRB(14, 4, 14, 0),
-                  sliver: SliverToBoxAdapter(child: PromptCard()),
-                ),
-                SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
-                  sliver: SliverReorderableList(
-                    itemCount: visible.length,
-                    onReorderItem: (from, to) =>
-                        _moveVisible(ref, model, from, to),
-                    proxyDecorator: (child, index, animation) => Material(
-                      color: Colors.transparent,
-                      borderRadius: BorderRadius.circular(16),
-                      elevation: 3,
-                      child: child,
+          child: Stack(
+            children: [
+              ScrollMemo(
+                memoKey: 'generate',
+                builder: (context, scrollCtrl) => CustomScrollView(
+                  controller: scrollCtrl,
+                  slivers: [
+                    const SliverPadding(
+                      padding: EdgeInsets.fromLTRB(14, 4, 14, 0),
+                      sliver: SliverToBoxAdapter(child: PromptCard()),
                     ),
-                    // 稳定 key 在 item 根上:调序/开关不丢卡片内部状态
-                    itemBuilder: (context, i) => Padding(
-                      key: ValueKey('mod-${visible[i].name}'),
-                      padding: const EdgeInsets.only(top: 9),
-                      child: _moduleCard(visible[i], i),
+                    SliverPadding(
+                      padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+                      sliver: SliverReorderableList(
+                        itemCount: visible.length,
+                        onReorderItem: (from, to) =>
+                            _moveVisible(ref, model, from, to),
+                        proxyDecorator: (child, index, animation) => Material(
+                          color: Colors.transparent,
+                          borderRadius: BorderRadius.circular(16),
+                          elevation: 3,
+                          child: child,
+                        ),
+                        // 稳定 key 在 item 根上:调序/开关不丢卡片内部状态
+                        itemBuilder: (context, i) => Padding(
+                          key: ValueKey('mod-${visible[i].name}'),
+                          padding: const EdgeInsets.only(top: 9),
+                          child: _moduleCard(visible[i], i),
+                        ),
+                      ),
                     ),
-                  ),
+                  ],
                 ),
-              ],
-            ),
+              ),
+              // 步数滑杆浮在列表上方(紧贴吸底栏):不占布局,开合不推动任何东西
+              const Positioned(
+                left: 14,
+                right: 14,
+                bottom: 10,
+                child: StepsSliderOverlay(),
+              ),
+            ],
           ),
         ),
         const BottomActionBar(),
@@ -89,4 +101,5 @@ Widget _moduleCard(GenModule m, int index) => switch (m) {
   GenModule.vibe => VibeCard(reorderIndex: index),
   GenModule.charRef => CharRefCard(reorderIndex: index),
   GenModule.img2img => Img2ImgCard(reorderIndex: index),
+  GenModule.lora => LoraCard(reorderIndex: index),
 };

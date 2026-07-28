@@ -1,31 +1,35 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:image_picker/image_picker.dart';
 
 import '../../core/auth/bot_session_store.dart';
 import '../../core/net/anlas_provider.dart';
 import '../../core/net/backend_client.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/ui/scroll_memory.dart';
+import '../../core/ui/selection_bar.dart';
+import '../../core/util/image_pick.dart';
 import '../generate/generate_state.dart';
+import '../generate/models.dart' show CharRefItem, VibeItem;
 import '../generate/nai_request.dart' show naiModelId;
+import '../generate/vibe_cache.dart' show vibeCacheProvider;
 import '../generate/vibe_encoder.dart';
 import '../generate/widgets/common.dart'
-    show ExpandBody, ParamSlider, confirmDialog, hintSnack;
+    show ParamSlider, confirmDialog, hintSnack;
 import 'naiv4vibe_codec.dart' show buildBundleText, kModelToEncodingKey;
 import 'vibe_backup_sheet.dart';
 import 'public_vibes.dart';
 import 'vibe_detail_sheet.dart';
 import 'vibe_library.dart';
+import '../../core/util/haptics.dart';
 
-// 状态圆点(功能色语义,浅色底仍清晰)
-const _dotOk = Color(0xFF2E9E44); // 当前模型可用
-const _dotWarn = Color(0xFFE8890C); // 缺当前模型编码,不可用
+// 状态圆点:压在缩略图上,不能跟种子色走 —— 单一来源见 [FixedSemantic]
+const _dotOk = FixedSemantic.ok; // 当前模型可用
+const _dotWarn = FixedSemantic.warn; // 缺当前模型编码,不可用
 
 // 保留标签「收藏」:固定显示在「全部」右侧、不可在管理里删除,按含此标签的条目筛选。
 const _kFavTag = '收藏';
@@ -95,6 +99,21 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
   final _localScroll = MemoScrollController('vibe.local');
   final _publicScroll = MemoScrollController('vibe.public');
 
+  /// 进入页面时的 vibe 快照(返回 = 放弃本次全部增删,还原它)。
+  /// 点卡即时加入生成面板,没有「攒到最后才生效」的缓冲,反悔只能靠这份底片。
+  late final List<VibeItem> _snapshot;
+
+  /// 加入 Vibe 会因互斥停用角色参考,快照一并存,还原时连同恢复 ——
+  /// 只还 vibe 的话角色参考还停着,等于还了半截。
+  late final List<CharRefItem> _charRefsSnapshot;
+
+  @override
+  void initState() {
+    super.initState();
+    _snapshot = List.of(ref.read(generateProvider).vibes);
+    _charRefsSnapshot = List.of(ref.read(generateProvider).charRefs);
+  }
+
   @override
   void dispose() {
     _tab.dispose();
@@ -126,6 +145,22 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
   bool _compatible(VibeEntry e) =>
       e.hasImage || e.supportedModels.contains(_modelKey);
 
+  /// 图字节哈希 → 缓存里已有的模型键。每次 build 建一次(见 [build])。
+  Map<String, Set<String>> _cachedEnc = const {};
+
+  /// 条目实际有的编码 = 索引里文件自带的 ∪ 缓存里后来编出来的。
+  ///
+  /// `supportedModels` 是**导入那一刻**文件 encodings 的快照,之后生成时新编出
+  /// 来的编码只进内容寻址缓存、不回填索引(编码的唯一真相在缓存,见
+  /// vibe_cache.dart)。只看索引就会把「用过之后才编出来的」显示成未编码 ——
+  /// 而详情页是合并了缓存的,于是外面写未编码、点进去写已编码。
+  List<String> _encModelsOf(VibeEntry e) {
+    final hash = e.imageHash;
+    final cached = hash == null ? null : _cachedEnc[hash];
+    if (cached == null || cached.isEmpty) return e.supportedModels;
+    return {...e.supportedModels, ...cached}.toList()..sort();
+  }
+
   Future<void> _toggle(VibeEntry e) async {
     final activeId = _activeItemId(e);
     if (activeId != null) {
@@ -148,7 +183,7 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
       hintSnack(context, '无法读取该 Vibe 文件', icon: Icons.error_outline);
       return;
     }
-    HapticFeedback.selectionClick();
+    Haptics.selection();
     final hadCharRefs = ref.read(generateProvider).enabledCharRefs > 0;
     ref
         .read(generateProvider.notifier)
@@ -264,16 +299,13 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
   // ---- 导入(右上角) ----
 
   Future<void> _importImages() async {
-    final files = await ImagePicker().pickMultiImage();
+    final files = await pickImageFiles(context);
     if (files.isEmpty || !mounted) return;
     setState(() => _busy = true);
     var n = 0;
     for (final f in files) {
       try {
-        await _lib.importImageBytes(
-          await f.readAsBytes(),
-          f.name.replaceAll(RegExp(r'\.[^.]+$'), ''),
-        );
+        await _lib.importImageBytes(f.bytes, f.baseName);
         n++;
       } catch (_) {}
     }
@@ -396,6 +428,26 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
   void _clearAllSelection() {
     _publicPending.clear();
     _clearActive();
+  }
+
+  /// 返回键的动作:还原进入页面时的快照(放弃本次全部增删,含被互斥停用的
+  /// 角色参考),回生成页。「确认选择」走直接 pop,不经这里。
+  ///
+  /// 只管生成面板的选择 —— 库里删掉/改名/导入的条目是真落盘的,还原不回来。
+  void _cancel() {
+    ref.read(generateProvider.notifier)
+      ..restoreVibes(_snapshot)
+      ..restoreCharRefs(_charRefsSnapshot);
+    Navigator.of(context).pop();
+  }
+
+  /// 相对进入页面时是否有增删(顺序也算)。
+  bool _changedFromSnapshot(List<VibeItem> now) {
+    if (now.length != _snapshot.length) return true;
+    for (var i = 0; i < now.length; i++) {
+      if (now[i].id != _snapshot[i].id) return true;
+    }
+    return false;
   }
 
   /// 批量给选中(已勾选)条目追加一个标签。
@@ -570,7 +622,7 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
           );
           spent = true;
         }
-        if (spent) ref.read(anlasProvider.notifier).refresh();
+        if (spent) unawaited(ref.read(anlasProvider.notifier).refresh());
       }
       // 2) 导出整条(合并刚生成的编码)并覆写发布参数。
       final raw = jsonDecode(await _lib.exportText(e)) as Map<String, dynamic>;
@@ -654,7 +706,7 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
   // ---- 公共库多选 ----
 
   void _enterPublicMulti(String filename) {
-    HapticFeedback.selectionClick();
+    Haptics.selection();
     setState(() {
       _publicMulti = true;
       _publicSel
@@ -806,9 +858,35 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final all = ref.watch(vibeLibraryProvider).value;
-    final activeCount = ref.watch(generateProvider).vibes.length;
+    final vibes = ref.watch(generateProvider).vibes;
     final checked = all == null ? const <VibeEntry>[] : _checkedEntries(all);
+    // 缓存没加载好就先按索引显示,加载完这里会重建一次
+    _cachedEnc =
+        ref.watch(vibeCacheProvider).value?.modelKeysByImage() ?? const {};
 
+    return PopScope(
+      // 返回 = 放弃本次全部增删(还原进入时的快照)。「确认选择」走的是
+      // Navigator.pop,不经 maybePop,不会被这里拦下。
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        // 公共库多选态:先退多选,不退页
+        if (_publicMulti) {
+          _exitPublicMulti();
+          return;
+        }
+        _cancel();
+      },
+      child: _scaffold(scheme, all, vibes, checked),
+    );
+  }
+
+  Widget _scaffold(
+    ColorScheme scheme,
+    List<VibeEntry>? all,
+    List<VibeItem> vibes,
+    List<VibeEntry> checked,
+  ) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Vibe 管理器'),
@@ -879,9 +957,15 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
               ),
             ),
           ),
-          // 分段 Tab
+          // 分段 Tab。本地页下面紧跟标签筛选行,间距由它顶出,这里不留底距;
+          // 公共页没有筛选行,补一档底距 —— 与灵感页画风/角色同一条规则。
           Padding(
-            padding: const EdgeInsets.fromLTRB(_kEdge, 8, _kEdge, 0),
+            padding: EdgeInsets.fromLTRB(
+              _kEdge,
+              8,
+              _kEdge,
+              _lastTabIndex == 0 ? 0 : 8,
+            ),
             child: _segTabs(scheme, all?.length ?? 0),
           ),
           Expanded(
@@ -897,7 +981,7 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
           ),
         ],
       ),
-      bottomNavigationBar: _bottomBar(scheme, checked, activeCount),
+      bottomNavigationBar: _bottomBar(scheme, checked, vibes),
     );
   }
 
@@ -1176,6 +1260,7 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
           entry: e,
           checked: _activeItemId(e) != null,
           compatible: _compatible(e),
+          encodedModels: _encModelsOf(e),
           thumb: _lib.thumbOf(e),
           onTap: () => _toggle(e), // 点卡 = 加入/移出生成
           onDelete: () => _deleteOne(e),
@@ -1269,10 +1354,9 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
                 )
               : GridView.builder(
                   controller: _publicScroll,
-                  // 顶距比本地页大一档:本地页分段行下面还有筛选行顶着,
-                  // 公共页没有,卡片会直接贴上分段行。间距记在本页自己身上
-                  // (而不是共享的分段行)——横滑切页时随页滑入,不抖共享布局。
-                  padding: const EdgeInsets.fromLTRB(12, 16, 12, 96),
+                  // 顶距 8:另外 8 由分段行的底距出(公共页才加),两段合起来
+                  // 仍是原来的一档间距,只是外面那半留在了滚动区之外。
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 96),
                   gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                     crossAxisCount: 2,
                     mainAxisSpacing: 10,
@@ -1320,64 +1404,38 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
   // ---- 底部操作栏 ----
 
   /// 公共库多选底栏:打包 / 收藏(作用于所选)+ 全选 + 退出多选。
+  /// 公共库多选态的底栏。左键仍是「取消选择」(清空勾选、留在多选里),
+  /// 主动作是退出多选 —— 和另外几条同一套版式。
   Widget _publicMultiBar(ColorScheme scheme) {
     final n = _publicSel.length;
     final total = _visiblePublic().length;
-    return Material(
-      color: scheme.surfaceContainerLow,
-      child: SafeArea(
-        top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  _pillBtn(
-                    icon: Icons.archive_outlined,
-                    label: '打包',
-                    onTap: (n == 0 || _busy) ? null : _bundlePublicSelected,
-                  ),
-                  const SizedBox(width: 8),
-                  _pillBtn(
-                    icon: Icons.favorite_border,
-                    label: '收藏',
-                    onTap: (n == 0 || _busy) ? null : _collectPublicSelected,
-                  ),
-                  const Spacer(),
-                  TextButton.icon(
-                    onPressed: total == 0 ? null : _selectAllPublic,
-                    style: TextButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                    ),
-                    icon: const Icon(Icons.done_all, size: 16),
-                    label: Text(n >= total && total > 0 ? '取消全选' : '全选'),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
-              SizedBox(
-                width: double.infinity,
-                child: FilledButton.icon(
-                  onPressed: _exitPublicMulti,
-                  style: FilledButton.styleFrom(
-                    minimumSize: const Size.fromHeight(46),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(23),
-                    ),
-                    textStyle: const TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  icon: const Icon(Icons.close, size: 19),
-                  label: Text('退出多选${n > 0 ? ' · 已选 $n' : ''}'),
-                ),
-              ),
-            ],
-          ),
+    final allSelected = n >= total && total > 0;
+    return SelectionBar(
+      // 多选态是显式进入的,进来就常驻,否则退不出去
+      visible: true,
+      onClear: n == 0 ? null : () => setState(_publicSel.clear),
+      actions: [
+        SelectionPill(
+          icon: Icons.archive_outlined,
+          label: '打包',
+          onTap: (n == 0 || _busy) ? null : _bundlePublicSelected,
         ),
+        SelectionPill(
+          icon: Icons.favorite_border,
+          label: '收藏',
+          onTap: (n == 0 || _busy) ? null : _collectPublicSelected,
+        ),
+        SelectionPill(
+          icon: Icons.done_all,
+          label: allSelected ? '取消全选' : '全选',
+          onTap: total == 0 ? null : _selectAllPublic,
+        ),
+      ],
+      primary: FilledButton.icon(
+        onPressed: _exitPublicMulti,
+        style: selectionPrimaryStyle(),
+        icon: const Icon(Icons.close, size: 18),
+        label: Text('退出多选${n > 0 ? ' · 已选 $n' : ''}'),
       ),
     );
   }
@@ -1385,160 +1443,66 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
   Widget _bottomBar(
     ColorScheme scheme,
     List<VibeEntry> checked,
-    int activeCount,
+    List<VibeItem> vibes,
   ) {
     // 公共库多选态:专用的「打包 / 收藏 / 全选 / 退出」栏。
     if (_tab.index == 1 && _publicMulti) return _publicMultiBar(scheme);
-    // 没有任何选择/待下载时收起(与灵感页一致,把整屏留给列表)
+    final activeCount = vibes.length;
+    // 没有任何选择/待下载时收起,把整屏留给列表。
+    // 「相对进入时有改动」也要露着:全部移出后底栏若消失,唯一出口就只剩返回,
+    // 而返回=还原快照,刚做的移出会被撤销 —— 没有「确认」就没法把移出落地。
     final show =
         activeCount > 0 ||
         checked.isNotEmpty ||
         _publicPending.isNotEmpty ||
-        _downloading != null;
-    return ExpandBody(
-      expanded: show,
-      child: Material(
-        color: scheme.surfaceContainerLow,
-        child: SafeArea(
-          top: false,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // 第一层:批量操作(勾选后浮现;清空已并入第二层「取消选择」)
-                if (_tab.index == 0 && checked.isNotEmpty) ...[
-                  Row(
-                    children: [
-                      _pillBtn(
-                        icon: Icons.delete_outline,
-                        label: '删除',
-                        color: scheme.error,
-                        onTap: () => _deleteChecked(checked),
-                      ),
-                      const SizedBox(width: 8),
-                      _pillBtn(
-                        icon: Icons.archive_outlined,
-                        label: '打包',
-                        onTap: _busy ? null : () => _exportChecked(checked),
-                      ),
-                      const SizedBox(width: 8),
-                      _pillBtn(
-                        icon: Icons.sell_outlined,
-                        label: '标签',
-                        onTap: () => _batchTag(checked),
-                      ),
-                      const Spacer(),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                ],
-                // 第二层:取消选择(选择归零,不退页)+ 确认选择(下载待下载的公共 vibe)
-                Builder(
-                  builder: (context) {
-                    final downloading = _downloading != null;
-                    final selCount = activeCount + _publicPending.length;
-                    return Row(
-                      children: [
-                        OutlinedButton(
-                          onPressed: downloading || selCount == 0
-                              ? null
-                              : _clearAllSelection,
-                          style: OutlinedButton.styleFrom(
-                            minimumSize: const Size(0, 46),
-                            padding: const EdgeInsets.symmetric(horizontal: 16),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(23),
-                            ),
-                          ),
-                          child: const Text('取消选择'),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: FilledButton.icon(
-                            onPressed: downloading ? null : _confirmSelection,
-                            style: FilledButton.styleFrom(
-                              minimumSize: const Size.fromHeight(46),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(23),
-                              ),
-                              textStyle: const TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                            icon: downloading
-                                ? SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: scheme.onPrimary,
-                                    ),
-                                  )
-                                : const Icon(Icons.check, size: 19),
-                            label: Text(
-                              downloading
-                                  ? '下载中 ${_downloading!.$1}/${_downloading!.$2}'
-                                  : (selCount > 0
-                                        ? '确认选择 ($selCount)'
-                                        : '确认选择'),
-                            ),
-                          ),
-                        ),
-                      ],
-                    );
-                  },
-                ),
-              ],
-            ),
+        _downloading != null ||
+        _changedFromSnapshot(vibes);
+    final downloading = _downloading != null;
+    final selCount = activeCount + _publicPending.length;
+    final local = _tab.index == 0 && checked.isNotEmpty;
+    return SelectionBar(
+      visible: show,
+      onClear: downloading || selCount == 0 ? null : _clearAllSelection,
+      actions: [
+        if (local) ...[
+          SelectionPill(
+            icon: Icons.archive_outlined,
+            label: '打包',
+            onTap: _busy ? null : () => _exportChecked(checked),
           ),
-        ),
-      ),
-    );
-  }
-
-  /// 批量行的小描边按钮(图标 + 文字)。
-  Widget _pillBtn({
-    required IconData icon,
-    required String label,
-    Color? color,
-    VoidCallback? onTap,
-  }) {
-    final scheme = context.scheme;
-    final enabled = onTap != null;
-    final fg = (color ?? scheme.onSurfaceVariant).withValues(
-      alpha: enabled ? 1 : .45,
-    );
-    return Material(
-      color: Colors.transparent,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(11),
-        side: BorderSide(
-          color: color != null
-              ? color.withValues(alpha: .5)
-              : scheme.outlineVariant,
-        ),
-      ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(11),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 16, color: fg),
-              const SizedBox(width: 5),
-              Text(
-                label,
-                style: context.texts.labelMedium!.copyWith(
-                  color: fg,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ],
+          SelectionPill(
+            icon: Icons.sell_outlined,
+            label: '标签',
+            onTap: () => _batchTag(checked),
           ),
+        ],
+      ],
+      destructive: local
+          ? SelectionPill(
+              icon: Icons.delete_outline,
+              label: '删除',
+              color: scheme.error,
+              onTap: () => _deleteChecked(checked),
+            )
+          : null,
+      // 确认 = 下载待下载的公共 vibe;下载中转进度并锁住
+      primary: FilledButton.icon(
+        onPressed: downloading ? null : _confirmSelection,
+        style: selectionPrimaryStyle(),
+        icon: downloading
+            ? SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: scheme.onPrimary,
+                ),
+              )
+            : const Icon(Icons.check, size: 18),
+        label: Text(
+          downloading
+              ? '下载中 ${_downloading!.$1}/${_downloading!.$2}'
+              : (selCount > 0 ? '确认选择 ($selCount)' : '确认选择'),
         ),
       ),
     );
@@ -1821,6 +1785,7 @@ class _VibeCard extends StatelessWidget {
     required this.entry,
     required this.checked,
     required this.compatible,
+    required this.encodedModels,
     required this.thumb,
     required this.onTap,
     required this.onDelete,
@@ -1833,6 +1798,10 @@ class _VibeCard extends StatelessWidget {
   final VibeEntry entry;
   final bool checked;
   final bool compatible;
+
+  /// 实际有的编码模型键(索引 ∪ 缓存),**不是** `entry.supportedModels`
+  /// —— 后者只是导入那一刻的快照,见 `_encModelsOf`。
+  final List<String> encodedModels;
   final File thumb;
   final VoidCallback onTap;
   final VoidCallback onDelete;
@@ -1850,7 +1819,7 @@ class _VibeCard extends StatelessWidget {
       checked: checked,
       compatible: compatible,
       name: entry.name,
-      supportedModels: entry.supportedModels,
+      supportedModels: encodedModels,
       busy: false,
       onTap: onTap,
       tagLabel: entry.tags.isEmpty ? null : entry.tags.first,

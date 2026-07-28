@@ -12,7 +12,10 @@ import 'save_settings.dart';
 /// 估算大小 = 真实走一遍取长度,估算即实际。
 Future<Uint8List> processForSave(Uint8List bytes, SaveSettings o) async {
   if (o.format == SaveFormat.jpg) {
-    return compute(_encodeJpg, (bytes, (o.quality * 100).round().clamp(10, 100)));
+    return compute(_encodeJpg, (
+      bytes,
+      (o.quality * 100).round().clamp(10, 100),
+    ));
   }
   return switch (o.meta) {
     SaveMeta.original => bytes,

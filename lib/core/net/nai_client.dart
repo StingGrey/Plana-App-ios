@@ -9,11 +9,23 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:msgpack_dart/msgpack_dart.dart' as msgpack;
 
+import 'gen_abort.dart';
+
 /// 流式生成的一帧:step 非空=中间预览,isFinal=终图。
 typedef NaiFrame = ({int? step, bool isFinal, Uint8List bytes});
 
 /// 订阅信息:剩余点数 + 是否 Opus(决定免费额度)。
-typedef NaiSubscription = ({int anlas, bool isOpus});
+/// [tier] 为生效档位:订阅有效(active/宽限)时取原 tier(1 Tablet /
+/// 2 Scroll / 3 Opus),失效按 0(未订阅)。
+typedef NaiSubscription = ({int anlas, bool isOpus, int tier});
+
+/// 档位显示名。
+String naiTierName(int tier) => switch (tier) {
+  3 => 'Opus',
+  2 => 'Scroll',
+  1 => 'Tablet',
+  _ => '未订阅',
+};
 
 /// NovelAI 直连客户端(v1:App 用用户自己的 Bearer token 直接打 NAI)。
 /// 复刻后端 `novelai_web_ui/server/app.py` 的原生请求。
@@ -30,36 +42,38 @@ class NaiException implements Exception {
 class NaiClient {
   static const _imageHost = 'https://image.novelai.net';
 
-  static const _ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+  static const _ua =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
       'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36';
 
   Map<String, String> _genHeaders(String token) => {
-        'Authorization': 'Bearer $token',
-        'Content-Type': 'application/json',
-        'accept': '*/*',
-        'origin': 'https://novelai.net',
-        'referer': 'https://novelai.net/',
-        'user-agent': _ua,
-      };
+    'Authorization': 'Bearer $token',
+    'Content-Type': 'application/json',
+    'accept': '*/*',
+    'origin': 'https://novelai.net',
+    'referer': 'https://novelai.net/',
+    'user-agent': _ua,
+  };
 
   /// 流式端点头:NAI 前端每请求都带 x-correlation-id(6 hex)+ x-initiated-at。
   Map<String, String> _streamHeaders(String token) => {
-        'Authorization': 'Bearer $token',
-        'Content-Type': 'application/json',
-        'accept': '*/*',
-        'accept-language': 'en-US,en;q=0.9',
-        'origin': 'https://novelai.net',
-        'referer': 'https://novelai.net/',
-        'user-agent': _ua,
-        'x-correlation-id': _corrId(),
-        'x-initiated-at': _isoNow(),
-      };
+    'Authorization': 'Bearer $token',
+    'Content-Type': 'application/json',
+    'accept': '*/*',
+    'accept-language': 'en-US,en;q=0.9',
+    'origin': 'https://novelai.net',
+    'referer': 'https://novelai.net/',
+    'user-agent': _ua,
+    'x-correlation-id': _corrId(),
+    'x-initiated-at': _isoNow(),
+  };
 
   String _corrId() {
     final r = Random();
-    return List<int>.generate(3, (_) => r.nextInt(256))
-        .map((x) => x.toRadixString(16).padLeft(2, '0'))
-        .join();
+    return List<int>.generate(
+      3,
+      (_) => r.nextInt(256),
+    ).map((x) => x.toRadixString(16).padLeft(2, '0')).join();
   }
 
   String _isoNow() {
@@ -75,10 +89,17 @@ class NaiClient {
   Stream<NaiFrame> generateImageStream({
     required String token,
     required Map<String, dynamic> body,
+    GenAbort? abort,
   }) async* {
     final uri = Uri.parse('$_imageHost/ai/generate-image-stream');
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 30);
+    // 取消:强制关连接,进行中的请求/流随即断开抛错(对齐 web abort fetch)。
+    abort?.whenAbort(() {
+      try {
+        client.close(force: true);
+      } catch (_) {}
+    });
 
     var received = 0; // 诊断:累计字节
     var parseFails = 0; // 诊断:解析失败帧数
@@ -98,8 +119,10 @@ class NaiClient {
             .transform(utf8.decoder)
             .join()
             .timeout(const Duration(seconds: 10), onTimeout: () => '');
-        throw NaiException(_errorTextRaw(text, resp.statusCode),
-            status: resp.statusCode);
+        throw NaiException(
+          _errorTextRaw(text, resp.statusCode),
+          status: resp.statusCode,
+        );
       }
 
       final buf = <int>[];
@@ -109,7 +132,8 @@ class NaiClient {
         buf.addAll(chunk);
         var off = 0;
         while (buf.length - off >= 4) {
-          final len = (buf[off] << 24) |
+          final len =
+              (buf[off] << 24) |
               (buf[off + 1] << 16) |
               (buf[off + 2] << 8) |
               buf[off + 3];
@@ -117,8 +141,9 @@ class NaiClient {
             throw NaiException('流数据格式异常(帧长 $len)');
           }
           if (buf.length - off < 4 + len) break;
-          final msgBytes =
-              Uint8List.fromList(buf.sublist(off + 4, off + 4 + len));
+          final msgBytes = Uint8List.fromList(
+            buf.sublist(off + 4, off + 4 + len),
+          );
           off += 4 + len;
 
           dynamic msg;
@@ -134,8 +159,10 @@ class NaiClient {
           final code = msg['code'];
           if (code != null && code != 200) {
             final m = msg['message'];
-            throw NaiException(m is String ? m : '生成失败(code $code)',
-                status: code is int ? code : null);
+            throw NaiException(
+              m is String ? m : '生成失败(code $code)',
+              status: code is int ? code : null,
+            );
           }
 
           final img = msg['image'];
@@ -230,19 +257,18 @@ class NaiClient {
     final uri = Uri.parse('https://api.novelai.net/ai/upscale');
     final http.Response resp;
     try {
-      resp = await http.post(
-        uri,
-        headers: {
-          ..._genHeaders(token),
-          'accept': 'application/zip',
-        },
-        body: jsonEncode({
-          'image': imageBase64,
-          'width': width,
-          'height': height,
-          'scale': scale,
-        }),
-      ).timeout(const Duration(seconds: 120));
+      resp = await http
+          .post(
+            uri,
+            headers: {..._genHeaders(token), 'accept': 'application/zip'},
+            body: jsonEncode({
+              'image': imageBase64,
+              'width': width,
+              'height': height,
+              'scale': scale,
+            }),
+          )
+          .timeout(const Duration(seconds: 120));
     } catch (e) {
       throw NaiException('网络错误:$e');
     }
@@ -258,9 +284,9 @@ class NaiClient {
     final uri = Uri.parse('$_imageHost/user/subscription');
     final http.Response resp;
     try {
-      resp = await http.get(uri, headers: {
-        'Authorization': 'Bearer $token',
-      }).timeout(const Duration(seconds: 20));
+      resp = await http
+          .get(uri, headers: {'Authorization': 'Bearer $token'})
+          .timeout(const Duration(seconds: 20));
     } catch (e) {
       throw NaiException('网络错误:$e');
     }
@@ -271,9 +297,9 @@ class NaiClient {
     final steps = (data['trainingStepsLeft'] as Map?) ?? const {};
     final fixed = (steps['fixedTrainingStepsLeft'] as num?)?.toInt() ?? 0;
     final purchased = (steps['purchasedTrainingSteps'] as num?)?.toInt() ?? 0;
-    final isOpus = data['tier'] == 3 &&
-        (data['active'] == true || data['isGracePeriod'] == true);
-    return (anlas: fixed + purchased, isOpus: isOpus);
+    final alive = data['active'] == true || data['isGracePeriod'] == true;
+    final tier = alive ? ((data['tier'] as num?)?.toInt() ?? 0) : 0;
+    return (anlas: fixed + purchased, isOpus: tier == 3, tier: tier);
   }
 
   /// Vibe 编码:POST /ai/encode-vibe(每次固定耗 2 Anlas)。
@@ -288,21 +314,23 @@ class NaiClient {
     final uri = Uri.parse('$_imageHost/ai/encode-vibe');
     final http.Response resp;
     try {
-      resp = await http.post(
-        uri,
-        headers: {
-          'accept': '*/*',
-          'Authorization': 'Bearer $token',
-          'Content-Type': 'application/json',
-          'origin': 'https://novelai.net',
-          'referer': 'https://novelai.net/',
-        },
-        body: jsonEncode({
-          'image': imageBase64,
-          'information_extracted': infoExtracted,
-          'model': model,
-        }),
-      ).timeout(const Duration(seconds: 120));
+      resp = await http
+          .post(
+            uri,
+            headers: {
+              'accept': '*/*',
+              'Authorization': 'Bearer $token',
+              'Content-Type': 'application/json',
+              'origin': 'https://novelai.net',
+              'referer': 'https://novelai.net/',
+            },
+            body: jsonEncode({
+              'image': imageBase64,
+              'information_extracted': infoExtracted,
+              'model': model,
+            }),
+          )
+          .timeout(const Duration(seconds: 120));
     } catch (e) {
       throw NaiException('编码参考图失败:$e');
     }

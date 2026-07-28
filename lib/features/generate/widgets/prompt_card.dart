@@ -27,7 +27,9 @@ class PromptCard extends ConsumerWidget {
       state.negativePrompt,
       preset?.negative ?? '',
     );
+    final over = promptTokens > 512;
     final ratio = (promptTokens / 512).clamp(0.0, 1.0);
+    final barColor = over ? scheme.error : scheme.primary;
 
     return Material(
       color: scheme.surfaceContainerLow,
@@ -37,7 +39,7 @@ class PromptCard extends ConsumerWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(15, 8, 10, 4),
+            padding: const EdgeInsets.fromLTRB(15, 8, 13, 4),
             child: Row(
               children: [
                 Icon(Icons.subject, size: 20, color: scheme.onSurfaceVariant),
@@ -50,7 +52,15 @@ class PromptCard extends ConsumerWidget {
                 ),
                 const SizedBox(width: 9),
                 Text(
-                  '$promptTokens / 512',
+                  '$promptTokens',
+                  style: mono(
+                    context,
+                    size: 11,
+                    weight: FontWeight.w700,
+                  ).copyWith(color: over ? scheme.error : scheme.onSurface),
+                ),
+                Text(
+                  ' / 512',
                   style: mono(
                     context,
                     size: 11,
@@ -75,6 +85,10 @@ class PromptCard extends ConsumerWidget {
                     );
                   },
                 ),
+                const SizedBox(width: 6),
+                // 常驻下拉图标:提示词卡固定展开(不折叠),此处仅为让卡头与下方
+                // 各功能卡(SectionCard 尾部 chevron)在视觉上对齐,不接手势。
+                Icon(Icons.expand_more, size: 22, color: scheme.outline),
               ],
             ),
           ),
@@ -90,7 +104,7 @@ class PromptCard extends ConsumerWidget {
                   value: v,
                   minHeight: 3,
                   backgroundColor: scheme.surfaceContainerHighest,
-                  color: scheme.primary,
+                  color: barColor,
                 ),
               ),
             ),

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -9,7 +10,8 @@ import '../generate_state.dart';
 import '../generation_controller.dart';
 import '../loop_controller.dart';
 import '../models.dart';
-import 'common.dart' show hintSnack;
+import '../vibe_encoder.dart';
+import 'common.dart' show confirmDialog, hintSnack;
 
 /// 循环生成面板:选张数 → 看预估 → 开始;运行中切换为批次进度 + 停止。
 /// 抓手由 BottomSheetTheme(showDragHandle: true)统一提供。
@@ -48,14 +50,19 @@ class _Setup extends ConsumerWidget {
     // 与吸底栏同口径:按剥离隐藏模块后的实际发送内容估价
     final mods =
         ref.watch(genModulesProvider).value ?? const GenModuleSettings();
-    final cost = estimateCost(stripHiddenModules(s, mods), isOpus: isOpus);
+    final sent = stripHiddenModules(s, mods);
+    // 与吸底栏同口径:未缓存的 Vibe 编码费要算进去(见 vibeEncodeFeeProvider)。
+    // 注意编码费只在**首张**发生,之后进缓存;所以总价按「单张 × N + 一次编码费」。
+    final vibeFee =
+        ref.watch(vibeEncodeFeeProvider(vibeEncodeFeeKey(sent))).value ?? 0;
+    final cost = estimateCost(sent, isOpus: isOpus);
     final n = p.loop.count;
 
-    final costText = cost == 0
+    final costText = cost == 0 && vibeFee == 0
         ? '免费'
         : n > 0
-        ? '$cost/张 · 共 ${cost * n} Anlas'
-        : '$cost Anlas/张';
+        ? '$cost/张 · 共 ${cost * n + vibeFee} Anlas'
+        : '$cost Anlas/张${vibeFee > 0 ? ' + 编码 $vibeFee' : ''}';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -68,7 +75,8 @@ class _Setup extends ConsumerWidget {
         ),
         const SizedBox(height: 6),
         Text(
-          '按当前创作参数连续出图;Seed 留空时每张随机。单张失败自动停止;可退到后台,通知栏跟进度。',
+          '按当前参数一张接一张地出图,种子留空就每张随机。'
+          '中途出错会自动停下,也可以退到后台,进度在通知栏继续。',
           style: context.texts.bodySmall!.copyWith(
             color: scheme.onSurfaceVariant,
           ),
@@ -102,12 +110,18 @@ class _Setup extends ConsumerWidget {
         Row(
           children: [
             Expanded(child: Text('预估消耗', style: context.texts.bodyMedium)),
-            Text(
-              costText,
-              style: mono(
-                context,
-                size: 13,
-              ).copyWith(fontWeight: FontWeight.w600),
+            // 「12/张 · 共 246 Anlas」这类串在窄屏会顶破一行,收进 Flexible
+            Flexible(
+              child: Text(
+                costText,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.end,
+                style: mono(
+                  context,
+                  size: 13,
+                ).copyWith(fontWeight: FontWeight.w600),
+              ),
             ),
           ],
         ),
@@ -115,7 +129,21 @@ class _Setup extends ConsumerWidget {
         FilledButton(
           onPressed: gen.busy
               ? null
-              : () {
+              : () async {
+                  // 无限 + 收费档:没有张数上限就没有花费上限,且退到后台仍会继续,
+                  // 所以开跑前确认一次。免费档或有限张数不打扰。
+                  if (n == 0 && (cost > 0 || vibeFee > 0)) {
+                    final ok = await confirmDialog(
+                      context,
+                      title: '无限循环会持续扣点',
+                      message:
+                          '当前参数每张约 $cost Anlas'
+                          '${vibeFee > 0 ? '(另首张含 $vibeFee 点 Vibe 编码费)' : ''}'
+                          ',张数为无限——不点停止就会一直生成,退到后台也会继续。确定开始?',
+                      confirmLabel: '开始',
+                    );
+                    if (!ok || !context.mounted) return;
+                  }
                   // 循环每轮重读当前参数,开跑前先把缺编码的纯编码 Vibe 停掉并提示
                   final skipped = ref
                       .read(generateProvider.notifier)
@@ -129,7 +157,7 @@ class _Setup extends ConsumerWidget {
                   }
                   final notifier = ref.read(loopStatusProvider.notifier);
                   Navigator.pop(context);
-                  notifier.start();
+                  unawaited(notifier.start());
                 },
           style: FilledButton.styleFrom(
             minimumSize: const Size.fromHeight(48),
@@ -202,9 +230,11 @@ class _Running extends ConsumerWidget {
           child: LinearProgressIndicator(value: progress, minHeight: 6),
         ),
         const SizedBox(height: 18),
+        // 与吸底栏同规则:软停后不置灰,升级为强制取消 —— 当前张卡住时
+        // (断网最常见)这是唯一能中断请求的入口,置灰等于关掉退路。
         FilledButton.tonal(
           onPressed: loop.stopping
-              ? null
+              ? () => ref.read(generationProvider.notifier).cancel()
               : () => ref.read(loopStatusProvider.notifier).stop(),
           style: FilledButton.styleFrom(
             minimumSize: const Size.fromHeight(48),
@@ -213,7 +243,7 @@ class _Running extends ConsumerWidget {
             ),
           ),
           child: Text(
-            loop.stopping ? '本张后停止…' : '停止(本张跑完后)',
+            loop.stopping ? '本张后停止' : '停止(本张跑完后)',
             style: const TextStyle(fontWeight: FontWeight.w700),
           ),
         ),

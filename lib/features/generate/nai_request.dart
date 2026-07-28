@@ -28,6 +28,20 @@ String naiSamplerId(String displaySampler) =>
 /// 一个已编码的 vibe 参考:编码串 + 参考强度。
 typedef EncodedVibe = ({String encoded, double strength});
 
+/// 均衡强度:多张 Vibe 且合计 >1 时按比例缩到合计 1(规则与 web 一致)。
+///
+/// 两条线都得自己算 —— NAI 的 `normalize_reference_strength_multiple` 只对
+/// 缓存模式生效,直传编码串时它不会动手;后端 `convert_web_params_to_stream`
+/// 也只是把这个标记原样转发。标记照发,真活在这儿干。
+List<double> normalizeVibeStrengths(
+  List<double> strengths, {
+  required bool on,
+}) {
+  if (!on || strengths.length <= 1) return strengths;
+  final total = strengths.fold<double>(0, (a, b) => a + b);
+  return total > 1 ? [for (final s in strengths) s / total] : strengths;
+}
+
 /// 图生图参考:已 cover 到目标分辨率的 PNG base64 + 强度 + 噪声。
 typedef Img2ImgRef = ({String image, double strength, double noise});
 
@@ -128,7 +142,7 @@ Map<String, double> _center(String? pos, int index) {
     // Variety+ = 固定值 58(与 web 一致),关闭则 null
     'skip_cfg_above_sigma': p.varietyPlus ? 58 : null,
     'use_coords': useCoords,
-    'normalize_reference_strength_multiple': true,
+    'normalize_reference_strength_multiple': p.normalizeVibe,
     'inpaintImg2ImgStrength': 1,
     'seed': seed,
     'legacy_uc': false,
@@ -181,16 +195,12 @@ Map<String, double> _center(String? pos, int index) {
     ];
   }
 
-  // Vibe 参考:编码串 + 强度。与 web 一致:数量>1 且 和>1 时按比例归一化
-  // (另有 normalize_reference_strength_multiple:true 兜底)。生成不发 info_extracted。
+  // Vibe 参考:编码串 + 强度。生成不发 info_extracted。
   if (vibes.isNotEmpty) {
-    var strengths = [for (final v in vibes) v.strength];
-    if (strengths.length > 1) {
-      final total = strengths.fold<double>(0, (a, b) => a + b);
-      if (total > 1) strengths = [for (final v in strengths) v / total];
-    }
     params['reference_image_multiple'] = [for (final v in vibes) v.encoded];
-    params['reference_strength_multiple'] = strengths;
+    params['reference_strength_multiple'] = normalizeVibeStrengths([
+      for (final v in vibes) v.strength,
+    ], on: p.normalizeVibe);
   }
 
   // 角色参考(Director/Precise Reference):仅 4.5 模型下发,其余静默不发。

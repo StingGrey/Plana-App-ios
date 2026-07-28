@@ -39,13 +39,12 @@ class GenQueueState {
     bool? active,
     int? done,
     bool? stopping,
-  }) =>
-      GenQueueState(
-        items: items ?? this.items,
-        active: active ?? this.active,
-        done: done ?? this.done,
-        stopping: stopping ?? this.stopping,
-      );
+  }) => GenQueueState(
+    items: items ?? this.items,
+    active: active ?? this.active,
+    done: done ?? this.done,
+    stopping: stopping ?? this.stopping,
+  );
 }
 
 final genQueueProvider = NotifierProvider<GenQueueNotifier, GenQueueState>(
@@ -76,7 +75,10 @@ class GenQueueNotifier extends Notifier<GenQueueState> {
       ref.read(genModulesProvider).value ?? const GenModuleSettings(),
     );
     state = state.copyWith(
-      items: [...state.items, QueuedTask(id: _seq++, snapshot: snap)],
+      items: [
+        ...state.items,
+        QueuedTask(id: _seq++, snapshot: snap),
+      ],
     );
     return true;
   }
@@ -109,7 +111,6 @@ class GenQueueNotifier extends Notifier<GenQueueState> {
 
   Future<void> _drain() async {
     state = state.copyWith(active: true, done: 0, stopping: false);
-    var ok = true;
     while (!state.stopping && state.items.isNotEmpty) {
       // 消费间隙用户手动点了生成:等它跑完再续
       if (ref.read(generationProvider).busy) {
@@ -119,9 +120,14 @@ class GenQueueNotifier extends Notifier<GenQueueState> {
       final task = state.items.first;
       state = state.copyWith(items: state.items.sublist(1));
       final gen = ref.read(generationProvider.notifier);
-      ok = await gen.generate(using: task.snapshot);
-      if (!ok) ok = await gen.generate(using: task.snapshot); // 瞬时抖动重试一次
-      if (!ok) {
+      var outcome = await gen.generate(using: task.snapshot);
+      // **只有「确定未扣点」才重试。** 流中断 / 超时 / 内容审核这类失败,NAI
+      // 可能已经受理并扣了点,盲目重试就是第二次扣费,而且没有任何用户动作。
+      // 用户取消(stopping)同样不重试。见 S1B-01。
+      if (outcome == GenOutcome.notCharged && !state.stopping) {
+        outcome = await gen.generate(using: task.snapshot);
+      }
+      if (outcome != GenOutcome.ok) {
         state = state.copyWith(items: [task, ...state.items]); // 放回队首
         break;
       }
@@ -131,13 +137,13 @@ class GenQueueNotifier extends Notifier<GenQueueState> {
     final left = state.items.length;
     state = GenQueueState(items: state.items);
 
-    // 与循环同款收尾:前台静默撤通知;后台留一条汇总,可点回应用
-    if (_appForeground) {
-      await LiveProgress.instance.stop();
-    } else {
-      await LiveProgress.instance.finish(
-        text: left == 0 ? '队列完成 · 共 $done 张' : '队列暂停 · 剩 $left 项',
-      );
-    }
+    // 与循环同款收尾:岛上先显示完成态;前台不留通知,后台留一条汇总可点回应用
+    final all = left == 0;
+    await LiveProgress.instance.finish(
+      title: all ? '队列完成' : '队列暂停',
+      text: _appForeground ? '' : (all ? '共 $done 张 · 点按查看' : '剩 $left 项'),
+      short: all ? '完成' : '暂停',
+      keep: !_appForeground,
+    );
   }
 }

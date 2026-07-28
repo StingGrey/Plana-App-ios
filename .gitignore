@@ -43,3 +43,9 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# 发布签名:密钥与口令**绝不入库**。丢了会导致老用户无法覆盖升级
+# (只能卸载重装 → App 内数据全清),所以请自行离线备份 .jks 与密码。
+/android/key.properties
+*.jks
+*.keystore

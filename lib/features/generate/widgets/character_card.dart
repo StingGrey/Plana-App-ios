@@ -45,10 +45,13 @@ class CharacterCard extends ConsumerWidget {
           onTap: canAdd ? notifier.addCharacter : null,
         ),
       ],
-      // 没有角色时整卡不可展开:展开体本就是空的,留个箭头点开只会给出一片空白。
+      // 没有角色时整卡不可展开(展开体本就是空的),但保留一个静态 chevron 占位,
+      // 让空卡卡头与下方各功能卡视觉对齐;箭头不接手势、不旋转、不点开空白。
       expanded: chars.isNotEmpty && state.openPanels.contains(Panel.characters),
-      onHeaderTap:
-          chars.isEmpty ? null : () => notifier.togglePanel(Panel.characters),
+      onHeaderTap: chars.isEmpty
+          ? null
+          : () => notifier.togglePanel(Panel.characters),
+      chevronPlaceholder: chars.isEmpty,
       body: chars.isEmpty
           ? null
           // 长按卡片拖动排序;横滑删除保留
@@ -76,7 +79,9 @@ class CharacterCard extends ConsumerWidget {
   }
 
   Future<void> _confirmClear(
-      BuildContext context, GenerateNotifier notifier) async {
+    BuildContext context,
+    GenerateNotifier notifier,
+  ) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -122,9 +127,9 @@ class _CharacterTile extends ConsumerWidget {
         borderRadius: BorderRadius.circular(12),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
-          onTap: () => Navigator.of(context).push(sharedAxisRoute(
-            EditorPage(positive: true, charId: char.id),
-          )),
+          onTap: () => Navigator.of(
+            context,
+          ).push(sharedAxisRoute(EditorPage(positive: true, charId: char.id))),
           child: Padding(
             padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
             child: Column(
@@ -136,15 +141,27 @@ class _CharacterTile extends ConsumerWidget {
                     IconButton(
                       onPressed: () =>
                           notifier.updateCharacter(char.id, enabled: !enabled),
-                      icon: Icon(Icons.power_settings_new,
-                          size: 21,
-                          color: enabled ? scheme.tertiary : scheme.outline),
+                      icon: Icon(
+                        Icons.power_settings_new,
+                        size: 24,
+                        color: enabled ? scheme.primary : scheme.outline,
+                      ),
+                      // 与参考图那枚同款:字号 + 启用时的主色底托(见 RefEnableToggle)
+                      style: IconButton.styleFrom(
+                        backgroundColor: enabled
+                            ? scheme.primary.withValues(alpha: .12)
+                            : Colors.transparent,
+                      ),
                       tooltip: enabled ? '停用(保留配置)' : '启用',
-                      visualDensity:
-                          const VisualDensity(horizontal: -3, vertical: -3),
+                      visualDensity: const VisualDensity(
+                        horizontal: -3,
+                        vertical: -3,
+                      ),
                       padding: EdgeInsets.zero,
-                      constraints:
-                          const BoxConstraints(minWidth: 34, minHeight: 34),
+                      constraints: const BoxConstraints(
+                        minWidth: 38,
+                        minHeight: 38,
+                      ),
                     ),
                     const SizedBox(width: 4),
                     // 名称 + 状态说明:占满中间,把尾部(徽章+删除)顶到最右
@@ -158,20 +175,21 @@ class _CharacterTile extends ConsumerWidget {
                               overflow: TextOverflow.ellipsis,
                               style: context.texts.bodyLarge!.copyWith(
                                 fontWeight: FontWeight.w700,
-                                color:
-                                    enabled ? scheme.onSurface : scheme.outline,
+                                color: enabled
+                                    ? scheme.onSurface
+                                    : scheme.outline,
                               ),
                             ),
                           ),
                           if (!enabled) ...[
                             const SizedBox(width: 8),
-                            Flexible(
-                              child: Text(
-                                '已禁用 · 配置保留',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: context.texts.labelSmall!
-                                    .copyWith(color: scheme.outline),
+                            // 不给 Flexible:状态标签是定长的,该让角色名去挤。
+                            // 原先两个都 flex:1 平分,标签分到的一半装不下,
+                            // 就从尾巴开始吃 —— 屏幕上只剩「已禁用 ·…」。
+                            Text(
+                              '已禁用',
+                              style: context.texts.labelSmall!.copyWith(
+                                color: scheme.outline,
                               ),
                             ),
                           ],
@@ -188,27 +206,35 @@ class _CharacterTile extends ConsumerWidget {
                         onTap: () => showPositionGridDialog(context, char.id),
                         child: Padding(
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 7),
+                            horizontal: 12,
+                            vertical: 7,
+                          ),
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(Icons.grid_on,
-                                  size: 15,
-                                  color: char.position == null
-                                      ? scheme.onSurfaceVariant
-                                      : scheme.primary),
+                              Icon(
+                                Icons.grid_on,
+                                size: 15,
+                                color: char.position == null
+                                    ? scheme.onSurfaceVariant
+                                    : scheme.primary,
+                              ),
                               const SizedBox(width: 5),
                               SizedBox(
                                 width: 38,
                                 child: Text(
                                   char.position ?? 'AUTO',
                                   textAlign: TextAlign.center,
-                                  style: mono(context,
-                                          size: 12, weight: FontWeight.w700)
-                                      .copyWith(
-                                          color: char.position == null
-                                              ? scheme.onSurfaceVariant
-                                              : scheme.primary),
+                                  style:
+                                      mono(
+                                        context,
+                                        size: 12,
+                                        weight: FontWeight.w700,
+                                      ).copyWith(
+                                        color: char.position == null
+                                            ? scheme.onSurfaceVariant
+                                            : scheme.primary,
+                                      ),
                                 ),
                               ),
                             ],
@@ -222,9 +248,11 @@ class _CharacterTile extends ConsumerWidget {
                       height: 40,
                       child: IconButton(
                         onPressed: () => notifier.removeCharacter(char.id),
-                        icon: Icon(Icons.delete_outline,
-                            size: 20,
-                            color: scheme.error.withValues(alpha: .85)),
+                        icon: Icon(
+                          Icons.delete_outline,
+                          size: 20,
+                          color: scheme.error.withValues(alpha: .85),
+                        ),
                         tooltip: '删除角色',
                         padding: EdgeInsets.zero,
                         visualDensity: VisualDensity.compact,
@@ -239,25 +267,26 @@ class _CharacterTile extends ConsumerWidget {
                     children: [
                       Expanded(
                         child: Text(
-                          char.positive.isEmpty
-                              ? '点击编辑提示词…'
-                              : char.positive,
+                          char.positive.isEmpty ? '点击编辑提示词…' : char.positive,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: context.texts.bodyMedium!.copyWith(
                             color: char.positive.isEmpty
                                 ? scheme.outline
                                 : (enabled
-                                    ? scheme.onSurfaceVariant
-                                    : scheme.outline),
+                                      ? scheme.onSurfaceVariant
+                                      : scheme.outline),
                           ),
                         ),
                       ),
                       const SizedBox(width: 8),
                       Text(
                         '$tokens',
-                        style: mono(context, size: 11, weight: FontWeight.w500)
-                            .copyWith(color: scheme.outline),
+                        style: mono(
+                          context,
+                          size: 11,
+                          weight: FontWeight.w500,
+                        ).copyWith(color: scheme.outline),
                       ),
                     ],
                   ),

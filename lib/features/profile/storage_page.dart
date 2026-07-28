@@ -40,6 +40,12 @@ const _cleanable = <_CatSpec>[
   _CatSpec('charLib', Icons.person_outline, '角色参考库', '清空'),
 ];
 
+/// 单独成组,**不能混进「可清理」** —— 那一组里的东西删掉都能免费重建,
+/// 而模型是用户花流量下的,删了要再下 10.9 MB。动作也叫「删除」不叫「清理」。
+const _downloaded = <_CatSpec>[
+  _CatSpec('models', Icons.hd_outlined, '超分模型', '删除'),
+];
+
 class _StoragePageState extends ConsumerState<StoragePage> {
   StorageReport? _report;
   String? _busy; // 正在清理的分类 key
@@ -144,7 +150,8 @@ class _StoragePageState extends ConsumerState<StoragePage> {
         final ok = await confirmDialog(
           context,
           title: '清空编码缓存',
-          message: '清空后,下次用这些图生成时需重新编码;直连线路每张图约扣 2 Anlas。'
+          message:
+              '清空后,下次用这些图生成时需重新编码;直连线路每张图约扣 2 Anlas。'
               '不影响 Vibe 库文件本身。',
           confirmLabel: '清空',
         );
@@ -158,7 +165,8 @@ class _StoragePageState extends ConsumerState<StoragePage> {
         final ok = await confirmDialog(
           context,
           title: '清空 Vibe 库',
-          message: '将删除库内全部${n == null ? '' : ' $n 个'}文件'
+          message:
+              '将删除库内全部${n == null ? '' : ' $n 个'}文件'
               '(原图 / 缩略图 / 已存编码),不可恢复。',
           confirmLabel: '清空',
         );
@@ -172,7 +180,8 @@ class _StoragePageState extends ConsumerState<StoragePage> {
         final ok = await confirmDialog(
           context,
           title: '清空角色参考库',
-          message: '将删除库内全部${n == null ? '' : ' $n 个'}文件,不可恢复。'
+          message:
+              '将删除库内全部${n == null ? '' : ' $n 个'}文件,不可恢复。'
               '图库作品里的参数快照不受影响。',
           confirmLabel: '清空',
         );
@@ -181,6 +190,17 @@ class _StoragePageState extends ConsumerState<StoragePage> {
           key,
           () => ref.read(charLibraryProvider.notifier).clearAll(),
         );
+      case 'models':
+        final ok = await confirmDialog(
+          context,
+          title: '删除超分模型',
+          message:
+              '将删除已下载的 ${fmtBytes(_report?['models']?.bytes ?? 0)} 模型文件。'
+              '下次用本地超分时需重新从 Upscayl 官方仓库下载,请留意流量。',
+          confirmLabel: '删除',
+        );
+        if (!ok) return;
+        await _run(key, clearUpscaleModels);
     }
   }
 
@@ -215,6 +235,20 @@ class _StoragePageState extends ConsumerState<StoragePage> {
                   SettingsCard(
                     children: [
                       for (final spec in _cleanable)
+                        _CleanRow(
+                          spec: spec,
+                          bytes: rep[spec.key]?.bytes ?? 0,
+                          busy: _busy == spec.key,
+                          enabled: _busy == null,
+                          onAction: () => _onAction(spec.key),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  const SettingsLabel('已下载'),
+                  SettingsCard(
+                    children: [
+                      for (final spec in _downloaded)
                         _CleanRow(
                           spec: spec,
                           bytes: rep[spec.key]?.bytes ?? 0,
@@ -291,7 +325,7 @@ class _CapsCard extends ConsumerWidget {
   const _CapsCard({required this.onPatch});
 
   final Future<void> Function(StorageSettings Function(StorageSettings))
-      onPatch;
+  onPatch;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -347,10 +381,7 @@ class _CapRow extends StatelessWidget {
           autofocus: true,
           keyboardType: TextInputType.number,
           inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-          decoration: InputDecoration(
-            hintText: '超出自动删最旧',
-            suffixText: unit,
-          ),
+          decoration: InputDecoration(suffixText: unit),
           onSubmitted: (v) =>
               Navigator.of(ctx).pop(int.tryParse(v.trim()) ?? 0),
         ),
@@ -471,4 +502,3 @@ class _CleanRow extends StatelessWidget {
     );
   }
 }
-

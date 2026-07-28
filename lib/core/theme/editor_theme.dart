@@ -10,6 +10,7 @@ class EditorPalette extends ThemeExtension<EditorPalette> {
     required this.character,
     required this.oc,
     required this.work,
+    required this.artist,
     required this.weightUp,
     required this.weightDown,
     required this.weightUpWash,
@@ -27,6 +28,10 @@ class EditorPalette extends ThemeExtension<EditorPalette> {
 
   /// 作品(紫罗兰)
   final Color work;
+
+  /// 画师串(品红)。两个变体同值:原先在 `completion_bar` 内联硬编码时就是
+  /// 一个值通吃亮暗,搬进来只做归位不改观感;要分变体随时在这里加。
+  final Color artist;
 
   /// 加权 {} (橙,文本/读数/按钮用)
   final Color weightUp;
@@ -55,6 +60,7 @@ class EditorPalette extends ThemeExtension<EditorPalette> {
     character: Color(0xFF6750A4), // 靛紫
     oc: Color(0xFF2E7D32), // 绿
     work: Color(0xFF8E44AD), // 紫罗兰
+    artist: Color(0xFFC2569B), // 品红
     weightUp: Color(0xFFC7620E), // 橙
     weightDown: Color(0xFF1B66C9), // 蓝
     weightUpWash: Color(0xFFC63A10), // 朱红(浅底上显红)
@@ -69,6 +75,7 @@ class EditorPalette extends ThemeExtension<EditorPalette> {
     character: Color(0xFFCBB8FF),
     oc: Color(0xFF81C784),
     work: Color(0xFFCE93D8),
+    artist: Color(0xFFC2569B),
     weightUp: Color(0xFFFFB74D),
     weightDown: Color(0xFF64B5F6),
     weightUpWash: Color(0xFFC2410C),
@@ -83,6 +90,7 @@ class EditorPalette extends ThemeExtension<EditorPalette> {
     Color? character,
     Color? oc,
     Color? work,
+    Color? artist,
     Color? weightUp,
     Color? weightDown,
     Color? weightUpWash,
@@ -90,19 +98,19 @@ class EditorPalette extends ThemeExtension<EditorPalette> {
     Color? weightUpBorder,
     Color? weightDownBorder,
     Color? cursor,
-  }) =>
-      EditorPalette(
-        character: character ?? this.character,
-        oc: oc ?? this.oc,
-        work: work ?? this.work,
-        weightUp: weightUp ?? this.weightUp,
-        weightDown: weightDown ?? this.weightDown,
-        weightUpWash: weightUpWash ?? this.weightUpWash,
-        weightDownWash: weightDownWash ?? this.weightDownWash,
-        weightUpBorder: weightUpBorder ?? this.weightUpBorder,
-        weightDownBorder: weightDownBorder ?? this.weightDownBorder,
-        cursor: cursor ?? this.cursor,
-      );
+  }) => EditorPalette(
+    character: character ?? this.character,
+    oc: oc ?? this.oc,
+    work: work ?? this.work,
+    artist: artist ?? this.artist,
+    weightUp: weightUp ?? this.weightUp,
+    weightDown: weightDown ?? this.weightDown,
+    weightUpWash: weightUpWash ?? this.weightUpWash,
+    weightDownWash: weightDownWash ?? this.weightDownWash,
+    weightUpBorder: weightUpBorder ?? this.weightUpBorder,
+    weightDownBorder: weightDownBorder ?? this.weightDownBorder,
+    cursor: cursor ?? this.cursor,
+  );
 
   /// 权重底色(强度曲线集中在此,正文色带与排序 chip 共用):
   /// 加权 (w−1)/1.5、降权 (1−w)/0.7 定强度,越偏离 1 越深;
@@ -126,6 +134,7 @@ class EditorPalette extends ThemeExtension<EditorPalette> {
       character: Color.lerp(character, other.character, t)!,
       oc: Color.lerp(oc, other.oc, t)!,
       work: Color.lerp(work, other.work, t)!,
+      artist: Color.lerp(artist, other.artist, t)!,
       weightUp: Color.lerp(weightUp, other.weightUp, t)!,
       weightDown: Color.lerp(weightDown, other.weightDown, t)!,
       weightUpWash: Color.lerp(weightUpWash, other.weightUpWash, t)!,

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -19,11 +20,16 @@ import '../save_pipeline.dart';
 import '../save_settings.dart';
 import '../upscale_local.dart';
 import '../upscale_model.dart';
+import '../upscale_model_store.dart';
 import '../upscale_nai.dart';
 import 'save_sheet.dart';
 
-/// 持久大图层:有字节 → `Image.memory`(gaplessPlayback);否则斜纹 + 尺寸占位。
+/// 持久大图层:有字节 → `Image.memory`(gaplessPlayback);否则画一个目标尺寸的空画框。
 /// 生成/查看全程复用同一个 Image widget,借 gaplessPlayback 桥接逐帧预览与终图,消除切换闪烁。
+///
+/// 占位**不再用斜纹 CustomPaint**:斜纹是平行四边形路径,右端会伸出画布 size.height
+/// 那么远,而 CustomPaint 默认不裁剪 —— 在 PageView 里横滑时整条纹直接糊到隔壁页上。
+/// 现在这版只有 ColoredBox + Container,画不出界。
 class GalleryImageLayer extends StatelessWidget {
   const GalleryImageLayer({
     super.key,
@@ -51,20 +57,38 @@ class GalleryImageLayer extends StatelessWidget {
         ),
       );
     }
-    return CustomPaint(
-      painter: _HatchPainter(
-        base: scheme.surfaceContainerHigh,
-        stripe: scheme.surfaceContainerHighest,
-      ),
+    // 空画框按目标宽高比撑到最大,落点与出图后 BoxFit.contain 的位置一致 ——
+    // 图一到就在原地替换,不会跳位。尺寸未知(width/height 为 0)时只留底色。
+    return ColoredBox(
+      color: scheme.surfaceContainerHigh,
       child: (width > 0 && height > 0)
-          ? Center(
-              child: Text(
-                '$width × $height',
-                style: mono(
-                  context,
-                  size: 20,
-                  weight: FontWeight.w600,
-                  color: scheme.onSurfaceVariant.withValues(alpha: .55),
+          ? Padding(
+              padding: const EdgeInsets.all(28),
+              child: Center(
+                child: AspectRatio(
+                  aspectRatio: width / height,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: scheme.surfaceContainerHighest.withValues(
+                        alpha: .55,
+                      ),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: scheme.outlineVariant.withValues(alpha: .8),
+                      ),
+                    ),
+                    child: Center(
+                      child: Text(
+                        '$width × $height',
+                        style: mono(
+                          context,
+                          size: 20,
+                          weight: FontWeight.w600,
+                          color: scheme.onSurfaceVariant.withValues(alpha: .55),
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
               ),
             )
@@ -223,7 +247,7 @@ class _ActionRail extends ConsumerWidget {
     final GenerateState input = snap ?? ref.read(generateProvider);
     ref
         .read(inpaintSessionProvider.notifier)
-        .open(imageBytes: bytes, input: input);
+        .open(imageBytes: bytes, input: input, sourceId: result.id);
   }
 
   /// 放大:弹方式面板(本地快/质 · NAI)→ 分发本地 ncnn / NAI 远程 → 进度 → 入库。
@@ -267,17 +291,28 @@ class _ActionRail extends ConsumerWidget {
       return;
     }
 
-    // 2. 进度对话框(本地=tile 真进度条;NAI=不确定动画 + 阶段文案)
+    // 2. 本地模型不随包分发。缺了先问一声再下 —— 可能正在移动网络上,
+    //    8.5MB 不该由 App 替用户决定花。
+    if (method.local && !await isUpscaleModelReady(method.asset!)) {
+      if (!context.mounted) return;
+      if (!await _confirmModelDownload(context, method)) return;
+    }
+    // 就绪分支也 await 过了,mounted 检查必须在 if 之外 —— 放里面会漏掉这条路径。
+    if (!context.mounted) return;
+
+    // 3. 进度对话框(本地=下载/tile 真进度条;NAI=不确定动画 + 阶段文案)
     final stage = ValueNotifier<String>('准备…');
     final frac = ValueNotifier<double?>(null);
-    showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) =>
-          _UpscaleProgressDialog(method: method, stage: stage, frac: frac),
+    unawaited(
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) =>
+            _UpscaleProgressDialog(method: method, stage: stage, frac: frac),
+      ),
     );
 
-    // 3. 执行:按方式分发
+    // 4. 执行:按方式分发
     try {
       late final Uint8List png;
       late final int outW;
@@ -316,7 +351,7 @@ class _ActionRail extends ConsumerWidget {
             badge: ResultBadge.upscaled,
             input: input,
           );
-      if (!method.local) ref.read(anlasProvider.notifier).refresh();
+      if (!method.local) unawaited(ref.read(anlasProvider.notifier).refresh());
       if (context.mounted) Navigator.of(context).pop();
       if (context.mounted) {
         hintSnack(
@@ -336,6 +371,35 @@ class _ActionRail extends ConsumerWidget {
     }
   }
 
+  /// 首次使用某个本地档位时征求下载同意。只下一次,之后一直在本地。
+  Future<bool> _confirmModelDownload(
+    BuildContext context,
+    UpscaleMethod method,
+  ) async {
+    final mb = (upscaleModelBytes(method.asset!) / 1048576).toStringAsFixed(1);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('需要先下载模型'),
+        content: Text(
+          '「${method.label}」档位的模型不随应用分发,首次使用需从 Upscayl 官方仓库下载 $mb MB。'
+          '下载后一直保存在本机,之后离线可用。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('下载'),
+          ),
+        ],
+      ),
+    );
+    return ok ?? false;
+  }
+
   /// 1.5× 重绘放大:以 1.5 倍尺寸 img2img 重新生成(走生成管线,结果画布流式 + 自动入库)。
   Future<void> _redraw15x(
     BuildContext context,
@@ -353,18 +417,20 @@ class _ActionRail extends ConsumerWidget {
       (result.width * 1.5).round(),
       (result.height * 1.5).round(),
     );
-    ref
-        .read(generationProvider.notifier)
-        .generate(
-          using: input.copyWith(
-            img2img: Img2ImgConfig(
-              image: bytes,
-              strength: kRedraw15xStrength,
-              noise: kRedraw15xNoise,
+    unawaited(
+      ref
+          .read(generationProvider.notifier)
+          .generate(
+            using: input.copyWith(
+              img2img: Img2ImgConfig(
+                image: bytes,
+                strength: kRedraw15xStrength,
+                noise: kRedraw15xNoise,
+              ),
+              params: input.params.copyWith(width: t.w, height: t.h, seed: ''),
             ),
-            params: input.params.copyWith(width: t.w, height: t.h, seed: ''),
           ),
-        );
+    );
     hintSnack(
       context,
       '开始 1.5× 重绘 ${t.w}×${t.h}(生成中)',
@@ -380,11 +446,17 @@ class _ActionRail extends ConsumerWidget {
       hintSnack(context, '图片尚未就绪', icon: Icons.hourglass_empty);
       return;
     }
-    Navigator.of(context).push(sharedAxisRoute(ImportImagePanel(
-      bytes: bytes,
-      fileName: 'plana_${result.seed}.png',
-      displayName: 'plana_${result.seed}',
-    )));
+    unawaited(
+      Navigator.of(context).push(
+        sharedAxisRoute(
+          ImportImagePanel(
+            bytes: bytes,
+            fileName: 'plana_${result.seed}.png',
+            displayName: 'plana_${result.seed}',
+          ),
+        ),
+      ),
+    );
   }
 
   /// 点按保存:按默认保存设置处理后存相册(gal;Android 10+ 免权限走 MediaStore)。
@@ -436,11 +508,13 @@ class _ActionRail extends ConsumerWidget {
       hintSnack(context, '缺少参数快照,无法重新生成', icon: Icons.error_outline);
       return;
     }
-    ref
-        .read(generationProvider.notifier)
-        .generate(
-          using: input.copyWith(params: input.params.copyWith(seed: '')),
-        );
+    unawaited(
+      ref
+          .read(generationProvider.notifier)
+          .generate(
+            using: input.copyWith(params: input.params.copyWith(seed: '')),
+          ),
+    );
   }
 }
 
@@ -543,34 +617,6 @@ class _SeedChip extends StatelessWidget {
       ),
     );
   }
-}
-
-/// 斜纹占位(比缩略图更宽的条纹,大尺寸更耐看)。
-class _HatchPainter extends CustomPainter {
-  const _HatchPainter({required this.base, required this.stripe});
-
-  final Color base;
-  final Color stripe;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    canvas.drawRect(Offset.zero & size, Paint()..color = base);
-    final sp = Paint()..color = stripe;
-    const w = 14.0;
-    for (double x = -size.height; x < size.width; x += w * 2) {
-      final path = Path()
-        ..moveTo(x, size.height)
-        ..lineTo(x + size.height, 0)
-        ..lineTo(x + size.height + w, 0)
-        ..lineTo(x + w, size.height)
-        ..close();
-      canvas.drawPath(path, sp);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _HatchPainter old) =>
-      old.base != base || old.stripe != stripe;
 }
 
 /// 放大档位选择面板:快速(lite)/ 质量(digital-art),点卡片即选中并开始。

@@ -3,9 +3,9 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gal/gal.dart';
-import 'package:image_picker/image_picker.dart';
 
 import '../../core/theme/app_theme.dart';
+import '../../core/util/image_pick.dart';
 import '../../core/util/png_meta.dart';
 import '../generate/widgets/common.dart' show hintSnack, sharedAxisRoute;
 import '../import/image_metadata.dart';
@@ -48,7 +48,7 @@ class _MetadataToolViewState extends ConsumerState<MetadataToolView> {
   }
 
   Future<void> _pick() async {
-    final files = await ImagePicker().pickMultiImage();
+    final files = await pickImageFiles(context);
     if (files.isEmpty || !mounted) return;
     setState(() {
       _loading = true;
@@ -56,7 +56,7 @@ class _MetadataToolViewState extends ConsumerState<MetadataToolView> {
     });
     for (var i = 0; i < files.length; i++) {
       try {
-        final bytes = await files[i].readAsBytes();
+        final bytes = files[i].bytes;
         final meta = await extractImageMetadata(bytes);
         _items.add(_Item(name: files[i].name, bytes: bytes, meta: meta));
       } catch (_) {}
@@ -150,8 +150,10 @@ class _MetadataToolViewState extends ConsumerState<MetadataToolView> {
                 ),
                 IconButton(
                   onPressed: _loading ? null : _pick,
-                  icon: const Icon(Icons.add_photo_alternate_outlined,
-                      size: 21),
+                  icon: const Icon(
+                    Icons.add_photo_alternate_outlined,
+                    size: 21,
+                  ),
                   tooltip: '添加图片',
                   visualDensity: VisualDensity.compact,
                 ),
@@ -174,8 +176,11 @@ class _MetadataToolViewState extends ConsumerState<MetadataToolView> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.document_scanner_outlined,
-              size: 44, color: scheme.outline),
+          Icon(
+            Icons.document_scanner_outlined,
+            size: 44,
+            color: scheme.outline,
+          ),
           const SizedBox(height: 14),
           Text(
             '查看生成参数 · 批量清除或覆写元数据',
@@ -215,16 +220,18 @@ class _MetadataToolViewState extends ConsumerState<MetadataToolView> {
 
   Widget _thumb(ColorScheme scheme, _Item f) {
     return InkWell(
-      onTap: () => Navigator.of(context).push(sharedAxisRoute(
-        f.meta == null
-            ? _NoMetaPage(item: f)
-            : MetadataDetailPage(
-                meta: f.meta!,
-                bytes: f.bytes,
-                fileName: f.name,
-                standalone: true,
-              ),
-      )),
+      onTap: () => Navigator.of(context).push(
+        sharedAxisRoute(
+          f.meta == null
+              ? _NoMetaPage(item: f)
+              : MetadataDetailPage(
+                  meta: f.meta!,
+                  bytes: f.bytes,
+                  fileName: f.name,
+                  standalone: true,
+                ),
+        ),
+      ),
       borderRadius: BorderRadius.circular(12),
       child: Stack(
         fit: StackFit.expand,
@@ -237,8 +244,7 @@ class _MetadataToolViewState extends ConsumerState<MetadataToolView> {
               cacheWidth: 256,
               errorBuilder: (_, _, _) => ColoredBox(
                 color: scheme.surfaceContainerHigh,
-                child: Icon(Icons.broken_image_outlined,
-                    color: scheme.outline),
+                child: Icon(Icons.broken_image_outlined, color: scheme.outline),
               ),
             ),
           ),
@@ -267,9 +273,7 @@ class _MetadataToolViewState extends ConsumerState<MetadataToolView> {
                       : Colors.black.withValues(alpha: .35),
                   border: f.selected
                       ? null
-                      : Border.all(
-                          color: Colors.white.withValues(alpha: .8),
-                        ),
+                      : Border.all(color: Colors.white.withValues(alpha: .8)),
                 ),
                 child: f.selected
                     ? Icon(Icons.check, size: 15, color: scheme.onPrimary)
@@ -282,8 +286,10 @@ class _MetadataToolViewState extends ConsumerState<MetadataToolView> {
               top: 6,
               right: 6,
               child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 5,
+                  vertical: 1.5,
+                ),
                 decoration: BoxDecoration(
                   color: scheme.primary,
                   borderRadius: BorderRadius.circular(5),
@@ -338,18 +344,14 @@ class _MetadataToolViewState extends ConsumerState<MetadataToolView> {
                 children: [
                   SegmentedButton<_BatchMode>(
                     segments: const [
-                      ButtonSegment(
-                        value: _BatchMode.clean,
-                        label: Text('清除'),
-                      ),
+                      ButtonSegment(value: _BatchMode.clean, label: Text('清除')),
                       ButtonSegment(
                         value: _BatchMode.custom,
                         label: Text('覆写'),
                       ),
                     ],
                     selected: {_mode},
-                    onSelectionChanged: (s) =>
-                        setState(() => _mode = s.first),
+                    onSelectionChanged: (s) => setState(() => _mode = s.first),
                     showSelectedIcon: false,
                     style: const ButtonStyle(
                       visualDensity: VisualDensity.compact,

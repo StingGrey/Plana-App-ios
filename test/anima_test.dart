@@ -30,15 +30,22 @@ void main() {
 
   test('档位默认值对齐 web ANIMA_TIER_DEFAULTS', () {
     final t = animaTierDefaults('turbo');
-    expect((t.steps, t.cfg, t.sampler, t.scheduler), (12, 1.0, 'euler', 'simple'));
+    expect(
+      (t.steps, t.cfg, t.sampler, t.scheduler),
+      (12, 1.0, 'euler', 'simple'),
+    );
     final a = animaTierDefaults('aesthetic');
-    expect((a.steps, a.cfg, a.sampler, a.scheduler), (28, 4.5, 'er_sde', 'simple'));
+    expect(
+      (a.steps, a.cfg, a.sampler, a.scheduler),
+      (28, 4.5, 'er_sde', 'simple'),
+    );
     expect(animaTierDefaults('base').steps, 28);
   });
 
   test('anima 下 NAI 模块全部不可见,数据整组剥离', () {
     const ms = GenModuleSettings();
-    expect(ms.visibleFor('Anima Turbo'), isEmpty);
+    // anima 组只有 LoRA 模块(NAI 四件套全部收走)
+    expect(ms.visibleFor('Anima Turbo'), [GenModule.lora]);
     final out = stripHiddenModules(_animaState(), ms);
     expect(out.characters, isEmpty);
     expect(out.vibes, isEmpty);

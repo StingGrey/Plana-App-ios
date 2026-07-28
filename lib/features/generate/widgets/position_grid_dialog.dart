@@ -63,9 +63,12 @@ class _PositionDialogState extends ConsumerState<_PositionDialog> {
                 Icon(Icons.grid_on, size: 19, color: scheme.primary),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Text('角色位置 · ${me.name}',
-                      style: context.texts.titleMedium!
-                          .copyWith(fontWeight: FontWeight.w700)),
+                  child: Text(
+                    '角色位置 · ${me.name}',
+                    style: context.texts.titleMedium!.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
                 ),
                 IconButton(
                   onPressed: () => Navigator.pop(context),
@@ -83,10 +86,13 @@ class _PositionDialogState extends ConsumerState<_PositionDialog> {
                 for (final col in 'ABCDE'.split(''))
                   Expanded(
                     child: Center(
-                      child: Text(col,
-                          style: context.texts.labelSmall!.copyWith(
-                              fontWeight: FontWeight.w700,
-                              color: scheme.onSurfaceVariant)),
+                      child: Text(
+                        col,
+                        style: context.texts.labelSmall!.copyWith(
+                          fontWeight: FontWeight.w700,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
                     ),
                   ),
               ],
@@ -98,10 +104,13 @@ class _PositionDialogState extends ConsumerState<_PositionDialog> {
                   SizedBox(
                     width: 26,
                     child: Center(
-                      child: Text('$row',
-                          style: context.texts.labelSmall!.copyWith(
-                              fontWeight: FontWeight.w700,
-                              color: scheme.onSurfaceVariant)),
+                      child: Text(
+                        '$row',
+                        style: context.texts.labelSmall!.copyWith(
+                          fontWeight: FontWeight.w700,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
                     ),
                   ),
                   for (final col in 'ABCDE'.split('')) ...[
@@ -131,19 +140,25 @@ class _PositionDialogState extends ConsumerState<_PositionDialog> {
                           borderRadius: BorderRadius.circular(4),
                         ),
                         child: Center(
-                          child: Text('${chars.indexOf(c) + 1}',
-                              style: TextStyle(
-                                  fontSize: 8,
-                                  fontWeight: FontWeight.w700,
-                                  color: c.id == me.id
-                                      ? scheme.onPrimary
-                                      : scheme.onSurfaceVariant)),
+                          child: Text(
+                            '${chars.indexOf(c) + 1}',
+                            style: TextStyle(
+                              fontSize: 8,
+                              fontWeight: FontWeight.w700,
+                              color: c.id == me.id
+                                  ? scheme.onPrimary
+                                  : scheme.onSurfaceVariant,
+                            ),
+                          ),
                         ),
                       ),
                       const SizedBox(width: 5),
-                      Text('${c.name} ${c.position ?? "AUTO"}',
-                          style: context.texts.labelSmall!
-                              .copyWith(color: scheme.onSurfaceVariant)),
+                      Text(
+                        '${c.name} ${c.position ?? "AUTO"}',
+                        style: context.texts.labelSmall!.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
                     ],
                   ),
               ],
@@ -164,7 +179,8 @@ class _PositionDialogState extends ConsumerState<_PositionDialog> {
                     style: OutlinedButton.styleFrom(
                       minimumSize: const Size.fromHeight(44),
                       shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(22)),
+                        borderRadius: BorderRadius.circular(22),
+                      ),
                     ),
                   ),
                 ),
@@ -182,10 +198,13 @@ class _PositionDialogState extends ConsumerState<_PositionDialog> {
                     style: FilledButton.styleFrom(
                       minimumSize: const Size.fromHeight(44),
                       shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(22)),
+                        borderRadius: BorderRadius.circular(22),
+                      ),
                     ),
-                    child: Text('确认${pos == null ? '' : ' $pos'}',
-                        style: const TextStyle(fontWeight: FontWeight.w700)),
+                    child: Text(
+                      '确认${pos == null ? '' : ' $pos'}',
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
                   ),
                 ),
               ],
@@ -196,8 +215,12 @@ class _PositionDialogState extends ConsumerState<_PositionDialog> {
     );
   }
 
-  Widget _cell(BuildContext context, String code, int myIndex,
-      Map<String, List<int>> occ) {
+  Widget _cell(
+    BuildContext context,
+    String code,
+    int myIndex,
+    Map<String, List<int>> occ,
+  ) {
     final scheme = context.scheme;
     final mine = pos == code;
     final others = occ[code] ?? const <int>[];
@@ -218,26 +241,37 @@ class _PositionDialogState extends ConsumerState<_PositionDialog> {
         children: [
           Icon(Icons.layers, size: 13, color: scheme.onTertiaryContainer),
           const SizedBox(height: 1),
-          Text(all.join('·'),
-              style: TextStyle(
-                  fontSize: 10.5,
-                  fontWeight: FontWeight.w700,
-                  color: scheme.onTertiaryContainer)),
+          Text(
+            all.join('·'),
+            style: TextStyle(
+              fontSize: 10.5,
+              fontWeight: FontWeight.w700,
+              color: scheme.onTertiaryContainer,
+            ),
+          ),
         ],
       );
     } else if (mine) {
       bg = scheme.primary;
-      content = Text('$myIndex',
-          style: TextStyle(
-              fontSize: 14, fontWeight: FontWeight.w700, color: scheme.onPrimary));
+      content = Text(
+        '$myIndex',
+        style: TextStyle(
+          fontSize: 14,
+          fontWeight: FontWeight.w700,
+          color: scheme.onPrimary,
+        ),
+      );
     } else if (others.length == 1) {
       bg = scheme.surfaceContainerHighest;
       border = Border.all(color: scheme.outline.withValues(alpha: .4));
-      content = Text('${others.first}',
-          style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w700,
-              color: scheme.onSurfaceVariant));
+      content = Text(
+        '${others.first}',
+        style: TextStyle(
+          fontSize: 13,
+          fontWeight: FontWeight.w700,
+          color: scheme.onSurfaceVariant,
+        ),
+      );
     } else {
       bg = scheme.surfaceContainerHigh;
     }

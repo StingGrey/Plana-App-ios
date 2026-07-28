@@ -53,12 +53,16 @@ class MetadataDetailPage extends StatelessWidget {
                 padding: const EdgeInsets.fromLTRB(14, 6, 14, 10),
                 child: FilledButton.icon(
                   onPressed: () => Navigator.of(context).push(
-                    sharedAxisRoute(ImportImagePanel(
-                      bytes: bytes,
-                      fileName: fileName,
-                      displayName:
-                          fileName.replaceAll(RegExp(r'\.[^.]+$'), ''),
-                    )),
+                    sharedAxisRoute(
+                      ImportImagePanel(
+                        bytes: bytes,
+                        fileName: fileName,
+                        displayName: fileName.replaceAll(
+                          RegExp(r'\.[^.]+$'),
+                          '',
+                        ),
+                      ),
+                    ),
                   ),
                   icon: const Icon(Icons.download, size: 18),
                   label: const Text('去导入面板(导入参数 / 用作参考)'),
@@ -78,8 +82,13 @@ class MetadataDetailPage extends StatelessWidget {
             _textBlock(context, scheme, '正向提示词', meta.prompt),
           if (meta.negativePrompt.isNotEmpty) ...[
             const SizedBox(height: 16),
-            _textBlock(context, scheme, '负向提示词', meta.negativePrompt,
-                danger: true),
+            _textBlock(
+              context,
+              scheme,
+              '负向提示词',
+              meta.negativePrompt,
+              danger: true,
+            ),
           ],
           if (meta.characters.isNotEmpty) ...[
             const SizedBox(height: 16),
@@ -125,15 +134,23 @@ class MetadataDetailPage extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(fileName,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: context.texts.bodyMedium!
-                      .copyWith(fontWeight: FontWeight.w600)),
+              Text(
+                fileName,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: context.texts.bodyMedium!.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
               const SizedBox(height: 7),
               _kv(context, scheme, '大小', _fmtSize(bytes.length)),
-              _kv(context, scheme, '尺寸', '${meta.width}×${meta.height}',
-                  mono: true),
+              _kv(
+                context,
+                scheme,
+                '尺寸',
+                '${meta.width}×${meta.height}',
+                mono: true,
+              ),
               _kv(context, scheme, '格式', _sourceLabel(meta.sourceType)),
               _kv(context, scheme, '来源', meta.source),
             ],
@@ -143,8 +160,13 @@ class MetadataDetailPage extends StatelessWidget {
     );
   }
 
-  Widget _kv(BuildContext context, ColorScheme scheme, String k, String v,
-      {bool mono = false}) {
+  Widget _kv(
+    BuildContext context,
+    ColorScheme scheme,
+    String k,
+    String v, {
+    bool mono = false,
+  }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 3),
       child: Row(
@@ -152,33 +174,44 @@ class MetadataDetailPage extends StatelessWidget {
         children: [
           SizedBox(
             width: 34,
-            child: Text(k,
-                style: TextStyle(fontSize: 11, color: scheme.outline)),
+            child: Text(
+              k,
+              style: TextStyle(fontSize: 11, color: scheme.outline),
+            ),
           ),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(v,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: mono
-                    ? monoStyle(context, 11)
-                    : TextStyle(fontSize: 11, color: scheme.onSurface)),
+            child: Text(
+              v,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: mono
+                  ? monoStyle(context, 11)
+                  : TextStyle(fontSize: 11, color: scheme.onSurface),
+            ),
           ),
         ],
       ),
     );
   }
 
-  Widget _sectionLabel(BuildContext context, ColorScheme scheme, String text,
-      {String? copyText}) {
+  Widget _sectionLabel(
+    BuildContext context,
+    ColorScheme scheme,
+    String text, {
+    String? copyText,
+  }) {
     return Row(
       children: [
-        Text(text.toUpperCase(),
-            style: TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 0.8,
-                color: scheme.onSurfaceVariant)),
+        Text(
+          text.toUpperCase(),
+          style: TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.8,
+            color: scheme.onSurfaceVariant,
+          ),
+        ),
         const Spacer(),
         if (copyText != null)
           InkWell(
@@ -188,12 +221,19 @@ class MetadataDetailPage extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
               child: Row(
                 children: [
-                  Icon(Icons.content_copy,
-                      size: 13, color: scheme.onSurfaceVariant),
+                  Icon(
+                    Icons.content_copy,
+                    size: 13,
+                    color: scheme.onSurfaceVariant,
+                  ),
                   const SizedBox(width: 3),
-                  Text('复制',
-                      style: TextStyle(
-                          fontSize: 10, color: scheme.onSurfaceVariant)),
+                  Text(
+                    '复制',
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -203,8 +243,12 @@ class MetadataDetailPage extends StatelessWidget {
   }
 
   Widget _textBlock(
-      BuildContext context, ColorScheme scheme, String label, String text,
-      {bool danger = false}) {
+    BuildContext context,
+    ColorScheme scheme,
+    String label,
+    String text, {
+    bool danger = false,
+  }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -217,11 +261,14 @@ class MetadataDetailPage extends StatelessWidget {
             color: scheme.surfaceContainerHigh,
             borderRadius: BorderRadius.circular(11),
           ),
-          child: Text(text,
-              style: TextStyle(
-                  fontSize: 11.5,
-                  height: 1.6,
-                  color: danger ? scheme.error : scheme.onSurface)),
+          child: Text(
+            text,
+            style: TextStyle(
+              fontSize: 11.5,
+              height: 1.6,
+              color: danger ? scheme.error : scheme.onSurface,
+            ),
+          ),
         ),
       ],
     );
@@ -256,22 +303,33 @@ class MetadataDetailPage extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('角色 ${i + 1}$coord',
-              style: TextStyle(
-                  fontSize: 10.5,
-                  fontWeight: FontWeight.w500,
-                  color: scheme.onSurfaceVariant)),
+          Text(
+            '角色 ${i + 1}$coord',
+            style: TextStyle(
+              fontSize: 10.5,
+              fontWeight: FontWeight.w500,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
           const SizedBox(height: 5),
-          Text(c.prompt.isEmpty ? '(空)' : c.prompt,
-              style: TextStyle(
-                  fontSize: 11.5, height: 1.55, color: scheme.onSurface)),
+          Text(
+            c.prompt.isEmpty ? '(空)' : c.prompt,
+            style: TextStyle(
+              fontSize: 11.5,
+              height: 1.55,
+              color: scheme.onSurface,
+            ),
+          ),
           if ((c.uc ?? '').isNotEmpty) ...[
             const SizedBox(height: 5),
-            Text('UC: ${c.uc}',
-                style: TextStyle(
-                    fontSize: 11,
-                    height: 1.5,
-                    color: scheme.error.withValues(alpha: .85))),
+            Text(
+              'UC: ${c.uc}',
+              style: TextStyle(
+                fontSize: 11,
+                height: 1.5,
+                color: scheme.error.withValues(alpha: .85),
+              ),
+            ),
           ],
         ],
       ),
@@ -297,41 +355,51 @@ class MetadataDetailPage extends StatelessWidget {
       children: [
         _sectionLabel(context, scheme, '生成参数'),
         const SizedBox(height: 8),
-        LayoutBuilder(builder: (context, c) {
-          const gap = 7.0;
-          final w = (c.maxWidth - gap) / 2;
-          return Wrap(
-            spacing: gap,
-            runSpacing: gap,
-            children: [
-              for (final (k, v) in items)
-                SizedBox(
-                  width: w,
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: scheme.surfaceContainerHigh,
-                      borderRadius: BorderRadius.circular(9),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(k.toUpperCase(),
-                            style:
-                                TextStyle(fontSize: 9, color: scheme.outline)),
-                        const SizedBox(height: 2),
-                        Text(v,
+        LayoutBuilder(
+          builder: (context, c) {
+            const gap = 7.0;
+            final w = (c.maxWidth - gap) / 2;
+            return Wrap(
+              spacing: gap,
+              runSpacing: gap,
+              children: [
+                for (final (k, v) in items)
+                  SizedBox(
+                    width: w,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 8,
+                      ),
+                      decoration: BoxDecoration(
+                        color: scheme.surfaceContainerHigh,
+                        borderRadius: BorderRadius.circular(9),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            k.toUpperCase(),
+                            style: TextStyle(
+                              fontSize: 9,
+                              color: scheme.outline,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            v,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: monoStyle(context, 11.5)),
-                      ],
+                            style: monoStyle(context, 11.5),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                ),
-            ],
-          );
-        }),
+              ],
+            );
+          },
+        ),
       ],
     );
   }
@@ -354,11 +422,12 @@ class MetadataDetailPage extends StatelessWidget {
               child: Row(
                 children: [
                   Expanded(
-                    child: Text(l.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                            fontSize: 11.5, color: scheme.onSurface)),
+                    child: Text(
+                      l.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 11.5, color: scheme.onSurface),
+                    ),
                   ),
                   const SizedBox(width: 12),
                   Text(l.weight.toString(), style: monoStyle(context, 11.5)),
@@ -376,44 +445,59 @@ class MetadataDetailPage extends StatelessWidget {
       children: [
         _sectionLabel(context, scheme, 'Vibe Transfer (${meta.vibes.length})'),
         const SizedBox(height: 8),
-        LayoutBuilder(builder: (context, c) {
-          const gap = 7.0;
-          final w = (c.maxWidth - gap) / 2;
-          return Wrap(
-            spacing: gap,
-            runSpacing: gap,
-            children: [
-              for (var i = 0; i < meta.vibes.length; i++)
-                SizedBox(
-                  width: w,
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: scheme.surfaceContainerHigh,
-                      borderRadius: BorderRadius.circular(9),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Vibe ${i + 1}',
-                            style:
-                                TextStyle(fontSize: 9, color: scheme.outline)),
-                        const SizedBox(height: 2),
-                        Text('强度: ${meta.vibes[i].strength.toStringAsFixed(2)}',
+        LayoutBuilder(
+          builder: (context, c) {
+            const gap = 7.0;
+            final w = (c.maxWidth - gap) / 2;
+            return Wrap(
+              spacing: gap,
+              runSpacing: gap,
+              children: [
+                for (var i = 0; i < meta.vibes.length; i++)
+                  SizedBox(
+                    width: w,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 8,
+                      ),
+                      decoration: BoxDecoration(
+                        color: scheme.surfaceContainerHigh,
+                        borderRadius: BorderRadius.circular(9),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Vibe ${i + 1}',
                             style: TextStyle(
-                                fontSize: 11.5, color: scheme.onSurface)),
-                        Text(
+                              fontSize: 9,
+                              color: scheme.outline,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            '强度: ${meta.vibes[i].strength.toStringAsFixed(2)}',
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              color: scheme.onSurface,
+                            ),
+                          ),
+                          Text(
                             '提取: ${(meta.vibes[i].informationExtracted ?? 1.0).toStringAsFixed(1)}',
                             style: TextStyle(
-                                fontSize: 11, color: scheme.onSurfaceVariant)),
-                      ],
+                              fontSize: 11,
+                              color: scheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                ),
-            ],
-          );
-        }),
+              ],
+            );
+          },
+        ),
       ],
     );
   }
@@ -434,8 +518,10 @@ class MetadataDetailPage extends StatelessWidget {
             borderRadius: BorderRadius.circular(11),
           ),
           child: SingleChildScrollView(
-            child: Text(text,
-                style: monoStyle(context, 10, color: scheme.onSurfaceVariant)),
+            child: Text(
+              text,
+              style: monoStyle(context, 10, color: scheme.onSurfaceVariant),
+            ),
           ),
         ),
       ],
@@ -456,11 +542,11 @@ class MetadataDetailPage extends StatelessWidget {
   }
 
   String _sourceLabel(ImageSourceType t) => switch (t) {
-        ImageSourceType.novelai => 'novelai',
-        ImageSourceType.stableDiffusion => 'stable-diffusion',
-        ImageSourceType.comfyui => 'comfyui',
-        ImageSourceType.unknown => 'unknown',
-      };
+    ImageSourceType.novelai => 'novelai',
+    ImageSourceType.stableDiffusion => 'stable-diffusion',
+    ImageSourceType.comfyui => 'comfyui',
+    ImageSourceType.unknown => 'unknown',
+  };
 
   String _fmtSize(int bytes) {
     if (bytes >= 1024 * 1024) {

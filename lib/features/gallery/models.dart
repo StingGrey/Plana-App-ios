@@ -5,6 +5,7 @@ library;
 import 'dart:typed_data';
 import 'dart:ui' show Color;
 
+import '../../core/theme/app_theme.dart' show FixedSemantic;
 import '../generate/models.dart' show GenerateState;
 
 /// 结果图的处理标记 —— 决定缩略图角标与画布顶部标签。
@@ -13,17 +14,18 @@ enum ResultBadge { none, upscaled, inpaint }
 extension ResultBadgeX on ResultBadge {
   /// 角标短文案;none 无角标。
   String? get label => switch (this) {
-        ResultBadge.upscaled => '4x',
-        ResultBadge.inpaint => '重绘',
-        ResultBadge.none => null,
-      };
+    ResultBadge.upscaled => '4x',
+    ResultBadge.inpaint => '重绘',
+    ResultBadge.none => null,
+  };
 
-  /// 角标底色 —— 语义状态色(超分绿 / 重绘紫),与全局金色主题区隔。
+  /// 角标底色 —— 压在缩略图上,用固定语义色(见 [FixedSemantic]),
+  /// 不跟种子色走,也与全局主色区隔。
   Color get color => switch (this) {
-        ResultBadge.upscaled => const Color(0xFF2E7D32),
-        ResultBadge.inpaint => const Color(0xFF7E57C2),
-        ResultBadge.none => const Color(0x00000000),
-      };
+    ResultBadge.upscaled => FixedSemantic.ok,
+    ResultBadge.inpaint => FixedSemantic.inpaint,
+    ResultBadge.none => const Color(0x00000000),
+  };
 }
 
 /// 一张生成结果。bytes/input 只是**内存缓存**——重启水合或 RAM 减负后

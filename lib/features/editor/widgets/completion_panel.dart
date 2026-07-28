@@ -153,15 +153,12 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
         if ((d.primaryVelocity ?? 0) > 120) widget.onCollapse();
       },
       child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8),
+        padding: const EdgeInsets.symmetric(vertical: 2),
         child: Center(
-          child: Container(
-            width: 36,
-            height: 4,
-            decoration: BoxDecoration(
-              color: scheme.outline.withValues(alpha: .5),
-              borderRadius: BorderRadius.circular(2),
-            ),
+          child: Icon(
+            Icons.keyboard_arrow_down_rounded,
+            size: 22,
+            color: scheme.outline,
           ),
         ),
       ),

@@ -36,6 +36,30 @@ class MaskGrid {
 
   void restore(Uint8List snapshot) => cells.setAll(0, snapshot);
 
+  /// 落盘格式:`[imgW:u32BE][imgH:u32BE][cells…]`。
+  ///
+  /// 直接存格子而不是光栅化成 PNG —— cells 本来就是每格 1 字节的 0/1,
+  /// 一张 1216×832 图才 ~15KB,存 PNG 反而要编解码一遍还更大。
+  /// 带上原图尺寸是为了 [decodeInto] 能拒绝尺寸对不上的旧蒙版(扩图/裁切后)。
+  Uint8List encode() {
+    final out = Uint8List(8 + cells.length);
+    ByteData.sublistView(out)
+      ..setUint32(0, imgW)
+      ..setUint32(4, imgH);
+    out.setRange(8, out.length, cells);
+    return out;
+  }
+
+  /// 把 [encode] 的字节读回本网格;尺寸不符或数据损坏返回 false(调用方保持空白)。
+  bool decodeInto(Uint8List data) {
+    if (data.length < 8) return false;
+    final bd = ByteData.sublistView(data);
+    if (bd.getUint32(0) != imgW || bd.getUint32(4) != imgH) return false;
+    if (data.length - 8 != cells.length) return false;
+    cells.setRange(0, cells.length, data, 8);
+    return true;
+  }
+
   void clear() => cells.fillRange(0, cells.length, 0);
 
   /// 方形笔刷落格(对齐 web 桌面端 drawBrush 方块模式):
@@ -89,6 +113,43 @@ class MaskGrid {
       }
     }
     return false;
+  }
+
+  /// 遮罩区域的**并集轮廓**(图像素坐标):只画邻格为空的那些边,
+  /// 相邻两格之间的内部边跳过 —— 出来的是外轮廓,不是一片网格线。
+  ///
+  /// 重绘完成后遮罩改用轮廓显示:55% 实心紫盖住的恰好就是唯一变了的那块,
+  /// 挡着没法看结果;轮廓既不遮像素,又还留着"刚才涂的是哪"。
+  ui.Path outlinePath() {
+    final p = ui.Path();
+    bool on(int gx, int gy) =>
+        gx >= 0 && gy >= 0 && gx < gw && gy < gh && cells[gy * gw + gx] != 0;
+    for (var gy = 0; gy < gh; gy++) {
+      for (var gx = 0; gx < gw; gx++) {
+        if (!on(gx, gy)) continue;
+        final l = gx * 8.0;
+        final t = gy * 8.0;
+        final r = l + 8;
+        final b = t + 8;
+        if (!on(gx, gy - 1)) {
+          p.moveTo(l, t);
+          p.lineTo(r, t);
+        }
+        if (!on(gx, gy + 1)) {
+          p.moveTo(l, b);
+          p.lineTo(r, b);
+        }
+        if (!on(gx - 1, gy)) {
+          p.moveTo(l, t);
+          p.lineTo(l, b);
+        }
+        if (!on(gx + 1, gy)) {
+          p.moveTo(r, t);
+          p.lineTo(r, b);
+        }
+      }
+    }
+    return p;
   }
 
   /// 遮罩格子的显示矩形集合(图像素坐标,行内连续格子合并)。

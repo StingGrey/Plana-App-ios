@@ -4,9 +4,9 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:image_picker/image_picker.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../../core/util/image_pick.dart';
 import '../../vibe_library/vibe_library.dart';
 import '../../vibe_library/vibe_library_page.dart';
 import '../generate_state.dart';
@@ -32,33 +32,39 @@ class _VibeCardState extends ConsumerState<VibeCard> {
   String? _selectedId;
 
   Future<void> _onAdd() async {
-    final XFile? file = await ImagePicker().pickImage(
-      source: ImageSource.gallery,
-    );
-    if (file == null || !mounted) return;
-    final bytes = await file.readAsBytes();
-    final hash = await compute(_sha256Hex, bytes); // 后台算内容哈希
-    if (!mounted) return;
-    final name = file.name.replaceAll(RegExp(r'\.[^.]+$'), '');
-    // 顺手入库(同图去重;重启后可从 Vibe 库找回,编码缓存互通不多扣点)
-    String? sourceId;
-    try {
-      final entry = await ref
-          .read(vibeLibraryProvider.notifier)
-          .importImageBytes(bytes, name, knownHash: hash);
-      sourceId = entry.id;
-    } catch (_) {
-      // 入库失败不影响本次使用
-    }
-    if (!mounted) return;
+    final files = await pickImageFiles(context);
+    if (files.isEmpty || !mounted) return;
+    // 互斥态在加图前取一次:加 Vibe 会顺手停掉角色参考
     final hadCharRefs = ref.read(generateProvider).enabledCharRefs > 0;
-    final id = ref
-        .read(generateProvider.notifier)
-        .addVibe(image: bytes, name: name, imageHash: hash, sourceId: sourceId);
-    if (id.isNotEmpty) {
-      if (hadCharRefs) _mutexHint();
-      setState(() => _selectedId = id);
+    String? lastId;
+    for (final f in files) {
+      final bytes = f.bytes;
+      final hash = await compute(_sha256Hex, bytes); // 后台算内容哈希
+      if (!mounted) return;
+      // 顺手入库(同图去重;重启后可从 Vibe 库找回,编码缓存互通不多扣点)
+      String? sourceId;
+      try {
+        final entry = await ref
+            .read(vibeLibraryProvider.notifier)
+            .importImageBytes(bytes, f.baseName, knownHash: hash);
+        sourceId = entry.id;
+      } catch (_) {
+        // 入库失败不影响本次使用
+      }
+      if (!mounted) return;
+      final id = ref
+          .read(generateProvider.notifier)
+          .addVibe(
+            image: bytes,
+            name: f.baseName,
+            imageHash: hash,
+            sourceId: sourceId,
+          );
+      if (id.isNotEmpty) lastId = id;
     }
+    if (lastId == null) return;
+    if (hadCharRefs) _mutexHint(); // 整批只提示一次
+    setState(() => _selectedId = lastId);
   }
 
   void _toggle(String id, bool currentlyEnabled) {
@@ -121,7 +127,8 @@ class _VibeCardState extends ConsumerState<VibeCard> {
         ),
         RoundIconBtn(
           Icons.add,
-          tooltip: '导入参考图',
+          // 与角色参考卡的同位按钮区分:两者互斥,tooltip 一样会让人分不清点了哪个
+          tooltip: '导入 Vibe 参考图',
           color: scheme.primary,
           onTap: _onAdd,
         ),
@@ -156,6 +163,29 @@ class _VibeCardState extends ConsumerState<VibeCard> {
               ],
             ),
           ),
+          // 只有多张同时启用才谈得上「均衡」,单张时这行没有意义(与 web 同)
+          if (state.enabledVibes > 1) ...[
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                Expanded(
+                  child: HelpLabel(
+                    text: '均衡强度',
+                    help: Help.normalizeVibe,
+                    style: context.texts.bodySmall!.copyWith(
+                      color: scheme.onSurface,
+                    ),
+                  ),
+                ),
+                Switch(
+                  value: state.params.normalizeVibe,
+                  onChanged: (v) => notifier.applyParams(
+                    state.params.copyWith(normalizeVibe: v),
+                  ),
+                ),
+              ],
+            ),
+          ],
           if (selected != null) ...[
             const SizedBox(height: 14),
             _VibeDetail(
@@ -200,27 +230,30 @@ class _VibeDetail extends ConsumerWidget {
         const SizedBox(height: 14),
         LiveParamSlider(
           label: 'Strength 参考强度',
+          help: Help.vibeStrength,
           value: vibe.strength,
           divisions: 100, // step 0.01(对齐 web)
           onCommit: (v) => notifier.updateVibe(vibe.id, strength: v),
         ),
         const SizedBox(height: 6),
         if (vibe.isEncodingOnly)
-          // 纯编码 vibe(库导入、无原图):IE 随编码固定,不可调
-          IgnorePointer(
-            child: Opacity(
-              opacity: 0.5,
-              child: ParamSlider(
-                label: 'Info Extracted 信息提取(随编码固定)',
-                value: vibe.infoExtracted,
-                divisions: 100,
-                onChanged: (_) {},
-              ),
+          // 纯编码 vibe(库导入、无原图):IE 随编码固定,不可调。
+          // 用 onChanged: null 走 M3 禁用态,不再整块 IgnorePointer ——
+          // 否则连标签上的参数说明都点不开,而恰恰是这里最该解释「为什么锁死」。
+          Opacity(
+            opacity: .7,
+            child: ParamSlider(
+              label: 'Info Extracted 信息提取(随编码固定)',
+              help: Help.infoExtracted,
+              value: vibe.infoExtracted,
+              divisions: 100,
+              onChanged: null,
             ),
           )
         else
           LiveParamSlider(
             label: 'Info Extracted 信息提取',
+            help: Help.infoExtracted,
             value: vibe.infoExtracted,
             divisions: 100,
             onCommit: (v) => notifier.updateVibe(vibe.id, infoExtracted: v),

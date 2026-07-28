@@ -23,8 +23,10 @@ void main() {
     });
 
     test('转义括号还原为字面括号', () {
-      expect(convertSdToNai(r'ganyu \(genshin impact\)'),
-          'ganyu (genshin impact)');
+      expect(
+        convertSdToNai(r'ganyu \(genshin impact\)'),
+        'ganyu (genshin impact)',
+      );
     });
 
     test('嵌套:内层裸括号转 {}', () {
@@ -45,8 +47,10 @@ void main() {
     });
 
     test('字面括号转义', () {
-      expect(convertNaiToSd('ganyu (genshin impact)'),
-          r'ganyu \(genshin impact\)');
+      expect(
+        convertNaiToSd('ganyu (genshin impact)'),
+        r'ganyu \(genshin impact\)',
+      );
     });
 
     test('SD→NAI→SD 权重词条回环', () {

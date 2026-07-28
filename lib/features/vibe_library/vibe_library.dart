@@ -1,9 +1,10 @@
+import '../../core/util/log.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
-import 'package:flutter/foundation.dart' show compute, debugPrint;
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -295,7 +296,7 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
         }),
       );
     } catch (e) {
-      debugPrint('[vibe-lib] 写索引失败: $e'); // 内存态仍可用,下次启动会重建
+      logd('[vibe-lib] 写索引失败: $e'); // 内存态仍可用,下次启动会重建
     }
   }
 
@@ -397,7 +398,7 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
           await _seedEncodings(p, e.imageHash);
           out.add(e);
         } catch (err) {
-          debugPrint('[vibe-lib] 重建跳过 ${ent.path}: $err');
+          logd('[vibe-lib] 重建跳过 ${ent.path}: $err');
         }
       }
       out.sort((a, b) => b.createdAt.compareTo(a.createdAt));
@@ -409,7 +410,7 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
         }),
       );
     } catch (e) {
-      debugPrint('[vibe-lib] 重建失败: $e');
+      logd('[vibe-lib] 重建失败: $e');
     }
     return out;
   }
@@ -615,7 +616,7 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
         ),
       );
     } catch (err) {
-      debugPrint('[vibe-lib] 更新失败: $err');
+      logd('[vibe-lib] 更新失败: $err');
     }
   }
 
@@ -630,7 +631,7 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
       raw['tags'] = tags;
       await fileOf(e).writeAsString(jsonEncode(raw));
     } catch (err) {
-      debugPrint('[vibe-lib] 写标签失败: $err');
+      logd('[vibe-lib] 写标签失败: $err');
     }
     await _upsert(e.copyWith(tags: tags));
   }

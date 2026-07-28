@@ -1,16 +1,22 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/auth/auth_mode.dart';
 import '../../core/auth/bot_session_store.dart';
+import '../../core/auth/token_probe.dart';
 import '../../core/auth/token_store.dart';
 import '../../core/net/backend_config.dart';
+import '../../core/net/nai_client.dart';
 import '../../core/theme/app_theme.dart';
 import '../editor/data/completion_source.dart';
 import '../generate/widgets/common.dart'
     show confirmDialog, hintSnack, sharedAxisRoute;
 import '../onboarding/bot_auth_page.dart';
+import 'widgets/token_status.dart';
+import '../../core/util/haptics.dart';
 
 /// 账号与接入(我的页二级):接入方式切换、Token / Bot 凭据、标签补全来源。
 class AccountPage extends ConsumerStatefulWidget {
@@ -26,16 +32,33 @@ class _AccountPageState extends ConsumerState<AccountPage> {
   bool _obscure = true;
   bool _saving = false;
 
+  /// Token 账户状态(会员档位 + Anlas):输入像样的令牌就防抖直查,
+  /// 不等保存(相当于保存前的在线校验);进页灌入已存令牌同样触发。
+  late final TokenProbe _probe = TokenProbe(
+    (t) => ref.read(naiClientProvider).subscription(t),
+  );
+
   @override
   void initState() {
     super.initState();
     _controller.addListener(_onChanged);
+    _probe.addListener(_onProbe);
   }
 
-  void _onChanged() => setState(() {});
+  void _onProbe() {
+    if (mounted) setState(() {});
+  }
+
+  void _onChanged() {
+    setState(() {});
+    _probe.input(_controller.text);
+  }
 
   @override
   void dispose() {
+    _probe
+      ..removeListener(_onProbe)
+      ..dispose();
     _controller
       ..removeListener(_onChanged)
       ..dispose();
@@ -51,7 +74,7 @@ class _AccountPageState extends ConsumerState<AccountPage> {
     setState(() => _saving = false);
     FocusScope.of(context).unfocus();
     final err = ref.read(tokenProvider).hasError;
-    HapticFeedback.selectionClick();
+    Haptics.selection();
     _snack(err ? '保存失败,请重试' : '令牌已保存');
   }
 
@@ -66,7 +89,8 @@ class _AccountPageState extends ConsumerState<AccountPage> {
     await ref.read(tokenProvider.notifier).clear();
     if (!mounted) return;
     _controller.clear();
-    HapticFeedback.mediumImpact();
+    _probe.reset();
+    Haptics.medium();
     _snack('已清除令牌');
   }
 
@@ -88,6 +112,14 @@ class _AccountPageState extends ConsumerState<AccountPage> {
     // 不再自动跳授权页:Bot 卡常驻在下方,选了没配也会在卡内直接标红提示。
   }
 
+  /// Token 卡里的账户状态行:档位 + Anlas。查询中/失败/空态都占同一行位,
+  /// 状态出现或消失不改卡片高度。
+  Widget _accountLine(BuildContext context) => tokenStatusLine(
+    context,
+    _probe,
+    onRetry: () => _probe.run(_controller.text),
+  );
+
   void _openBotAuth() =>
       Navigator.of(context).push(sharedAxisRoute(const BotAuthPage()));
 
@@ -101,7 +133,7 @@ class _AccountPageState extends ConsumerState<AccountPage> {
     if (!ok) return;
     await ref.read(botSessionProvider.notifier).clear();
     if (!mounted) return;
-    HapticFeedback.mediumImpact();
+    Haptics.medium();
     hintSnack(context, '已解除授权', icon: Icons.check_circle_outline);
   }
 
@@ -110,6 +142,7 @@ class _AccountPageState extends ConsumerState<AccountPage> {
     final async = ref.watch(tokenProvider);
     // 载入完成后把已存令牌灌入输入框一次(之后交给用户编辑)。
     if (!_seeded && async.hasValue) {
+      // 灌入触发 listener → 走输入即查的同一条防抖链
       _controller.text = async.value ?? '';
       _seeded = true;
     }
@@ -143,11 +176,14 @@ class _AccountPageState extends ConsumerState<AccountPage> {
             obscure: _obscure,
             hasSaved: hasSaved,
             canSave: canSave,
+            // 有存档且未改动 → 按钮化身红底「清除」
+            showClear: hasSaved && !dirty && !_saving,
             saving: _saving,
             onToggleObscure: () => setState(() => _obscure = !_obscure),
             onPaste: _paste,
             onSave: _save,
             onClear: _clear,
+            accountLine: _accountLine(context),
           ),
           const SizedBox(height: 12),
           _BotCard(
@@ -175,22 +211,30 @@ class _TokenCard extends StatelessWidget {
     required this.obscure,
     required this.hasSaved,
     required this.canSave,
+    required this.showClear,
     required this.saving,
     required this.onToggleObscure,
     required this.onPaste,
     required this.onSave,
     required this.onClear,
+    required this.accountLine,
   });
 
   final TextEditingController controller;
   final bool obscure;
   final bool hasSaved;
   final bool canSave;
+
+  /// true = 同一颗按钮化身红底「清除」(有存档且输入未改动)。
+  final bool showClear;
   final bool saving;
   final VoidCallback onToggleObscure;
   final VoidCallback onPaste;
   final VoidCallback onSave;
   final VoidCallback onClear;
+
+  /// 账户状态行(会员档位 · Anlas / 查询中 / 失败重试 / 空占位)。
+  final Widget accountLine;
 
   @override
   Widget build(BuildContext context) {
@@ -269,23 +313,32 @@ class _TokenCard extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 14),
+            // 左边两行(账户状态 / 隐私说明),右边一颗随状态变身的按钮:
+            // 有改动 → 保存;与存档一致 → 红底清除
             Row(
               children: [
-                if (hasSaved)
-                  TextButton.icon(
-                    onPressed: onClear,
-                    icon: Icon(
-                      Icons.delete_outline,
-                      size: 18,
-                      color: scheme.error,
-                    ),
-                    label: Text('清除', style: TextStyle(color: scheme.error)),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      accountLine,
+                      const SizedBox(height: 2),
+                      Text(
+                        '仅加密存储在本机',
+                        style: context.texts.labelSmall!.copyWith(
+                          color: scheme.outline,
+                        ),
+                      ),
+                    ],
                   ),
-                const Spacer(),
+                ),
+                const SizedBox(width: 12),
                 FilledButton(
-                  onPressed: canSave ? onSave : null,
+                  onPressed: showClear ? onClear : (canSave ? onSave : null),
                   style: FilledButton.styleFrom(
                     minimumSize: const Size(96, 44),
+                    backgroundColor: showClear ? scheme.error : null,
+                    foregroundColor: showClear ? scheme.onError : null,
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(22),
                     ),
@@ -299,14 +352,9 @@ class _TokenCard extends StatelessWidget {
                             color: scheme.onPrimary,
                           ),
                         )
-                      : const Text('保存'),
+                      : Text(showClear ? '清除' : '保存'),
                 ),
               ],
-            ),
-            const SizedBox(height: 6),
-            Text(
-              '仅加密存储在本机',
-              style: context.texts.labelSmall!.copyWith(color: scheme.outline),
             ),
           ],
         ),
@@ -422,31 +470,19 @@ class _RouteCard extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 10),
+            // 缺凭据的警告直接顶替常驻说明的位置(同一行槽,高度不变)
             Text(
-              mode == AuthMode.token
-                  ? '使用你的 NovelAI 账户生成图片'
-                  : '使用 Bot 账户生成图片,需按月结算费用',
-              style: context.texts.labelSmall!.copyWith(color: scheme.outline),
-            ),
-            if (missing) ...[
-              const SizedBox(height: 8),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(Icons.error_outline, size: 15, color: scheme.error),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      mode == AuthMode.token
-                          ? '尚未保存 Token,当前无法生成'
-                          : '尚未授权 Bot,当前无法生成',
-                      style: context.texts.labelSmall!
-                          .copyWith(color: scheme.error),
-                    ),
-                  ),
-                ],
+              missing
+                  ? (mode == AuthMode.token
+                        ? '尚未保存 Token,当前无法生成'
+                        : '尚未授权 Bot,当前无法生成')
+                  : (mode == AuthMode.token
+                        ? '使用你的 NovelAI 账户生成图片'
+                        : '使用 Bot 账户生成图片,需按月结算费用'),
+              style: context.texts.labelSmall!.copyWith(
+                color: missing ? scheme.error : scheme.outline,
               ),
-            ],
+            ),
           ],
         ),
       ),

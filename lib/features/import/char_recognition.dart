@@ -24,27 +24,27 @@ class RecognizedChar {
 
 final charRecognitionProvider = FutureProvider.autoDispose
     .family<List<RecognizedChar>, String>((ref, fullPrompt) async {
-  if (fullPrompt.trim().isEmpty) return const [];
-  final out = <RecognizedChar>[];
-  try {
-    final roles = await ref
-        .watch(roleLibraryProvider)
-        .matchInPrompt(tokenizeSet(fullPrompt));
-    out.addAll([
-      for (final r in roles)
-        RecognizedChar(zh: r.zh, en: r.en, origin: r.origin),
-    ]);
-  } catch (_) {}
-  try {
-    final ocs = await ref
-        .watch(artistOcLibraryProvider)
-        .matchOcsInPrompt(tokenizeSeq(fullPrompt));
-    out.addAll([
-      for (final o in ocs) RecognizedChar(zh: o.zh, en: o.en, isOc: true),
-    ]);
-  } catch (_) {}
-  return out.take(5).toList();
-});
+      if (fullPrompt.trim().isEmpty) return const [];
+      final out = <RecognizedChar>[];
+      try {
+        final roles = await ref
+            .watch(roleLibraryProvider)
+            .matchInPrompt(tokenizeSet(fullPrompt));
+        out.addAll([
+          for (final r in roles)
+            RecognizedChar(zh: r.zh, en: r.en, origin: r.origin),
+        ]);
+      } catch (_) {}
+      try {
+        final ocs = await ref
+            .watch(artistOcLibraryProvider)
+            .matchOcsInPrompt(tokenizeSeq(fullPrompt));
+        out.addAll([
+          for (final o in ocs) RecognizedChar(zh: o.zh, en: o.en, isOc: true),
+        ]);
+      } catch (_) {}
+      return out.take(5).toList();
+    });
 
 /// 详情页「角色识别」区块:无命中时零占位。
 class CharRecognitionSection extends ConsumerWidget {

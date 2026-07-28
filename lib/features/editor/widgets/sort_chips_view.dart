@@ -1,27 +1,43 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/editor_theme.dart';
 import '../editor_models.dart';
 import 'rich_tag_controller.dart';
+import '../../../core/util/haptics.dart';
 
-/// 排序模式的 chip 流视图(web DesktopChipEditor 形态):替换文本渲染,
-/// 每枚词条一颗真 chip(英文+译文双行,带权重角标/禁用删除线)。
-/// 交互:点 chip 选中 → 其余 chip 间浮现 ⊕ → 点 ⊕ 插入;
-/// 点别的 chip 改选,点自身取消。文本经 onReorder 槽位法写回。
+/// 多选模式的 chip 流视图(web DesktopChipEditor 形态):替换文本渲染,
+/// 每个**顶层单元**一颗 chip —— 散标签是普通词条 chip(英文+译文双行,带权重
+/// 角标/禁用删除线),折叠段是一颗 `#名字` chip(和普通标签同款外观,只多个
+/// 折叠符号与主色边)。
+///
+/// 交互:点 chip 加选/取消(**可多选**)→ 未选中处浮现 ⊕ → 点 ⊕ 把所选整批
+/// 搬过去,彼此相对顺序不变。折叠 chip 和散标签一视同仁,选中即整块移动
+/// (moveUnits 保证记号跟随不卷入)。批量禁用/删除在底部操作条上。
+/// 折叠的**解散**在正文里点标题做,这里不重复入口。
 class SortChipsView extends StatefulWidget {
   const SortChipsView({
     super.key,
     required this.controller,
-    required this.onReorder,
+    required this.foldBodies,
+    required this.selection,
+    required this.onSelectionChanged,
+    required this.onMove,
     this.abnormalThreshold = 10,
   });
 
   final RichTagController controller;
 
-  /// 把第 from 枚移到 to(移除后下标)。
-  final void Function(int from, int to) onReorder;
+  /// 折叠表(名字 -> 折叠体):识别占位符 + 数成员。
+  final Map<String, String> foldBodies;
+
+  /// 已选顶层单元下标。**状态提在页面上** —— 底部批量操作条要读它,
+  /// 而且改完文本后要由页面决定清不清选中。
+  final Set<int> selection;
+  final ValueChanged<Set<int>> onSelectionChanged;
+
+  /// 把已选单元整批移到间隙 [to](原序下标)。
+  final void Function(int to) onMove;
 
   /// 异常权重阈值(编辑器设置)。
   final double abnormalThreshold;
@@ -32,7 +48,6 @@ class SortChipsView extends StatefulWidget {
 
 class _SortChipsViewState extends State<SortChipsView>
     with SingleTickerProviderStateMixin {
-  int? _sel; // 选中待移动的词条下标
 
   final GlobalKey _stackKey = GlobalKey();
   final List<GlobalKey> _chipKeys = [];
@@ -48,7 +63,7 @@ class _SortChipsViewState extends State<SortChipsView>
             setState(() => _startOffsets = const {});
           }
         });
-  Map<int, Offset> _startOffsets = const {}; // 新下标 → 起始位移(内容坐标)
+  Map<int, Offset> _startOffsets = const {}; // 单元下标 → 起始位移(内容坐标)
 
   @override
   void dispose() {
@@ -56,14 +71,18 @@ class _SortChipsViewState extends State<SortChipsView>
     super.dispose();
   }
 
+  Set<int> get _sel => widget.selection;
+
   void _tapChip(int i) {
-    HapticFeedback.selectionClick();
+    Haptics.selection();
     // 在途滑动先归位并清位移,保证下次插入量到干净布局
     if (_startOffsets.isNotEmpty) {
       _moveAnim.value = 1;
       _startOffsets = const {};
     }
-    setState(() => _sel = _sel == i ? null : i);
+    final next = {...widget.selection};
+    if (!next.remove(i)) next.add(i);
+    widget.onSelectionChanged(next);
   }
 
   /// 量各 chip 相对 Stack 的矩形(未布局返回 null)。
@@ -81,25 +100,25 @@ class _SortChipsViewState extends State<SortChipsView>
   }
 
   void _insert(int gap) {
-    final sel = _sel;
-    if (sel == null) return;
-    final to = gap > sel ? gap - 1 : gap;
-    if (to == sel) {
-      setState(() => _sel = null);
-      return;
-    }
-    HapticFeedback.mediumImpact();
-    final n = parseToks(widget.controller.text).length;
+    final sel = _sel.toList()..sort();
+    if (sel.isEmpty) return;
+    Haptics.medium();
+    final n = topLevelUnits(widget.controller.text, widget.foldBodies).length;
     // 收前先把在途动画归位(value=1 → 现有 Transform 位移为 0,量到干净布局)
     _moveAnim.value = 1;
     final oldRects = _measureRects(n);
-    setState(() => _sel = null);
-    widget.onReorder(sel, to); // 改文本 → 触发重建(chip 跳到新槽)
+    widget.onMove(gap); // 改文本 + 清选中 → 触发重建(chip 跳到新槽)
     if (oldRects == null) return; // 量不到就不动画,内容已更新
 
-    // 新下标 j 处的 chip 来自旧下标 order[j]
-    final order = [for (var i = 0; i < n; i++) i];
-    order.insert(to, order.removeAt(sel));
+    // 新下标 j 处的 chip 来自旧下标 order[j] —— 与 moveUnits 同一套换算
+    var at = 0;
+    for (var i = 0; i < gap && i < n; i++) {
+      if (!_selWas(sel, i)) at++;
+    }
+    final order = [
+      for (var i = 0; i < n; i++)
+        if (!_selWas(sel, i)) i,
+    ]..insertAll(at.clamp(0, n - sel.length), sel);
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -116,13 +135,15 @@ class _SortChipsViewState extends State<SortChipsView>
     });
   }
 
+  static bool _selWas(List<int> sorted, int i) => sorted.contains(i);
+
   /// 布局后按 chip 实际位置计算间隙加号锚点(浮层,不占 Wrap 位——
   /// 加号出现/消失时 chip 一动不动)。结果收敛才 setState,防循环。
   void _scheduleAnchors(int count) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final sel = _sel;
-      if (sel == null || count == 0) {
+      if (sel.isEmpty || count == 0 || sel.length >= count) {
         if (_anchors.isNotEmpty) setState(() => _anchors = const []);
         return;
       }
@@ -138,7 +159,12 @@ class _SortChipsViewState extends State<SortChipsView>
       }
       final next = <(int, Offset)>[];
       for (var g = 0; g <= rects.length; g++) {
-        if (g == sel || g == sel + 1) continue;
+        // 落点等于原位就没意义:间隙两侧都被选中(搬过去还是那儿),或者
+        // 紧贴选中块的两端。判据 —— 间隙左右各自是不是选中项。
+        final leftSel = g > 0 && sel.contains(g - 1);
+        final rightSel = g < rects.length && sel.contains(g);
+        if (leftSel && rightSel) continue;
+        if (_noOpGap(sel, g, rects.length)) continue;
         final Offset pos;
         if (g == rects.length) {
           final r = rects.last;
@@ -151,6 +177,24 @@ class _SortChipsViewState extends State<SortChipsView>
       }
       if (!_sameAnchors(next)) setState(() => _anchors = next);
     });
+  }
+
+  /// 搬到间隙 [g] 之后顺序完全没变 → 这个 ⊕ 是空操作,别画出来。
+  /// 直接按 moveUnits 的换算跑一遍新序,与原序比对,省得逐种情况讨论。
+  bool _noOpGap(Set<int> sel, int g, int n) {
+    var at = 0;
+    for (var i = 0; i < g && i < n; i++) {
+      if (!sel.contains(i)) at++;
+    }
+    final sorted = sel.toList()..sort();
+    final next = [
+      for (var i = 0; i < n; i++)
+        if (!sel.contains(i)) i,
+    ]..insertAll(at.clamp(0, n - sel.length), sorted);
+    for (var i = 0; i < n; i++) {
+      if (next[i] != i) return false;
+    }
+    return true;
   }
 
   bool _sameAnchors(List<(int, Offset)> next) {
@@ -166,12 +210,16 @@ class _SortChipsViewState extends State<SortChipsView>
     return AnimatedBuilder(
       animation: Listenable.merge([widget.controller, _moveAnim]),
       builder: (context, _) {
-        final toks = parseToks(widget.controller.text);
-        final sel = (_sel != null && _sel! < toks.length) ? _sel : null;
-        while (_chipKeys.length < toks.length) {
+        final text = widget.controller.text;
+        final units = topLevelUnits(text, widget.foldBodies);
+        final sel = {
+          for (final i in _sel)
+            if (i < units.length) i,
+        };
+        while (_chipKeys.length < units.length) {
           _chipKeys.add(GlobalKey());
         }
-        _scheduleAnchors(toks.length);
+        _scheduleAnchors(units.length);
         final t = Curves.easeOutCubic.transform(_moveAnim.value);
         return SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(16, 10, 16, 24),
@@ -186,34 +234,12 @@ class _SortChipsViewState extends State<SortChipsView>
                   runSpacing: 10,
                   crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
-                    for (var i = 0; i < toks.length; i++)
-                      _slide(
-                        i,
-                        t,
-                        _TagChip(
-                          key: _chipKeys[i],
-                          tok: toks[i],
-                          abnormal:
-                              abnormalWeightOf(
-                                widget.controller.text,
-                                toks[i],
-                                threshold: widget.abnormalThreshold,
-                              ) !=
-                              null,
-                          sd: isSdWeightSeg(
-                            widget.controller.text.substring(
-                              toks[i].segStart,
-                              toks[i].segEnd,
-                            ),
-                          ),
-                          selected: i == sel,
-                          onTap: () => _tapChip(i),
-                        ),
-                      ),
+                    for (var i = 0; i < units.length; i++)
+                      _slide(i, t, _chipFor(text, units[i], i, sel)),
                   ],
                 ),
               ),
-              if (sel != null)
+              if (sel.isNotEmpty)
                 for (final (g, pos) in _anchors)
                   Positioned(
                     left: pos.dx - 15,
@@ -227,11 +253,114 @@ class _SortChipsViewState extends State<SortChipsView>
     );
   }
 
+  Widget _chipFor(String text, TopUnit u, int i, Set<int> sel) {
+    if (u.isFold) {
+      return _FoldChip(
+        key: _chipKeys[i],
+        name: u.fold!.name,
+        count: _memberCount(u.fold!),
+        selected: sel.contains(i),
+        onTap: () => _tapChip(i),
+      );
+    }
+    final tok = u.tok!;
+    return _TagChip(
+      key: _chipKeys[i],
+      tok: tok,
+      abnormal:
+          abnormalWeightOf(text, tok, threshold: widget.abnormalThreshold) !=
+          null,
+      sd: isSdWeightSeg(text.substring(tok.segStart, tok.segEnd)),
+      selected: sel.contains(i),
+      onTap: () => _tapChip(i),
+    );
+  }
+
+  int _memberCount(FoldRef f) =>
+      parseToks(widget.foldBodies[f.name] ?? '').length;
+
   /// FLIP:动画中把第 [i] 颗 chip 从起始位移滑回 0(paint-time,不改布局)。
   Widget _slide(int i, double t, Widget child) {
     final start = _startOffsets[i];
     if (start == null || t >= 1) return child;
     return Transform.translate(offset: start * (1 - t), child: child);
+  }
+}
+
+/// 折叠 chip:和普通标签同款外观(单行,主色系),前缀 `#` 折叠符号 + 成员数。
+/// 点它选中/移动,和散标签一视同仁;解散在正文点标题做。
+class _FoldChip extends StatelessWidget {
+  const _FoldChip({
+    super.key,
+    required this.name,
+    required this.count,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String name;
+  final int count;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return Material(
+      color: selected
+          ? scheme.primaryContainer
+          : scheme.primary.withValues(alpha: .10),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(9),
+        side: BorderSide(
+          color: selected
+              ? scheme.primary
+              : scheme.primary.withValues(alpha: .45),
+          width: selected ? 1.6 : 1,
+        ),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '#',
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  color: scheme.primary,
+                ),
+              ),
+              const SizedBox(width: 3),
+              Flexible(
+                child: Text(
+                  name,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color: scheme.onSurface,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 5),
+              Text(
+                '$count',
+                style: mono(
+                  context,
+                  size: 11,
+                  weight: FontWeight.w700,
+                ).copyWith(color: scheme.primary.withValues(alpha: .8)),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -291,8 +420,9 @@ class _TagChip extends StatelessWidget {
         pal.weightWash(mult)!,
         scheme.surfaceContainerHigh,
       );
-      chipBorder = (up ? pal.weightUpBorder : pal.weightDownBorder)
-          .withValues(alpha: .45 + i * .35);
+      chipBorder = (up ? pal.weightUpBorder : pal.weightDownBorder).withValues(
+        alpha: .45 + i * .35,
+      );
     }
     return Material(
       color: selected ? scheme.primaryContainer : chipBg,

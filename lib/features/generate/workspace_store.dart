@@ -1,9 +1,9 @@
+import '../../core/util/log.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show debugPrint;
-
+import '../../core/store/atomic_file.dart';
 import '../../core/store/blob_store.dart';
 import 'models.dart';
 import 'state_codec.dart';
@@ -13,7 +13,7 @@ import 'state_codec.dart';
 /// 写入防抖 800ms 吸收滑条/输入抖动;前后台切换由 AppStores.flushNow 即刻落盘。
 class WorkspaceStore {
   WorkspaceStore(this._blobs, Directory supportRoot)
-      : _file = File('${supportRoot.path}/workspace/state.json');
+    : _file = File('${supportRoot.path}/workspace/state.json');
 
   final BlobStore _blobs;
   final File _file;
@@ -52,7 +52,7 @@ class WorkspaceStore {
         }
       }
     } catch (e) {
-      debugPrint('[workspace] 载入失败(按首启处理): $e');
+      logd('[workspace] 载入失败(按首启处理): $e');
       initial = null;
     }
   }
@@ -80,15 +80,18 @@ class WorkspaceStore {
     _chain = _chain.then((_) async {
       try {
         final enc = await encodeGenerateState(s, _blobs);
-        await _file.parent.create(recursive: true);
-        await _file.writeAsString(jsonEncode({
-          'v': 1,
-          'idSeq': seq,
-          'refs': enc.refs.toList(),
-          'state': enc.json,
-        }));
+        // 原子写:落盘时机就是退后台,不能留半截 JSON(见 atomic_file.dart)
+        await writeStringAtomic(
+          _file,
+          jsonEncode({
+            'v': 1,
+            'idSeq': seq,
+            'refs': enc.refs.toList(),
+            'state': enc.json,
+          }),
+        );
       } catch (e) {
-        debugPrint('[workspace] 保存失败: $e');
+        logd('[workspace] 保存失败: $e');
       }
     });
   }

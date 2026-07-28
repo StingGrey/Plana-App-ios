@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/store/app_stores.dart';
@@ -24,6 +23,7 @@ import 'widgets/editor_top_bar.dart';
 import 'widgets/rich_tag_controller.dart';
 import 'widgets/sort_chips_view.dart';
 import 'widgets/tag_panel.dart';
+import '../../core/util/haptics.dart';
 
 /// 提示词编辑器(光标驱动定稿):
 /// 表面是可编辑文本域,权重原样内联+上色,翻译绘制层画在词下。
@@ -69,7 +69,8 @@ class _EditorPageState extends ConsumerState<EditorPage>
   List<String> _related = const []; // 当前词的关联标签(异步拉取)
   String? _relatedFor; // _related 归属的词名(防过期回调窜词)
   bool _relatedLoading = false; // 关联标签拉取中(词条栏「关联」显示转圈)
-  bool _sortMode = false; // 排序模式:正文按住即拖词条换位
+  bool _sortMode = false; // 多选模式:正文换成 chip 流,点选后批量移动/禁用/删除
+  Set<int> _sortSel = {}; // 多选模式已选顶层单元下标
   String? _charName; // 编辑角色时的名字(顶栏标题);主提示词会话为 null
 
   EditorNotifier get _notifier => ref.read(editorProvider.notifier);
@@ -118,9 +119,15 @@ class _EditorPageState extends ConsumerState<EditorPage>
       final gen = ref.read(generateProvider);
       // 角色会话即使没命中(角色已被删)也**不**退回主提示词:那正是
       // 这个页面从前的 bug——回写会静默盖掉用户的主提示词。
+      // 载入原文草稿(带回禁用/折叠);草稿过期(提示词被编辑器之外改过)
+      // 时 pickEditorText 自动退回定稿。
       _notifier.load(
-        positive: id == null ? gen.prompt : (char?.positive ?? ''),
-        negative: id == null ? gen.negativePrompt : (char?.negative ?? ''),
+        positive: id == null
+            ? pickEditorText(gen.promptRaw, gen.prompt)
+            : pickEditorText(char?.positiveRaw ?? '', char?.positive ?? ''),
+        negative: id == null
+            ? pickEditorText(gen.negativePromptRaw, gen.negativePrompt)
+            : pickEditorText(char?.negativeRaw ?? '', char?.negative ?? ''),
         startPositive: widget.positive,
         charId: id,
       );
@@ -206,6 +213,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _prevSel = _controller.selection;
     final text = _controller.text;
     if (text != _prevText) {
+      if (_guardFoldEdit(text)) return; // 折叠被啃 → 改判为整只删,已自行落地
       _prevText = text;
       _syncedText = text;
       _notifier.editActive(text);
@@ -214,8 +222,67 @@ class _EditorPageState extends ConsumerState<EditorPage>
     } else {
       // 双击/长按选词 → 扩到整枚词条;改完选区会再进一次监听走 _routeCursor
       if (_captureTagSelection(prevSel)) return;
+      if (_snapCaretOutOfFold()) return;
       _routeCursor(); // 纯移光标 → 右邻判定
     }
+  }
+
+  // ---- 折叠在正文里的交互 ----
+  // 正文里折叠只是占位符 `<#名字>`(折叠体在 EditorState.foldBodies 表里,
+  // 不进 TextField)。一次性:单击标题热区即解散(占位符原地换成内容)。
+  // 占位符是原子整体:光标不进内部、退格落在上面整只删——啃烂占位符会留下
+  // 解析不出的残渣。多字删除是主动划选,不拦(删掉占位符 = 删掉折叠,合理)。
+
+  Map<String, String> get _foldBodies => ref.read(editorProvider).foldBodies;
+
+  /// 单击折叠标题:一次性解散,占位符原地替换为折叠体。
+  void _unfoldByName(String name) {
+    for (final r in parseFoldRefs(_controller.text, _foldBodies)) {
+      if (r.name != name) continue;
+      _applyText(unfoldRef(_controller.text, r, _foldBodies), r.start);
+      Haptics.selection();
+      return;
+    }
+  }
+
+  /// 光标落进占位符内部 → 吸到最近的边缘。处理了返回 true。
+  ///
+  /// **必须 _muting 包住 selection 写入**:改 selection 会同步 notifyListeners →
+  /// 重入本 _onCtrl。不 mute 虽不至死循环(吸附后 off 已在边缘不再匹配),但会
+  /// 平白多走一轮路由;mute 后手动 _routeCursor 归位 dock,干净一次到位。
+  bool _snapCaretOutOfFold() {
+    final sel = _controller.selection;
+    if (!sel.isValid || !sel.isCollapsed) return false;
+    final off = sel.baseOffset;
+    for (final r in parseFoldRefs(_controller.text, _foldBodies)) {
+      if (off <= r.start || off >= r.end) continue;
+      _muting = true;
+      final to = (off - r.start) < (r.end - off) ? r.start : r.end;
+      _prevSel = TextSelection.collapsed(offset: to);
+      _controller.selection = _prevSel;
+      _muting = false;
+      _routeCursor();
+      return true;
+    }
+    return false;
+  }
+
+  /// 单字删除若落在占位符上,改判为整只删除。删除点 d 用闭区间
+  /// (`>= r.start`):退格删的是 d 左边那个字,d 落在 start 时删的正是
+  /// `<`,该算命中。
+  bool _guardFoldEdit(String next) {
+    if (next.length != _prevText.length - 1) return false;
+    final d = _controller.selection.baseOffset;
+    if (d < 0) return false;
+    for (final r in parseFoldRefs(_prevText, _foldBodies)) {
+      if (d >= r.start && d < r.end) {
+        final (out, cursor) = deleteFoldRef(_prevText, r);
+        _applyText(out, cursor);
+        Haptics.selection();
+        return true;
+      }
+    }
+    return false;
   }
 
   /// 双击/长按选词的 tag 捕获(web handleDoubleClick 同款):
@@ -289,6 +356,16 @@ class _EditorPageState extends ConsumerState<EditorPage>
       final toks = parseToks(text);
       final i = tokIndexAt(text, off, toks);
       if (i >= 0) tok = toks[i];
+      // 折叠占位符不是词条:词条栏对它没有任何有意义的操作
+      // (权重/禁用/删除该走整块语义),点标题解散才是它的交互。
+      if (tok case final Tok hit) {
+        for (final r in parseFoldRefs(text, _foldBodies)) {
+          if (r.start == hit.segStart && r.end == hit.segEnd) {
+            tok = null;
+            break;
+          }
+        }
+      }
     }
     if (tok?.segStart != _panelTok?.segStart ||
         tok?.braceLevel != _panelTok?.braceLevel ||
@@ -427,6 +504,22 @@ class _EditorPageState extends ConsumerState<EditorPage>
     if (mounted && !_sortMode) _focus.requestFocus();
   }
 
+  /// 建议的落地文本。画师串 / OC 标签组这类**一次带进来一整组**的建议
+  /// 自动折叠:内容注册进折叠表,正文只落占位符 `<#名字>`;单枚标签照常平铺。
+  ///
+  /// 两处不折:
+  /// - 角色提示词(charId != null)—— 折叠只服务主提示词;
+  /// - 落点不干净([plainSlot] = false,即被 `{}` / `N::` / `~` 包着)——
+  ///   占位符要独占一段才是折叠单元,塞半截词里徒增乱子。
+  String _insertTextOf(Suggestion s, {required bool plainSlot}) {
+    final ins = s.insertText ?? s.text;
+    if (widget.charId != null || !plainSlot) return ins;
+    final body = ins.trim();
+    if (parseToks(body).length < 2) return ins; // 单枚不折,折了徒增记号
+    final name = _notifier.registerFold(s.text, body);
+    return foldRefLiteral(name);
+  }
+
   /// `+` 连续插入:把建议追加为当前词后的新标签,弹层保持打开、结果冻结。
   /// 走独立路径(不经 [_routeCursor]),避免清掉正在浏览的补全列表。
   void _insertAppend(Suggestion s) {
@@ -436,7 +529,8 @@ class _EditorPageState extends ConsumerState<EditorPage>
       0,
       text.length,
     );
-    final ins = s.text;
+    // 追加到词条之后,落点天然干净
+    final ins = _insertTextOf(s, plainSlot: true);
     final newText = '${text.substring(0, at)}, $ins${text.substring(at)}';
     final cursor = at + 2 + ins.length;
     _muting = true;
@@ -449,7 +543,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _prevSel = _controller.selection;
     _muting = false;
     _notifier.editActive(newText, structural: true);
-    HapticFeedback.selectionClick();
+    Haptics.selection();
     // _query / _result 原样保留,弹层列表不跳
   }
 
@@ -494,8 +588,9 @@ class _EditorPageState extends ConsumerState<EditorPage>
     final off = _controller.selection.baseOffset;
     final toks = parseToks(text);
     final i = tokIndexAt(text, off, toks);
-    final ins = s.insertText ?? s.text;
     if (i < 0) {
+      // 光标在逗号/空隙上:落点干净
+      final ins = _insertTextOf(s, plainSlot: true);
       final replaced = text.replaceRange(off, off, ins);
       final (withComma, cursor) = _withTrailingComma(
         replaced,
@@ -511,11 +606,18 @@ class _EditorPageState extends ConsumerState<EditorPage>
     final cut = off.clamp(t.nameStart, t.nameEnd);
     final rightName = text.substring(cut, t.nameEnd).trimLeft();
     if (rightName.isEmpty) {
+      // 整枚替换:被替换的词条本身没有权重/禁用语法时,落点才算干净
+      final ins = _insertTextOf(
+        s,
+        plainSlot: t.segStart == t.nameStart && t.segEnd == t.nameEnd,
+      );
       final newText = text.replaceRange(t.nameStart, t.nameEnd, ins);
       final end = t.segEnd + (ins.length - (t.nameEnd - t.nameStart));
       final (withComma, cursor) = _withTrailingComma(newText, end);
       _applyText(withComma, cursor);
     } else {
+      // 拆分现有 token:落点夹在半截词里,不折
+      final ins = _insertTextOf(s, plainSlot: false);
       final newText = text.replaceRange(
         t.nameStart,
         t.nameEnd,
@@ -552,8 +654,8 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _focus.requestFocus();
   }
 
-  /// 排序模式开关:进入=收键盘/清补全与词条栏,正文按住即拖;
-  /// 退出=唤回键盘。每次拖动落一步撤销。
+  /// 多选模式开关:进入=收键盘/清补全与词条栏,正文换成 chip 流;
+  /// 退出=唤回键盘并清空选中。每次操作落一步撤销。
   void _toggleSort() {
     if (!_sortMode && parseToks(_controller.text).length < 2) return;
     final entering = !_sortMode;
@@ -563,6 +665,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
     }
     setState(() {
       _sortMode = entering;
+      _sortSel = {};
       if (entering) {
         _panelTok = null;
         _multiRange = null;
@@ -571,10 +674,41 @@ class _EditorPageState extends ConsumerState<EditorPage>
     if (!entering) _focus.requestFocus();
   }
 
-  /// 排序落地(排序层松手回调):槽位法重排,保留分隔/换行排版。
-  void _reorderTok(int from, int to) {
-    final next = reorderToks(_controller.text, from, to);
+  /// 多选移动落地:所选顶层单元整批搬到间隙 [to]。折叠占位符作为一整块
+  /// 移动;保留分隔/换行排版。搬完清空选中(这一批已经放到位了)。
+  void _moveUnits(int to) {
+    final next = moveUnits(_controller.text, _foldBodies, _sortSel, to);
+    setState(() => _sortSel = {});
     _applyText(next, _controller.selection.baseOffset.clamp(0, next.length));
+  }
+
+  /// 批量禁用/启用:以所选里**第一枚散标签**的状态定目标,全体对齐
+  /// (与划词批量同一条语义)。折叠单元跳过,选中保留以便继续操作。
+  void _sortToggleDisabled() {
+    final units = topLevelUnits(_controller.text, _foldBodies);
+    final sel = _sortSel.where((i) => i < units.length).toList()..sort();
+    Tok? first;
+    for (final i in sel) {
+      if (units[i].tok case final t?) {
+        first = t;
+        break;
+      }
+    }
+    if (first == null) return; // 全是折叠,没得禁用
+    _applyText(
+      setUnitsDisabled(_controller.text, _foldBodies, sel, !first.disabled),
+      _controller.selection.baseOffset,
+    );
+  }
+
+  void _sortDelete() {
+    final (text, cursor) = deleteUnits(
+      _controller.text,
+      _foldBodies,
+      _sortSel,
+    );
+    setState(() => _sortSel = {});
+    _applyText(text, cursor);
   }
 
   // ---- 划词多选批量操作(dock 批量面板;逐词应用,应用后保持选区)----
@@ -600,7 +734,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _prevSel = _controller.selection;
     _muting = false;
     _notifier.editActive(newText, structural: true);
-    HapticFeedback.selectionClick();
+    Haptics.selection();
     setState(() => _multiRange = (first, last));
   }
 
@@ -776,6 +910,10 @@ class _EditorPageState extends ConsumerState<EditorPage>
     final settings =
         ref.watch(editorSettingsProvider).value ?? const EditorSettings();
     _controller.showTrans = settings.showTranslation;
+    // 折叠表灌进控制器(着色/热区/药丸判占位符用);registerFold/load 改表
+    // 即触发本 build 重灌 + 重绘。
+    final foldBodies = ref.watch(editorProvider.select((s) => s.foldBodies));
+    _controller.foldBodies = foldBodies;
 
     return Theme(
       data: editorTheme(context),
@@ -806,7 +944,11 @@ class _EditorPageState extends ConsumerState<EditorPage>
                     child: _sortMode
                         ? SortChipsView(
                             controller: _controller,
-                            onReorder: _reorderTok,
+                            foldBodies: foldBodies,
+                            selection: _sortSel,
+                            onSelectionChanged: (s) =>
+                                setState(() => _sortSel = s),
+                            onMove: _moveUnits,
                             abnormalThreshold: settings.abnormalThreshold,
                           )
                         : ClipRect(
@@ -823,8 +965,8 @@ class _EditorPageState extends ConsumerState<EditorPage>
                                   showTrans: settings.showTranslation,
                                   showWeightWash: settings.showWeightWash,
                                   fontSize: settings.fontSize,
-                                  abnormalThreshold:
-                                      settings.abnormalThreshold,
+                                  abnormalThreshold: settings.abnormalThreshold,
+                                  onFoldTap: _unfoldByName,
                                   hint: '点击输入标签,可输入中文自动触发翻译与联想',
                                 ),
                               ),
@@ -865,17 +1007,26 @@ class _EditorPageState extends ConsumerState<EditorPage>
   Widget _dock() {
     // key 稳定=同一形态内更新不重播入场动画(如长按连续调权重);切形态才动画
     if (_sortMode) {
-      final scheme = context.scheme;
-      return Container(
+      // 说明文本换成真能用的批量操作条:选中数 + 禁用 + 删除。
+      final units = topLevelUnits(_controller.text, _foldBodies);
+      final sel = _sortSel.where((i) => i < units.length).toList()..sort();
+      var anyEnabled = false;
+      var anyTag = false;
+      for (final i in sel) {
+        if (units[i].tok case final t?) {
+          anyTag = true;
+          if (!t.disabled) anyEnabled = true;
+        }
+      }
+      return SortBatchBar(
         key: const ValueKey('dock-sort'),
-        width: double.infinity,
-        color: scheme.surface,
-        padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-        child: Text(
-          '点选词条 → 点间隙 ⊕ 插入 · 点别的词改选 · 点自身或空白取消',
-          textAlign: TextAlign.center,
-          style: context.texts.labelSmall!.copyWith(color: scheme.outline),
-        ),
+        count: sel.length,
+        // 折叠单元不能禁用(套 ~ 会把折叠拆散),全是折叠时这个键就该灰着
+        canDisable: anyTag,
+        anyEnabled: anyEnabled,
+        onToggleDisabled: _sortToggleDisabled,
+        onDelete: _sortDelete,
+        onClear: () => setState(() => _sortSel = {}),
       );
     }
     if (_multiRange != null) {
@@ -931,9 +1082,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
           threshold: _settings.abnormalThreshold,
         ),
         sdConvert:
-            isSdWeightSeg(
-              _controller.text.substring(tok.segStart, tok.segEnd),
-            )
+            isSdWeightSeg(_controller.text.substring(tok.segStart, tok.segEnd))
             ? _convertSd
             : null,
         onSelectGroup: (tok.groupMult - 1).abs() > 0.0001

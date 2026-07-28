@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/auth/secure_storage.dart';
+import '../../core/store/app_stores.dart';
 
 /// 保存到相册的元数据处理方式(对齐 web SaveModal)。
 enum SaveMeta { original, clean, custom }
@@ -33,13 +33,12 @@ class SaveSettings {
     SaveFormat? format,
     double? quality,
     String? customPrompt,
-  }) =>
-      SaveSettings(
-        meta: meta ?? this.meta,
-        format: format ?? this.format,
-        quality: quality ?? this.quality,
-        customPrompt: customPrompt ?? this.customPrompt,
-      );
+  }) => SaveSettings(
+    meta: meta ?? this.meta,
+    format: format ?? this.format,
+    quality: quality ?? this.quality,
+    customPrompt: customPrompt ?? this.customPrompt,
+  );
 
   factory SaveSettings.fromJson(Map<String, dynamic> j) {
     final q = (j['quality'] as num?)?.toDouble() ?? 0.92;
@@ -47,16 +46,18 @@ class SaveSettings {
       meta: SaveMeta.values.asNameMap()[j['meta']] ?? SaveMeta.original,
       format: SaveFormat.values.asNameMap()[j['format']] ?? SaveFormat.png,
       quality: q.clamp(0.1, 1.0),
-      customPrompt: j['customPrompt'] is String ? j['customPrompt'] as String : '',
+      customPrompt: j['customPrompt'] is String
+          ? j['customPrompt'] as String
+          : '',
     );
   }
 
   Map<String, dynamic> toJson() => {
-        'meta': meta.name,
-        'format': format.name,
-        'quality': quality,
-        'customPrompt': customPrompt,
-      };
+    'meta': meta.name,
+    'format': format.name,
+    'quality': quality,
+    'customPrompt': customPrompt,
+  };
 
   @override
   bool operator ==(Object other) =>
@@ -74,14 +75,14 @@ const _key = 'save_settings';
 
 final saveSettingsProvider =
     AsyncNotifierProvider<SaveSettingsNotifier, SaveSettings>(
-  SaveSettingsNotifier.new,
-);
+      SaveSettingsNotifier.new,
+    );
 
 class SaveSettingsNotifier extends AsyncNotifier<SaveSettings> {
   @override
   Future<SaveSettings> build() async {
     try {
-      final raw = await ref.read(secureStorageProvider).read(key: _key);
+      final raw = await ref.read(prefsStoreProvider).read(key: _key);
       if (raw == null || raw.isEmpty) return const SaveSettings();
       return SaveSettings.fromJson(jsonDecode(raw) as Map<String, dynamic>);
     } catch (_) {
@@ -95,7 +96,7 @@ class SaveSettingsNotifier extends AsyncNotifier<SaveSettings> {
     state = AsyncData(next);
     try {
       await ref
-          .read(secureStorageProvider)
+          .read(prefsStoreProvider)
           .write(key: _key, value: jsonEncode(next.toJson()));
     } catch (_) {}
   }

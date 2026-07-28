@@ -1,9 +1,10 @@
+import '../../core/util/log.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
-import 'package:flutter/foundation.dart' show compute, debugPrint;
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -39,22 +40,22 @@ class CharRefEntry {
   int get recency => lastUsedAt > 0 ? lastUsedAt : createdAt;
 
   CharRefEntry copyWith({String? name, int? lastUsedAt}) => CharRefEntry(
-        id: id,
-        name: name ?? this.name,
-        fileName: fileName,
-        createdAt: createdAt,
-        lastUsedAt: lastUsedAt ?? this.lastUsedAt,
-        sizeBytes: sizeBytes,
-      );
+    id: id,
+    name: name ?? this.name,
+    fileName: fileName,
+    createdAt: createdAt,
+    lastUsedAt: lastUsedAt ?? this.lastUsedAt,
+    sizeBytes: sizeBytes,
+  );
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'name': name,
-        'fileName': fileName,
-        'createdAt': createdAt,
-        'lastUsedAt': lastUsedAt,
-        'sizeBytes': sizeBytes,
-      };
+    'id': id,
+    'name': name,
+    'fileName': fileName,
+    'createdAt': createdAt,
+    'lastUsedAt': lastUsedAt,
+    'sizeBytes': sizeBytes,
+  };
 
   static CharRefEntry? fromJson(Map<String, dynamic> j) {
     final id = j['id'];
@@ -129,12 +130,14 @@ class CharLibrary extends AsyncNotifier<List<CharRefEntry>> {
   Future<void> _setEntries(List<CharRefEntry> list) async {
     state = AsyncData(List.unmodifiable(list));
     try {
-      await _indexFile.writeAsString(jsonEncode({
-        'version': 1,
-        'entries': [for (final e in list) e.toJson()],
-      }));
+      await _indexFile.writeAsString(
+        jsonEncode({
+          'version': 1,
+          'entries': [for (final e in list) e.toJson()],
+        }),
+      );
     } catch (e) {
-      debugPrint('[char-lib] 写索引失败: $e');
+      logd('[char-lib] 写索引失败: $e');
     }
   }
 
@@ -153,21 +156,23 @@ class CharLibrary extends AsyncNotifier<List<CharRefEntry>> {
           if (!await tf.exists()) {
             await tf.writeAsBytes(await coverResizePng(bytes, 256, 256));
           }
-          out.add(CharRefEntry(
-            id: id,
-            name: '参考图',
-            fileName: fileName,
-            createdAt: (await ent.stat()).modified.millisecondsSinceEpoch,
-            sizeBytes: bytes.length,
-          ));
+          out.add(
+            CharRefEntry(
+              id: id,
+              name: '参考图',
+              fileName: fileName,
+              createdAt: (await ent.stat()).modified.millisecondsSinceEpoch,
+              sizeBytes: bytes.length,
+            ),
+          );
         } catch (err) {
-          debugPrint('[char-lib] 重建跳过 ${ent.path}: $err');
+          logd('[char-lib] 重建跳过 ${ent.path}: $err');
         }
       }
       out.sort((a, b) => b.recency.compareTo(a.recency));
       await _setEntries(out);
     } catch (e) {
-      debugPrint('[char-lib] 重建失败: $e');
+      logd('[char-lib] 重建失败: $e');
     }
     return out;
   }
@@ -189,8 +194,9 @@ class CharLibrary extends AsyncNotifier<List<CharRefEntry>> {
     final fileName = '$id.img';
     await File('${_filesDir.path}/$fileName').writeAsBytes(bytes);
     try {
-      await thumbOf(CharRefEntry(id: id, name: '', fileName: fileName))
-          .writeAsBytes(await coverResizePng(bytes, 256, 256));
+      await thumbOf(
+        CharRefEntry(id: id, name: '', fileName: fileName),
+      ).writeAsBytes(await coverResizePng(bytes, 256, 256));
     } catch (_) {}
 
     final entry = CharRefEntry(

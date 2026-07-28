@@ -25,7 +25,7 @@ class AnlasNotifier extends AsyncNotifier<NaiSubscription?> {
       if (base.isEmpty) return null;
       try {
         final anlas = await ref.read(backendClientProvider).getAnlas();
-        return (anlas: anlas, isOpus: true);
+        return (anlas: anlas, isOpus: true, tier: 3);
       } catch (_) {
         return null;
       }
@@ -50,7 +50,7 @@ class AnlasNotifier extends AsyncNotifier<NaiSubscription?> {
         final base = await ref.read(backendBaseProvider.future);
         if (base.isEmpty) return;
         final anlas = await ref.read(backendClientProvider).getAnlas();
-        next = (anlas: anlas, isOpus: true);
+        next = (anlas: anlas, isOpus: true, tier: 3);
       } else {
         final token = await ref.read(tokenProvider.future);
         if (token == null || token.isEmpty) return;

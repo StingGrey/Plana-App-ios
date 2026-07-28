@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../editor_settings.dart';
+import '../../../core/util/haptics.dart';
 
 /// 编辑器设置弹层:行为开关 + 档位选择,改动即时生效并持久化。
 /// 按模块分组;子项跟随所属功能开关置灰(补全关了实体/逗号无意义)。
@@ -182,7 +182,7 @@ class _SettingRow extends StatelessWidget {
   final ValueChanged<bool> onChanged;
 
   void _flip(bool v) {
-    HapticFeedback.selectionClick();
+    Haptics.selection();
     onChanged(v);
   }
 
@@ -354,7 +354,7 @@ class _MiniSeg<T> extends StatelessWidget {
                     behavior: HitTestBehavior.opaque,
                     onTap: () {
                       if (v == value) return;
-                      HapticFeedback.selectionClick();
+                      Haptics.selection();
                       onChanged(v);
                     },
                     child: SizedBox(

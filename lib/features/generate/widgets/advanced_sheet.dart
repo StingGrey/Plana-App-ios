@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
@@ -8,6 +7,7 @@ import '../models.dart';
 import '../preset_manage_page.dart';
 import '../prompt_presets.dart';
 import 'common.dart';
+import '../../../core/util/haptics.dart';
 
 /// 高级设置 Sheet:分区滚动,底部「恢复默认 / 确认」固定。
 /// Sheet 内编辑草稿,确认才写回全局状态。
@@ -51,6 +51,8 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final isAnima = isAnimaModel(draft.model);
+    // 空 = 每次生成都随机(下发时才掷);填了值 = 钉死这一颗
+    final randomSeed = seedCtrl.text.trim().isEmpty;
     return Column(
       children: [
         Padding(
@@ -105,8 +107,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                   max: 50,
                   divisions: 44,
                   valueText: '${draft.animaSteps}',
-                  onChanged: (v) =>
-                      _set(draft.copyWith(animaSteps: v.round())),
+                  onChanged: (v) => _set(draft.copyWith(animaSteps: v.round())),
                 ),
                 const SizedBox(height: 8),
                 ParamSlider(
@@ -138,8 +139,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                       _SelectTile(
                         label: s.label,
                         selected: draft.animaSampler == s.id,
-                        onTap: () =>
-                            _set(draft.copyWith(animaSampler: s.id)),
+                        onTap: () => _set(draft.copyWith(animaSampler: s.id)),
                       ),
                   ],
                 ),
@@ -163,14 +163,14 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                       _SelectTile(
                         label: n.label,
                         selected: draft.animaScheduler == n.id,
-                        onTap: () =>
-                            _set(draft.copyWith(animaScheduler: n.id)),
+                        onTap: () => _set(draft.copyWith(animaScheduler: n.id)),
                       ),
                   ],
                 ),
               ] else ...[
                 ParamSlider(
                   label: '步数 Steps',
+                  help: Help.steps,
                   value: draft.steps.toDouble(),
                   min: 1,
                   max: 50,
@@ -186,36 +186,45 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                 const SizedBox(height: 8),
                 ParamSlider(
                   label: '提示词引导 CFG',
+                  help: Help.cfg,
                   value: draft.cfg,
                   min: 0,
                   max: 25,
                   divisions: 250, // step 0.1(对齐 web)
                   valueText: draft.cfg.toStringAsFixed(1),
-                  trailing: FilterChip(
-                    avatar: Icon(
-                      Icons.shuffle,
-                      size: 13,
-                      color: draft.varietyPlus
-                          ? scheme.onSecondaryContainer
-                          : scheme.onSurfaceVariant,
-                    ),
-                    label: const Text(
-                      'Variety+',
-                      style: TextStyle(fontSize: 11),
-                    ),
-                    selected: draft.varietyPlus,
-                    showCheckmark: false,
-                    visualDensity: const VisualDensity(
-                      horizontal: -3,
-                      vertical: -3,
-                    ),
-                    onSelected: (v) => _set(draft.copyWith(varietyPlus: v)),
+                  // Variety+ 借住在 CFG 这行,自己那份说明只能挂个独立问号
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      FilterChip(
+                        avatar: Icon(
+                          Icons.shuffle,
+                          size: 13,
+                          color: draft.varietyPlus
+                              ? scheme.onSecondaryContainer
+                              : scheme.onSurfaceVariant,
+                        ),
+                        label: const Text(
+                          'Variety+',
+                          style: TextStyle(fontSize: 11),
+                        ),
+                        selected: draft.varietyPlus,
+                        showCheckmark: false,
+                        visualDensity: const VisualDensity(
+                          horizontal: -3,
+                          vertical: -3,
+                        ),
+                        onSelected: (v) => _set(draft.copyWith(varietyPlus: v)),
+                      ),
+                      const HelpDot(Help.varietyPlus, size: 30, iconSize: 17),
+                    ],
                   ),
                   onChanged: (v) => _set(draft.copyWith(cfg: v)),
                 ),
                 const SizedBox(height: 12),
-                Text(
-                  '采样器 Sampler',
+                HelpLabel(
+                  text: '采样器 Sampler',
+                  help: Help.sampler,
                   style: context.texts.bodySmall!.copyWith(
                     color: scheme.onSurfaceVariant,
                   ),
@@ -238,8 +247,9 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                   ],
                 ),
                 const SizedBox(height: 14),
-                Text(
-                  '噪声调度 Noise Schedule',
+                HelpLabel(
+                  text: '噪声调度 Noise Schedule',
+                  help: Help.noiseSchedule,
                   style: context.texts.bodySmall!.copyWith(
                     color: scheme.onSurfaceVariant,
                   ),
@@ -278,31 +288,44 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                       style: mono(context, size: 13),
                       decoration: InputDecoration(
                         labelText: '种子 Seed',
-                        hintText: '留空 = 随机',
+                        hintText: '每次随机',
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(12),
                         ),
                         isDense: true,
+                        // 骰子是**状态**不是动作:亮着 = 当前每次随机。
+                        // 填过种子后点它清空,这是回到「每次随机」的唯一确切入口
+                        // (旧版是掷一个具体数填进去,那反而把种子钉死了)。
                         suffixIcon: IconButton(
-                          tooltip: '随机',
-                          icon: const Icon(Icons.casino_outlined, size: 18),
-                          onPressed: () {
-                            seedCtrl.text =
-                                (DateTime.now().millisecondsSinceEpoch %
-                                        4294967296)
-                                    .toString();
-                          },
+                          tooltip: randomSeed ? '当前:每次随机' : '改为每次随机',
+                          icon: Icon(
+                            randomSeed ? Icons.casino : Icons.casino_outlined,
+                            size: 18,
+                            color: randomSeed
+                                ? scheme.primary
+                                : scheme.onSurfaceVariant,
+                          ),
+                          onPressed: randomSeed
+                              ? null
+                              : () {
+                                  seedCtrl.clear();
+                                  _set(draft.copyWith(seed: ''));
+                                },
                         ),
                       ),
                       onChanged: (v) => _set(draft.copyWith(seed: v)),
                     ),
                   ),
+                  // 输入框的浮动标签挂不住点击区,说明单独给个问号
+                  const SizedBox(width: 2),
+                  const HelpDot(Help.seed),
                 ],
               ),
               if (!isAnima) ...[
                 const SizedBox(height: 14),
                 ParamSlider(
                   label: 'CFG Rescale',
+                  help: Help.cfgRescale,
                   value: draft.cfgRescale,
                   divisions: 100, // step 0.01(对齐 web)
                   onChanged: (v) => _set(draft.copyWith(cfgRescale: v)),
@@ -504,7 +527,7 @@ class _PresetRow extends ConsumerWidget {
               ],
               onChanged: (id) {
                 if (id == null) return;
-                HapticFeedback.selectionClick();
+                Haptics.selection();
                 ref.read(promptPresetsProvider.notifier).setActive(id);
               },
             ),

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
@@ -5,20 +6,23 @@ import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:image_picker/image_picker.dart';
 
 import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/util/image_ops.dart';
+import '../../core/util/image_pick.dart';
 import '../char_library/char_library.dart';
 import '../generate/generate_state.dart';
 import '../generate/models.dart';
+import '../generate/nai_request.dart' show naiModelId;
 import '../generate/widgets/common.dart';
 import '../shell/shell_state.dart';
+import '../vibe_library/naiv4vibe_codec.dart' show kModelToEncodingKey;
 import '../vibe_library/vibe_library.dart';
 import 'image_metadata.dart';
 import 'metadata_detail_page.dart';
+import '../../core/util/haptics.dart';
 
 /// 后台 isolate 算图片内容哈希。
 String _sha256Hex(Uint8List bytes) => sha256.convert(bytes).toString();
@@ -55,16 +59,31 @@ Uint8List? _tryB64(String s) {
   }
 }
 
-/// 创作页吸底栏「导入图片」入口:选相册图 → 推入全屏导入面板。
+/// 元数据角色 centers(0~1 坐标)→ 站位格('A1'..'E5';无坐标返回 null=AUTO)。
+/// 正向映射是 x=(col+.5)/5、y=(row-.5)/5,这里取反并就近取整 ——
+/// 网格出身的坐标可精确还原,个别手写的奇异坐标吸附到最近格。
+String? gridPosOfCenter(double? x, double? y) {
+  if (x == null || y == null) return null;
+  final col = (x * 5 - 0.5).round().clamp(0, 4);
+  final row = (y * 5 + 0.5).round().clamp(1, 5);
+  return '${'ABCDE'[col]}$row';
+}
+
+/// 创作页吸底栏「导入图片」入口:选图 → 推入全屏导入面板。
 Future<void> openImportPanel(BuildContext context) async {
-  final file = await ImagePicker().pickImage(source: ImageSource.gallery);
+  final file = await pickImageFile(context);
   if (file == null || !context.mounted) return;
-  final bytes = await file.readAsBytes();
-  if (!context.mounted) return;
-  final display = file.name.replaceAll(RegExp(r'\.[^.]+$'), '');
-  Navigator.of(context).push(sharedAxisRoute(
-    ImportImagePanel(bytes: bytes, fileName: file.name, displayName: display),
-  ));
+  unawaited(
+    Navigator.of(context).push(
+      sharedAxisRoute(
+        ImportImagePanel(
+          bytes: file.bytes,
+          fileName: file.name,
+          displayName: file.baseName,
+        ),
+      ),
+    ),
+  );
 }
 
 /// 导入图片面板(全屏)。3a 导入主页:解析元数据、逐项勾选导入到生成页,
@@ -106,8 +125,12 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
 
   // 生成设置
   bool _settingsExpanded = true;
+  bool _useModel = false;
+  bool _useRes = false;
   bool _useSteps = false;
   bool _useCfg = false;
+  bool _useCfgRescale = false;
+  bool _useVariety = false;
   bool _useSampler = false;
   bool _useScheduler = false;
   bool _useSeed = false;
@@ -153,25 +176,63 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
       _vibeChecked
         ..clear()
         ..addAll([
-          for (var i = 0; i < _vibeBytes.length; i++)
-            if (_vibeBytes[i] != null) i,
+          for (var i = 0; i < m.vibes.length; i++)
+            if (_vibeImportable(m, i)) i,
         ]);
+      _useModel = _importModel != null;
+      _useRes = _hasRes;
       _useSteps = m.steps != null;
       _useCfg = m.scale != null;
+      _useCfgRescale = m.cfgRescale != null;
+      _useVariety = m.varietyPlus != null;
       _useSampler = m.sampler != null;
       _useScheduler = m.noiseSchedule != null;
       _useSeed = false; // 默认不导入种子(对齐定稿 4/5)
     }
   }
 
+  // ---- Vibe 可导入性 ----
+
+  /// 来源模型可识别时,元数据里编码串对应的 encodings 键(v4-5full 等)。
+  /// vibe 编码是按模型算的,来源模型不明(V3 等)就没法归档,只能拒收。
+  String? get _vibeEncKey {
+    final display = _importModel;
+    return display == null ? null : kModelToEncodingKey[naiModelId(display)];
+  }
+
+  /// 有原图 → 可导入(生成时按当前模型现场编码);
+  /// 仅编码 → 来源模型可识别才可导入(挂到该模型的编码键下)。
+  bool _vibeImportable(ImageMetadata m, int i) =>
+      _vibeBytes[i] != null ||
+      (m.vibes[i].encoding != null && _vibeEncKey != null);
+
   // ---- 生成设置可用性 ----
+
+  /// 来源可映射到本机模型时的展示名(v3 等无对应返回 null)。
+  String? get _importModel {
+    final m = _meta;
+    return (m != null && m.isNovelAI) ? _modelFromSource(m.source) : null;
+  }
+
+  bool get _hasModel => _importModel != null;
+  bool get _hasRes => (_meta?.width ?? 0) > 0 && (_meta?.height ?? 0) > 0;
   bool get _hasSteps => _meta?.steps != null;
   bool get _hasCfg => _meta?.scale != null;
+  bool get _hasCfgRescale => _meta?.cfgRescale != null;
+  bool get _hasVariety => _meta?.varietyPlus != null;
   bool get _hasSampler => _meta?.sampler != null;
   bool get _hasScheduler => _meta?.noiseSchedule != null;
   bool get _hasSeed => (_meta?.seed ?? '').isNotEmpty;
   bool get _hasAnySettings =>
-      _hasSteps || _hasCfg || _hasSampler || _hasScheduler || _hasSeed;
+      _hasModel ||
+      _hasRes ||
+      _hasSteps ||
+      _hasCfg ||
+      _hasCfgRescale ||
+      _hasVariety ||
+      _hasSampler ||
+      _hasScheduler ||
+      _hasSeed;
 
   /// 含 UI 不支持的值(未知 sampler / noise)时,整个生成设置禁止导入。
   String? get _settingsUnsupportedReason {
@@ -192,7 +253,15 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     if (_charChecked.isNotEmpty) return true;
     if (_vibeChecked.isNotEmpty) return true;
     if (_settingsUnsupportedReason == null &&
-        (_useSteps || _useCfg || _useSampler || _useScheduler || _useSeed)) {
+        (_useModel ||
+            _useRes ||
+            _useSteps ||
+            _useCfg ||
+            _useCfgRescale ||
+            _useVariety ||
+            _useSampler ||
+            _useScheduler ||
+            _useSeed)) {
       return true;
     }
     return false;
@@ -213,59 +282,68 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
       notifier.setPrompts(positive: pos, negative: neg);
     }
 
-    // 角色
+    // 角色(站位跟着角色勾选一起走,不单独设开关)
     if (m.isNovelAI && _charChecked.isNotEmpty) {
       final idx = _charChecked.toList()..sort();
       final chars = [
         for (final i in idx)
-          (positive: m.characters[i].prompt, negative: m.characters[i].uc ?? ''),
+          (
+            positive: m.characters[i].prompt,
+            negative: m.characters[i].uc ?? '',
+            position: gridPosOfCenter(
+              m.characters[i].centerX,
+              m.characters[i].centerY,
+            ),
+          ),
       ];
       notifier.addCharactersFrom(chars, replace: !_charAppend);
     }
 
     // 生成设置(仅 NAI、无不支持值)
     if (m.isNovelAI && _settingsUnsupportedReason == null) {
-      final anyCore = _useSteps || _useCfg || _useSampler || _useScheduler;
-      final before = ref.read(generateProvider).params;
-      final applyRes = anyCore && m.width > 0 && m.height > 0;
+      final applyRes = _useRes && _hasRes;
       notifier.applyImportedSettings(
-        model: anyCore ? _modelFromSource(m.source) : null,
+        model: _useModel ? _importModel : null,
         width: applyRes ? m.width : null,
         height: applyRes ? m.height : null,
         steps: _useSteps && m.steps != null ? int.tryParse(m.steps!) : null,
         cfg: _useCfg && m.scale != null ? double.tryParse(m.scale!) : null,
+        cfgRescale: _useCfgRescale && m.cfgRescale != null
+            ? double.tryParse(m.cfgRescale!)
+            : null,
+        varietyPlus: _useVariety ? m.varietyPlus : null,
         sampler: _useSampler && m.sampler != null
             ? _samplerIdToDisplay[m.sampler!]
             : null,
-        noiseSchedule:
-            _useScheduler && m.noiseSchedule != null ? m.noiseSchedule : null,
+        noiseSchedule: _useScheduler && m.noiseSchedule != null
+            ? m.noiseSchedule
+            : null,
         seed: _useSeed && m.seed.isNotEmpty ? m.seed : null,
       );
-      if (applyRes && (before.width != m.width || before.height != m.height)) {
-        msgs.add('分辨率 ${m.width}×${m.height}');
-      }
     }
 
-    // Vibe
+    // Vibe:有原图的带图导入(生成时按当前模型现场编码);仅编码的挂到
+    // 来源模型的编码键下(换模型生成时无原图可重编码,会被停用提示)。
     if (m.isNovelAI && _vibeChecked.isNotEmpty) {
       if (!_vibeAppend) notifier.restoreVibes(const []);
       final idx = _vibeChecked.toList()..sort();
-      var added = 0, skipped = 0;
+      final encKey = _vibeEncKey;
+      var added = 0, encOnly = 0;
       for (final i in idx) {
         final b = _vibeBytes[i];
-        if (b == null) {
-          skipped++;
-          continue;
-        }
+        final enc = m.vibes[i].encoding;
+        if (b == null && (enc == null || encKey == null)) continue;
         notifier.addVibe(
           image: b,
           name: '导入的 Vibe ${added + 1}',
           strength: m.vibes[i].strength,
           infoExtracted: m.vibes[i].informationExtracted ?? 1.0,
+          encodedByModel: b == null ? {encKey!: enc!} : null,
         );
         added++;
+        if (b == null) encOnly++;
       }
-      if (skipped > 0) msgs.add('$skipped 个 Vibe 仅编码无法导入');
+      if (encOnly > 0) msgs.add('$encOnly 个 Vibe 仅编码,只在 $_importModel 下可用');
     }
 
     _finish(
@@ -289,11 +367,9 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     if (!mounted) return;
     final res = img2imgResolution(rw, rh);
     final before = ref.read(generateProvider).params;
-    ref.read(generateProvider.notifier).setImg2ImgImage(
-          image: bytes,
-          width: res.w,
-          height: res.h,
-        );
+    ref
+        .read(generateProvider.notifier)
+        .setImg2ImgImage(image: bytes, width: res.w, height: res.h);
     final changed = before.width != res.w || before.height != res.h;
     _finish(
       changed ? '已设为图生图底图 · 分辨率 ${res.w}×${res.h}' : '已设为图生图底图',
@@ -312,11 +388,9 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     } catch (_) {}
     if (!mounted) return;
     final hadCharRefs = ref.read(generateProvider).enabledCharRefs > 0;
-    ref.read(generateProvider.notifier).addVibe(
-          image: bytes,
-          name: widget.displayName,
-          imageHash: hash,
-        );
+    ref
+        .read(generateProvider.notifier)
+        .addVibe(image: bytes, name: widget.displayName, imageHash: hash);
     _finish(
       hadCharRefs ? '已加入 Vibe · 与角色参考互斥,已暂停角色参考' : '已加入 Vibe 参考',
       hadCharRefs ? Icons.swap_horiz : Icons.palette_outlined,
@@ -334,11 +408,9 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     } catch (_) {}
     if (!mounted) return;
     final hadVibes = ref.read(generateProvider).enabledVibes > 0;
-    ref.read(generateProvider.notifier).addCharRef(
-          image: bytes,
-          name: widget.displayName,
-          imageHash: hash,
-        );
+    ref
+        .read(generateProvider.notifier)
+        .addCharRef(image: bytes, name: widget.displayName, imageHash: hash);
     _finish(
       hadVibes ? '已加入角色参考 · 与 Vibe 互斥,已暂停 Vibe' : '已加入角色参考',
       hadVibes ? Icons.swap_horiz : Icons.face_retouching_natural,
@@ -390,7 +462,10 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
         centerTitle: true,
       ),
       body: body,
-      bottomNavigationBar: _loading ? null : _bottomBar(scheme),
+      // 无元数据时四个「用作」按钮已移到正文居中,底栏留空,避免大片空档 + 吊底。
+      bottomNavigationBar: _loading || (_meta == null && _reverseTags == null)
+          ? null
+          : _bottomBar(scheme),
     );
   }
 
@@ -402,9 +477,12 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
       children: [
         _infoCard(scheme, reverse: true),
         const SizedBox(height: 16),
-        Text('反推结果',
-            style: context.texts.titleMedium!
-                .copyWith(fontWeight: FontWeight.w600)),
+        Text(
+          '反推结果',
+          style: context.texts.titleMedium!.copyWith(
+            fontWeight: FontWeight.w600,
+          ),
+        ),
         const SizedBox(height: 11),
         _fixedRow(
           scheme,
@@ -418,27 +496,50 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     );
   }
 
-  // ---- 无元数据 ----
+  // ---- 无元数据:顶部信息 + 提示,四个「用作」按钮居中(不再吊在底部留大空档) ----
   Widget _noMetaBody(ColorScheme scheme) {
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
-      children: [
-        _infoCard(scheme, noMeta: true),
-        const SizedBox(height: 16),
-        Row(
-          children: [
-            Icon(Icons.info_outline, size: 16, color: scheme.outline),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                '未在这张图里找到生成参数,仍可把它用作下方参考。',
-                style: context.texts.bodySmall!
-                    .copyWith(color: scheme.onSurfaceVariant),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _infoCard(scheme, noMeta: true),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Icon(Icons.info_outline, size: 16, color: scheme.outline),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '未在这张图里找到生成参数,仍可把它用作参考。',
+                  style: context.texts.bodySmall!.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          Expanded(
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    '把这张图用作',
+                    textAlign: TextAlign.center,
+                    style: context.texts.bodyMedium!.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  _useAsRow(scheme, reverse: false),
+                ],
               ),
             ),
-          ],
-        ),
-      ],
+          ),
+        ],
+      ),
     );
   }
 
@@ -450,9 +551,12 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
       children: [
         _infoCard(scheme),
         const SizedBox(height: 16),
-        Text('导入到生成页',
-            style: context.texts.titleMedium!
-                .copyWith(fontWeight: FontWeight.w600)),
+        Text(
+          '导入到生成页',
+          style: context.texts.titleMedium!.copyWith(
+            fontWeight: FontWeight.w600,
+          ),
+        ),
         const SizedBox(height: 11),
         // 正向
         if (m.prompt.isNotEmpty) ...[
@@ -507,8 +611,11 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   }
 
   // ---- 顶部信息卡 ----
-  Widget _infoCard(ColorScheme scheme,
-      {bool noMeta = false, bool reverse = false}) {
+  Widget _infoCard(
+    ColorScheme scheme, {
+    bool noMeta = false,
+    bool reverse = false,
+  }) {
     final m = _meta;
     final simple = noMeta || reverse; // 无徽标 / 无原始元数据入口
     final hasDims = m != null && (m.width > 0 || m.height > 0);
@@ -531,8 +638,12 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
         children: [
           ClipRRect(
             borderRadius: BorderRadius.circular(11),
-            child: Image.memory(widget.bytes,
-                width: 56, height: 70, fit: BoxFit.cover),
+            child: Image.memory(
+              widget.bytes,
+              width: 56,
+              height: 70,
+              fit: BoxFit.cover,
+            ),
           ),
           const SizedBox(width: 13),
           Expanded(
@@ -543,13 +654,18 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
                   simple || m == null ? widget.fileName : m.source,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: context.texts.titleMedium!
-                      .copyWith(fontWeight: FontWeight.w700),
+                  style: context.texts.titleMedium!.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
                 const SizedBox(height: 3),
                 Text(
                   subtitle,
-                  style: mono(context, size: 12, color: scheme.onSurfaceVariant),
+                  style: mono(
+                    context,
+                    size: 12,
+                    color: scheme.onSurfaceVariant,
+                  ),
                 ),
                 if (m != null && !simple) ...[
                   const SizedBox(height: 8),
@@ -558,13 +674,23 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
                     runSpacing: 5,
                     children: [
                       if (m.characters.isNotEmpty)
-                        _badge(scheme, '${m.characters.length} 角色',
-                            scheme.tertiary),
+                        _badge(
+                          scheme,
+                          '${m.characters.length} 角色',
+                          scheme.tertiary,
+                        ),
                       if (m.vibes.isNotEmpty)
-                        _badge(scheme, '${m.vibes.length} Vibe', scheme.primary),
+                        _badge(
+                          scheme,
+                          '${m.vibes.length} Vibe',
+                          scheme.primary,
+                        ),
                       if (m.loras.isNotEmpty)
-                        _badge(scheme, '${m.loras.length} Lora',
-                            scheme.secondary),
+                        _badge(
+                          scheme,
+                          '${m.loras.length} Lora',
+                          scheme.secondary,
+                        ),
                     ],
                   ),
                 ],
@@ -573,15 +699,19 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
           ),
           // 原始元数据入口
           if (m != null && !simple)
-            _RawEntry(onTap: () {
-              Navigator.of(context).push(sharedAxisRoute(
-                MetadataDetailPage(
-                  meta: m,
-                  bytes: widget.bytes,
-                  fileName: widget.fileName,
-                ),
-              ));
-            }),
+            _RawEntry(
+              onTap: () {
+                Navigator.of(context).push(
+                  sharedAxisRoute(
+                    MetadataDetailPage(
+                      meta: m,
+                      bytes: widget.bytes,
+                      fileName: widget.fileName,
+                    ),
+                  ),
+                );
+              },
+            ),
         ],
       ),
     );
@@ -594,9 +724,14 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
         color: color.withValues(alpha: .16),
         borderRadius: BorderRadius.circular(6),
       ),
-      child: Text(text,
-          style: TextStyle(
-              fontSize: 10.5, color: color, fontWeight: FontWeight.w600)),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 10.5,
+          color: color,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
     );
   }
 
@@ -620,23 +755,32 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
           padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
           child: Row(
             children: [
-              Icon(icon,
-                  size: 20,
-                  color: danger ? scheme.error : scheme.onSurfaceVariant),
+              Icon(
+                icon,
+                size: 20,
+                color: danger ? scheme.error : scheme.onSurfaceVariant,
+              ),
               const SizedBox(width: 11),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(title,
-                        style: context.texts.bodyLarge!
-                            .copyWith(fontWeight: FontWeight.w600)),
+                    Text(
+                      title,
+                      style: context.texts.bodyLarge!.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                     const SizedBox(height: 2),
-                    Text(preview,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                            fontSize: 11.5, color: scheme.onSurfaceVariant)),
+                    Text(
+                      preview,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -673,13 +817,23 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
       onToggleExpand: () => setState(() => _charExpanded = !_charExpanded),
       child: Column(
         children: [
-          _overrideSeg(scheme, _charAppend,
-              (v) => setState(() => _charAppend = v)),
+          _overrideSeg(
+            scheme,
+            _charAppend,
+            (v) => setState(() => _charAppend = v),
+          ),
           const SizedBox(height: 9),
           for (var i = 0; i < total; i++) ...[
+            // 站位跟着角色勾选一起导入,tag 只标站位 —— 「角色 N」是行序
+            // 本身就看得出来的信息,占着位置反而把真正有用的格号挤窄。
             _itemRow(
               scheme,
-              tag: '角色 ${i + 1}',
+              tag:
+                  gridPosOfCenter(
+                    m.characters[i].centerX,
+                    m.characters[i].centerY,
+                  ) ??
+                  'AUTO',
               tagColor: scheme.tertiary,
               text: m.characters[i].prompt,
               checked: _charChecked.contains(i),
@@ -701,7 +855,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     final total = m.vibes.length;
     final importable = [
       for (var i = 0; i < total; i++)
-        if (_vibeBytes[i] != null) i,
+        if (_vibeImportable(m, i)) i,
     ];
     final allOn =
         importable.isNotEmpty && _vibeChecked.length == importable.length;
@@ -725,8 +879,11 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
       onToggleExpand: () => setState(() => _vibeExpanded = !_vibeExpanded),
       child: Column(
         children: [
-          _overrideSeg(scheme, _vibeAppend,
-              (v) => setState(() => _vibeAppend = v)),
+          _overrideSeg(
+            scheme,
+            _vibeAppend,
+            (v) => setState(() => _vibeAppend = v),
+          ),
           const SizedBox(height: 9),
           for (var i = 0; i < total; i++) ...[
             _vibeRow(scheme, m, i),
@@ -740,8 +897,21 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   Widget _vibeRow(ColorScheme scheme, ImageMetadata m, int i) {
     final v = m.vibes[i];
     final thumb = _vibeBytes[i];
-    final importable = thumb != null;
+    final importable = _vibeImportable(m, i);
     final checked = _vibeChecked.contains(i);
+    final params =
+        '强度 ${v.strength.toStringAsFixed(2)} · IE ${(v.informationExtracted ?? 1.0).toStringAsFixed(1)}';
+    final String sub;
+    if (thumb != null) {
+      sub = params;
+    } else if (importable) {
+      sub = '仅编码 · $params';
+    } else if (v.encoding != null) {
+      sub = '仅编码 · 来源模型未知,无法导入';
+    } else {
+      // needsLocalMatch:元数据里只有强度参数,既无原图也无编码
+      sub = '仅有参数,无法导入';
+    }
     return Opacity(
       opacity: importable ? 1 : .5,
       child: Container(
@@ -758,16 +928,20 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Vibe ${i + 1}',
-                      style: context.texts.bodyMedium!
-                          .copyWith(fontWeight: FontWeight.w500)),
+                  Text(
+                    'Vibe ${i + 1}',
+                    style: context.texts.bodyMedium!.copyWith(
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
                   const SizedBox(height: 2),
                   Text(
-                    importable
-                        ? '强度 ${v.strength.toStringAsFixed(2)} · IE ${(v.informationExtracted ?? 1.0).toStringAsFixed(1)}'
-                        : '仅编码,无法导入',
-                    style: mono(context,
-                        size: 10.5, color: scheme.onSurfaceVariant),
+                    sub,
+                    style: mono(
+                      context,
+                      size: 10.5,
+                      color: scheme.onSurfaceVariant,
+                    ),
                   ),
                 ],
               ),
@@ -792,57 +966,102 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   Widget _settingsSection(ColorScheme scheme, ImageMetadata m) {
     final unsupported = _settingsUnsupportedReason;
     final items = <_SettingSpec>[
-      if (_hasSteps) _SettingSpec('Steps', m.steps!, _useSteps, (v) => _useSteps = v),
+      if (_hasModel)
+        _SettingSpec('模型', _importModel!, _useModel, (v) => _useModel = v),
+      if (_hasRes)
+        _SettingSpec(
+          '分辨率',
+          '${m.width}×${m.height}',
+          _useRes,
+          (v) => _useRes = v,
+        ),
+      if (_hasSteps)
+        _SettingSpec('Steps', m.steps!, _useSteps, (v) => _useSteps = v),
       if (_hasCfg) _SettingSpec('CFG', m.scale!, _useCfg, (v) => _useCfg = v),
+      if (_hasCfgRescale)
+        _SettingSpec(
+          'CFG Rescale',
+          m.cfgRescale!,
+          _useCfgRescale,
+          (v) => _useCfgRescale = v,
+        ),
+      // 叫 Variety+ 而不是「多样性」:创作页高级设置里就是这个名字,
+      // 两处对不上的话用户认不出导的是哪一项。
+      if (_hasVariety)
+        _SettingSpec(
+          'Variety+',
+          m.varietyPlus! ? '开' : '关',
+          _useVariety,
+          (v) => _useVariety = v,
+        ),
       if (_hasSampler)
-        _SettingSpec('Sampler', _samplerIdToDisplay[m.sampler!] ?? m.sampler!,
-            _useSampler, (v) => _useSampler = v),
+        _SettingSpec(
+          'Sampler',
+          _samplerIdToDisplay[m.sampler!] ?? m.sampler!,
+          _useSampler,
+          (v) => _useSampler = v,
+        ),
       if (_hasScheduler)
-        _SettingSpec('Scheduler', m.noiseSchedule!, _useScheduler,
-            (v) => _useScheduler = v),
+        _SettingSpec(
+          'Scheduler',
+          m.noiseSchedule!,
+          _useScheduler,
+          (v) => _useScheduler = v,
+        ),
       if (_hasSeed) _SettingSpec('Seed', m.seed, _useSeed, (v) => _useSeed = v),
     ];
-    final checkedCount =
-        unsupported != null ? 0 : items.where((e) => e.on).length;
-    final allOn = unsupported == null &&
-        items.isNotEmpty &&
-        items.every((e) => e.on);
+    final checkedCount = unsupported != null
+        ? 0
+        : items.where((e) => e.on).length;
+    final allOn =
+        unsupported == null && items.isNotEmpty && items.every((e) => e.on);
     return _section(
       scheme,
       icon: Icons.tune,
       iconColor: scheme.primary,
-      title: '生成设置 · 种子',
+      title: '生成设置',
       count: '$checkedCount/${items.length}',
       allOn: allOn,
       onToggleAll: unsupported != null
           ? null
           : () => setState(() {
-                final target = !allOn;
-                for (final e in items) {
-                  e.set(target);
-                }
-              }),
+              final target = !allOn;
+              for (final e in items) {
+                e.set(target);
+              }
+            }),
       expanded: _settingsExpanded,
       onToggleExpand: () =>
           setState(() => _settingsExpanded = !_settingsExpanded),
       child: unsupported != null
-          ? InfoNote('含当前版本不支持的参数($unsupported),无法导入生成设置。',
-              icon: Icons.warning_amber_rounded)
-          : LayoutBuilder(builder: (context, c) {
-              const gap = 8.0;
-              final w = (c.maxWidth - gap) / 2;
-              return Wrap(
-                spacing: gap,
-                runSpacing: gap,
-                children: [
-                  for (final e in items)
-                    SizedBox(
-                      width: e.label == 'Seed' ? c.maxWidth : w,
-                      child: _settingTile(scheme, e),
-                    ),
-                ],
-              );
-            }),
+          ? InfoNote(
+              '含当前版本不支持的参数($unsupported),无法导入生成设置。',
+              icon: Icons.warning_amber_rounded,
+            )
+          : LayoutBuilder(
+              builder: (context, c) {
+                const gap = 8.0;
+                final w = (c.maxWidth - gap) / 2;
+                return Wrap(
+                  spacing: gap,
+                  runSpacing: gap,
+                  children: [
+                    // 模型/Seed 值长,分辨率凑数也整行 —— 这样满字段时正好
+                    // Steps+CFG / Rescale+Variety+ / Sampler+Scheduler 三对。
+                    for (final e in items)
+                      SizedBox(
+                        width:
+                            (e.label == 'Seed' ||
+                                e.label == '模型' ||
+                                e.label == '分辨率')
+                            ? c.maxWidth
+                            : w,
+                        child: _settingTile(scheme, e),
+                      ),
+                  ],
+                );
+              },
+            ),
     );
   }
 
@@ -861,13 +1080,17 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(e.label,
-                        style: TextStyle(fontSize: 10, color: scheme.outline)),
+                    Text(
+                      e.label,
+                      style: TextStyle(fontSize: 10, color: scheme.outline),
+                    ),
                     const SizedBox(height: 2),
-                    Text(e.value,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: mono(context, size: 13)),
+                    Text(
+                      e.value,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: mono(context, size: 13),
+                    ),
                   ],
                 ),
               ),
@@ -899,11 +1122,16 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
 
   /// 完全覆盖 / 额外添加 分段(滑块式,带切换动画)
   Widget _overrideSeg(
-      ColorScheme scheme, bool append, ValueChanged<bool> onChanged) {
+    ColorScheme scheme,
+    bool append,
+    ValueChanged<bool> onChanged,
+  ) {
     return Row(
       children: [
-        Text('导入方式',
-            style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant)),
+        Text(
+          '导入方式',
+          style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant),
+        ),
         const Spacer(),
         _SlideSeg(
           options: const ['完全覆盖', '额外添加'],
@@ -943,12 +1171,17 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
                 children: [
                   Icon(icon, size: 20, color: iconColor),
                   const SizedBox(width: 10),
-                  Text(title,
-                      style: context.texts.bodyLarge!
-                          .copyWith(fontWeight: FontWeight.w600)),
+                  Text(
+                    title,
+                    style: context.texts.bodyLarge!.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                   const SizedBox(width: 7),
-                  Text(count,
-                      style: mono(context, size: 12.5, color: iconColor)),
+                  Text(
+                    count,
+                    style: mono(context, size: 12.5, color: iconColor),
+                  ),
                   const Spacer(),
                   GestureDetector(
                     onTap: onToggleAll,
@@ -958,8 +1191,11 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
                   AnimatedRotation(
                     turns: expanded ? 0.5 : 0,
                     duration: Motion.fast,
-                    child: Icon(Icons.expand_more,
-                        size: 22, color: scheme.onSurfaceVariant),
+                    child: Icon(
+                      Icons.expand_more,
+                      size: 22,
+                      color: scheme.onSurfaceVariant,
+                    ),
                   ),
                 ],
               ),
@@ -1006,11 +1242,14 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
                 color: tagColor.withValues(alpha: .16),
                 borderRadius: BorderRadius.circular(6),
               ),
-              child: Text(tag,
-                  style: TextStyle(
-                      fontSize: 10.5,
-                      color: tagColor,
-                      fontWeight: FontWeight.w600)),
+              child: Text(
+                tag,
+                style: TextStyle(
+                  fontSize: 10.5,
+                  color: tagColor,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
             ),
             const SizedBox(width: 10),
             Expanded(
@@ -1040,22 +1279,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Row(
-              children: [
-                _useAsBtn(
-                    scheme, Icons.image_outlined, '图生图', _useAsImg2img),
-                const SizedBox(width: 8),
-                _useAsBtn(scheme, Icons.palette_outlined, '风格', _useAsVibe),
-                const SizedBox(width: 8),
-                _useAsBtn(scheme, Icons.face_retouching_natural, '角色',
-                    _useAsCharRef),
-                // 反推结果页不再重复提供「反推」入口(对齐桌面)。
-                if (!reverse) ...[
-                  const SizedBox(width: 8),
-                  _useAsBtn(scheme, Icons.auto_awesome, '反推', _reverse),
-                ],
-              ],
-            ),
+            _useAsRow(scheme, reverse: reverse),
             if (showCta) ...[
               const SizedBox(height: 10),
               SizedBox(
@@ -1066,9 +1290,13 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
                       ? (_useReverse ? _importReverse : null)
                       : (_hasAnySelection ? _import : null),
                   icon: const Icon(Icons.download, size: 22),
-                  label: const Text('导入所选内容',
-                      style: TextStyle(
-                          fontSize: 15.5, fontWeight: FontWeight.w700)),
+                  label: const Text(
+                    '导入所选内容',
+                    style: TextStyle(
+                      fontSize: 15.5,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
                 ),
               ),
             ],
@@ -1078,8 +1306,29 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     );
   }
 
+  /// 四个「用作」按钮一行(反推结果页不重复提供「反推」)。
+  Widget _useAsRow(ColorScheme scheme, {required bool reverse}) {
+    return Row(
+      children: [
+        _useAsBtn(scheme, Icons.image_outlined, '图生图', _useAsImg2img),
+        const SizedBox(width: 8),
+        _useAsBtn(scheme, Icons.palette_outlined, '风格', _useAsVibe),
+        const SizedBox(width: 8),
+        _useAsBtn(scheme, Icons.face_retouching_natural, '角色', _useAsCharRef),
+        if (!reverse) ...[
+          const SizedBox(width: 8),
+          _useAsBtn(scheme, Icons.auto_awesome, '反推', _reverse),
+        ],
+      ],
+    );
+  }
+
   Widget _useAsBtn(
-      ColorScheme scheme, IconData icon, String label, VoidCallback onTap) {
+    ColorScheme scheme,
+    IconData icon,
+    String label,
+    VoidCallback onTap,
+  ) {
     return Expanded(
       child: Material(
         color: scheme.surfaceContainerHigh,
@@ -1094,11 +1343,14 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
               children: [
                 Icon(icon, size: 22, color: scheme.primary),
                 const SizedBox(height: 4),
-                Text(label,
-                    style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                        color: scheme.onSurface)),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: scheme.onSurface,
+                  ),
+                ),
               ],
             ),
           ),
@@ -1108,11 +1360,11 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   }
 
   String _sourceLabel(ImageSourceType t) => switch (t) {
-        ImageSourceType.novelai => 'NovelAI',
-        ImageSourceType.stableDiffusion => 'Stable Diffusion',
-        ImageSourceType.comfyui => 'ComfyUI',
-        ImageSourceType.unknown => '未知来源',
-      };
+    ImageSourceType.novelai => 'NovelAI',
+    ImageSourceType.stableDiffusion => 'Stable Diffusion',
+    ImageSourceType.comfyui => 'ComfyUI',
+    ImageSourceType.unknown => '未知来源',
+  };
 }
 
 /// 顶卡右侧「原始元数据」竖分栏入口。
@@ -1137,12 +1389,15 @@ class _RawEntry extends StatelessWidget {
           children: [
             Icon(Icons.data_object, size: 20, color: scheme.primary),
             const SizedBox(height: 3),
-            Text('原始\n元数据',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                    fontSize: 8.5,
-                    height: 1.2,
-                    color: scheme.onSurfaceVariant)),
+            Text(
+              '原始\n元数据',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 8.5,
+                height: 1.2,
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
           ],
         ),
       ),
@@ -1213,7 +1468,7 @@ class _SlideSeg extends StatelessWidget {
                     behavior: HitTestBehavior.opaque,
                     onTap: () {
                       if (i == index) return;
-                      HapticFeedback.selectionClick();
+                      Haptics.selection();
                       onChanged(i);
                     },
                     child: SizedBox(
@@ -1270,10 +1525,9 @@ class _ReverseDialogState extends ConsumerState<_ReverseDialog> {
         throw Exception('AI 反推需 Bot 后端会话,请先在「我的」里登录 Bot');
       }
       final b64 = base64Encode(widget.bytes);
-      final r = await ref.read(backendClientProvider).wdTagger(
-            sessionId: session.sessionId,
-            imageBase64: b64,
-          );
+      final r = await ref
+          .read(backendClientProvider)
+          .wdTagger(sessionId: session.sessionId, imageBase64: b64);
       if (!r.success || r.tags.isEmpty) {
         throw Exception(r.message.isNotEmpty ? r.message : '反推失败,请稍后重试');
       }
@@ -1299,11 +1553,17 @@ class _ReverseDialogState extends ConsumerState<_ReverseDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text('选择反推模型',
-                style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
+            Text(
+              '选择反推模型',
+              style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+            ),
             const SizedBox(height: 10),
-            _modelOption(scheme, 0, 'pixai-tagger',
-                'Danbooru 标签体系 · 识别角色 / 画风 / 通用标签'),
+            _modelOption(
+              scheme,
+              0,
+              'pixai-tagger',
+              'Danbooru 标签体系 · 识别角色 / 画风 / 通用标签',
+            ),
             if (_error != null) ...[
               const SizedBox(height: 12),
               Row(
@@ -1312,8 +1572,10 @@ class _ReverseDialogState extends ConsumerState<_ReverseDialog> {
                   Icon(Icons.error_outline, size: 16, color: scheme.error),
                   const SizedBox(width: 6),
                   Expanded(
-                    child: Text(_error!,
-                        style: TextStyle(fontSize: 12, color: scheme.error)),
+                    child: Text(
+                      _error!,
+                      style: TextStyle(fontSize: 12, color: scheme.error),
+                    ),
                   ),
                 ],
               ),
@@ -1323,13 +1585,18 @@ class _ReverseDialogState extends ConsumerState<_ReverseDialog> {
               Row(
                 children: [
                   const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2)),
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
                   const SizedBox(width: 10),
-                  Text('反推中,请稍候…',
-                      style: TextStyle(
-                          fontSize: 12.5, color: scheme.onSurfaceVariant)),
+                  Text(
+                    '反推中,请稍候…',
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
                 ],
               ),
             ],
@@ -1349,8 +1616,7 @@ class _ReverseDialogState extends ConsumerState<_ReverseDialog> {
     );
   }
 
-  Widget _modelOption(
-      ColorScheme scheme, int index, String name, String desc) {
+  Widget _modelOption(ColorScheme scheme, int index, String name, String desc) {
     final selected = _model == index;
     return Material(
       color: selected
@@ -1365,23 +1631,31 @@ class _ReverseDialogState extends ConsumerState<_ReverseDialog> {
           child: Row(
             children: [
               Icon(
-                  selected
-                      ? Icons.radio_button_checked
-                      : Icons.radio_button_unchecked,
-                  size: 20,
-                  color: selected ? scheme.primary : scheme.outline),
+                selected
+                    ? Icons.radio_button_checked
+                    : Icons.radio_button_unchecked,
+                size: 20,
+                color: selected ? scheme.primary : scheme.outline,
+              ),
               const SizedBox(width: 11),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(name,
-                        style: context.texts.bodyMedium!
-                            .copyWith(fontWeight: FontWeight.w600)),
+                    Text(
+                      name,
+                      style: context.texts.bodyMedium!.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                     const SizedBox(height: 2),
-                    Text(desc,
-                        style: TextStyle(
-                            fontSize: 11, color: scheme.onSurfaceVariant)),
+                    Text(
+                      desc,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
                   ],
                 ),
               ),

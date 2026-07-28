@@ -67,123 +67,118 @@ class _WeightConvertViewState extends ConsumerState<WeightConvertView> {
       child: Padding(
         padding: const EdgeInsets.fromLTRB(14, 4, 14, 12),
         child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: SegmentedButton<_Dir>(
+                    segments: const [
+                      ButtonSegment(
+                        value: _Dir.sd2nai,
+                        label: Text('SD → NAI'),
+                      ),
+                      ButtonSegment(
+                        value: _Dir.nai2sd,
+                        label: Text('NAI → SD'),
+                      ),
+                    ],
+                    selected: {_dir},
+                    onSelectionChanged: (s) => setState(() {
+                      _dir = s.first;
+                      _output = null;
+                    }),
+                    showSelectedIcon: false,
+                  ),
+                ),
+                if (_dir == _Dir.sd2nai) ...[
+                  const SizedBox(width: 4),
+                  Checkbox(
+                    value: _stripLora,
+                    visualDensity: VisualDensity.compact,
+                    onChanged: (v) => setState(() => _stripLora = v ?? true),
+                  ),
+                  Text('去 Lora', style: context.texts.bodySmall),
+                ],
+              ],
+            ),
+            const SizedBox(height: 10),
+            Expanded(
+              flex: 2,
+              child: TextField(
+                controller: _input,
+                expands: true,
+                maxLines: null,
+                textAlignVertical: TextAlignVertical.top,
+                style: mono(context, size: 13, weight: FontWeight.w400),
+                decoration: InputDecoration(
+                  filled: true,
+                  fillColor: scheme.surfaceContainerLow,
+                  hintText: _dir == _Dir.sd2nai
+                      ? '(masterpiece:1.2), (best quality), 1girl'
+                      : '1.2::masterpiece::, {best quality}, 1girl',
+                  hintStyle: TextStyle(color: scheme.outline, fontSize: 13),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
+                    borderSide: BorderSide.none,
+                  ),
+                  contentPadding: const EdgeInsets.all(12),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            FilledButton.icon(
+              onPressed: _convert,
+              icon: const Icon(Icons.swap_horiz, size: 19),
+              label: const Text('转换'),
+              style: FilledButton.styleFrom(
+                minimumSize: const Size.fromHeight(46),
+              ),
+            ),
+            if (_output != null) ...[
+              const SizedBox(height: 12),
+              Expanded(
+                flex: 3,
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: scheme.surfaceContainerLow,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: SingleChildScrollView(
+                    child: SelectableText.rich(
+                      TextSpan(
+                        style: mono(context, size: 13, weight: FontWeight.w400),
+                        children: _dir == _Dir.sd2nai
+                            ? _naiSpans(context, _output!)
+                            : _sdSpans(context, _output!),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
               Row(
                 children: [
-                  Expanded(
-                    child: SegmentedButton<_Dir>(
-                      segments: const [
-                        ButtonSegment(
-                          value: _Dir.sd2nai,
-                          label: Text('SD → NAI'),
-                        ),
-                        ButtonSegment(
-                          value: _Dir.nai2sd,
-                          label: Text('NAI → SD'),
-                        ),
-                      ],
-                      selected: {_dir},
-                      onSelectionChanged: (s) => setState(() {
-                        _dir = s.first;
-                        _output = null;
-                      }),
-                      showSelectedIcon: false,
+                  if (_dir == _Dir.sd2nai)
+                    FilledButton.tonalIcon(
+                      onPressed: _import,
+                      icon: const Icon(Icons.download, size: 18),
+                      label: const Text('导入提示词'),
                     ),
+                  const Spacer(),
+                  FilledButton.icon(
+                    onPressed: _copy,
+                    icon: const Icon(Icons.content_copy, size: 17),
+                    label: const Text('复制结果'),
                   ),
-                  if (_dir == _Dir.sd2nai) ...[
-                    const SizedBox(width: 4),
-                    Checkbox(
-                      value: _stripLora,
-                      visualDensity: VisualDensity.compact,
-                      onChanged: (v) =>
-                          setState(() => _stripLora = v ?? true),
-                    ),
-                    Text('去 Lora', style: context.texts.bodySmall),
-                  ],
                 ],
               ),
-              const SizedBox(height: 10),
-              Expanded(
-                flex: 2,
-                child: TextField(
-                  controller: _input,
-                  expands: true,
-                  maxLines: null,
-                  textAlignVertical: TextAlignVertical.top,
-                  style: mono(context, size: 13, weight: FontWeight.w400),
-                  decoration: InputDecoration(
-                    filled: true,
-                    fillColor: scheme.surfaceContainerLow,
-                    hintText: _dir == _Dir.sd2nai
-                        ? '(masterpiece:1.2), (best quality), 1girl'
-                        : '1.2::masterpiece::, {best quality}, 1girl',
-                    hintStyle: TextStyle(color: scheme.outline, fontSize: 13),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(14),
-                      borderSide: BorderSide.none,
-                    ),
-                    contentPadding: const EdgeInsets.all(12),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              FilledButton.icon(
-                onPressed: _convert,
-                icon: const Icon(Icons.swap_horiz, size: 19),
-                label: const Text('转换'),
-                style: FilledButton.styleFrom(
-                  minimumSize: const Size.fromHeight(46),
-                ),
-              ),
-              if (_output != null) ...[
-                const SizedBox(height: 12),
-                Expanded(
-                  flex: 3,
-                  child: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: scheme.surfaceContainerLow,
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: SingleChildScrollView(
-                      child: SelectableText.rich(
-                        TextSpan(
-                          style: mono(
-                            context,
-                            size: 13,
-                            weight: FontWeight.w400,
-                          ),
-                          children: _dir == _Dir.sd2nai
-                              ? _naiSpans(context, _output!)
-                              : _sdSpans(context, _output!),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    if (_dir == _Dir.sd2nai)
-                      FilledButton.tonalIcon(
-                        onPressed: _import,
-                        icon: const Icon(Icons.download, size: 18),
-                        label: const Text('导入提示词'),
-                      ),
-                    const Spacer(),
-                    FilledButton.icon(
-                      onPressed: _copy,
-                      icon: const Icon(Icons.content_copy, size: 17),
-                      label: const Text('复制结果'),
-                    ),
-                  ],
-                ),
-              ],
             ],
-          ),
+          ],
         ),
+      ),
     );
   }
 }
@@ -192,8 +187,8 @@ class _WeightConvertViewState extends ConsumerState<WeightConvertView> {
 
 EditorPalette _pal(BuildContext context) =>
     Theme.of(context).brightness == Brightness.dark
-        ? EditorPalette.dark
-        : EditorPalette.light;
+    ? EditorPalette.dark
+    : EditorPalette.light;
 
 final _naiNumRe = RegExp(r'(-?\d+(?:\.\d+)?)::');
 
@@ -223,10 +218,12 @@ List<TextSpan> _naiSpans(BuildContext context, String text) {
         if (end != -1) {
           flush();
           final w = double.parse(m.group(1)!);
-          spans.add(TextSpan(
-            text: text.substring(i, end + 2),
-            style: TextStyle(backgroundColor: w >= 1 ? upStrong : down),
-          ));
+          spans.add(
+            TextSpan(
+              text: text.substring(i, end + 2),
+              style: TextStyle(backgroundColor: w >= 1 ? upStrong : down),
+            ),
+          );
           i = end + 2;
           continue;
         }
@@ -246,10 +243,12 @@ List<TextSpan> _naiSpans(BuildContext context, String text) {
       }
       if (d == 0) {
         flush();
-        spans.add(TextSpan(
-          text: text.substring(i, j),
-          style: TextStyle(backgroundColor: ch == '{' ? up : down),
-        ));
+        spans.add(
+          TextSpan(
+            text: text.substring(i, j),
+            style: TextStyle(backgroundColor: ch == '{' ? up : down),
+          ),
+        );
         i = j;
         continue;
       }
@@ -308,10 +307,12 @@ List<TextSpan> _sdSpans(BuildContext context, String text) {
             if (w != null && w < 1) bg = down;
           }
         }
-        spans.add(TextSpan(
-          text: text.substring(i, j),
-          style: TextStyle(backgroundColor: bg),
-        ));
+        spans.add(
+          TextSpan(
+            text: text.substring(i, j),
+            style: TextStyle(backgroundColor: bg),
+          ),
+        );
         i = j;
         continue;
       }

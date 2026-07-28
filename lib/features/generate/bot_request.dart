@@ -2,7 +2,12 @@ import 'dart:convert';
 
 import 'models.dart';
 import 'nai_request.dart'
-    show CharRefPayload, Img2ImgRef, naiModelId, naiSamplerId;
+    show
+        CharRefPayload,
+        Img2ImgRef,
+        naiModelId,
+        naiSamplerId,
+        normalizeVibeStrengths;
 import 'prompt_presets.dart' show ucPresetBot;
 
 /// bot 模式的一条 vibe:后端编码串 + 强度 + 信息提取(原样透传,归一化交后端)。
@@ -42,7 +47,7 @@ Map<String, dynamic> buildBotParams(
     'varietyPlus': p.varietyPlus,
     'qualityToggle': presetId == 'heavy',
     'ucPreset': ucPresetBot(presetId), // 数值映射对齐 web bot 线 ucPresetMap
-    'normalizeVibeStrength': true,
+    'normalizeVibeStrength': p.normalizeVibe,
     'model': model, // 后端接受 API 内部名,直接透传
     'characterPrompts': [
       for (final c in chars)
@@ -87,14 +92,19 @@ Map<String, dynamic> buildBotParams(
     };
   }
 
-  // Vibe:原样发 strength(bot 模式不在前端归一化,后端按 normalizeVibeStrength 处理)
+  // Vibe:强度在这边算好再发。后端只是把 normalizeVibeStrength 转成
+  // normalize_reference_strength_multiple 原样递给 NAI,自己不动强度,
+  // 而 NAI 那个开关对直传编码串不生效 —— 不在这儿归一化就等于没这功能。
   if (vibes.isNotEmpty) {
+    final strengths = normalizeVibeStrengths([
+      for (final v in vibes) v.strength,
+    ], on: p.normalizeVibe);
     params['vibeReferences'] = [
-      for (final v in vibes)
+      for (var i = 0; i < vibes.length; i++)
         {
-          'encodedVibe': v.encodedVibe,
-          'strength': v.strength,
-          'informationExtracted': v.infoExtracted,
+          'encodedVibe': vibes[i].encodedVibe,
+          'strength': strengths[i],
+          'informationExtracted': vibes[i].infoExtracted,
         },
     ];
   }
@@ -104,6 +114,10 @@ Map<String, dynamic> buildBotParams(
   // (NAI 专属数据已在剥离层清掉,此处无需重复处理)。
   if (isAnimaModel(p.model)) {
     final tier = animaTierOf(p.model);
+    // 挂载的 LoRA(仅启用的,防御性截到服务端上限)。触发词由卡片点击
+    // 直接写进正向词,这里显式传空数组告知服务端不要再拼
+    // (空数组=一个都不拼;LoRA 本体 name/weight 照常注入 LoraLoader 链)。
+    final loras = s.loras.where((l) => l.enabled).take(kMaxActiveLoras);
     params['anima_extra'] = {
       'steps': p.animaSteps,
       'cfg': p.animaCfg,
@@ -111,6 +125,11 @@ Map<String, dynamic> buildBotParams(
       'scheduler': p.animaScheduler,
       'model': tier,
       'turbo': tier == 'turbo',
+      if (loras.isNotEmpty)
+        'loras': [
+          for (final l in loras)
+            {'name': l.name, 'weight': l.weight, 'triggers': const <String>[]},
+        ],
     };
   }
 

@@ -82,13 +82,14 @@ Future<StorageReport> scanStorage() async {
 
   Directory sub(String p) => Directory('${sup.path}/$p');
 
-  // 超分模型:支持目录顶层的 .bin/.param(缺失时下次超分从 assets 重解包)
+  // 超分模型:支持目录顶层的 .bin/.param。
+  // 注意这**不是**缓存:模型不随包分发,删掉要重新下载 10.9 MB(见
+  // features/gallery/upscale_model_store.dart),别当临时文件清。
   var modelBytes = 0;
   var modelCount = 0;
   try {
     await for (final e in sup.list(followLinks: false)) {
-      if (e is File &&
-          (e.path.endsWith('.bin') || e.path.endsWith('.param'))) {
+      if (e is File && (e.path.endsWith('.bin') || e.path.endsWith('.param'))) {
         try {
           modelBytes += await e.length();
           modelCount++;
@@ -101,8 +102,10 @@ Future<StorageReport> scanStorage() async {
     StorageCategory(
       key: 'gallery',
       bytes: await _sizeOf(sub('gallery')),
-      count: await _countIn(Directory('${sup.path}/gallery/images'),
-          suffix: '.png'),
+      count: await _countIn(
+        Directory('${sup.path}/gallery/images'),
+        suffix: '.png',
+      ),
     ),
     StorageCategory(
       key: 'blobs',
@@ -136,7 +139,8 @@ Future<StorageReport> scanStorage() async {
     ),
   ];
 
-  final total = await _sizeOf(sup) +
+  final total =
+      await _sizeOf(sup) +
       await _sizeOf(tmp) +
       (docs == null ? 0 : await _sizeOf(docs));
   var categorized = 0;
@@ -150,13 +154,16 @@ Future<StorageReport> scanStorage() async {
   );
 }
 
-/// 清除超分模型解包缓存(下次超分自动从 assets 重新解包,无损)。
+/// 删除已下载的超分模型。**不是无损操作** —— 模型不随包分发,再用要重新
+/// 下载 10.9 MB,所以存储管理里它单独成组、动作叫「删除」不叫「清理」。
+///
+/// 扫的是支持目录**顶层**的 `.bin`/`.param`,与 [scanStorage] 的 `models`
+/// 口径一致。blob 仓在 `blobs/` 子目录里,扫不到,不会被误删。
 Future<void> clearUpscaleModels() async {
   try {
     final sup = await getApplicationSupportDirectory();
     await for (final e in sup.list(followLinks: false)) {
-      if (e is File &&
-          (e.path.endsWith('.bin') || e.path.endsWith('.param'))) {
+      if (e is File && (e.path.endsWith('.bin') || e.path.endsWith('.param'))) {
         try {
           await e.delete();
         } catch (_) {}

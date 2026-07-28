@@ -234,6 +234,400 @@ class PublicOcMeta {
       zhName != null && zhName!.isNotEmpty ? zhName! : enName;
 }
 
+/// 一段用量统计(个人 `/api/user/stats` 与平台 `/api/platform/stats(/all)`
+/// 共用一个形状,后者多活跃/总用户与起止时间)。
+class UsageStats {
+  const UsageStats({
+    this.imageCalls = 0,
+    this.aiCalls = 0,
+    this.pointsSpent = 0,
+    this.activeUsers = 0,
+    this.totalUsers = 0,
+    this.firstRecord,
+    this.lastRecord,
+  });
+
+  final int imageCalls;
+  final int aiCalls;
+  final int pointsSpent;
+  final int activeUsers;
+  final int totalUsers;
+
+  /// ISO 时间串(仅 `/platform/stats/all` 返回)。
+  final String? firstRecord;
+  final String? lastRecord;
+
+  factory UsageStats.fromJson(Map<String, dynamic> j) => UsageStats(
+    imageCalls: (j['image_calls'] as num?)?.toInt() ?? 0,
+    aiCalls: (j['ai_calls'] as num?)?.toInt() ?? 0,
+    pointsSpent: (j['points_spent'] as num?)?.toInt() ?? 0,
+    activeUsers: (j['active_users'] as num?)?.toInt() ?? 0,
+    totalUsers: (j['total_users'] as num?)?.toInt() ?? 0,
+    firstRecord: j['first_record'] as String?,
+    lastRecord: j['last_record'] as String?,
+  );
+}
+
+/// 每日(time_range=today 时为每小时)个人用量点(`/api/user/stats/daily`)。
+class DailyStat {
+  const DailyStat({
+    required this.date,
+    required this.imageCalls,
+    required this.pointsSpent,
+  });
+
+  /// `yyyy-MM-dd`;今日档为 `HH:mm`。
+  final String date;
+  final int imageCalls;
+  final int pointsSpent;
+}
+
+/// 平台 24 小时热力图种类(端点与字段名随种类不同)。
+enum HourlyKind {
+  calls('hourly-heatmap', 'avg_calls', 'total_calls'),
+  users('hourly-users', 'avg_users', 'total_users'),
+  duration('hourly-duration', 'avg_duration', 'count');
+
+  const HourlyKind(this.path, this.avgKey, this.totalKey);
+  final String path;
+  final String avgKey;
+  final String totalKey;
+}
+
+/// 平台热力图一份(24 格 + 有效天数)。
+class HourlyHeat {
+  const HourlyHeat({this.cells = const [], this.totalDays = 1});
+
+  final List<({int hour, double avg, double total})> cells;
+  final int totalDays;
+}
+
+/// 账单里「一个人」的一行。estimate 的 current_user 与 settlement 结构略异:
+/// settlement 直接给 `total_fee`;estimate 只给 `image_fee`/`anlas_fee`,总费
+/// 需两者相加(web 同款)。这里 totalFee 取 `total_fee`,缺省时回落到分项和。
+class BillingParty {
+  const BillingParty({
+    this.tierName = '免费',
+    this.imageCalls = 0,
+    this.anlasUsed = 0,
+    this.totalFee = 0,
+  });
+
+  final String tierName;
+  final int imageCalls;
+  final int anlasUsed;
+  final double totalFee;
+
+  factory BillingParty.fromJson(Map<String, dynamic> j) {
+    final total = (j['total_fee'] as num?)?.toDouble();
+    final imgFee = (j['image_fee'] as num?)?.toDouble() ?? 0;
+    final anlasFee = (j['anlas_fee'] as num?)?.toDouble() ?? 0;
+    return BillingParty(
+      tierName: j['tier_name'] as String? ?? '免费',
+      imageCalls: (j['image_calls'] as num?)?.toInt() ?? 0,
+      anlasUsed: (j['anlas_used'] as num?)?.toInt() ?? 0,
+      totalFee: total ?? (imgFee + anlasFee),
+    );
+  }
+}
+
+/// 一档阶梯的分布(人数/总张数/总费用),用于账单页的阶梯表。
+typedef TierRow = ({int count, int images, double fee});
+
+/// 计费报告(`/api/billing/estimate` 与 `/api/billing/settlement` 同结构,
+/// 均出自服务端 `_compute_billing`;后者多支付状态)。
+class BillingReport {
+  const BillingReport({
+    this.me,
+    this.periodLabel = '',
+    this.freeThreshold = 0,
+    this.t1 = 0,
+    this.t2 = 0,
+    this.distribution = const {},
+    this.activeUsers = 0,
+    this.earlyMode = false,
+    this.paymentStatus = '',
+  });
+
+  final BillingParty? me;
+
+  /// 周期标签,形如 `06/27 - 07/27`。
+  final String periodLabel;
+
+  /// 免费线(张);[t1]/[t2] 为付费用户内 P50/P80 分界(0 = 人太少走均摊)。
+  final int freeThreshold;
+  final int t1;
+  final int t2;
+
+  /// 阶梯名(免费/一阶/二阶/三阶/均摊)→ 分布。
+  final Map<String, TierRow> distribution;
+  final int activeUsers;
+
+  /// 预估专属:周期早期样本不足。
+  final bool earlyMode;
+
+  /// 结算专属:`paid` | `unpaid` | `free`。
+  final String paymentStatus;
+
+  /// 该阶梯的张数区间文案(对齐 web);均摊态没有区间。
+  String rangeOf(String tier) => switch (tier) {
+    '免费' => '≤$freeThreshold 张',
+    '一阶' => t1 > 0 ? '${freeThreshold + 1}~$t1 张' : '—',
+    '二阶' => t2 > 0 ? '${(t1 == 0 ? freeThreshold : t1) + 1}~$t2 张' : '—',
+    '三阶' => t2 > 0 ? '>$t2 张' : '—',
+    _ => '>$freeThreshold 张',
+  };
+
+  /// 人均费用;无样本返回 null。
+  double? avgFeeOf(String tier) {
+    final r = distribution[tier];
+    if (r == null || r.count == 0) return null;
+    return r.fee / r.count;
+  }
+
+  factory BillingReport.fromJson(Map<String, dynamic> j) {
+    final tiers = j['tiers'];
+    final dist = j['tier_distribution'];
+    return BillingReport(
+      me: j['current_user'] is Map<String, dynamic>
+          ? BillingParty.fromJson(j['current_user'] as Map<String, dynamic>)
+          : null,
+      periodLabel: j['billing_month']?.toString() ?? '',
+      freeThreshold:
+          (tiers is Map ? (tiers['free'] as num?)?.toInt() : null) ??
+          (j['free_threshold'] as num?)?.toInt() ??
+          0,
+      t1: tiers is Map ? ((tiers['t1'] as num?)?.toInt() ?? 0) : 0,
+      t2: tiers is Map ? ((tiers['t2'] as num?)?.toInt() ?? 0) : 0,
+      distribution: {
+        if (dist is Map)
+          for (final e in dist.entries)
+            if (e.value is Map)
+              e.key.toString(): (
+                count: ((e.value as Map)['count'] as num?)?.toInt() ?? 0,
+                images:
+                    ((e.value as Map)['total_images'] as num?)?.toInt() ?? 0,
+                fee: ((e.value as Map)['total_fee'] as num?)?.toDouble() ?? 0,
+              ),
+      },
+      activeUsers: (j['active_user_count'] as num?)?.toInt() ?? 0,
+      earlyMode: j['estimate_mode'] == 'early',
+      paymentStatus: j['payment_status']?.toString() ?? '',
+    );
+  }
+}
+
+/// 一笔点数消耗(`points_spent` 行)。[reason] 由服务端拼装,
+/// 形如 `web生图(生图832x1216_28步=20, 角色参考x1=5)`。
+class PointRecord {
+  const PointRecord({
+    required this.time,
+    required this.points,
+    required this.reason,
+  });
+
+  /// 本地时间(服务端按北京时间落库,无时区后缀)。
+  final DateTime? time;
+  final int points;
+  final String reason;
+
+  factory PointRecord.fromJson(Map<String, dynamic> j) => PointRecord(
+    time: DateTime.tryParse(j['timestamp']?.toString() ?? ''),
+    points: (j['points'] as num?)?.toInt() ?? 0,
+    reason: j['reason']?.toString() ?? '',
+  );
+}
+
+/// 一笔生成记录(`/api/user/stats/calls`)。老记录只有时间,参数为空。
+class CallRecord {
+  const CallRecord({
+    required this.time,
+    this.width = 0,
+    this.height = 0,
+    this.steps = 0,
+    this.model = '',
+    this.anlas = 0,
+    this.img2img = false,
+    this.charRefs = 0,
+  });
+
+  final DateTime? time;
+  final int width;
+  final int height;
+  final int steps;
+
+  /// 服务端模型 id(如 `nai-diffusion-4-5-full`)。
+  final String model;
+
+  /// 该次生成扣的点数;0 = 免费档。
+  final int anlas;
+  final bool img2img;
+  final int charRefs;
+
+  bool get hasParams => width > 0 && height > 0;
+
+  factory CallRecord.fromJson(Map<String, dynamic> j) => CallRecord(
+    time: DateTime.tryParse(j['timestamp']?.toString() ?? ''),
+    width: (j['w'] as num?)?.toInt() ?? 0,
+    height: (j['h'] as num?)?.toInt() ?? 0,
+    steps: (j['steps'] as num?)?.toInt() ?? 0,
+    model: j['model']?.toString() ?? '',
+    anlas: (j['anlas'] as num?)?.toInt() ?? 0,
+    img2img: j['i2i'] == true,
+    charRefs: (j['pr'] as num?)?.toInt() ?? 0,
+  );
+}
+
+/// 某窗口内的消耗明细(`/api/billing/user/details`,窗口可指定到某一天)。
+class UsageDetails {
+  const UsageDetails({
+    this.records = const [],
+    this.breakdown = const [],
+    this.imageCalls = 0,
+    this.points = 0,
+  });
+
+  /// 逐笔消耗,新→旧(服务端上限 50 条)。
+  final List<PointRecord> records;
+
+  /// 按 reason 归并 (原因, 点数, 笔数)。
+  final List<({String reason, int points, int count})> breakdown;
+  final int imageCalls;
+  final int points;
+}
+
+/// 机房已装 LoRA 卡片(`GET /api/lora/list`;anima 出图渠道专用)。
+/// [favorited] 需带会话查询才有意义(是否在「我的库」);[addedBy] == 'bot'
+/// 的官方条目豁免无人收藏时的回收。
+class LoraCardInfo {
+  const LoraCardInfo({
+    required this.name,
+    required this.displayName,
+    this.type = 'concept',
+    this.triggerWords = const [],
+    this.recommendedWeight = 0.8,
+    this.previewUrl = '',
+    this.sourceUrl = '',
+    this.sizeMb,
+    this.syncStatus = 'synced',
+    this.usageCount = 0,
+    this.addedBy = 'web',
+    this.favorited = false,
+    this.favoriteCount = 0,
+  });
+
+  /// LR 编号(LR1…),生成载荷与收藏操作都用它。
+  final String name;
+  final String displayName;
+
+  /// character / style / concept。
+  final String type;
+  final List<String> triggerWords;
+  final double recommendedWeight;
+  final String previewUrl;
+  final String sourceUrl;
+  final double? sizeMb;
+
+  /// synced = 已在机房就绪;其余值(pending/failed)不可挂载。
+  final String syncStatus;
+  final int usageCount;
+  final String addedBy;
+  final bool favorited;
+  final int favoriteCount;
+
+  bool get ready => syncStatus == 'synced';
+
+  factory LoraCardInfo.fromJson(Map<String, dynamic> j) => LoraCardInfo(
+    name: j['name']?.toString() ?? '',
+    displayName: (j['display_name']?.toString().trim().isNotEmpty ?? false)
+        ? j['display_name'].toString()
+        : j['name']?.toString() ?? '',
+    type: j['type']?.toString() ?? 'concept',
+    triggerWords: [
+      for (final t
+          in j['trigger_words'] is List ? j['trigger_words'] as List : const [])
+        if (t is String && t.isNotEmpty) t,
+    ],
+    recommendedWeight: (j['recommended_weight'] as num?)?.toDouble() ?? 0.8,
+    previewUrl: j['preview_url']?.toString() ?? '',
+    sourceUrl: j['source_url']?.toString() ?? '',
+    sizeMb: (j['size_mb'] as num?)?.toDouble(),
+    syncStatus: j['sync_status']?.toString() ?? 'synced',
+    usageCount: (j['usage_count'] as num?)?.toInt() ?? 0,
+    addedBy: j['added_by']?.toString() ?? 'web',
+    favorited: j['favorited'] == true,
+    favoriteCount: (j['favorite_count'] as num?)?.toInt() ?? 0,
+  );
+}
+
+/// Civitai 在线搜索结果一条(`GET /api/lora/search`,服务端代理)。
+class CivitaiLoraInfo {
+  const CivitaiLoraInfo({
+    required this.modelId,
+    required this.versionId,
+    required this.name,
+    this.creator = '',
+    this.downloadCount = 0,
+    this.previewUrl = '',
+    this.triggerWords = const [],
+    this.type = 'concept',
+    this.recommendedWeight = 0.8,
+    this.fileName = '',
+    this.sizeMb,
+    this.baseModel = '',
+    this.tags = const [],
+    this.installed = false,
+    this.description = '',
+  });
+
+  final int modelId;
+  final int versionId;
+  final String name;
+  final String creator;
+  final int downloadCount;
+  final String previewUrl;
+  final List<String> triggerWords;
+  final String type;
+  final double recommendedWeight;
+  final String fileName;
+  final double? sizeMb;
+  final String baseModel;
+  final List<String> tags;
+
+  /// 机房库里已有该版本(下载会走「仅加收藏」,不重复拉)。
+  final bool installed;
+  final String description;
+
+  /// Civitai 模型页(带版本参数)。
+  String get civitaiUrl =>
+      'https://civitai.com/models/$modelId?modelVersionId=$versionId';
+
+  factory CivitaiLoraInfo.fromJson(Map<String, dynamic> j) => CivitaiLoraInfo(
+    modelId: (j['model_id'] as num?)?.toInt() ?? 0,
+    versionId: (j['version_id'] as num?)?.toInt() ?? 0,
+    name: j['name']?.toString() ?? '',
+    creator: j['creator']?.toString() ?? '',
+    downloadCount: (j['download_count'] as num?)?.toInt() ?? 0,
+    previewUrl: j['preview_url']?.toString() ?? '',
+    triggerWords: [
+      for (final t
+          in j['trigger_words'] is List ? j['trigger_words'] as List : const [])
+        if (t is String && t.isNotEmpty) t,
+    ],
+    type: j['type']?.toString() ?? 'concept',
+    recommendedWeight: (j['recommended_weight'] as num?)?.toDouble() ?? 0.8,
+    fileName: j['file_name']?.toString() ?? '',
+    sizeMb: (j['size_mb'] as num?)?.toDouble(),
+    baseModel: j['base_model']?.toString() ?? '',
+    tags: [
+      for (final t in j['tags'] is List ? j['tags'] as List : const [])
+        if (t is String && t.isNotEmpty) t,
+    ],
+    installed: j['installed'] == true,
+    description: j['description']?.toString() ?? '',
+  );
+}
+
 /// Plana 后端客户端(当前仅含 bot 授权四端点里 App 要用的三个;
 /// verify 由 Bot 侧调用,App 不实现)。契约见 docs/api/auth-bot.md。
 ///
@@ -909,7 +1303,7 @@ class BackendClient {
     }
   }
 
-  /// NAI 官方超分(bot 模式;登录:Bearer 头)。仅支持 832×1216/1216×832/1024² · 4x 扣约 6 点。
+  /// NAI 官方超分(bot 模式;登录:Bearer 头)。仅支持 832×1216/1216×832/1024² · 4x 固定扣 7 点。
   /// 后端要远程转发 NAI,给足 2 分钟超时。⚠️ 失败也返 200,看 success/message。
   /// → (是否成功, 结果图 base64?, 文案)
   Future<({bool success, String? imageBase64, String message})> upscale({
@@ -948,6 +1342,264 @@ class BackendClient {
       tags: (j['tags'] as String?) ?? '',
       character: (j['character'] as String?) ?? '',
       message: (j['error'] as String?) ?? '',
+    );
+  }
+
+  // ── 统计 / 账单(个人中心,对齐 web)────────────────
+  // 除 online/count 外全部要求 Bearer 会话。会话**只走 Authorization 头,不进
+  // query** —— URL 会原样落进服务端与各级代理的访问日志(S1A-01)。后端
+  // require_session 目前还留着 `?session_id=` 回退,但那只为兼容老 web,新客户端
+  // 一律不用。time_range ∈ today/week/month(累计尝试 all,后端不支持时由调用方
+  // 按失败兜底)。
+
+  /// 个人统计(bot 账号,跨端汇总)。
+  Future<UsageStats> userStats(String sessionId, String range) async {
+    final j = await _getJson('/user/stats?time_range=$range', sessionId);
+    return UsageStats.fromJson(j);
+  }
+
+  /// 个人逐日(今日档为逐小时)统计。
+  Future<List<DailyStat>> userStatsDaily(String sessionId, String range) async {
+    final j = await _getJson('/user/stats/daily?time_range=$range', sessionId);
+    final data = j['data'];
+    if (data is! List) return const [];
+    return [
+      for (final d in data)
+        if (d is Map)
+          DailyStat(
+            date: d['date']?.toString() ?? '',
+            imageCalls: (d['image_calls'] as num?)?.toInt() ?? 0,
+            pointsSpent: (d['points_spent'] as num?)?.toInt() ?? 0,
+          ),
+    ];
+  }
+
+  /// 平台当期统计。
+  Future<UsageStats> platformStats(String sessionId, String range) async {
+    final j = await _getJson('/platform/stats?time_range=$range', sessionId);
+    return UsageStats.fromJson(j);
+  }
+
+  /// 平台历史全局统计。
+  Future<UsageStats> platformStatsAll(String sessionId) async {
+    return UsageStats.fromJson(
+      await _getJson('/platform/stats/all', sessionId),
+    );
+  }
+
+  /// 平台 24 小时热力图(负载/活跃人数/平均耗时)。
+  Future<HourlyHeat> platformHourly(
+    String sessionId,
+    HourlyKind kind,
+    int days,
+  ) async {
+    final j = await _getJson(
+      '/platform/stats/${kind.path}?days=$days',
+      sessionId,
+    );
+    final raw = j['heatmap'];
+    if (raw is! List) return const HourlyHeat();
+    return HourlyHeat(
+      totalDays: (j['total_days'] as num?)?.toInt() ?? 1,
+      cells: [
+        for (final c in raw)
+          if (c is Map)
+            (
+              hour: (c['hour'] as num?)?.toInt() ?? 0,
+              avg: (c[kind.avgKey] as num?)?.toDouble() ?? 0,
+              total: (c[kind.totalKey] as num?)?.toDouble() ?? 0,
+            ),
+      ],
+    );
+  }
+
+  /// 当前在线人数(公开端点)。
+  Future<int> onlineCount() async {
+    final j = await _getJson('/online/count');
+    return (j['count'] as num?)?.toInt() ?? 0;
+  }
+
+  /// 本期费用预估(当前 27 日周期,含阶梯边界与各阶分布)。
+  Future<BillingReport> billingEstimate(String sessionId) async {
+    return BillingReport.fromJson(
+      await _getJson('/billing/estimate', sessionId),
+    );
+  }
+
+  /// 指定窗口的消耗明细。窗口传当天 00:00 ~ 次日 00:00 即得「当日逐笔」。
+  /// 归属由后端从会话强制取(`user_id = session.bot_user_id`,只能查自己),
+  /// 早先那个 `user_id` query 线上已被忽略 —— 一并去掉,别白送 bot 账号进日志。
+  Future<UsageDetails> usageDetails({
+    required String sessionId,
+    required DateTime from,
+    required DateTime to,
+  }) async {
+    String iso(DateTime d) =>
+        '${d.year.toString().padLeft(4, '0')}-'
+        '${d.month.toString().padLeft(2, '0')}-'
+        '${d.day.toString().padLeft(2, '0')}T00:00:00';
+    final j = await _getJson(
+      '/billing/user/details'
+      '?period_start=${Uri.encodeComponent(iso(from))}'
+      '&period_end=${Uri.encodeComponent(iso(to))}',
+      sessionId,
+      const Duration(seconds: 30),
+    );
+    final recs = j['recent_records'];
+    final bd = j['type_breakdown'];
+    return UsageDetails(
+      records: [
+        for (final r in recs is List ? recs : const [])
+          if (r is Map<String, dynamic>) PointRecord.fromJson(r),
+      ],
+      breakdown: [
+        for (final b in bd is List ? bd : const [])
+          if (b is Map)
+            (
+              reason: b['reason']?.toString() ?? '未知',
+              points: (b['total_points'] as num?)?.toInt() ?? 0,
+              count: (b['count'] as num?)?.toInt() ?? 0,
+            ),
+      ],
+      imageCalls: (j['total_image_calls'] as num?)?.toInt() ?? 0,
+      points: (j['total_points'] as num?)?.toInt() ?? 0,
+    );
+  }
+
+  /// 逐笔生成明细(含分辨率/步数/模型)。窗口传当天 00:00 ~ 次日 00:00。
+  /// 需要服务端 `/api/user/stats/calls`(未部署该接口时抛 404,调用方降级)。
+  Future<List<CallRecord>> callRecords({
+    required String sessionId,
+    required DateTime from,
+    required DateTime to,
+  }) async {
+    String iso(DateTime d) =>
+        '${d.year.toString().padLeft(4, '0')}-'
+        '${d.month.toString().padLeft(2, '0')}-'
+        '${d.day.toString().padLeft(2, '0')}T00:00:00';
+    final j = await _getJson(
+      '/user/stats/calls'
+      '?period_start=${Uri.encodeComponent(iso(from))}'
+      '&period_end=${Uri.encodeComponent(iso(to))}',
+      sessionId,
+      const Duration(seconds: 30),
+    );
+    final recs = j['records'];
+    return [
+      for (final r in recs is List ? recs : const [])
+        if (r is Map<String, dynamic>) CallRecord.fromJson(r),
+    ];
+  }
+
+  /// 点数逐笔(按 today/week/month 取,服务端上限 50 条)。
+  /// [usageDetails] 拿不到归属 id 时的兜底。
+  Future<List<PointRecord>> pointRecords(String sessionId, String range) async {
+    final j = await _getJson('/user/stats/points?time_range=$range', sessionId);
+    final recs = j['records'];
+    return [
+      for (final r in recs is List ? recs : const [])
+        if (r is Map<String, dynamic>) PointRecord.fromJson(r),
+    ];
+  }
+
+  /// 上期结算(含阶梯边界/分布与支付状态;付款流程留在 web)。
+  Future<BillingReport> billingSettlement(String sessionId) async {
+    return BillingReport.fromJson(
+      await _getJson('/billing/settlement', sessionId),
+    );
+  }
+
+  // ── LoRA 管理(anima 出图渠道专用,契约对齐 web loraService.ts) ──
+
+  /// 机房已装 LoRA 全集(登录:Bearer 头 → 每张卡带 favorited)。
+  /// 「我的库」= 其中 favorited 的;「公共库」= 全集。
+  Future<List<LoraCardInfo>> listLoras(String sessionId) async {
+    final j = await _getJson('/lora/list', sessionId);
+    if (j['ok'] == false) {
+      throw BackendException(j['message']?.toString() ?? 'LoRA 列表加载失败');
+    }
+    return [
+      for (final e in j['items'] is List ? j['items'] as List : const [])
+        if (e is Map<String, dynamic>) LoraCardInfo.fromJson(e),
+    ];
+  }
+
+  /// 加入我的库(纯改收藏关系,不涉及下载)。
+  Future<({bool ok, int? favoriteCount, String message})> favoriteLora({
+    required String sessionId,
+    required String lrId,
+  }) async {
+    final j = await _postJson(
+      '/lora/${Uri.encodeComponent(lrId)}/favorite',
+      const {},
+      sessionId,
+    );
+    return (
+      ok: j['ok'] == true,
+      favoriteCount: (j['favorite_count'] as num?)?.toInt(),
+      message: j['message']?.toString() ?? '',
+    );
+  }
+
+  /// 移出我的库。[deleted] = 机房已无人拥有,该 web 条目连库一起回收。
+  Future<({bool ok, bool deleted, int? favoriteCount, String message})>
+  unfavoriteLora({required String sessionId, required String lrId}) async {
+    final j = await _postJson(
+      '/lora/${Uri.encodeComponent(lrId)}/unfavorite',
+      const {},
+      sessionId,
+    );
+    return (
+      ok: j['ok'] == true,
+      deleted: j['deleted'] == true,
+      favoriteCount: (j['favorite_count'] as num?)?.toInt(),
+      message: j['message']?.toString() ?? '',
+    );
+  }
+
+  /// Civitai 在线搜索(服务端代理,公开端点)。[cursor] 翻页游标。
+  Future<({List<CivitaiLoraInfo> items, String? nextCursor})> searchLoras({
+    String query = '',
+    String? cursor,
+    int limit = 24,
+  }) async {
+    final q = <String>[
+      if (query.isNotEmpty) 'query=${Uri.encodeComponent(query)}',
+      if (cursor != null && cursor.isNotEmpty)
+        'cursor=${Uri.encodeComponent(cursor)}',
+      'nsfw=true', // 对齐 web:不做 R18 过滤开关
+      'limit=$limit',
+    ].join('&');
+    final j = await _getJson('/lora/search?$q', null, _timeout * 2);
+    if (j['ok'] == false) {
+      throw BackendException(j['message']?.toString() ?? 'Civitai 搜索失败');
+    }
+    return (
+      items: [
+        for (final e in j['items'] is List ? j['items'] as List : const [])
+          if (e is Map<String, dynamic>) CivitaiLoraInfo.fromJson(e),
+      ],
+      nextCursor: j['next_cursor']?.toString(),
+    );
+  }
+
+  /// 在线「下载到我的库」:库里没有 → 机房直拉 Civitai 入 Volume + 写注册表;
+  /// 已有 → 仅加收藏(服务端按 sha/版本去重,不重复下载)。
+  /// 直拉在服务端同步完成,大文件要等 —— 超时放宽到 3 分钟。
+  Future<({bool ok, String? lrId, String message})> installLora({
+    required String sessionId,
+    required int versionId,
+  }) async {
+    final j = await _postJson(
+      '/lora/install',
+      {'version_id': versionId},
+      sessionId,
+      const Duration(minutes: 3),
+    );
+    return (
+      ok: j['ok'] == true,
+      lrId: j['lr_id']?.toString(),
+      message: j['message']?.toString() ?? '',
     );
   }
 }

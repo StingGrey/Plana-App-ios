@@ -17,7 +17,7 @@ import '../data/suggestions.dart';
     case SuggestionKind.tag:
       return (Icons.label, context.scheme.onSurfaceVariant);
     case SuggestionKind.artist:
-      return (Icons.brush, const Color(0xFFC2569B));
+      return (Icons.brush, pal.artist);
   }
 }
 
@@ -82,22 +82,16 @@ class CompletionBar extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // 把手:点按或上滑展开
+              // 把手:点一下或往上拉都展开
               InkWell(
                 onTap: onExpand,
                 borderRadius: BorderRadius.circular(12),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    vertical: 4,
-                    horizontal: 24,
-                  ),
-                  child: Container(
-                    width: 32,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: scheme.outline.withValues(alpha: .5),
-                      borderRadius: BorderRadius.circular(2),
-                    ),
+                  padding: const EdgeInsets.symmetric(horizontal: 24),
+                  child: Icon(
+                    Icons.keyboard_arrow_up_rounded,
+                    size: 22,
+                    color: scheme.outline,
                   ),
                 ),
               ),

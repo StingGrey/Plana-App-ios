@@ -16,6 +16,8 @@ class CharacterPrompt {
     required this.name,
     this.positive = '',
     this.negative = '',
+    this.positiveRaw = '',
+    this.negativeRaw = '',
     this.enabled = true,
     this.position, // 'A1'..'E5';null = AUTO
     this.activeTab = CharTab.positive,
@@ -25,6 +27,12 @@ class CharacterPrompt {
   final String name;
   final String positive;
   final String negative;
+
+  /// 编辑器原文草稿(含禁用 `~tag~` / 折叠 `<#名字: …>` 等仅编辑期语法),
+  /// 空 = 与定稿无差别,不必单独存。有效性由读取侧判定,见 [pickEditorText]。
+  final String positiveRaw;
+  final String negativeRaw;
+
   final bool enabled;
   final String? position;
   final CharTab activeTab;
@@ -33,6 +41,8 @@ class CharacterPrompt {
     String? name,
     String? positive,
     String? negative,
+    String? positiveRaw,
+    String? negativeRaw,
     bool? enabled,
     Object? position = _unset,
     CharTab? activeTab,
@@ -42,6 +52,8 @@ class CharacterPrompt {
       name: name ?? this.name,
       positive: positive ?? this.positive,
       negative: negative ?? this.negative,
+      positiveRaw: positiveRaw ?? this.positiveRaw,
+      negativeRaw: negativeRaw ?? this.negativeRaw,
       enabled: enabled ?? this.enabled,
       position: position == _unset ? this.position : position as String?,
       activeTab: activeTab ?? this.activeTab,
@@ -334,14 +346,62 @@ const animaSchedulers = <AnimaOption>[
 ({int steps, double cfg, String sampler, String scheduler}) animaTierDefaults(
   String tier,
 ) => switch (tier) {
-  'aesthetic' || 'base' => (
-    steps: 28,
-    cfg: 4.5,
-    sampler: 'er_sde',
-    scheduler: 'simple',
-  ),
+  'aesthetic' ||
+  'base' => (steps: 28, cfg: 4.5, sampler: 'er_sde', scheduler: 'simple'),
   _ => (steps: 12, cfg: 1.0, sampler: 'euler', scheduler: 'simple'),
 };
+
+// ── LoRA(anima 专属功能模块) ──────────────────────────────
+
+/// 同时挂载上限(与服务端 _run_anima_task 的 5 个上限一致)。
+const kMaxActiveLoras = 5;
+
+/// 权重钳制,与服务端 resolve_ui_loras / web LoraNumberInput 一致。
+const kLoraWeightMax = 2.0;
+
+/// 类型徽标文案(character/style/concept → 中文;未知原样显示)。
+String loraTypeLabel(String type) => switch (type) {
+  'character' => '角色',
+  'style' => '画风',
+  'concept' => '概念',
+  _ => type,
+};
+
+/// 挂载中的一个 LoRA。[name] 即服务端 LR 编号(LR1…),生成载荷只发它;
+/// 其余字段来自注册表卡片,供 UI 展示与触发词交互。
+class ActiveLora {
+  const ActiveLora({
+    required this.name,
+    required this.displayName,
+    this.weight = 0.8,
+    this.enabled = true,
+    this.triggerWords = const [],
+    this.previewUrl = '',
+    this.type = 'concept',
+  });
+
+  final String name;
+  final String displayName;
+  final double weight;
+  final bool enabled;
+
+  /// 全部可选触发词条目(一条可能是逗号分隔的整套 tag)。
+  /// 是否写进正向词由用户在卡片上逐条点选(前端所见即所得),
+  /// 载荷 triggers 恒传空数组告知服务端不要再拼。
+  final List<String> triggerWords;
+  final String previewUrl;
+  final String type;
+
+  ActiveLora copyWith({double? weight, bool? enabled}) => ActiveLora(
+    name: name,
+    displayName: displayName,
+    weight: weight ?? this.weight,
+    enabled: enabled ?? this.enabled,
+    triggerWords: triggerWords,
+    previewUrl: previewUrl,
+    type: type,
+  );
+}
 
 const samplers = <String>[
   'Euler Ancestral',
@@ -366,6 +426,7 @@ class GenParams {
     this.noiseSchedule = 'karras',
     this.seed = '',
     this.cfgRescale = 0.0,
+    this.normalizeVibe = true,
     this.loop = LoopCount.x8,
     this.animaSteps = 12,
     this.animaCfg = 1.0,
@@ -383,6 +444,9 @@ class GenParams {
   final String noiseSchedule;
   final String seed;
   final double cfgRescale;
+
+  /// 多张 Vibe 时把强度按比例缩到合计 ≤1(关掉则各自独立相加)。
+  final bool normalizeVibe;
   final LoopCount loop;
 
   // Anima 专属采样参数(与 NAI 的 steps/cfg/sampler 独立,两套不混用)。
@@ -405,6 +469,7 @@ class GenParams {
     String? noiseSchedule,
     String? seed,
     double? cfgRescale,
+    bool? normalizeVibe,
     LoopCount? loop,
     int? animaSteps,
     double? animaCfg,
@@ -422,6 +487,7 @@ class GenParams {
       noiseSchedule: noiseSchedule ?? this.noiseSchedule,
       seed: seed ?? this.seed,
       cfgRescale: cfgRescale ?? this.cfgRescale,
+      normalizeVibe: normalizeVibe ?? this.normalizeVibe,
       loop: loop ?? this.loop,
       animaSteps: animaSteps ?? this.animaSteps,
       animaCfg: animaCfg ?? this.animaCfg,
@@ -432,12 +498,14 @@ class GenParams {
 }
 
 /// 折叠面板标识
-enum Panel { prompt, characters, vibe, charRef, i2i }
+enum Panel { prompt, characters, vibe, charRef, i2i, lora }
 
 class GenerateState {
   const GenerateState({
     required this.prompt,
     required this.negativePrompt,
+    this.promptRaw = '',
+    this.negativePromptRaw = '',
     required this.characters,
     required this.vibes,
     required this.charRefs,
@@ -445,6 +513,7 @@ class GenerateState {
     required this.params,
     required this.anlas,
     required this.openPanels,
+    this.loras = const [],
     this.inpaint,
   });
 
@@ -462,6 +531,13 @@ class GenerateState {
 
   final String prompt;
   final String negativePrompt;
+
+  /// 编辑器原文草稿(含禁用/折叠等仅编辑期语法),空 = 与定稿无差别。
+  /// [prompt] 恒为定稿:发给 NAI 的、算 token 的、拼预设的都只看它,
+  /// 草稿不参与生成链路的任何一环。有效性判定见 [pickEditorText]。
+  final String promptRaw;
+  final String negativePromptRaw;
+
   final List<CharacterPrompt> characters;
   final List<VibeItem> vibes;
   final List<CharRefItem> charRefs;
@@ -469,6 +545,9 @@ class GenerateState {
   final GenParams params;
   final int anlas;
   final Set<Panel> openPanels;
+
+  /// 挂载的 LoRA(anima 专属;非 anima 模型生成时由模块剥离层清掉)。
+  final List<ActiveLora> loras;
 
   /// 重绘任务载荷:仅由重绘编辑器写入生成快照(与 img2img 互斥,
   /// 优先生效);创作页编辑器状态恒为 null。
@@ -480,10 +559,13 @@ class GenerateState {
 
   int get enabledVibes => vibes.where((v) => v.enabled).length;
   int get enabledCharRefs => charRefs.where((r) => r.enabled).length;
+  int get enabledLoras => loras.where((l) => l.enabled).length;
 
   GenerateState copyWith({
     String? prompt,
     String? negativePrompt,
+    String? promptRaw,
+    String? negativePromptRaw,
     List<CharacterPrompt>? characters,
     List<VibeItem>? vibes,
     List<CharRefItem>? charRefs,
@@ -491,11 +573,14 @@ class GenerateState {
     GenParams? params,
     int? anlas,
     Set<Panel>? openPanels,
+    List<ActiveLora>? loras,
     Object? inpaint = _unset,
   }) {
     return GenerateState(
       prompt: prompt ?? this.prompt,
       negativePrompt: negativePrompt ?? this.negativePrompt,
+      promptRaw: promptRaw ?? this.promptRaw,
+      negativePromptRaw: negativePromptRaw ?? this.negativePromptRaw,
       characters: characters ?? this.characters,
       vibes: vibes ?? this.vibes,
       charRefs: charRefs ?? this.charRefs,
@@ -503,6 +588,7 @@ class GenerateState {
       params: params ?? this.params,
       anlas: anlas ?? this.anlas,
       openPanels: openPanels ?? this.openPanels,
+      loras: loras ?? this.loras,
       inpaint: inpaint == _unset ? this.inpaint : inpaint as InpaintJob?,
     );
   }

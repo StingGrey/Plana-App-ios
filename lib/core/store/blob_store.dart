@@ -4,6 +4,8 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart' show compute;
 
+import 'atomic_file.dart';
+
 /// 顶层函数:isolate 里算 sha256(大图不卡 UI)。
 String _sha256Hex(Uint8List bytes) => sha256.convert(bytes).toString();
 
@@ -13,7 +15,7 @@ String _sha256Hex(Uint8List bytes) => sha256.convert(bytes).toString();
 /// 写入方不管生命周期。
 class BlobStore {
   BlobStore(Directory supportRoot)
-      : _dir = Directory('${supportRoot.path}/blobs');
+    : _dir = Directory('${supportRoot.path}/blobs');
 
   final Directory _dir;
 
@@ -37,10 +39,13 @@ class BlobStore {
   }
 
   /// 存入(已存在跳过写),返回哈希。
+  ///
+  /// 原子写不是可选项:这里是**内容寻址**存储,半截文件的内容与文件名里的
+  /// 哈希对不上,却会被后续 [get] 当成有效缓存命中 —— 比文件缺失更糟。
   Future<String> put(Uint8List bytes, {String? known}) async {
     final h = await hashOf(bytes, known: known);
     final f = _fileOf(h);
-    if (!await f.exists()) await f.writeAsBytes(bytes);
+    if (!await f.exists()) await writeBytesAtomic(f, bytes);
     return h;
   }
 

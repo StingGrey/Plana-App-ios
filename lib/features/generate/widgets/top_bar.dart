@@ -32,9 +32,12 @@ class _GenerateTopBarState extends ConsumerState<GenerateTopBar> {
               padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
               child: Row(
                 children: [
-                  Text('模型',
-                      style: context.texts.titleMedium!
-                          .copyWith(fontWeight: FontWeight.w700)),
+                  Text(
+                    '模型',
+                    style: context.texts.titleMedium!.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -128,15 +131,22 @@ class _GenerateTopBarState extends ConsumerState<GenerateTopBar> {
                       const SizedBox(width: 6),
                       Text(
                         anlasValue != null ? _formatAnlas(anlasValue) : '—',
-                        style: mono(context, size: 14, weight: FontWeight.w700)
-                            .copyWith(color: scheme.primary),
+                        style: mono(
+                          context,
+                          size: 14,
+                          weight: FontWeight.w700,
+                        ).copyWith(color: scheme.primary),
                       ),
                       const SizedBox(width: 6),
                       AnimatedRotation(
                         turns: _refreshTurns,
                         duration: Motion.slow,
                         curve: Motion.standard,
-                        child: Icon(Icons.refresh, size: 16, color: scheme.outline),
+                        child: Icon(
+                          Icons.refresh,
+                          size: 16,
+                          color: scheme.outline,
+                        ),
                       ),
                     ],
                   ),
