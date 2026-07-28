@@ -629,7 +629,7 @@ class CivitaiLoraInfo {
 }
 
 /// Plana 后端客户端(当前仅含 bot 授权四端点里 App 要用的三个;
-/// verify 由 Bot 侧调用,App 不实现)。契约见 docs/api/auth-bot.md。
+/// verify 由 Bot 侧调用,App 不实现)。端点契约由后端项目定义,不在本仓库内。
 ///
 /// 全站约定:auth 端点失败也返 200,要看 body 的 verified/valid 字段;
 /// 其余端点非 2xx + `{"detail": ...}`。
@@ -797,7 +797,7 @@ class BackendClient {
     return (j['anlas'] as num?)?.toInt() ?? 0;
   }
 
-  // ── 公共 Vibe 库(契约见 docs/api/library.md) ────────────────
+  // ── 公共 Vibe 库 ──────────────────────────────────────────────
 
   /// 缩略图端点绝对 URL(公开,`<img>`/Image.network 直接引用)。
   String publicVibeThumbUrl(String filename) =>

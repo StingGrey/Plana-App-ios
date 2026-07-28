@@ -74,7 +74,7 @@ Map<String, dynamic> buildBotParams(
   }
 
   // 重绘:后端识别 inpaint 块自动置 action=infill 并切 -inpainting 模型;
-  // 与图生图互斥且优先(见 docs/api/core.md 与 convert_web_params_to_stream)。
+  // 与图生图互斥且优先(对齐后端 convert_web_params_to_stream 的处理顺序)。
   final inpaint = s.inpaint;
   if (inpaint != null) {
     params['inpaint'] = {

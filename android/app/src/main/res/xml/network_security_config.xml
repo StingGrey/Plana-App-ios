@@ -7,7 +7,7 @@
   等于所有请求都允许明文,包括发往 novelai.net 的令牌。
 
   这里改成:默认强制 TLS,只对私有网段与本机放行明文。自建局域网后端照用不误,
-  公网地址一律走 https。见 docs/audit-findings.md S1A-08。
+  公网地址一律走 https。
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false" />

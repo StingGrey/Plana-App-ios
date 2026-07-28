@@ -88,9 +88,9 @@ abstract final class AppTheme {
 /// 参考线),跟着种子色走会在某些配色下失去对比,必须用固定值;其余一律走
 /// M3 语义角色。
 ///
-/// 集中在此的原因:审计前这些色散落在四个功能文件里各自 `const` 定义,
+/// 集中在此的原因:早先这些色散落在四个功能文件里各自 `const` 定义,
 /// 同一个「可用/免费」语义漂成了三个不同的绿(2E9E44 / 2E9E57 / 2E7D32),
-/// 用户在不同页面看到的是三种颜色。见 docs/audit-findings.md §4 S4-01。
+/// 用户在不同页面看到的是三种颜色。
 abstract final class FixedSemantic {
   /// 可用 / 免费 / 已完成
   static const ok = Color(0xFF2E9E57);

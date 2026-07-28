@@ -12,8 +12,6 @@ import 'dart:io';
 ///
 /// 崩溃残留的 `.tmp` 无害:下次写入直接覆盖,且各处目录扫描都按扩展名过滤
 /// (`.json` / `.bin` / `.png`),不会把它当成有效条目。
-///
-/// 见 docs/audit-findings.md §1C S1C-02。
 Future<void> writeStringAtomic(File target, String contents) async {
   await target.parent.create(recursive: true);
   final tmp = File('${target.path}.tmp');
