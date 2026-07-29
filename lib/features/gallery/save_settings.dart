@@ -17,6 +17,7 @@ class SaveSettings {
     this.format = SaveFormat.png,
     this.quality = 0.92,
     this.customPrompt = '',
+    this.recentAlbums = const [],
   });
 
   final SaveMeta meta;
@@ -28,16 +29,33 @@ class SaveSettings {
   /// meta = custom 时写入的提示词。
   final String customPrompt;
 
+  /// 用过的自定义相册名(最近在前,上限 [maxRecentAlbums])。
+  /// 只记名字不记路径 —— gal 恒写 `Pictures/<名字>/`,路径不由我们定。
+  final List<String> recentAlbums;
+
+  static const maxRecentAlbums = 8;
+
   SaveSettings copyWith({
     SaveMeta? meta,
     SaveFormat? format,
     double? quality,
     String? customPrompt,
+    List<String>? recentAlbums,
   }) => SaveSettings(
     meta: meta ?? this.meta,
     format: format ?? this.format,
     quality: quality ?? this.quality,
     customPrompt: customPrompt ?? this.customPrompt,
+    recentAlbums: recentAlbums ?? this.recentAlbums,
+  );
+
+  /// 记一次使用:提到最前、去重、截断。
+  SaveSettings withAlbumUsed(String name) => copyWith(
+    recentAlbums: [
+      name,
+      for (final a in recentAlbums)
+        if (a != name) a,
+    ].take(maxRecentAlbums).toList(),
   );
 
   factory SaveSettings.fromJson(Map<String, dynamic> j) {
@@ -49,6 +67,11 @@ class SaveSettings {
       customPrompt: j['customPrompt'] is String
           ? j['customPrompt'] as String
           : '',
+      recentAlbums: [
+        if (j['recentAlbums'] is List)
+          for (final a in j['recentAlbums'] as List)
+            if (a is String && a.isNotEmpty) a,
+      ],
     );
   }
 
@@ -57,6 +80,7 @@ class SaveSettings {
     'format': format.name,
     'quality': quality,
     'customPrompt': customPrompt,
+    if (recentAlbums.isNotEmpty) 'recentAlbums': recentAlbums,
   };
 
   @override
@@ -65,11 +89,33 @@ class SaveSettings {
       other.meta == meta &&
       other.format == format &&
       other.quality == quality &&
-      other.customPrompt == customPrompt;
+      other.customPrompt == customPrompt &&
+      _sameList(other.recentAlbums, recentAlbums);
+
+  static bool _sameList(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
 
   @override
-  int get hashCode => Object.hash(meta, format, quality, customPrompt);
+  int get hashCode => Object.hash(
+    meta,
+    format,
+    quality,
+    customPrompt,
+    Object.hashAll(recentAlbums),
+  );
 }
+
+/// 相册名清洗:剔除文件系统/MediaStore 不接受的字符,压空白,限长。
+/// 空 = 非法(调用方据此禁用确定按钮)。
+String sanitizeAlbumName(String raw) => raw
+    .replaceAll(RegExp(r'[/\\:*?"<>|]'), '')
+    .replaceAll(RegExp(r'\s+'), ' ')
+    .trim();
 
 const _key = 'save_settings';
 
