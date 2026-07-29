@@ -9,10 +9,29 @@ import 'result_badge_chip.dart';
 import 'result_thumb.dart';
 import '../../../core/util/haptics.dart';
 
+// ---- 缩略图几何:**渲染与滚动定位共用这一组常数,谁都别再各写一份** ----
+//
+// 一枚条目的占位宽 = 图宽 + 内衬 2×2 + 边框 2×2。边框那 4px 极易漏算 ——
+// 未选中时颜色是 transparent,肉眼看不见,但**照样占布局空间**。漏掉它
+// 每张少算 4px,几十张累积上百像素,表现为自动滚动总差一截(实机反馈)。
+
+const _thumbH = 62.0;
+const _thumbPad = 2.0; // AnimatedContainer 内衬
+const _thumbBorder = 2.0; // 选中环(透明时也占位)
+const _thumbGap = 8.0; // ListView.separated 分隔
+const _stripPadH = 12.0; // ListView 水平 padding
+
+double _thumbImgW(double aspect) => (_thumbH * aspect).clamp(40.0, 116.0);
+
+/// 条目在滚动轴上的完整占位宽(含内衬与边框)。
+double _thumbSlotW(double aspect) =>
+    _thumbImgW(aspect) + (_thumbPad + _thumbBorder) * 2;
+
 /// 底部历史胶片条:横向缩略图(选中环 + 角标)+ 尾部「›」展开全部网格。
 /// 生成中头部插一张占位卡(逐帧预览 + 进度条),点它回到生成视角,
 /// 点历史缩略图切走看历史 —— 对齐 web 桌面端的占位卡交互。
-class FilmStrip extends StatelessWidget {
+/// 选中项变化(含画布横滑切图、从展开页跳选)时自动滚动,把选中项摆到视野中央。
+class FilmStrip extends StatefulWidget {
   const FilmStrip({
     super.key,
     required this.results,
@@ -35,9 +54,67 @@ class FilmStrip extends StatelessWidget {
   final VoidCallback? onTapGen;
 
   @override
+  State<FilmStrip> createState() => _FilmStripState();
+}
+
+class _FilmStripState extends State<FilmStrip> {
+  final _sc = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    // 冷启动的选中项可能在条中段,布局完成后滚到可见
+    WidgetsBinding.instance.addPostFrameCallback((_) => _reveal());
+  }
+
+  @override
+  void didUpdateWidget(FilmStrip old) {
+    super.didUpdateWidget(old);
+    if (old.selectedId != widget.selectedId ||
+        old.results.length != widget.results.length ||
+        (old.gen != null) != (widget.gen != null)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _reveal());
+    }
+  }
+
+  @override
+  void dispose() {
+    _sc.dispose();
+    super.dispose();
+  }
+
+  /// 把选中缩略图滚到**视野中央**。位置按渲染同款公式推算(缩略图宽 +
+  /// 容器 padding 4 + 分隔 8),不去量已构建的布局 —— ListView 视野外的项
+  /// 根本没建出来,量不着。
+  ///
+  /// 居中而非"最小滚动量刚好露出来":后者在横滑连切时会让选中项一直贴着
+  /// 边缘走(看不出前后还有几张),从展开页跳选一张远处的图时也只是刚好
+  /// 蹭进屏幕。首尾几张自然贴边(clamp 到滚动范围),那是应该的。
+  void _reveal() {
+    if (!mounted || !_sc.hasClients) return;
+    final id = widget.selectedId;
+    if (id == null) return;
+    final i = widget.results.indexWhere((r) => r.id == id);
+    if (i < 0) return;
+    var x = _stripPadH;
+    if (widget.gen case final g?) {
+      final aspect = (g.width > 0 && g.height > 0) ? g.width / g.height : 1.0;
+      x += _thumbSlotW(aspect) + _thumbGap; // 生成中占位卡排在头部
+    }
+    for (var k = 0; k < i; k++) {
+      x += _thumbSlotW(widget.results[k].aspect) + _thumbGap;
+    }
+    final w = _thumbSlotW(widget.results[i].aspect);
+    final vp = _sc.position.viewportDimension;
+    final t = (x + w / 2 - vp / 2).clamp(0.0, _sc.position.maxScrollExtent);
+    if ((t - _sc.offset).abs() < 1) return;
+    _sc.animateTo(t, duration: Motion.medium, curve: Motion.emphasized);
+  }
+
+  @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    final gen = this.gen;
+    final gen = widget.gen;
     final extra = gen != null ? 1 : 0;
     return Material(
       color: scheme.surface,
@@ -49,24 +126,26 @@ class FilmStrip extends StatelessWidget {
             children: [
               Expanded(
                 child: ListView.separated(
+                  controller: _sc,
                   scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  itemCount: results.length + extra,
-                  separatorBuilder: (_, _) => const SizedBox(width: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: _stripPadH),
+                  itemCount: widget.results.length + extra,
+                  separatorBuilder: (_, _) => const SizedBox(width: _thumbGap),
                   itemBuilder: (context, i) {
                     if (gen != null && i == 0) {
                       return _GenThumb(
                         gen: gen,
-                        active: genActive,
-                        onTap: onTapGen,
+                        active: widget.genActive,
+                        onTap: widget.onTapGen,
                       );
                     }
-                    final r = results[i - extra];
+                    final r = widget.results[i - extra];
                     return _FilmThumb(
                       result: r,
                       selected:
-                          r.id == selectedId && !(gen != null && genActive),
-                      onTap: () => onSelect(r.id),
+                          r.id == widget.selectedId &&
+                          !(gen != null && widget.genActive),
+                      onTap: () => widget.onSelect(r.id),
                       // 长按:直达网格多选并预选此张(快速删除/批量保存入口)
                       onLongPress: () {
                         Haptics.medium();
@@ -117,11 +196,11 @@ class _GenThumb extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    const h = 62.0;
+    const h = _thumbH;
     final aspect = (gen.width > 0 && gen.height > 0)
         ? gen.width / gen.height
         : 1.0;
-    final w = (h * aspect).clamp(40.0, 116.0);
+    final w = _thumbImgW(aspect);
     final preview = gen.preview;
     return GestureDetector(
       onTap: onTap,
@@ -132,10 +211,10 @@ class _GenThumb extends StatelessWidget {
           borderRadius: BorderRadius.circular(13),
           border: Border.all(
             color: active ? scheme.primary : Colors.transparent,
-            width: 2,
+            width: _thumbBorder,
           ),
         ),
-        padding: const EdgeInsets.all(2),
+        padding: const EdgeInsets.all(_thumbPad),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(9),
           child: SizedBox(
@@ -190,8 +269,8 @@ class _FilmThumb extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    const h = 62.0;
-    final w = (h * result.aspect).clamp(40.0, 116.0);
+    const h = _thumbH;
+    final w = _thumbImgW(result.aspect);
     return GestureDetector(
       onTap: onTap,
       onLongPress: onLongPress,
@@ -202,10 +281,10 @@ class _FilmThumb extends StatelessWidget {
           borderRadius: BorderRadius.circular(13),
           border: Border.all(
             color: selected ? scheme.primary : Colors.transparent,
-            width: 2,
+            width: _thumbBorder,
           ),
         ),
-        padding: const EdgeInsets.all(2),
+        padding: const EdgeInsets.all(_thumbPad),
         child: Stack(
           children: [
             ResultThumb(result: result, width: w, height: h, radius: 9),
