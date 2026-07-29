@@ -138,6 +138,7 @@ final compactSliderTheme = SliderThemeData(
 
 /// M3 动效时长/曲线的统一出口,页面内所有过渡保持一致节奏。
 abstract final class Motion {
+  static const Duration quick = Durations.short2; // 100ms(离场/关闭收得快)
   static const Duration fast = Durations.short4; // 200ms
   static const Duration medium = Durations.medium2; // 300ms
   static const Duration slow = Durations.medium4; // 400ms

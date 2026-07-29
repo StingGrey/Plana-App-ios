@@ -120,14 +120,57 @@ class FoldSpan {
 }
 
 /// 数值组/数值权重前缀 `N::`。
-final _numPrefixRe = RegExp(r'^(-?\d+(?:\.\d+)?)::');
-
-/// 跨词条权重组栈条目:brace=`{`/`[`,否则数值组。openPos=开记号原文下标。
+/// 跨词条权重组栈条目:brace=`{`/`[`,否则数值组。openPos=开记号原文下标,
+/// closeEnd=数值组的收口位置(由 [_numGroupsOf] 预扫定死;括号组为 -1)。
 class _Group {
-  const _Group(this.brace, this.mult, this.openPos);
+  const _Group(this.brace, this.mult, this.openPos, [this.closeEnd = -1]);
   final bool brace;
   final double mult;
   final int openPos;
+  final int closeEnd;
+}
+
+/// 数值权重组的全文边界 —— **照抄桌面端** `PromptEditor.tsx` 的权重装饰
+/// (Pass 2):逐个 `N::` 前缀扫,右界取「最近的闭合 `::`」与「下一个 `N::`
+/// 前缀」中**靠前**的那个。
+///
+/// 两条保证,老实现一条都没有:
+/// ① 闭合记号在**全文**里找,不按逗号切段 —— `0.5::a,::b` 这种闭记号落在
+///    逗号**之后**的写法照样收得了口(老实现只认「段尾以 `::` 结尾」,
+///    收不了口的组就一路开着吞掉后面所有段);
+/// ② 组的右界恒被下一个前缀截断,**绝不吞掉后面的组** —— 老实现遇到新前缀
+///    是再压一层栈(权重连乘),于是底色糊成一片、effMult 连乘成异常权重报橙。
+final _numGroupRe = RegExp(r'-?\d+(?:\.\d+)?::');
+
+class _NumGroup {
+  const _NumGroup(this.start, this.contentStart, this.end, this.mult);
+
+  /// 开记号 `N::` 的起点 / 内容起点(前缀之后)/ 组的右界(含闭记号)。
+  final int start;
+  final int contentStart;
+  final int end;
+  final double mult;
+}
+
+List<_NumGroup> _numGroupsOf(String text) {
+  final ms = _numGroupRe.allMatches(text).toList();
+  final out = <_NumGroup>[];
+  for (var i = 0; i < ms.length; i++) {
+    final m = ms[i];
+    final mult = double.tryParse(text.substring(m.start, m.end - 2));
+    if (mult == null) continue;
+    final nextStart = i + 1 < ms.length ? ms[i + 1].start : text.length;
+    final closeIdx = text.indexOf('::', m.end);
+    out.add(
+      _NumGroup(
+        m.start,
+        m.end,
+        closeIdx >= 0 && closeIdx + 2 <= nextStart ? closeIdx + 2 : nextStart,
+        mult,
+      ),
+    );
+  }
+  return out;
 }
 
 /// 解析整段文本 → 标签列表。
@@ -144,6 +187,9 @@ List<Tok> parseToks(
   final res = <Tok>[];
   var start = 0;
   final groups = <_Group>[];
+  // 数值组边界全文预扫(桌面端同款规则),逐段只做开/收记账
+  final numGroups = _numGroupsOf(text);
+  var ngi = 0;
 
   // 折叠不嵌套,同时最多一个开着;-1 = 当前不在折叠内
   var foldOpen = -1;
@@ -302,33 +348,48 @@ List<Tok> parseToks(
     a = trimL(a, b);
     b = trimR(a, b);
 
-    // 数值组:`N::` 前缀且本段没有属于它的尾部 `::` → 开组;
-    // 无前缀但尾部 `::` 且栈顶是数值组 → 收口。完整单词条 `N::a::` 不受扰。
-    var numClose = false;
-    var numCloseEnd = 0;
-    final sub = text.substring(a, b);
-    final pm = _numPrefixRe.firstMatch(sub);
-    if (pm != null && !(sub.endsWith('::') && sub.length - 2 >= pm.end)) {
-      final v = double.tryParse(pm.group(1)!);
-      if (v != null) {
-        groups.add(_Group(false, v, a));
-        a = trimL(a + pm.end, b);
+    // ---- 数值组:边界已由 [_numGroupsOf] 定死,这里只按位置开/收 ----
+
+    // ① 段首收口(`…,::b` 形态):闭记号落在本段内容**之前**,故本段内容
+    //    不算在组里 —— 立即出栈,并把 `::` 剥掉别落进标签名。
+    while (groups.isNotEmpty && !groups.last.brace && groups.last.closeEnd >= 0) {
+      final g = groups.last;
+      if (g.closeEnd > b) break;
+      if (g.closeEnd - 2 == a) {
+        a = trimL(g.closeEnd, b);
+      } else if (g.closeEnd > a) {
+        break; // 闭记号在段尾/段中 → 本段内容仍属于该组,留到 seg 之后收
       }
-    } else if (pm == null &&
-        sub.endsWith('::') &&
-        groups.isNotEmpty &&
-        !groups.last.brace) {
-      numClose = true;
-      numCloseEnd = b;
-      b = trimR(a, b - 2);
+      groups.removeLast();
+      weightSpans?.add(WeightSpan(g.openPos, g.closeEnd, g.mult));
+    }
+
+    // ② 开组:起点落在本段、且**跨段延伸**的数值组。整组落在本段之内的是
+    //    单词条自身权重(`N::a::`),交给 seg 的剥内层数值,不进组栈。
+    while (ngi < numGroups.length && numGroups[ngi].start < b) {
+      final g = numGroups[ngi];
+      ngi++;
+      if (g.start < a || g.end <= b) continue;
+      groups.add(_Group(false, g.mult, g.start, g.end));
+      a = trimL(g.contentStart, b);
+    }
+
+    // ③ 段尾收口(`… b::` 形态):本段内容属于该组,故只在此剥记号 + 记账,
+    //    出栈留到 seg 之后 —— 否则这枚词条会算不到该组的倍率。
+    var tailClose = 0;
+    for (var i = groups.length - 1; i >= 0; i--) {
+      final g = groups[i];
+      if (g.brace || g.closeEnd < 0 || g.closeEnd > b) break;
+      if (g.closeEnd == b) b = trimR(a, b - 2);
+      tailClose++;
     }
 
     seg(a, b);
 
     // 组闭出栈:先内层数值,再括号(错配时跳过,宽松容忍)
-    if (numClose && groups.isNotEmpty && !groups.last.brace) {
+    for (var i = 0; i < tailClose && groups.isNotEmpty; i++) {
       final g = groups.removeLast();
-      weightSpans?.add(WeightSpan(g.openPos, numCloseEnd, g.mult));
+      weightSpans?.add(WeightSpan(g.openPos, g.closeEnd, g.mult));
     }
     for (final endPos in closeEnds.reversed) {
       if (groups.isNotEmpty && groups.last.brace) {

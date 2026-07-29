@@ -7,6 +7,7 @@ import '../../core/store/app_stores.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/editor_theme.dart';
 import '../generate/generate_state.dart';
+import '../generate/widgets/common.dart' show hintSnack;
 import 'data/local_tag_db.dart';
 import 'data/suggestions.dart';
 import 'data/tag_completion.dart';
@@ -27,7 +28,8 @@ import '../../core/util/haptics.dart';
 
 /// 提示词编辑器(光标驱动定稿):
 /// 表面是可编辑文本域,权重原样内联+上色,翻译绘制层画在词下。
-/// **底部只一件事**:光标右邻是词正文→词条栏;是逗号/空隙/行尾或打字中→补全。
+/// **底部只一件事**:光标点在词里(含多词名内部空格)→词条栏;
+/// 逗号/词条间空隙/行尾或打字中→补全。
 class EditorPage extends ConsumerStatefulWidget {
   const EditorPage({super.key, required this.positive, this.charId});
 
@@ -62,6 +64,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
   SuggestResult _result = const SuggestResult();
   int _queryGen = 0; // 递增序号:作废在途异步补全(被后续输入/移光标取代)
   bool _loading = false; // 补全查询进行中(显示加载态)
+  bool _translating = false; // 「翻译为英文」LLM 在途(补全条切「翻译中」态)
   bool _sheetOpen = false; // 形态 B(分类竖向列表)弹层是否打开
   Tok? _panelTok; // 光标所在词条(显示词条栏)
   (int, int)? _multiRange; // 划词多选覆盖的词条区间 [first, last](批量面板)
@@ -240,6 +243,9 @@ class _EditorPageState extends ConsumerState<EditorPage>
     for (final r in parseFoldRefs(_controller.text, _foldBodies)) {
       if (r.name != name) continue;
       _applyText(unfoldRef(_controller.text, r, _foldBodies), r.start);
+      // 展开的意图是「摊开看」,不是「查首个词」:光标落在展开内容的
+      // 头一个词上,路由会把它的词条面板弹出来 —— 压掉。
+      if (_panelTok != null) setState(() => _panelTok = null);
       Haptics.selection();
       return;
     }
@@ -316,7 +322,8 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _scheduleQuery();
   }
 
-  /// 移光标:右邻是词正文→词条栏;否则清空(底部空)。设置里关掉则恒不出。
+  /// 移光标:点在词里(右邻是词正文,或多词标签名内部的空格)→词条栏;
+  /// 逗号/词条间空隙/行尾→清空(那是添加位)。设置里关掉则恒不出。
   /// 选区盖住 ≥2 枚词条时 dock 换成批量面板(web multiSelectPanel 移植)。
   void _routeCursor() {
     _clearSuggest();
@@ -352,10 +359,16 @@ class _EditorPageState extends ConsumerState<EditorPage>
     if (_multiRange != null) setState(() => _multiRange = null);
     final off = _controller.selection.baseOffset;
     Tok? tok;
-    if (_settings.enableTagPanel && _rnInside(text, off)) {
+    if (_settings.enableTagPanel) {
       final toks = parseToks(text);
       final i = tokIndexAt(text, off, toks);
-      if (i >= 0) tok = toks[i];
+      if (i >= 0 &&
+          // 右邻是词正文,或落在多词标签名**内部**的空格上(long| hair)——
+          // 都算点在词里;词条间空隙/逗号前仍是添加位,不出面板。
+          (_rnInside(text, off) ||
+              (off > toks[i].nameStart && off < toks[i].nameEnd))) {
+        tok = toks[i];
+      }
       // 折叠占位符不是词条:词条栏对它没有任何有意义的操作
       // (权重/禁用/删除该走整块语义),点标题解散才是它的交互。
       if (tok case final Tok hit) {
@@ -543,6 +556,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _prevSel = _controller.selection;
     _muting = false;
     _notifier.editActive(newText, structural: true);
+    _feedTranslation(newText); // 同 _applyText:_muting 压掉了 _onCtrl,得自己喂
     Haptics.selection();
     // _query / _result 原样保留,弹层列表不跳
   }
@@ -559,6 +573,12 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _prevSel = _controller.selection;
     _muting = false;
     _notifier.editActive(text, structural: structural);
+    // 打字走 _onCtrl 会喂翻译,这条路径 _muting 压掉了 _onCtrl,必须自己喂 ——
+    // 否则**所有**程序化改文本(折叠展开/补全插入/多选批量)带进来的新词
+    // 都问不到后端翻译,只能退出重进页面才补上(_syncFromProvider 那次)。
+    // 折叠展开尤其明显:折叠体里的词此前只在旁路表里,正文从没见过它们。
+    // request() 内部按「已问过/已有译文」去重,重复调很便宜。
+    _feedTranslation(text);
     _routeCursor();
   }
 
@@ -630,15 +650,23 @@ class _EditorPageState extends ConsumerState<EditorPage>
   }
 
   /// 「翻译为英文」行:异步把当前中文词整句翻成英文短句,替换之。
+  /// LLM 要等几秒:等待期补全条切「翻译中」态;定位用点击时的快照,
+  /// 等待中文本被改动则丢弃结果(落下去会毁掉新输入)。
   Future<void> _pickNatural(Suggestion s) async {
-    setState(() => _loading = true);
-    final en = await ref.read(tagCompletionProvider).translateNatural(s.text);
-    if (!mounted) return;
-    setState(() => _loading = false);
-    final ins = en?.trim() ?? '';
-    if (ins.isEmpty) return;
+    if (_translating) return; // 在途,忽略重复点击
     final text = _controller.text;
     final off = _controller.selection.baseOffset;
+    setState(() => _translating = true);
+    final en = await ref.read(tagCompletionProvider).translateNatural(s.text);
+    if (!mounted) return;
+    setState(() => _translating = false);
+    final ins = en?.trim() ?? '';
+    if (ins.isEmpty) {
+      hintSnack(context, '翻译失败,稍后再试', icon: Icons.error_outline);
+      return;
+    }
+    if (_controller.text != text) return;
+    // 文本没变,快照偏移仍有效;光标挪走也仍替换当初点击的那个词。
     final toks = parseToks(text);
     final i = tokIndexAt(text, off, toks);
     final (String replaced, int end) = i >= 0
@@ -702,11 +730,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
   }
 
   void _sortDelete() {
-    final (text, cursor) = deleteUnits(
-      _controller.text,
-      _foldBodies,
-      _sortSel,
-    );
+    final (text, cursor) = deleteUnits(_controller.text, _foldBodies, _sortSel);
     setState(() => _sortSel = {});
     _applyText(text, cursor);
   }
@@ -734,6 +758,9 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _prevSel = _controller.selection;
     _muting = false;
     _notifier.editActive(newText, structural: true);
+    // 批量操作只改权重/禁用,理论上不带进新名字;仍统一喂一次,让「压了
+    // _onCtrl 的路径都自己喂翻译」成为无例外的规矩,免得日后新增批量项踩坑。
+    _feedTranslation(newText);
     Haptics.selection();
     setState(() => _multiRange = (first, last));
   }
@@ -858,6 +885,9 @@ class _EditorPageState extends ConsumerState<EditorPage>
     if (t == null) return;
     final (text, cursor) = deleteTok(_controller.text, t);
     _applyText(text, cursor);
+    // 删除即与这枚词条的交互终结。光标落点恰是右邻词条开头,路由会把
+    // 面板顺延到下一枚 —— 按过删除的手指还悬在原地,极易误触,压掉。
+    if (_panelTok != null) setState(() => _panelTok = null);
     _focus.requestFocus();
   }
 
@@ -974,8 +1004,10 @@ class _EditorPageState extends ConsumerState<EditorPage>
                           ),
                   ),
                   // dock 入场:淡入 + 轻微上滑(高度瞬时占位,不撑盒子,避免橡皮筋)
+                  // 离场(关面板/收补全)比入场快:走了就别在路上磨蹭。
                   AnimatedSwitcher(
                     duration: Motion.fast,
+                    reverseDuration: Motion.quick,
                     switchInCurve: Motion.emphasized,
                     switchOutCurve: Motion.standard,
                     layoutBuilder: (current, previous) => Stack(
@@ -1061,6 +1093,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
         query: _query,
         result: _result,
         loading: _loading,
+        translating: _translating,
         onPick: _pick,
         onAddRaw: _clearSuggest,
         onExpand: _expand,

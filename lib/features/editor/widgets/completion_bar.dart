@@ -24,12 +24,14 @@ import '../data/suggestions.dart';
 /// 形态 A · 默认横向态:吸在键盘正上方。
 /// 自适应 1+1 —— 标签行常驻,实体行(角色/OC/作品)仅命中时滑入。
 /// 上滑 / 点把手 → 展开为形态 B。
+/// 内容三态(结果行 / 翻译中 / 空态)之间走高度 + 淡入过渡。
 class CompletionBar extends StatelessWidget {
   const CompletionBar({
     super.key,
     required this.query,
     required this.result,
     this.loading = false,
+    this.translating = false,
     required this.onPick,
     required this.onAddRaw,
     required this.onExpand,
@@ -41,6 +43,9 @@ class CompletionBar extends StatelessWidget {
 
   /// 查询进行中(结果尚未到)
   final bool loading;
+
+  /// 「翻译为英文」LLM 在途:整条切「翻译中…」行(结果行藏起,防重复点)
+  final bool translating;
 
   final void Function(Suggestion) onPick;
 
@@ -95,27 +100,54 @@ class CompletionBar extends StatelessWidget {
                   ),
                 ),
               ),
-              if (result.isEmpty)
-                (loading ? _loadingHint(context) : _emptyHint(context))
-              else ...[
-                // 实体行(画师/角色/OC/作品)命中时才滑入,占上;标签行常驻在下。
-                AnimatedSize(
-                  duration: Motion.medium,
-                  curve: Motion.emphasized,
-                  alignment: Alignment.topCenter,
-                  child: entities.isEmpty
-                      ? const SizedBox(width: double.infinity)
-                      : Padding(
-                          padding: const EdgeInsets.only(bottom: 5),
-                          child: _row(context, entities),
-                        ),
+              AnimatedSize(
+                duration: Motion.medium,
+                curve: Motion.emphasized,
+                alignment: Alignment.topCenter,
+                child: AnimatedSwitcher(
+                  duration: Motion.fast,
+                  child: KeyedSubtree(
+                    key: ValueKey(_bodyKey),
+                    child: _body(context, entities),
+                  ),
                 ),
-                _row(context, result.tags),
-              ],
+              ),
             ],
           ),
         ),
       ),
+    );
+  }
+
+  /// 三态互切要过动画,同态内更新(打字刷新结果)原地换,不闪。
+  String get _bodyKey => translating
+      ? 'translating'
+      : result.isEmpty
+      ? (loading ? 'loading' : 'empty')
+      : 'rows';
+
+  Widget _body(BuildContext context, List<Suggestion> entities) {
+    if (translating) return _busyHint(context, '翻译中…');
+    if (result.isEmpty) {
+      return loading ? _busyHint(context, '查询「$query」…') : _emptyHint(context);
+    }
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // 实体行(画师/角色/OC/作品)命中时才滑入,占上;标签行常驻在下。
+        AnimatedSize(
+          duration: Motion.medium,
+          curve: Motion.emphasized,
+          alignment: Alignment.topCenter,
+          child: entities.isEmpty
+              ? const SizedBox(width: double.infinity)
+              : Padding(
+                  padding: const EdgeInsets.only(bottom: 5),
+                  child: _row(context, entities),
+                ),
+        ),
+        _row(context, result.tags),
+      ],
     );
   }
 
@@ -145,7 +177,7 @@ class CompletionBar extends StatelessWidget {
     );
   }
 
-  Widget _loadingHint(BuildContext context) {
+  Widget _busyHint(BuildContext context, String label) {
     final scheme = context.scheme;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
@@ -160,12 +192,14 @@ class CompletionBar extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 10),
-          Text(
-            '查询「$query」…',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: context.texts.bodySmall!.copyWith(
-              color: scheme.onSurfaceVariant,
+          Expanded(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: context.texts.bodySmall!.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
             ),
           ),
         ],
