@@ -11,8 +11,9 @@ final editorProvider = NotifierProvider<EditorNotifier, EditorState>(
 
 /// 光标驱动定稿:字符串就是真相,正/负各一条(含原样权重语法)。
 /// 折叠体不在正文里(正文只有 `<#名字>` 占位符),存 [foldBodies];
-/// 会话内只增不删(解散/删除只动正文,表项留着给撤销兜底),
+/// 只增不删且跨会话留存于撤销档(解散/删除只动正文,表项留着给撤销兜底),
 /// 定稿与草稿都经 [expandFolds] 拼回完整语法后再算。
+/// 撤销栈按编辑目标跨会话长效(见 [_UndoArchive]),退出编辑器不重置。
 class EditorState {
   const EditorState({
     this.positiveText = '',
@@ -34,7 +35,6 @@ class EditorState {
 
   /// 当前段定稿(占位符展开 + 剔除编辑期语法)。token 读数用。
   String get activeOutput => outputOf(expandFolds(activeText, foldBodies));
-  int get activeTokens => estimateTokens(activeOutput);
 
   EditorState copyWith({
     String? positiveText,
@@ -53,10 +53,23 @@ class EditorState {
 
 typedef _Snap = (String pos, String neg);
 
+/// 单个编辑目标(主提示词/某角色)的撤销档。**进程级长效**:退出编辑器
+/// 不清空,重进接着撤,只在进程结束或角色被删时消亡。折叠表一并留存且
+/// 只增不删 —— 历史快照里的占位符要靠它才解析得回(会话内「表只增不删」
+/// 原则的跨会话延伸;表悬空会让占位符漏成 `#名字` 字面量进提示词)。
+class _UndoArchive {
+  final List<_Snap> snaps = [];
+  Map<String, String> folds = const {};
+}
+
 class EditorNotifier extends Notifier<EditorState> {
-  final List<_Snap> _history = [];
+  /// key = 角色 id,主提示词用 ''。
+  final Map<String, _UndoArchive> _archives = {};
   static const _maxHistory = 60;
   int _lastPushMs = 0;
+
+  _UndoArchive get _arc =>
+      _archives.putIfAbsent(_charId ?? '', _UndoArchive.new);
 
   /// 本次会话的编辑目标:null = 创作页主提示词,否则 = 该 id 的角色提示词。
   /// 进页面时由 [load] 钉死,中途不变。用 id 不用名字——角色自动编号
@@ -78,18 +91,30 @@ class EditorNotifier extends Notifier<EditorState> {
     String? charId,
   }) {
     _writeBack?.cancel(); // 新会话,作废上一会话可能挂着的回写
-    _history.clear();
     _lastPushMs = 0;
     _charId = charId;
-    // 草稿(完整折叠语法)→ 正文占位符 + 折叠表;负面侧避开正面已占的名字
-    final (posText, posBodies) = collapseFolds(positive);
-    final (negText, negBodies) = collapseFolds(negative, seed: posBodies);
+    // 角色已删,其撤销档随之作废(主档 '' 恒保留)
+    final live = <String>{
+      '',
+      for (final c in ref.read(generateProvider).characters) c.id,
+    };
+    _archives.removeWhere((k, _) => !live.contains(k));
+    final arc = _arc;
+    // 草稿(完整折叠语法)→ 正文占位符 + 折叠表。负面侧避开正面已占的
+    // 名字,两侧共同避开撤销档已占的名字(同名同体复用,不同体加序号 ——
+    // 免得本次载入的折叠顶掉历史快照还指望着的同名旧折叠体)。
+    final (posText, posBodies) = collapseFolds(positive, seed: arc.folds);
+    final (negText, negBodies) = collapseFolds(
+      negative,
+      seed: {...arc.folds, ...posBodies},
+    );
+    arc.folds = {...arc.folds, ...posBodies, ...negBodies};
     state = EditorState(
       positiveText: posText,
       negativeText: negText,
       activePositive: startPositive,
-      canUndo: false,
-      foldBodies: {...posBodies, ...negBodies},
+      canUndo: arc.snaps.isNotEmpty,
+      foldBodies: arc.folds,
     );
   }
 
@@ -98,7 +123,9 @@ class EditorNotifier extends Notifier<EditorState> {
   /// 仍能解析。
   String registerFold(String name, String body) {
     final n = uniqueFoldName(name, body, state.foldBodies);
-    state = state.copyWith(foldBodies: {...state.foldBodies, n: body});
+    final next = {...state.foldBodies, n: body};
+    _arc.folds = next; // 撤销档同步留存:快照回带占位符时仍解析得回
+    state = state.copyWith(foldBodies: next);
     return n;
   }
 
@@ -155,8 +182,9 @@ class EditorNotifier extends Notifier<EditorState> {
   void editActive(String text, {bool structural = false}) {
     final now = DateTime.now().millisecondsSinceEpoch;
     if (structural || now - _lastPushMs > 700) {
-      _history.add((state.positiveText, state.negativeText));
-      if (_history.length > _maxHistory) _history.removeAt(0);
+      final snaps = _arc.snaps;
+      snaps.add((state.positiveText, state.negativeText));
+      if (snaps.length > _maxHistory) snaps.removeAt(0);
       _lastPushMs = now;
     }
     state = state.activePositive
@@ -171,13 +199,14 @@ class EditorNotifier extends Notifier<EditorState> {
   }
 
   void undo() {
-    if (_history.isEmpty) return;
-    final s = _history.removeLast();
+    final snaps = _arc.snaps;
+    if (snaps.isEmpty) return;
+    final s = snaps.removeLast();
     _lastPushMs = 0;
     state = state.copyWith(
       positiveText: s.$1,
       negativeText: s.$2,
-      canUndo: _history.isNotEmpty,
+      canUndo: snaps.isNotEmpty,
     );
     _scheduleWriteBack();
   }
