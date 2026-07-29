@@ -8,7 +8,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/auth/bot_session_store.dart';
 import '../../../core/net/backend_client.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../../core/ui/import_picker.dart';
 import '../../generate/widgets/common.dart' show confirmDialog, hintSnack;
+import '../../migrate/web_backup.dart';
+import '../../migrate/web_backup_import.dart';
 import '../tag_library.dart';
 import '../tag_models.dart';
 
@@ -602,6 +605,38 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
       if (j is! Map<String, dynamic>) {
         throw const FormatException('不是有效的 JSON 备份文件');
       }
+      final lib = ref.read(tagLibraryProvider.notifier);
+
+      // web「设置 → 数据备份」的全量备份:走与专用导入页**同一套**编排 ——
+      // 面板里五类全列出来,勾什么导什么,不因为入口在灵感库就砍掉别的类。
+      if (j['meta'] is Map &&
+          (j['meta'] as Map)['identifier'] == kWebBackupIdentifier) {
+        final wb = WebBackup.parse(utf8.decode(bytes));
+        if (wb.isEmpty) {
+          throw const FormatException('这份 web 备份里没有可导入的内容');
+        }
+        if (!mounted) return;
+        final out = await runWebBackupImport(
+          context,
+          ref,
+          wb,
+          notice: '这是 web 端的全量备份文件,五类内容都可在此导入。',
+        );
+        if (out != null && mounted) {
+          hintSnack(
+            context,
+            out.errors.isEmpty
+                ? '导入完成:${out.rows.map((r) => '${r.$1} ${r.$2}').join(' · ')}'
+                : '导入完成,${out.errors.length} 项失败',
+            icon: out.errors.isEmpty
+                ? Icons.check_circle_outline
+                : Icons.warning_amber_outlined,
+          );
+        }
+        return;
+      }
+
+      // 本 app / web tag-manager 导出的单分类备份:仍按当前分类校验
       final parsed = parseBackupFile(j);
       if (parsed.cat != d.key) {
         throw FormatException(
@@ -612,22 +647,31 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
         if (mounted) hintSnack(context, '文件里没有条目', icon: Icons.info_outline);
         return;
       }
-      final lib = ref.read(tagLibraryProvider.notifier);
       final payload = {d.webId: parsed.items};
-      final pre = lib.previewMerge(payload);
+
       if (!mounted) return;
-      final ok = await confirmDialog(
+      final picked = await showImportPicker(
         context,
-        title: pre.overwrite > 0
-            ? '导入将覆盖本地数据'
-            : '导入 ${parsed.items.length} 个条目?',
-        message:
-            '将覆盖本地 ${pre.overwrite} 个,新增 ${pre.add} 个'
-            '(按 id 合并,本地独有的条目保留)。',
-        confirmLabel: '导入',
+        title: '选择要导入的内容',
+        options: [
+          for (final def in kTagCategoryDefs)
+            if (payload[def.webId] case final List items)
+              ImportOption(
+                key: def.webId,
+                label: def.label,
+                detail: '${items.length} 条',
+                conflict: lib.previewMerge({def.webId: items}).overwrite,
+              ),
+        ],
       );
-      if (!ok) return;
-      await lib.mergeBackup(payload);
+      if (picked == null || picked.isEmpty || !mounted) return;
+
+      final sel = {
+        for (final e in payload.entries)
+          if (picked.contains(e.key)) e.key: e.value,
+      };
+      final pre = lib.previewMerge(sel);
+      await lib.mergeBackup(sel);
       if (mounted) {
         hintSnack(
           context,

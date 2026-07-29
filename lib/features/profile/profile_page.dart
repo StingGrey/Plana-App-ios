@@ -5,6 +5,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/ui/scroll_memory.dart';
 import '../generate/preset_manage_page.dart';
 import '../generate/widgets/common.dart' show sharedAxisRoute;
+import '../migrate/web_backup_page.dart';
 import '../stats/stats_page.dart';
 import '../tools/tools_page.dart';
 import 'about_page.dart';
@@ -36,7 +37,13 @@ class ProfilePage extends ConsumerWidget {
                   ),
                 ),
               ),
-              // 关于不是"设置项",不值得在列表里占一张与存储管理等宽的卡
+              // 这两个都不是"设置项",不值得在列表里占一张与存储管理等宽的卡。
+              // 导入备份更是一次性的迁移动作,常驻列表里只会天天碍眼。
+              IconButton(
+                onPressed: () => push(const WebBackupPage()),
+                icon: const Icon(Icons.import_export, size: 22),
+                tooltip: '导入 web 备份',
+              ),
               IconButton(
                 onPressed: () => push(const AboutPage()),
                 icon: const Icon(Icons.info_outline, size: 22),

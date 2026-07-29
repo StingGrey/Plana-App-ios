@@ -197,6 +197,36 @@ class PromptPresetsNotifier extends AsyncNotifier<PromptPresetsState> {
       ),
     );
   }
+
+  /// 批量导入(web 备份迁移用):**按 id upsert** —— 与 web `restoreBackup` 的
+  /// 「相同 ID 覆盖、其余保留」同语义,重复导入同一份备份是幂等的。
+  /// 沿用来源 id 而非 [add] 那样新发 —— 后者按毫秒发号,一次导入多条会撞 id。
+  /// 内置三档的 id 一律跳过(app 侧恒用内置文本)。返回写入条数。
+  /// [activeId] 命中已有预设时顺带切过去,命中不了就不动当前激活项。
+  Future<int> importPresets(
+    List<PromptPreset> incoming, {
+    String? activeId,
+  }) async {
+    final s = await future;
+    final byId = {for (final p in s.presets) p.id: p};
+    var n = 0;
+    for (final p in incoming) {
+      if (kDefaultPromptPresets.any((d) => d.id == p.id)) continue;
+      byId[p.id] = p;
+      n++;
+    }
+    final merged = [
+      ...kDefaultPromptPresets,
+      for (final p in byId.values)
+        if (!p.isDefault) p,
+    ];
+    final active = activeId != null && merged.any((p) => p.id == activeId)
+        ? activeId
+        : s.activeId;
+    if (n == 0 && active == s.activeId) return 0;
+    await _write(PromptPresetsState(presets: merged, activeId: active));
+    return n;
+  }
 }
 
 /// 前缀拼接(web:`${preset}, ${prompt}`);任一侧为空则不留悬空逗号。
@@ -206,11 +236,6 @@ String joinPresetPrefix(String preset, String user) {
   if (user.trim().isEmpty) return p;
   return '$p, $user';
 }
-
-/// 粗略 token 估算(与 GenerateState 占位规则同式),把预设前缀计入——
-/// 预设实际参与生成,上限显示(x/512)也应包含它(web totalTokenCount 同理)。
-int estimateTokensWithPreset(String user, String preset) =>
-    (joinPresetPrefix(preset, user).length / 2.2).round().clamp(0, 999);
 
 /// 直连线 ucPreset 数值(web novelai.ts UC_PRESET_MAP,自定义预设 → 4)。
 int ucPresetDirect(String id) => switch (id) {
