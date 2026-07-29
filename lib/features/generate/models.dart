@@ -317,6 +317,27 @@ String animaTierOf(String displayModel) => switch (displayModel) {
   _ => 'turbo',
 };
 
+/// 模型选择弹层的副标题。**恒为单行**(渲染侧 ellipsis 兜底),内容取
+/// web 两版之长:桌面端 `LeftSidebar` 那三句讲**用途**(适合初步生成 /
+/// 适合尝试不同风格 / 标准版本),移动端 `MobileGeneratePage` 讲**规格**
+/// (蒸馏版、步数)—— 这里合成「规格 · 用途」,一行内给出选型要看的两件事。
+///
+/// NAI 四档 web 两版一字不差,原样取用。步数与本 app [animaTierDefaults] 的
+/// 实际取值对得上(turbo 12 步、aesthetic/base 28 步),不是照抄的死文案。
+///
+/// 去掉了 Anima Turbo 的「(默认)」:那在 web 指「anima 档位里的默认」,
+/// 而本 app 默认模型是 NAI 4.5 Full,七档平铺一张表会被读成"app 的默认"。
+/// 分隔符统一用 ` · `(web 的 NAI 用逗号、anima 用点,混着来一页两套版式)。
+const modelDescriptions = <String, String>{
+  'NAI 4.5 Full': '最新旗舰模型 · NSFW',
+  'NAI 4.5 Curated': '最新旗舰精选版 · SFW',
+  'NAI 4.0 Full': 'V4 旧模型 · NSFW',
+  'NAI 4.0 Curated': 'V4 旧模型精选版 · SFW',
+  'Anima Turbo': '蒸馏版 · 12 步 · 快,适合初稿',
+  'Anima Aesthetic': '画风美学微调 · 28 步 · 适合试风格',
+  'Anima Base': '标准基础模型 · 28 步',
+};
+
 /// 采样选项:id 直发服务端,label 供 UI。
 class AnimaOption {
   const AnimaOption(this.id, this.label);

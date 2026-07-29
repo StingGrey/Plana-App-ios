@@ -24,32 +24,41 @@ class _GenerateTopBarState extends ConsumerState<GenerateTopBar> {
     final animaOk = ref.read(authModeProvider).value == AuthMode.bot;
     final picked = await showModalBottomSheet<String>(
       context: context,
+      // 默认弹层 9/16 屏高封顶,矮屏/大字号机型装不下全部选项时会从底部
+      // 静默裁掉(实机反馈:部分机型最后一个模型被挡)。自控高度:
+      // 内部滚动 + 85% 封顶 + 底部安全区,内容再多也不裁,装得下就贴内容高。
+      isScrollControlled: true,
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.sizeOf(context).height * .85,
+      ),
       builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-              child: Row(
-                children: [
-                  Text(
-                    '模型',
-                    style: context.texts.titleMedium!.copyWith(
-                      fontWeight: FontWeight.w700,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+                child: Row(
+                  children: [
+                    Text(
+                      '模型',
+                      style: context.texts.titleMedium!.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
-            _GroupLabel('NAI'),
-            for (final model in m.models) _modelTile(model, current),
-            if (animaOk) ...[
-              const SizedBox(height: 4),
-              _GroupLabel('Anima'),
-              for (final model in m.animaModels) _modelTile(model, current),
+              _GroupLabel('NAI'),
+              for (final model in m.models) _modelTile(model, current),
+              if (animaOk) ...[
+                const SizedBox(height: 4),
+                _GroupLabel('Anima'),
+                for (final model in m.animaModels) _modelTile(model, current),
+              ],
+              const SizedBox(height: 8),
             ],
-            const SizedBox(height: 8),
-          ],
+          ),
         ),
       ),
     );
@@ -57,9 +66,22 @@ class _GenerateTopBarState extends ConsumerState<GenerateTopBar> {
   }
 
   Widget _modelTile(String model, String current) {
+    final desc = m.modelDescriptions[model];
     return ListTile(
       onTap: () => Navigator.pop(context, model),
       title: Text(model, style: context.texts.bodyMedium),
+      // 副标题恒单行:文案本身已按一行裁,但系统字号调大/窄屏仍会折行 ——
+      // 折了这张表就一页两套行高,ellipsis 兜住。
+      subtitle: desc == null
+          ? null
+          : Text(
+              desc,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: context.texts.bodySmall!.copyWith(
+                color: context.scheme.onSurfaceVariant,
+              ),
+            ),
       trailing: model == current
           ? Icon(Icons.check, size: 18, color: context.scheme.primary)
           : null,
