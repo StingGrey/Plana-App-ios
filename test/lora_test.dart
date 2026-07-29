@@ -66,6 +66,56 @@ void main() {
       // 不在词里的照旧
       expect(removeTriggerFromPrompt('1girl, solo', 'plana'), '1girl, solo');
     });
+
+    test('removeLoraTriggers:整条在场才清,他人占用的 tag 留下', () {
+      // grey hair 只属被删者 → 清;long hair 仍被另一 LoRA 的在场触发词占用 → 留
+      expect(
+        removeLoraTriggersFromPrompt(
+          '1girl, grey hair, long hair, solo',
+          ['grey hair, long hair'],
+          keepTriggers: [
+            ['long hair'],
+          ],
+        ),
+        '1girl, long hair, solo',
+      );
+      // 条目不完整在场(用户手删过一半)→ 整条不碰
+      expect(
+        removeLoraTriggersFromPrompt('1girl, grey hair', ['grey hair, halo']),
+        '1girl, grey hair',
+      );
+      // 占用方触发词自身不在场 → 不构成保护
+      expect(
+        removeLoraTriggersFromPrompt(
+          '1girl, halo',
+          ['halo'],
+          keepTriggers: [
+            ['halo, wings'],
+          ],
+        ),
+        '1girl',
+      );
+    });
+
+    test('removeLora:删卡连带收触发词,在架他卡占用的留下', () {
+      final stores = AppStores.ephemeral();
+      final c = ProviderContainer(
+        overrides: [appStoresProvider.overrideWithValue(stores)],
+      );
+      addTearDown(() async {
+        c.dispose();
+        stores.flushNow();
+      });
+      final n = c.read(generateProvider.notifier);
+      n.applyLoraSelection([
+        _lr('a', triggers: ['grey hair, long hair']),
+        _lr('b', triggers: ['long hair']),
+      ]);
+      n.setPrompts(positive: '1girl, grey hair, long hair, solo');
+      n.removeLora('a');
+      expect(c.read(generateProvider).prompt, '1girl, long hair, solo');
+      expect(c.read(generateProvider).loras.map((l) => l.name), ['b']);
+    });
   });
 
   group('载荷与剥离', () {

@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/store/app_stores.dart';
 import '../vibe_library/naiv4vibe_codec.dart' show kModelToEncodingKey;
 import 'gen_modules.dart';
+import 'lora_triggers.dart' show removeLoraTriggersFromPrompt;
 import 'models.dart';
 import 'nai_request.dart' show naiModelId;
 
@@ -354,9 +355,21 @@ class GenerateNotifier extends Notifier<GenerateState> {
   }
 
   void removeLora(String name) {
-    state = state.copyWith(
-      loras: state.loras.where((l) => l.name != name).toList(),
+    final victim = [
+      for (final l in state.loras)
+        if (l.name == name) l,
+    ];
+    final rest = state.loras.where((l) => l.name != name).toList();
+    state = state.copyWith(loras: rest);
+    // 删 LoRA 连带收走它在场的触发词;其他在架 LoRA(含暂禁用的)仍占用
+    // 的 tag 留下。setPrompts 顺带作废编辑器原文草稿(编辑器外改写语义)。
+    if (victim.isEmpty || victim.first.triggerWords.isEmpty) return;
+    final cleaned = removeLoraTriggersFromPrompt(
+      state.prompt,
+      victim.first.triggerWords,
+      keepTriggers: [for (final l in rest) l.triggerWords],
     );
+    if (cleaned != state.prompt) setPrompts(positive: cleaned);
   }
 
   // ---- 图生图 ----

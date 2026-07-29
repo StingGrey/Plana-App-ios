@@ -52,6 +52,37 @@ String appendTriggerToPrompt(String prompt, String trigger) {
   return '${prompt.replaceFirst(RegExp(r'\s*[,，]\s*$'), '')}, $joined';
 }
 
+/// 删除 LoRA 时连带收走它写进正向词的触发词。只清**完整在场**的条目
+/// (与卡片「已添加」判定同口径 —— 用户手动删过一部分的条目不碰);
+/// 仍被其他在架 LoRA 的在场触发词占用的 tag 留下:角色 LoRA 触发词
+/// 高频撞车("long hair" 这类),谁还在用就归谁。
+String removeLoraTriggersFromPrompt(
+  String prompt,
+  List<String> triggers, {
+  Iterable<List<String>> keepTriggers = const [],
+}) {
+  final toRemove = <String>{
+    for (final t in triggers)
+      if (promptHasTrigger(prompt, t))
+        for (final tag in t.split(_splitRe))
+          if (normalizeTagKey(tag).isNotEmpty) normalizeTagKey(tag),
+  };
+  for (final list in keepTriggers) {
+    for (final t in list) {
+      if (!promptHasTrigger(prompt, t)) continue;
+      for (final tag in t.split(_splitRe)) {
+        toRemove.remove(normalizeTagKey(tag));
+      }
+    }
+  }
+  if (toRemove.isEmpty) return prompt;
+  return prompt
+      .split(_splitRe)
+      .map((s) => s.trim())
+      .where((s) => s.isNotEmpty && !toRemove.contains(normalizeTagKey(s)))
+      .join(', ');
+}
+
 /// 从正向词里移除该触发词条目的 tag(带权重括号/后缀的同名 tag 一并算命中)。
 String removeTriggerFromPrompt(String prompt, String trigger) {
   final toRemove = {
