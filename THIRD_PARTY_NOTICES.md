@@ -66,8 +66,8 @@ URL 钉在 tag `v2.15.0` 上,并对每个文件校验 SHA-256(清单见
 | 许可 | 包 |
 |---|---|
 | BSD | `animations` · `crypto` · `flutter_secure_storage` · `gal` · `http` · `path_provider` · `url_launcher` |
-| MIT | `archive` · `cupertino_icons` · `file_picker` · `flutter_riverpod` · `image` · `msgpack_dart` |
-| Apache-2.0 | `material_color_utilities` · `photo_manager` · `photo_manager_image_provider` |
+| MIT | `archive` · `cupertino_icons` · `file_picker` · `flutter_riverpod` · `image` · `msgpack_dart` · `unorm_dart` |
+| Apache-2.0 | `cryptography` · `material_color_utilities` · `photo_manager` · `photo_manager_image_provider` |
 
 Flutter SDK 及其自带组件遵循 BSD 3-Clause(Copyright 2014 The Flutter Authors)。
 完整的依赖许可清单可由 `flutter build` 生成的 `LICENSE` 汇总文件获得,
