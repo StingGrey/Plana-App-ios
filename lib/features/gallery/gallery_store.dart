@@ -77,6 +77,7 @@ class GalleryStore {
               height: (e['h'] as num?)?.toInt() ?? 0,
               seed: (e['seed'] as num?)?.toInt() ?? 0,
               badge: badge,
+              createdAt: (e['t'] as num?)?.toInt() ?? 0,
               hasInput: e['hasInput'] == true,
             ),
           );
@@ -87,12 +88,39 @@ class GalleryStore {
             if (n > seq) seq = n;
           }
         }
-        initialResults = List.unmodifiable(out);
+        initialResults = List.unmodifiable(await _backfillCreatedAt(out));
       }
     } catch (e) {
       logd('[gallery-store] 索引载入失败,改从目录重建: $e');
       await _rebuildFromDisk();
     }
+  }
+
+  /// 生成时刻缺失(升级前的老索引)→ 原图文件 mtime 一次性回填并落索引,
+  /// 之后不再 stat。mtime 在备份恢复场景可能失真,但它是老图唯一可用来源。
+  Future<List<ResultImage>> _backfillCreatedAt(List<ResultImage> items) async {
+    var changed = false;
+    final out = <ResultImage>[];
+    for (final r in items) {
+      if (r.createdAt > 0) {
+        out.add(r);
+        continue;
+      }
+      var t = 0;
+      try {
+        final f = _imageFile(r.id);
+        if (await f.exists()) {
+          t = (await f.stat()).modified.millisecondsSinceEpoch;
+        }
+      } catch (_) {}
+      if (t > 0) changed = true;
+      out.add(t > 0 ? r.withCreatedAt(t) : r);
+    }
+    if (changed) {
+      // 防抖窗口内被杀也无妨:回填幂等,下次启动重来
+      scheduleIndex(results: out, selectedId: initialSelectedId, seq: seq);
+    }
+    return out;
   }
 
   /// 索引损坏 / 缺失时的兜底:扫 `images/` 重建条目并续上发号器。
@@ -121,6 +149,10 @@ class GalleryStore {
       for (final f in files) {
         final id = _idOf(f);
         final (w, h) = await _pngSize(f);
+        var t = 0;
+        try {
+          t = (await f.stat()).modified.millisecondsSinceEpoch;
+        } catch (_) {}
         out.add(
           ResultImage(
             id: id,
@@ -128,6 +160,7 @@ class GalleryStore {
             height: h,
             seed: 0,
             badge: ResultBadge.none,
+            createdAt: t > 0 ? t : 0,
             hasInput: await _inputFile(id).exists(),
           ),
         );
@@ -248,6 +281,7 @@ class GalleryStore {
                 'h': r.height,
                 'seed': r.seed,
                 'badge': r.badge.name,
+                't': r.createdAt,
                 'hasInput': r.hasInput,
               },
           ],
@@ -355,6 +389,84 @@ class GalleryStore {
         await writeBytesAtomic(_maskFile(toId), await src.readAsBytes());
       } catch (_) {}
     });
+  }
+
+  // ---- 检索索引(search.json;可重建,容错语义与 index.json 不同) ----
+
+  File get _searchFile => File('${_root.path}/search.json');
+
+  /// 检索索引读入;空/坏 → 空表(回填会重扫快照补齐)。
+  /// 值是结构化 record,与 gallery_search 的 GallerySearchMeta 结构同型
+  /// (record 按结构判型,这里不 import 上层 feature 文件,避免环)。
+  Future<Map<String, ({String model, String text})>> readSearchIndex() async {
+    try {
+      if (!await _searchFile.exists()) return const {};
+      final j = jsonDecode(await _searchFile.readAsString());
+      if (j is! Map || j['items'] is! Map) return const {};
+      return {
+        for (final e in (j['items'] as Map).entries)
+          if (e.key is String && e.value is Map && (e.value as Map)['t'] is String)
+            e.key as String: (
+              model: ((e.value as Map)['m'] as String?) ?? '',
+              text: (e.value as Map)['t'] as String,
+            ),
+      };
+    } catch (_) {
+      return const {};
+    }
+  }
+
+  // 检索索引防抖写(与主索引同节奏)。窗口内被杀 → 下次启动回填重建,无妨。
+  Timer? _searchTimer;
+  Map<String, ({String model, String text})>? _searchPending;
+
+  void writeSearchIndex(Map<String, ({String model, String text})> byId) {
+    _searchPending = byId;
+    _searchTimer?.cancel();
+    _searchTimer = Timer(const Duration(milliseconds: 400), () {
+      final m = _searchPending;
+      _searchPending = null;
+      if (m == null) return;
+      _enqueue(() async {
+        await writeStringAtomic(
+          _searchFile,
+          jsonEncode({
+            'v': 1,
+            'items': {
+              for (final e in m.entries)
+                e.key: {'m': e.value.model, 't': e.value.text},
+            },
+          }),
+        );
+      });
+    });
+  }
+
+  /// 有参数快照的全部 id(检索索引回填清单)。
+  Future<List<String>> listInputIds() async {
+    final out = <String>[];
+    try {
+      await for (final ent in _inputsDir.list()) {
+        if (ent is File && ent.path.endsWith('.json')) {
+          final n = ent.uri.pathSegments.last;
+          out.add(n.substring(0, n.length - 5));
+        }
+      }
+    } catch (_) {}
+    return out;
+  }
+
+  /// 参数快照的**原始 JSON**(检索索引轻量抽取用):只 jsonDecode,
+  /// 不走 [readInput] 的 decodeGenerateState(那要解参考图 blob,重)。
+  Future<Map<String, dynamic>?> readInputRaw(String id) async {
+    try {
+      final f = _inputFile(id);
+      if (!await f.exists()) return null;
+      final j = jsonDecode(await f.readAsString());
+      return j is Map<String, dynamic> ? j : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// 参数快照(重新生成/重绘/导入用),blob 缺失字段按可用降级。

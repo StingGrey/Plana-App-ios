@@ -38,6 +38,7 @@ class ResultImage {
     required this.height,
     required this.seed,
     this.badge = ResultBadge.none,
+    this.createdAt = 0,
     this.bytes,
     this.input,
     bool? hasInput,
@@ -48,6 +49,10 @@ class ResultImage {
   final int height;
   final int seed;
   final ResultBadge badge;
+
+  /// 生成时刻(ms epoch)。0 = 未知(升级前的老索引由文件 mtime 回填,
+  /// 回填也失败才会留 0,展开页归入「更早」段)。
+  final int createdAt;
 
   /// PNG 字节(内存缓存);null 时按需从盘读,读不到才是真无像素。
   final Uint8List? bytes;
@@ -69,6 +74,20 @@ class ResultImage {
           height: height,
           seed: seed,
           badge: badge,
+          createdAt: createdAt,
           hasInput: hasInput,
         );
+
+  /// 回填生成时刻的副本(索引迁移用,其余字段原样)。
+  ResultImage withCreatedAt(int t) => ResultImage(
+    id: id,
+    width: width,
+    height: height,
+    seed: seed,
+    badge: badge,
+    createdAt: t,
+    bytes: bytes,
+    input: input,
+    hasInput: hasInput,
+  );
 }

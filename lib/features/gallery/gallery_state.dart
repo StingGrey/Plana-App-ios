@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/store/app_stores.dart';
 import '../../core/store/storage_settings.dart';
 import '../generate/models.dart' show GenerateState;
+import 'gallery_search.dart';
 import 'models.dart';
 
 final galleryProvider = NotifierProvider<GalleryNotifier, GalleryState>(
@@ -110,9 +111,9 @@ class GalleryNotifier extends Notifier<GalleryState> {
         ? state.selectedId
         : (keep.isEmpty ? null : keep.first.id);
     state = GalleryState(results: keep, selectedId: sel);
-    ref.read(appStoresProvider).gallery.deleteResultFiles([
-      for (final r in drop) r.id,
-    ]);
+    final dropIds = [for (final r in drop) r.id];
+    ref.read(appStoresProvider).gallery.deleteResultFiles(dropIds);
+    ref.read(gallerySearchProvider.notifier).removeAll(dropIds);
     _persistIndex();
   }
 
@@ -148,9 +149,14 @@ class GalleryNotifier extends Notifier<GalleryState> {
       height: height,
       seed: seed,
       badge: badge,
+      createdAt: DateTime.now().millisecondsSinceEpoch,
       bytes: bytes,
       input: input,
     );
+    // 检索索引同帧写入(input 在内存,零 IO)
+    if (input != null) {
+      ref.read(gallerySearchProvider.notifier).put(r.id, input);
+    }
     var list = [r, ...state.results];
     if (list.length > _keepBytesFor) {
       list = [
@@ -187,6 +193,7 @@ class GalleryNotifier extends Notifier<GalleryState> {
         : (keep.isEmpty ? null : keep.first.id);
     state = GalleryState(results: keep, selectedId: sel);
     ref.read(appStoresProvider).gallery.deleteResultFiles(ids);
+    ref.read(gallerySearchProvider.notifier).removeAll(ids);
     _persistIndex();
   }
 
@@ -194,5 +201,6 @@ class GalleryNotifier extends Notifier<GalleryState> {
   void clearAll() {
     state = const GalleryState(results: [], selectedId: null);
     ref.read(appStoresProvider).gallery.clearAllFiles(seq: _seq);
+    ref.read(gallerySearchProvider.notifier).clear();
   }
 }
