@@ -23,10 +23,16 @@ class TokenProbe extends ChangeNotifier {
   String _queried = '';
   String _current = '';
 
-  /// 令牌形态判定:NAI 持久令牌以 `pst-` 开头且足够长。
+  /// 令牌形态判定:NAI 持久令牌(`pst-` 开头)或网页会话 JWT
+  /// (`头.载荷.签名` 三段式,浏览器 F12 里抓的那种,同样是 Bearer 直用)。
   /// 不成形就不查(省得每敲一个字符打一次网络)。
-  static bool looksLikeToken(String t) =>
-      t.startsWith('pst-') && t.length >= 30;
+  static bool looksLikeToken(String t) {
+    if (t.startsWith('pst-')) return t.length >= 30;
+    final parts = t.split('.');
+    return parts.length == 3 &&
+        parts.every((p) => p.isNotEmpty) &&
+        !t.contains(' ');
+  }
 
   /// 输入变化入口(TextField listener 里调)。
   void input(String raw) {

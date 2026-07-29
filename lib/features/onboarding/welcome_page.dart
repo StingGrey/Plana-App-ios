@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/auth/auth_mode.dart';
 import '../../core/auth/bot_session_store.dart';
+import '../../core/auth/nai_credential_login.dart';
 import '../../core/auth/token_probe.dart';
 import '../../core/auth/token_store.dart';
 import '../../core/live_progress/live_progress.dart';
@@ -12,6 +13,7 @@ import '../../core/net/nai_client.dart';
 import '../../core/store/gen_settings.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/theme_settings.dart';
+import '../profile/widgets/credential_login_sheet.dart';
 import '../profile/widgets/token_status.dart';
 import 'bot_auth_panel.dart';
 import '../../core/util/haptics.dart';
@@ -562,10 +564,22 @@ class _AccessStepState extends ConsumerState<_AccessStep>
     if (t.isEmpty) return;
     setState(() => _saving = true);
     await ref.read(tokenProvider.notifier).save(t);
+    // 手动保存 = 自己管理凭证,作废账号密码登录的续期凭证(防跨账号换新)。
+    await ref.read(accessKeyProvider.notifier).clear();
     if (!mounted) return;
     setState(() => _saving = false);
     await ref.read(authModeProvider.notifier).set(AuthMode.token);
     if (mounted) Haptics.selection();
+  }
+
+  /// 邮箱密码登录:sheet 里已换 JWT 并落盘,这里回填输入框(触发档位
+  /// 查询)+ 把接入方式定为直连,与手动保存令牌走完同样的收尾。
+  Future<void> _credentialLogin() async {
+    final jwt = await showCredentialLoginSheet(context);
+    if (jwt == null || !mounted) return;
+    _tokenCtrl.text = jwt;
+    _tokenCtrl.selection = TextSelection.collapsed(offset: jwt.length);
+    await ref.read(authModeProvider.notifier).set(AuthMode.token);
   }
 
   @override
@@ -616,7 +630,7 @@ class _AccessStepState extends ConsumerState<_AccessStep>
                     isDense: true,
                     filled: true,
                     fillColor: scheme.surfaceContainerHigh,
-                    hintText: 'pst-…',
+                    hintText: 'pst-… / eyJ…',
                     hintStyle: TextStyle(color: scheme.outline),
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
@@ -670,6 +684,18 @@ class _AccessStepState extends ConsumerState<_AccessStep>
                       child: Text(_saving ? '保存中' : '保存'),
                     ),
                   ],
+                ),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: _credentialLogin,
+                    style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                    ),
+                    icon: const Icon(Icons.mail_outline, size: 15),
+                    label: const Text('没有令牌?用邮箱密码登录'),
+                  ),
                 ),
               ],
             ),

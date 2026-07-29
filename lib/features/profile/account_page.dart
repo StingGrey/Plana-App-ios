@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/auth/auth_mode.dart';
 import '../../core/auth/bot_session_store.dart';
+import '../../core/auth/nai_credential_login.dart';
 import '../../core/auth/token_probe.dart';
 import '../../core/auth/token_store.dart';
 import '../../core/net/backend_config.dart';
@@ -15,6 +16,7 @@ import '../editor/data/completion_source.dart';
 import '../generate/widgets/common.dart'
     show confirmDialog, hintSnack, sharedAxisRoute;
 import '../onboarding/bot_auth_page.dart';
+import 'widgets/credential_login_sheet.dart';
 import 'widgets/token_status.dart';
 import '../../core/util/haptics.dart';
 
@@ -70,6 +72,9 @@ class _AccountPageState extends ConsumerState<AccountPage> {
     if (t.isEmpty) return;
     setState(() => _saving = true);
     await ref.read(tokenProvider.notifier).save(t);
+    // 手动换令牌 = 用户自己管理凭证:必须作废账号密码登录留下的续期凭证,
+    // 否则日后自动续期会拿旧账号的 key 把令牌悄悄换回旧账号。
+    await ref.read(accessKeyProvider.notifier).clear();
     if (!mounted) return;
     setState(() => _saving = false);
     FocusScope.of(context).unfocus();
@@ -87,6 +92,7 @@ class _AccountPageState extends ConsumerState<AccountPage> {
     );
     if (!ok) return;
     await ref.read(tokenProvider.notifier).clear();
+    await ref.read(accessKeyProvider.notifier).clear(); // 续期凭证一并清
     if (!mounted) return;
     _controller.clear();
     _probe.reset();
@@ -102,6 +108,16 @@ class _AccountPageState extends ConsumerState<AccountPage> {
     _controller.selection = TextSelection.collapsed(
       offset: _controller.text.length,
     );
+  }
+
+  /// 邮箱密码登录:sheet 里已完成换 JWT + 落盘,这里只回填输入框 ——
+  /// 回填触发 probe 查档位,且输入与存档一致,按钮自然呈「清除」态。
+  Future<void> _credentialLogin() async {
+    final jwt = await showCredentialLoginSheet(context);
+    if (jwt == null || !mounted) return;
+    _controller.text = jwt;
+    _controller.selection = TextSelection.collapsed(offset: jwt.length);
+    _snack('已登录,令牌有效期 30 天,到期自动换新');
   }
 
   void _snack(String msg) => hintSnack(context, msg);
@@ -183,6 +199,7 @@ class _AccountPageState extends ConsumerState<AccountPage> {
             onPaste: _paste,
             onSave: _save,
             onClear: _clear,
+            onCredentialLogin: _credentialLogin,
             accountLine: _accountLine(context),
           ),
           const SizedBox(height: 12),
@@ -217,6 +234,7 @@ class _TokenCard extends StatelessWidget {
     required this.onPaste,
     required this.onSave,
     required this.onClear,
+    required this.onCredentialLogin,
     required this.accountLine,
   });
 
@@ -232,6 +250,9 @@ class _TokenCard extends StatelessWidget {
   final VoidCallback onPaste;
   final VoidCallback onSave;
   final VoidCallback onClear;
+
+  /// 打开邮箱密码登录弹层(没有令牌也能接入的路)。
+  final VoidCallback onCredentialLogin;
 
   /// 账户状态行(会员档位 · Anlas / 查询中 / 失败重试 / 空占位)。
   final Widget accountLine;
@@ -280,7 +301,7 @@ class _TokenCard extends StatelessWidget {
               decoration: InputDecoration(
                 filled: true,
                 fillColor: scheme.surfaceContainerHigh,
-                hintText: '粘贴以 pst-… 开头的令牌',
+                hintText: '粘贴 pst-… 令牌或网页 eyJ… JWT',
                 hintStyle: TextStyle(color: scheme.outline),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
@@ -355,6 +376,19 @@ class _TokenCard extends StatelessWidget {
                       : Text(showClear ? '清除' : '保存'),
                 ),
               ],
+            ),
+            const SizedBox(height: 4),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: onCredentialLogin,
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                ),
+                icon: const Icon(Icons.mail_outline, size: 16),
+                label: const Text('没有令牌?用邮箱密码登录'),
+              ),
             ),
           ],
         ),

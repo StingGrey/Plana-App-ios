@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/auth/bot_session_store.dart';
+import '../../core/auth/nai_credential_login.dart';
 import '../../core/auth/token_store.dart';
 import '../../core/net/backend_config.dart';
 import '../../core/store/app_stores.dart';
@@ -51,6 +52,8 @@ class _AppShellState extends ConsumerState<AppShell> {
     ref.read(tokenProvider);
     ref.read(botSessionProvider);
     ref.read(backendBaseProvider);
+    // 账号密码登录的 JWT 临期静默换新(非该来源的令牌自动跳过)。
+    ref.read(naiTokenAutoRefreshProvider);
     _scheduleAutoCheck();
   }
 
