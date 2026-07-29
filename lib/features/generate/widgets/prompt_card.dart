@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../../core/util/nai_tokenizer.dart';
 import '../../editor/editor_page.dart';
 import '../generate_state.dart';
 import '../prompt_presets.dart';
@@ -17,15 +18,24 @@ class PromptCard extends ConsumerWidget {
     final state = ref.watch(generateProvider);
     final notifier = ref.read(generateProvider.notifier);
     final scheme = context.scheme;
-    // 激活的提示词预设实际参与生成,token 上限显示把它计入
+    // web totalTokenCount 口径:主串 + 启用角色串 + 激活预设(都实际参与生成)
+    final tok = ref.watch(naiTokenizerProvider).value;
     final preset = ref.watch(promptPresetsProvider).value?.active;
-    final promptTokens = estimateTokensWithPreset(
-      state.prompt,
-      preset?.positive ?? '',
+    final chars = [
+      for (final c in state.characters)
+        if (c.enabled) c,
+    ];
+    final promptTokens = totalPromptTokens(
+      tok,
+      main: state.prompt,
+      parts: [for (final c in chars) c.positive],
+      preset: preset?.positive ?? '',
     );
-    final negTokens = estimateTokensWithPreset(
-      state.negativePrompt,
-      preset?.negative ?? '',
+    final negTokens = totalPromptTokens(
+      tok,
+      main: state.negativePrompt,
+      parts: [for (final c in chars) c.negative],
+      preset: preset?.negative ?? '',
     );
     final over = promptTokens > 512;
     final ratio = (promptTokens / 512).clamp(0.0, 1.0);

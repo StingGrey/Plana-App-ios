@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../../core/util/nai_tokenizer.dart';
+import '../../generate/generate_state.dart';
 import '../../generate/prompt_presets.dart';
 import '../editor_state.dart';
 
@@ -26,17 +28,29 @@ class EditorTopBar extends ConsumerWidget {
     final scheme = context.scheme;
     final st = ref.watch(editorProvider);
 
-    // 激活预设按当前正/负侧计入(预设实际参与生成,上限显示要含它)。
-    // 角色提示词不参与:joinPresetPrefix 只拼主提示词,算进去读数就虚高。
+    // 主提示词会话按 web totalTokenCount 口径计:正文 + 启用角色串 + 激活
+    // 预设(都实际参与生成),与生成页卡头读数一致;角色会话只计本角色正文。
+    final tok = ref.watch(naiTokenizerProvider).value;
     final preset = charName != null
         ? null
         : ref.watch(promptPresetsProvider).value?.active;
     final presetSide = preset == null
         ? ''
         : (st.activePositive ? preset.positive : preset.negative);
+    final parts = charName != null
+        ? const <String>[]
+        : [
+            for (final c in ref.watch(generateProvider).characters)
+              if (c.enabled) st.activePositive ? c.positive : c.negative,
+          ];
     // activeOutput 而非 outputOf(activeText):正文里折叠只是占位符 `#名字`,
     // 直接算会把整段折叠体漏掉——读数得按占位符展开后的真实定稿来。
-    final tokens = estimateTokensWithPreset(st.activeOutput, presetSide);
+    final tokens = totalPromptTokens(
+      tok,
+      main: st.activeOutput,
+      parts: parts,
+      preset: presetSide,
+    );
     final over = tokens > 512;
     final ratio = (tokens / 512).clamp(0.0, 1.0);
     final barColor = over ? scheme.error : scheme.primary;

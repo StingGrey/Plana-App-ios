@@ -49,6 +49,9 @@ dependencies:
   msgpack_dart: ^1.0.1
   file_picker: ^10.1.0
   crypto: ^3.0.7
+  # 账号密码登录:NAI access key 派生要 Blake2b + Argon2id,上面的 crypto
+  # 包只有 SHA 系没有这俩;纯 Dart 实现,无原生依赖。
+  cryptography: ^2.7.0
   photo_manager: ^3.7.0
   photo_manager_image_provider: ^2.2.0
   path_provider: ^2.1.6
@@ -56,6 +59,7 @@ dependencies:
   url_launcher: ^6.3.2
   image: ^4.8.0
   material_color_utilities: ^0.13.0
+  unorm_dart: ^0.3.2
 
 dev_dependencies:
   flutter_test:
@@ -111,6 +115,9 @@ flutter:
     # 的真实几何(背景色 + inset 16% 前景 + 裁到中心 72dp)预合成好的
     # 256²,画出来与桌面图标一致。改图标后重跑 scratchpad/mkasset.py。
     - assets/app_icon.png
+    # NAI T5 词表 —— 与 web(novelai_web_ui)同一份 JSON,字节级同源拷贝。
+    # token 读数与 web 逐数一致的根基,消费方 lib/core/util/nai_tokenizer.dart。
+    - assets/t5_tokenizer.json
 
   # To add assets to your application, add an assets section, like this:
   # assets:

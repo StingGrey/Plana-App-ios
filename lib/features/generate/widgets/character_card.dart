@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../../core/util/nai_tokenizer.dart';
 import '../../editor/editor_page.dart';
 import '../generate_state.dart';
 import '../models.dart';
@@ -117,7 +118,10 @@ class _CharacterTile extends ConsumerWidget {
     final notifier = ref.read(generateProvider.notifier);
     final scheme = context.scheme;
     final enabled = char.enabled;
-    final tokens = (char.positive.length / 2.2).round();
+    final tokens = totalPromptTokens(
+      ref.watch(naiTokenizerProvider).value,
+      main: char.positive,
+    );
 
     return AnimatedOpacity(
       duration: Motion.fast,
