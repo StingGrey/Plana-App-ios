@@ -261,7 +261,8 @@ class MetadataDetailPage extends StatelessWidget {
             color: scheme.surfaceContainerHigh,
             borderRadius: BorderRadius.circular(11),
           ),
-          child: Text(
+          // 可选中:整段复制走右上角按钮,这里是给"只要其中几个 tag"的场景
+          child: SelectableText(
             text,
             style: TextStyle(
               fontSize: 11.5,
@@ -312,7 +313,7 @@ class MetadataDetailPage extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 5),
-          Text(
+          SelectableText(
             c.prompt.isEmpty ? '(空)' : c.prompt,
             style: TextStyle(
               fontSize: 11.5,
@@ -322,7 +323,7 @@ class MetadataDetailPage extends StatelessWidget {
           ),
           if ((c.uc ?? '').isNotEmpty) ...[
             const SizedBox(height: 5),
-            Text(
+            SelectableText(
               'UC: ${c.uc}',
               style: TextStyle(
                 fontSize: 11,
@@ -518,7 +519,7 @@ class MetadataDetailPage extends StatelessWidget {
             borderRadius: BorderRadius.circular(11),
           ),
           child: SingleChildScrollView(
-            child: Text(
+            child: SelectableText(
               text,
               style: monoStyle(context, 10, color: scheme.onSurfaceVariant),
             ),

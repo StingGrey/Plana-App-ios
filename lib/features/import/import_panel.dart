@@ -139,6 +139,10 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   String? _reverseTags;
   bool _useReverse = true;
 
+  /// 已展开全文的提示词行(按标题键)。默认全收起 —— 面板要先让人一眼看全
+  /// 有哪些可导入项,长提示词铺开会把下面的角色/Vibe/参数全顶出屏幕。
+  final _expandedRows = <String>{};
+
   /// 图片体积文案(顶卡与详情页共用)。
   String get _sizeText {
     final b = widget.bytes.length;
@@ -745,50 +749,98 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     required VoidCallback onTap,
     bool danger = false,
   }) {
+    final expanded = _expandedRows.contains(title);
+    final textColor = danger ? scheme.error : scheme.onSurfaceVariant;
+    // 与创作页 SectionCard 同一套手势分工:**整行点 = 展开/收起**,尾部
+    // chevron 只是指示器(不接手势),勾选交给独立点击域的勾选框。
     return Material(
       color: scheme.surfaceContainer,
       borderRadius: BorderRadius.circular(16),
       clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-          child: Row(
-            children: [
-              Icon(
-                icon,
-                size: 20,
-                color: danger ? scheme.error : scheme.onSurfaceVariant,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          InkWell(
+            onTap: () => setState(
+              () => expanded
+                  ? _expandedRows.remove(title)
+                  : _expandedRows.add(title),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 12, 13, 12),
+              child: Row(
+                children: [
+                  Icon(
+                    icon,
+                    size: 20,
+                    color: danger ? scheme.error : scheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 11),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          title,
+                          style: context.texts.bodyLarge!.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        // 展开后全文就在下面,单行预览留着只是重复
+                        if (!expanded) ...[
+                          const SizedBox(height: 2),
+                          Text(
+                            preview,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(fontSize: 11.5, color: textColor),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  // 勾选:自带点击域,不连带展开
+                  InkResponse(
+                    onTap: onTap,
+                    radius: 22,
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: _checkBox(scheme, checked),
+                    ),
+                  ),
+                  const SizedBox(width: 5),
+                  AnimatedRotation(
+                    turns: expanded ? .5 : 0,
+                    duration: Motion.medium,
+                    curve: Motion.emphasized,
+                    child: Icon(
+                      Icons.expand_more,
+                      size: 22,
+                      color: scheme.outline,
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(width: 11),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: context.texts.bodyLarge!.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      preview,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 11.5,
-                        color: scheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
+            ),
+          ),
+          // 全文:可选中,给"只想抄其中几个 tag"的场景。放在可点击行之外 ——
+          // SelectableText 要吃住长按/拖拽手势,套进 InkWell 会跟点击打架。
+          ExpandBody(
+            expanded: expanded,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 13),
+              child: SelectableText(
+                preview,
+                style: TextStyle(
+                  fontSize: 11.5,
+                  height: 1.55,
+                  color: textColor,
                 ),
               ),
-              const SizedBox(width: 10),
-              _checkBox(scheme, checked),
-            ],
+            ),
           ),
-        ),
+        ],
       ),
     );
   }
