@@ -9,11 +9,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/net/anlas_provider.dart';
 import '../../core/store/app_stores.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/ui/param_input.dart';
 import '../gallery/gallery_state.dart';
 import '../generate/cost.dart';
+import '../generate/gen_modules.dart';
+import '../generate/generate_state.dart';
 import '../generate/generation_controller.dart';
 import '../generate/models.dart';
 import '../generate/res_rules.dart' show kFreePixelThreshold;
+import '../generate/vibe_encoder.dart';
 import '../generate/widgets/common.dart' show hintSnack;
 import '../shell/shell_state.dart';
 import 'inpaint_ops.dart';
@@ -28,18 +32,16 @@ const _maskFill = Color(0x8CA855F7); // 遮罩填充 ~55% 紫
 /// NAI img2img/inpaint 像素上限(与 img2imgResolution 一致)。
 const _maxSendPixels = 1024 * 3072;
 
-/// 一次重绘编辑会话:进入编辑器所需的图与参数快照。
+/// 一次重绘编辑会话:进入编辑器所需的底图。
+///
+/// **不带参数快照**:prompt/角色/vibe/步数等一律由面板现读创作页
+/// (见 [_InpaintOverlayState._liveInput])。曾经在这儿存过一份打开时的
+/// 快照,但图库页在编辑期间 keep-alive,用户切去创作页改完再切回来,
+/// 费用和实际发送都还停在旧值 —— 冻结的那份就是漂移的来源。
 class InpaintSession {
-  const InpaintSession({
-    required this.imageBytes,
-    required this.input,
-    this.sourceId,
-  });
+  const InpaintSession({required this.imageBytes, this.sourceId});
 
   final Uint8List imageBytes;
-
-  /// 参数快照(原图快照或当前创作页状态),重绘沿用其 prompt/角色/vibe 等。
-  final GenerateState input;
 
   /// 源图的图库 id。非空时蒙版按这张图记忆:进来恢复、离开保存。
   /// 从创作页等无图库归属的入口进来时为 null,蒙版仅本次会话有效。
@@ -56,16 +58,8 @@ class InpaintSessionNotifier extends Notifier<InpaintSession?> {
   @override
   InpaintSession? build() => null;
 
-  void open({
-    required Uint8List imageBytes,
-    required GenerateState input,
-    String? sourceId,
-  }) {
-    state = InpaintSession(
-      imageBytes: imageBytes,
-      input: input,
-      sourceId: sourceId,
-    );
+  void open({required Uint8List imageBytes, String? sourceId}) {
+    state = InpaintSession(imageBytes: imageBytes, sourceId: sourceId);
   }
 
   void close() => state = null;
@@ -138,6 +132,10 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   _SliderTarget? _slider;
   bool _showOriginal = false;
   bool _firing = false;
+
+  /// 上一次算出的 Vibe 编码费(同 BottomActionBar._lastVibeFee):查询键一变
+  /// 就从 loading 重来,取值 null 时沿用旧值,免得费用在参数连改时来回跳。
+  int _lastVibeFee = 0;
 
   // 扩图模式(对齐 web:四向 padding 恒 64 倍数,发送=白底扩后画布)
   bool _expandMode = false;
@@ -814,6 +812,17 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
 
   // ---------- 发起重绘 ----------
 
+  /// 重绘发送与计价的参数源:创作页**此刻**的状态,按模块配置剥离隐藏模块
+  /// (与手动生成同语义)。面板只在这之上覆盖 inpaint/img2img、发送尺寸和种子。
+  ///
+  /// 现读而不是用打开面板时的快照 —— 对齐 web `handleInpaintGenerate`:
+  /// 那边费用和载荷都是当下的 state。冻住会让「切去创作页改步数再切回来」
+  /// 变成价格不动、发出去的也还是旧步数。计价用 watch 版(见 build)。
+  GenerateState get _liveInput => stripHiddenModules(
+    ref.read(generateProvider),
+    ref.read(genModulesProvider).value ?? const GenModuleSettings(),
+  );
+
   ({int w, int h}) get _sendSize {
     final img = _img;
     if (img == null) return (w: 0, h: 0);
@@ -826,7 +835,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
 
   /// 扩图发送:白底扩后画布 + 自动 mask(原图区黑/新增区白),
   /// paste 置空 → 结果即完整新图直接入库(尺寸=params 扩后尺寸)。
-  Future<void> _fireExpand(ui.Image img) async {
+  Future<void> _fireExpand(ui.Image img, GenerateState input) async {
     final tw = img.width + _padL + _padR;
     final th = img.height + _padT + _padB;
     if (tw * th > _maxSendPixels) {
@@ -854,14 +863,10 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
         padR: _padR,
         padB: _padB,
       );
-      final snapshot = widget.session.input.copyWith(
+      final snapshot = input.copyWith(
         inpaint: InpaintJob(image: image, mask: mask, strength: _strength),
         img2img: null,
-        params: widget.session.input.params.copyWith(
-          width: tw,
-          height: th,
-          seed: '',
-        ),
+        params: input.params.copyWith(width: tw, height: th, seed: ''),
       );
       if (!mounted) return;
       // 完成换底图后旧图落位 (padL, padT);预览帧直接铺满扩后区域
@@ -891,12 +896,20 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
       hintSnack(context, '生成进行中,请稍后再试', icon: Icons.hourglass_top);
       return;
     }
+    // 参数现读创作页,模型自然也跟着走:面板开着的时候完全可以切去换成
+    // Anima(那边没有 infill)。进面板时 result_canvas 已拦过一道,这里补
+    // 发车前的第二道 —— 否则会一路走到生成器里报「Anima 不支持重绘」。
+    final input = _liveInput;
+    if (isAnimaModel(input.params.model)) {
+      hintSnack(context, 'Anima 模型不支持重绘,请先切回 NovelAI 模型', icon: Icons.block);
+      return;
+    }
     if (_expandMode) {
       if (!_hasExpand) {
         hintSnack(context, '先拖动边缘扩展画布', icon: Icons.open_in_full);
         return;
       }
-      await _fireExpand(img);
+      await _fireExpand(img, input);
       return;
     }
     if (grid.isEmpty) {
@@ -946,7 +959,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
         image = _currentBytes;
         mask = await maskToPng(grid);
       }
-      final snapshot = widget.session.input.copyWith(
+      final snapshot = input.copyWith(
         inpaint: InpaintJob(
           image: image,
           mask: mask,
@@ -954,11 +967,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
           paste: paste,
         ),
         img2img: null,
-        params: widget.session.input.params.copyWith(
-          width: sw,
-          height: sh,
-          seed: '',
-        ),
+        params: input.params.copyWith(width: sw, height: sh, seed: ''),
       );
       if (!mounted) return;
       // 留在编辑器内流式预览:记录预览目标区 + 发送时遮罩快照
@@ -1030,15 +1039,30 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     });
     final isOpus = ref.watch(anlasProvider).asData?.value?.isOpus ?? false;
     final send = _sendSize;
+    // 计价读的是创作页当下的状态,和 _fire 发出去的那份同源(见 _liveInput):
+    // 步数进两处 —— 免费门槛 steps≤28 和基础价的 (steps+5) —— 用打开面板时的
+    // 快照会让改完步数切回来价格纹丝不动。
+    final live = stripHiddenModules(
+      ref.watch(generateProvider),
+      ref.watch(genModulesProvider).value ?? const GenModuleSettings(),
+    );
+    // 与创作页吸底栏同口径:未缓存的 Vibe 编码费要单列进来。重绘和手动生成
+    // 走的是同一条 generate() → _prepareVibes,缓存 miss 照样现场编码扣 2 点
+    // (bot / 直连都扣);漏算的话创作页写「2 Anlas」、重绘写「免费」,同一批
+    // Vibe 两处报两个价。查询键随创作页变,新键从 loading 起步取值为 null ——
+    // 落 0 会让费用在「免费 ⇄ N」间闪,沿用上次的更稳(同 BottomActionBar)。
+    final fee = ref.watch(vibeEncodeFeeProvider(vibeEncodeFeeKey(live))).value;
+    if (fee != null) _lastVibeFee = fee;
     final cost = img == null
         ? 0
         : estimateInpaintCost(
-            widget.session.input,
-            isOpus: isOpus,
-            sendW: send.w,
-            sendH: send.h,
-            strength: _strength,
-          );
+                live,
+                isOpus: isOpus,
+                sendW: send.w,
+                sendH: send.h,
+                strength: _strength,
+              ) +
+              (fee ?? _lastVibeFee);
     final hasPrev = _prevImg != null; // 至少重绘过一次才有「前后对比」
     // 编辑中允许切 tab(图库页 keep-alive 保留本面板);仅当图库可见时
     // 返回键收面板,在其他 tab 返回键走系统默认(最小化)。
@@ -1547,14 +1571,19 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
                   color: scheme.onPrimary.withValues(alpha: .16),
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: Text(
-                  cost == 0 ? '免费' : '$cost Anlas',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    color: scheme.onPrimary,
-                  ),
-                ),
+                // 「N Anlas」在这条 CTA 上放不下:涂抹面板里它只占半宽,还要
+                // 和强度按钮分。改成顶栏同款点数图标 + 数字,砍掉最长的那个词,
+                // 四位数也不必再靠 FittedBox 整块压缩。免费档保留中文。
+                child: cost == 0
+                    ? Text('免费', style: _pillStyle(scheme))
+                    : Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.toll, size: 12, color: scheme.onPrimary),
+                          const SizedBox(width: 3),
+                          Text('$cost', style: _pillStyle(scheme)),
+                        ],
+                      ),
               ),
             ],
           ],
@@ -1562,6 +1591,13 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
       ),
     );
   }
+
+  /// CTA 上费用胶囊的文字样式(图标与数字同色同重)。
+  TextStyle _pillStyle(ColorScheme scheme) => TextStyle(
+    fontSize: 11,
+    fontWeight: FontWeight.w700,
+    color: scheme.onPrimary,
+  );
 
   /// 扩图尺寸弹窗:输入/步进目标分辨率(controller 生命周期归弹窗
   /// StatefulWidget 管,退场动画期间仍存活,勿在 await 后立刻 dispose)。
@@ -1640,17 +1676,27 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
               ),
             ),
           ),
-          SizedBox(
-            width: 40,
-            child: Text(
-              isBrush ? '${_brush.round()}' : _strength.toStringAsFixed(2),
-              textAlign: TextAlign.right,
-              style: TextStyle(
-                fontSize: 13,
-                color: scheme.onSurface,
-                fontFeatures: const [ui.FontFeature.tabularFigures()],
-              ),
-            ),
+          ParamValueBox(
+            text: isBrush ? '${_brush.round()}' : _strength.toStringAsFixed(2),
+            dense: true,
+            onTap: () async {
+              final v = await showParamInput(
+                context,
+                title: isBrush ? '笔刷大小' : '重绘强度',
+                value: isBrush ? _brush : _strength,
+                min: isBrush ? 5 : 0.1,
+                max: isBrush ? 200 : 1,
+                divisions: isBrush ? 195 : 90,
+              );
+              if (v == null || !mounted) return;
+              setState(() {
+                if (isBrush) {
+                  _brush = v;
+                } else {
+                  _strength = v;
+                }
+              });
+            },
           ),
         ],
       ),

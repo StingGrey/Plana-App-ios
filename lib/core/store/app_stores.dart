@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import '../../features/gallery/gallery_store.dart';
 import '../../features/generate/workspace_store.dart';
 import '../../features/stats/key_ledger.dart';
+import '../net/remote_image.dart';
 import 'blob_store.dart';
 import 'cache_sweep.dart';
 import 'prefs_store.dart';
@@ -33,6 +34,7 @@ class AppStores {
   /// 测试用空档:临时目录、不读盘;写入尽力而为。
   factory AppStores.ephemeral() {
     final root = Directory.systemTemp.createTempSync('plana_stores');
+    RemoteImageStore.bind(root);
     final blobs = BlobStore(root);
     return AppStores._(
       blobs,
@@ -55,6 +57,9 @@ class AppStores {
         root = Directory.systemTemp; // 拿不到目录的极端兜底:本次会话内存态可用
       }
     }
+    // 远端图缓存目录:ImageProvider 拿不到 ref,只能挂静态量,这里是唯一
+    // 知道 root 的地方(见 RemoteImageStore)。
+    RemoteImageStore.bind(root);
     final blobs = BlobStore(root);
     final workspace = WorkspaceStore(blobs, root);
     final gallery = GalleryStore(blobs, root);
@@ -77,11 +82,13 @@ class AppStores {
     ledger.flush();
   }
 
-  /// 启动后台维护(避开首帧,延迟几秒):清选图器缓存垃圾 + blob GC。
+  /// 启动后台维护(避开首帧,延迟几秒):清选图器缓存垃圾 + 远端图缓存裁剪
+  /// + blob GC。
   void postBootMaintenance() {
     Future<void>(() async {
       await Future<void>.delayed(const Duration(seconds: 6));
       await sweepPickerCache();
+      await RemoteImageStore.trim();
       try {
         final live = <String>{
           ...await workspace.liveRefs(),

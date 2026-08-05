@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/auth/bot_session_store.dart';
+import '../../../core/net/backend_client.dart';
+import '../../../core/net/remote_image.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../lora/lora_install_queue.dart';
 import '../../lora/lora_manager_page.dart';
 import '../generate_state.dart';
 import '../lora_triggers.dart';
@@ -23,6 +27,73 @@ class LoraCard extends ConsumerStatefulWidget {
 
 class _LoraCardState extends ConsumerState<LoraCard> {
   String? _selectedName;
+  void Function()? _dropInstallHandler;
+
+  @override
+  void initState() {
+    super.initState();
+    // 后台安装队列:导入页只负责入队,装好在这里自动挂上并提示。
+    _dropInstallHandler = ref
+        .read(loraInstallQueueProvider.notifier)
+        .onInstalled(_onLoraInstalled);
+  }
+
+  @override
+  void dispose() {
+    _dropInstallHandler?.call();
+    super.dispose();
+  }
+
+  Future<void> _onLoraInstalled(LoraInstallJob job) async {
+    final queue = ref.read(loraInstallQueueProvider.notifier);
+    final notifier = ref.read(generateProvider.notifier);
+    final placeholder = pendingLoraKey(job.versionId);
+    if (job.status != LoraInstallStatus.done || job.lrId == null) {
+      // 失败:占位条留在原地标红,别让它默默消失 —— 用户导入时是勾了的,
+      // 悄悄不见了他会以为已经生效。停用它,同时保住「移除」入口。
+      notifier.markLoraFailed(placeholder, job.message ?? '下载失败');
+      if (mounted) {
+        hintSnack(context, 'LoRA「${job.name}」下载失败:${job.message ?? '未知原因'}');
+      }
+      queue.clearFinished();
+      return;
+    }
+    try {
+      final sid = (await ref.read(botSessionProvider.future))?.sessionId;
+      if (sid == null || sid.isEmpty) return;
+      final lib = await ref.read(backendClientProvider).listLoras(sid);
+      final item = lib.where((l) => l.name == job.lrId).firstOrNull;
+      if (item != null && mounted) {
+        final promoted = notifier.promotePendingLora(
+          placeholder,
+          ActiveLora(
+            name: item.name,
+            displayName: item.displayName,
+            weight: job.weight ?? item.recommendedWeight,
+            clipWeight: job.clipWeight,
+            hasTe: item.hasTe,
+            triggerWords: item.triggerWords,
+            previewUrl: item.previewUrl,
+            type: item.type,
+          ),
+        );
+        if (mounted) {
+          hintSnack(
+            context,
+            // 没转正 = 占位条已经不在了(用户中途移除 / 换了工作区),
+            // 只报下载完成,别暗示它已经挂上
+            promoted
+                ? 'LoRA「${item.displayName}」已下载,现在可以用了'
+                : 'LoRA「${item.displayName}」已下载,可在管理器里挂载',
+          );
+        }
+      }
+    } catch (_) {
+      if (mounted) hintSnack(context, 'LoRA「${job.name}」已下载,请手动挂载');
+    } finally {
+      queue.clearFinished();
+    }
+  }
 
   Future<void> _openManager() async {
     await Navigator.of(context).push(sharedAxisRoute(const LoraManagerPage()));
@@ -46,9 +117,19 @@ class _LoraCardState extends ConsumerState<LoraCard> {
     }
     selected ??= loras.isNotEmpty ? loras.first : null;
 
+    // 后台下载(导入页入队的),让人在生成页也看得到进度
+    final queue = ref.watch(loraInstallQueueProvider);
+    final installing = queue.where((j) => j.pending).length;
+    final cur = queue
+        .where((j) => j.status == LoraInstallStatus.installing)
+        .firstOrNull;
+    final dlTitle = cur != null
+        ? 'LoRA · ${cur.name} ${cur.progressText}'
+        : (installing > 0 ? 'LoRA · 下载排队 $installing' : 'LoRA');
+
     return SectionCard(
       icon: Icons.auto_awesome_outlined,
-      title: 'LoRA',
+      title: dlTitle,
       reorderIndex: widget.reorderIndex,
       badge: loras.isEmpty ? null : CountBadge('${loras.length}'),
       actions: [
@@ -60,10 +141,23 @@ class _LoraCardState extends ConsumerState<LoraCard> {
         ),
       ],
       expanded: expanded,
-      onHeaderTap: loras.isEmpty ? _openManager : () => notifier.togglePanel(Panel.lora),
+      onHeaderTap: loras.isEmpty
+          ? _openManager
+          : () => notifier.togglePanel(Panel.lora),
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // 有条目还没下载完 → 明说本次生成不带它,别让人以为已经生效
+          if (loras.any((l) => l.pending != null && l.pending!.failed == null))
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: InfoNote(
+                '${loras.where((l) => l.pending != null && l.pending!.failed == null).length}'
+                ' 个 LoRA 正在下载,暂时不参与生成,装好会自动接上',
+                icon: Icons.downloading_outlined,
+                color: scheme.primary,
+              ),
+            ),
           for (final l in loras) ...[
             _LoraRow(
               lora: l,
@@ -146,13 +240,11 @@ class LoraThumb extends StatelessWidget {
       borderRadius: BorderRadius.circular(9),
       child: url.isEmpty
           ? fallback
-          : Image.network(
+          : RemoteImage(
               url,
               width: size,
               height: size,
               fit: BoxFit.cover,
-              cacheWidth: (size * MediaQuery.devicePixelRatioOf(context))
-                  .round(),
               errorBuilder: (_, _, _) => fallback,
             ),
     );
@@ -224,7 +316,11 @@ class _LoraRow extends ConsumerWidget {
                       const SizedBox(height: 3),
                       Row(
                         children: [
-                          LoraTypeBadge(lora.type),
+                          // 下载态顶掉类型徽标:这条现在的关键信息是「还不能用」
+                          if (lora.pending != null)
+                            _PendingBadge(pending: lora.pending!)
+                          else
+                            LoraTypeBadge(lora.type),
                           if (lora.triggerWords.isNotEmpty) ...[
                             const SizedBox(width: 6),
                             Icon(
@@ -252,16 +348,53 @@ class _LoraRow extends ConsumerWidget {
                 style: mono(
                   context,
                   size: 12,
-                  color: lora.enabled ? scheme.primary : scheme.outline,
+                  color: lora.enabled && lora.pending == null
+                      ? scheme.primary
+                      : scheme.outline,
                 ),
               ),
-              if (!lora.enabled) ...[
+              if (!lora.enabled && lora.pending == null) ...[
                 const SizedBox(width: 6),
                 Icon(Icons.visibility_off, size: 15, color: scheme.outline),
               ],
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// 占位条上的状态徽标:实时进度从安装队列按 versionId 取(别在条目里再存一份
+/// 进度,两份状态迟早对不上)。失败时标红停在原地,等用户移除或重新导入。
+class _PendingBadge extends ConsumerWidget {
+  const _PendingBadge({required this.pending});
+
+  final LoraPending pending;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final scheme = context.scheme;
+    final failed = pending.failed;
+    final job = ref
+        .watch(loraInstallQueueProvider)
+        .where((j) => j.versionId == pending.versionId)
+        .firstOrNull;
+    final text = failed != null
+        ? '下载失败'
+        : job == null || job.status == LoraInstallStatus.queued
+        ? '排队中'
+        : '下载中 ${job.progressText}';
+    final fg = failed != null ? scheme.error : scheme.primary;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: fg.withValues(alpha: .16),
+        borderRadius: BorderRadius.circular(5),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: fg),
       ),
     );
   }
@@ -279,16 +412,33 @@ class _LoraDetail extends ConsumerWidget {
     final notifier = ref.read(generateProvider.notifier);
     final scheme = context.scheme;
     final prompt = ref.watch(generateProvider.select((s) => s.prompt));
+    // 还没下载完:控件全锁(改了也没处生效),只留「移除」
+    final locked = lora.pending != null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Row(
           children: [
-            RefEnableToggle(
-              enabled: lora.enabled,
-              onTap: () =>
-                  notifier.updateLora(lora.name, enabled: !lora.enabled),
-            ),
+            // 下载中/失败的不给切启停 —— 它本来就还不能用
+            if (locked)
+              Padding(
+                padding: const EdgeInsets.all(8),
+                child: Icon(
+                  lora.pending!.failed != null
+                      ? Icons.error_outline
+                      : Icons.downloading_outlined,
+                  size: 20,
+                  color: lora.pending!.failed != null
+                      ? scheme.error
+                      : scheme.primary,
+                ),
+              )
+            else
+              RefEnableToggle(
+                enabled: lora.enabled,
+                onTap: () =>
+                    notifier.updateLora(lora.name, enabled: !lora.enabled),
+              ),
             const SizedBox(width: 4),
             Expanded(
               child: Text(
@@ -314,11 +464,7 @@ class _LoraDetail extends ConsumerWidget {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(
-                        Icons.delete_outline,
-                        size: 18,
-                        color: scheme.error,
-                      ),
+                      Icon(Icons.delete_outline, size: 18, color: scheme.error),
                       const SizedBox(width: 6),
                       Text(
                         '移除',
@@ -340,8 +486,70 @@ class _LoraDetail extends ConsumerWidget {
           value: lora.weight,
           max: kLoraWeightMax,
           divisions: 40, // step 0.05(对齐 web LoraNumberInput)
+          enabled: !locked,
+          caption: locked ? '下载完成后可调(元数据里的值已记下)' : null,
           onCommit: (v) => notifier.updateLora(lora.name, weight: v),
         ),
+        // CLIP 强度:默认跟随权重(开关关着=不发 clip_weight)。开了才独立,
+        // 所见即所发——不留「界面没显示但请求里有」的隐藏参数。
+        // 该 LoRA 没训文本编码器时整块换成一行说明:调了也不会有任何变化,
+        // 摆个能拨的开关反而误导。
+        if (lora.hasTe == false)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(
+              children: [
+                Icon(Icons.info_outline, size: 15, color: scheme.outline),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    '该 LoRA 未训练文本编码器,CLIP 强度对它无效',
+                    style: context.texts.bodySmall!.copyWith(
+                      color: scheme.outline,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          )
+        else
+          Row(
+            children: [
+              // 说明挂在下面那条滑杆的标签上,这里不再重复一个问号
+              Expanded(
+                child: Text(
+                  'CLIP 跟随权重',
+                  style: context.texts.bodySmall!.copyWith(
+                    color: scheme.onSurface,
+                  ),
+                ),
+              ),
+              // 开=跟随(默认,与历史行为一致);关掉才独立调下面那条滑杆。
+              // 语义与 web 的「CLIP 跟随权重」勾选框一致——正着说,别让默认态是「关」。
+              Switch(
+                value: lora.clipWeight == null,
+                onChanged: locked
+                    ? null
+                    : (follow) => notifier.updateLora(
+                        lora.name,
+                        clipWeight: follow ? null : lora.weight,
+                        clearClipWeight: follow,
+                      ),
+              ),
+            ],
+          ),
+        // 滑杆常驻(对齐 web 的常显 CLIP 列):跟随开着时只读、显权重值,
+        // 关掉跟随就地变可拖——不藏起来,省得用户找不到这个参数在哪。
+        if (lora.hasTe != false)
+          LiveParamSlider(
+            label: 'CLIP 强度',
+            help: Help.loraClip,
+            value: lora.clipWeight ?? lora.weight,
+            max: kLoraWeightMax,
+            divisions: 40,
+            enabled: lora.clipWeight != null && !locked,
+            onCommit: (v) => notifier.updateLora(lora.name, clipWeight: v),
+          ),
         if (lora.triggerWords.isNotEmpty) ...[
           const SizedBox(height: 6),
           Text(

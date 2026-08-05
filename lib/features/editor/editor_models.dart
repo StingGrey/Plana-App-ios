@@ -1042,6 +1042,76 @@ String moveUnits(
   return out;
 }
 
+/// 选中单元切成**极大连续段**。权重类批量按段整体包裹(`{a, b}` /
+/// `m::a, b::`),段与段互不牵连 —— 多选模式可以跳着选,没选中的词绝不能被
+/// 卷进同一层括号里;划词多选天然只有一段,与从前逐字节一致。
+///
+/// 只含一枚折叠单元的段丢弃:给占位符**单独**套括号 / `::`,它的区间就不再
+/// 与 tok 段重合,[topLevelUnits] 当场把它降级成普通标签,折叠就散了(同
+/// [setUnitsDisabled] 的顾虑)。段里还有别的词条时括号落在**组**上,占位符
+/// 自身区间不变,折叠安然无恙。
+List<(int, int)> weightRuns(List<TopUnit> units, Iterable<int> idx) {
+  final sel =
+      {
+        for (final i in idx)
+          if (i >= 0 && i < units.length) i,
+      }.toList()..sort();
+  final runs = <(int, int)>[];
+  var k = 0;
+  while (k < sel.length) {
+    var j = k;
+    while (j + 1 < sel.length && sel[j + 1] == sel[j] + 1) {
+      j++;
+    }
+    if (k != j || !units[sel[k]].isFold) runs.add((sel[k], sel[j]));
+    k = j + 1;
+  }
+  return runs;
+}
+
+/// 顶层单元多选的权重批量(套括号 / 统一数值 / 清除):按 [weightRuns] 切出的
+/// 连续段逐段应用,**倒序** —— 后面的段先改,前面的段下标不漂移。
+///
+/// 段边界直接喂给范围版 `batch*`:[topLevelUnits] 与 [parseToks] 一一对应
+/// (一个逗号段一枚),单元下标与词条下标本就是同一个空间。
+String batchWrapUnits(
+  String text,
+  Map<String, String> bodies,
+  Iterable<int> idx, {
+  required bool up,
+}) {
+  var out = text;
+  for (final (a, b) in weightRuns(topLevelUnits(text, bodies), idx).reversed) {
+    out = batchWrap(out, a, b, up: up);
+  }
+  return out;
+}
+
+String batchSetMultUnits(
+  String text,
+  Map<String, String> bodies,
+  Iterable<int> idx,
+  double m,
+) {
+  var out = text;
+  for (final (a, b) in weightRuns(topLevelUnits(text, bodies), idx).reversed) {
+    out = batchSetMult(out, a, b, m);
+  }
+  return out;
+}
+
+String batchClearWeightUnits(
+  String text,
+  Map<String, String> bodies,
+  Iterable<int> idx,
+) {
+  var out = text;
+  for (final (a, b) in weightRuns(topLevelUnits(text, bodies), idx).reversed) {
+    out = batchClearWeight(out, a, b);
+  }
+  return out;
+}
+
 /// 顶层单元多选设禁用。**折叠单元跳过** —— 给占位符套上 `~` 会让它的区间
 /// 不再与 tok 段重合,[topLevelUnits] 当场把它降级成普通标签,折叠就散了。
 ///

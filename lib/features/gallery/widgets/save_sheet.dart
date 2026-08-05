@@ -7,6 +7,7 @@ import 'package:gal/gal.dart';
 
 import '../../../core/store/storage_stats.dart' show fmtBytes;
 import '../../../core/theme/app_theme.dart';
+import '../../../core/ui/param_input.dart';
 import '../../generate/widgets/common.dart' show hintSnack;
 import '../save_pipeline.dart';
 import '../save_settings.dart';
@@ -184,9 +185,21 @@ class _SaveSheetState extends ConsumerState<_SaveSheet> {
                   children: [
                     Text('压缩质量', style: context.texts.bodySmall),
                     const Spacer(),
-                    Text(
-                      '${(_s.quality * 100).round()}',
-                      style: mono(context, size: 13),
+                    ParamValueBox(
+                      text: '${(_s.quality * 100).round()}',
+                      onTap: () async {
+                        final v = await showParamInput(
+                          context,
+                          title: '压缩质量',
+                          value: (_s.quality * 100).roundToDouble(),
+                          min: 10,
+                          max: 100,
+                          divisions: 90,
+                        );
+                        if (v != null && mounted) {
+                          _set(_s.copyWith(quality: v / 100));
+                        }
+                      },
                     ),
                   ],
                 ),

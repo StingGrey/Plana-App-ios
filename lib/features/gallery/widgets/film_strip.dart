@@ -21,6 +21,10 @@ const _thumbBorder = 2.0; // 选中环(透明时也占位)
 const _thumbGap = 8.0; // ListView.separated 分隔
 const _stripPadH = 12.0; // ListView 水平 padding
 
+// 「›」是纯悬浮层:滚动区铺满全宽,缩略图从它底下直接穿过去,一寸不让。
+const _moreSize = 44.0; // 圆钮直径
+const _moreRight = 12.0; // 距右边缘
+
 double _thumbImgW(double aspect) => (_thumbH * aspect).clamp(40.0, 116.0);
 
 /// 条目在滚动轴上的完整占位宽(含内衬与边框)。
@@ -122,9 +126,9 @@ class _FilmStripState extends State<FilmStrip> {
         padding: const EdgeInsets.symmetric(vertical: 10),
         child: SizedBox(
           height: 68,
-          child: Row(
+          child: Stack(
             children: [
-              Expanded(
+              Positioned.fill(
                 child: ListView.separated(
                   controller: _sc,
                   scrollDirection: Axis.horizontal,
@@ -155,22 +159,28 @@ class _FilmStripState extends State<FilmStrip> {
                   },
                 ),
               ),
-              // 尾部「›」展开全部
-              Padding(
-                padding: const EdgeInsets.only(right: 12, left: 4),
-                child: Material(
-                  color: scheme.surfaceContainerHighest,
-                  shape: const CircleBorder(),
-                  clipBehavior: Clip.antiAlias,
-                  child: InkWell(
-                    onTap: () => showGalleryGrid(context),
-                    child: SizedBox(
-                      width: 44,
-                      height: 44,
-                      child: Icon(
-                        Icons.chevron_right,
-                        size: 24,
-                        color: scheme.onSurfaceVariant,
+              // 悬浮「›」展开全部:压在缩略图之上,靠投影拉开层次
+              Positioned(
+                top: 0,
+                bottom: 0,
+                right: _moreRight,
+                child: Center(
+                  child: Material(
+                    color: scheme.surfaceContainerHighest,
+                    elevation: 4,
+                    shadowColor: Colors.black.withValues(alpha: .45),
+                    shape: const CircleBorder(),
+                    clipBehavior: Clip.antiAlias,
+                    child: InkWell(
+                      onTap: () => showGalleryGrid(context),
+                      child: SizedBox(
+                        width: _moreSize,
+                        height: _moreSize,
+                        child: Icon(
+                          Icons.chevron_right,
+                          size: 24,
+                          color: scheme.onSurfaceVariant,
+                        ),
                       ),
                     ),
                   ),

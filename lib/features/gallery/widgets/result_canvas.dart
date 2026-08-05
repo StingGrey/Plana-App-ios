@@ -232,22 +232,28 @@ class _ActionRail extends ConsumerWidget {
     return true;
   }
 
-  /// 重绘:图库画布原地切入涂抹编辑面板(非路由页)。参数快照缺失时
-  /// 退回当前创作页状态,保证任何有像素的图都能重绘。
+  /// 重绘:图库画布原地切入涂抹编辑面板(非路由页)。参数一律取创作页**当前**
+  /// 状态(对齐 web `handleInpaintGenerate`:重绘用的是此刻编辑器里的提示词/
+  /// 角色/vibe,不是这张图当初的快照)—— 想换个描述重画,改创作页就行,不必
+  /// 先重新生成一张。这里只开面板、不传参数:参数由面板发车时现读,免得开着
+  /// 面板去创作页改完步数切回来,价格和实际发送都还停在旧值。
   Future<void> _inpaint(BuildContext context, WidgetRef ref) async {
     if (_blockWhileBusy(context, ref)) return;
+    // 模型跟着创作页走,可能正停在 Anima:那边没有 infill,让人涂完再报错太晚。
+    // 面板发车前还有一道同样的拦截(期间可以切去换模型)。
+    if (isAnimaModel(ref.read(generateProvider).params.model)) {
+      hintSnack(context, 'Anima 模型不支持重绘,请先切回 NovelAI 模型', icon: Icons.block);
+      return;
+    }
     final bytes = await _bytesOf(ref);
     if (!context.mounted) return;
     if (bytes == null) {
       hintSnack(context, '此图无像素数据', icon: Icons.error_outline);
       return;
     }
-    final snap = await _inputOf(ref);
-    if (!context.mounted) return;
-    final GenerateState input = snap ?? ref.read(generateProvider);
     ref
         .read(inpaintSessionProvider.notifier)
-        .open(imageBytes: bytes, input: input, sourceId: result.id);
+        .open(imageBytes: bytes, sourceId: result.id);
   }
 
   /// 放大:弹方式面板(本地快/质 · NAI)→ 分发本地 ncnn / NAI 远程 → 进度 → 入库。

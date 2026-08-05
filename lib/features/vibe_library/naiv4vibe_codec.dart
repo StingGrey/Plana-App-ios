@@ -138,6 +138,12 @@ List<ParsedVibe> parseVibeFileText(String text) {
   } catch (_) {
     throw const FormatException('不是有效的 JSON 文件');
   }
+  return parseVibeJson(j);
+}
+
+/// 同 [parseVibeFileText],但吃已解析好的 JSON —— 整包可能上百 MB(图是
+/// base64),流式读文件时用这个,免得整份文本再在内存里存一份。
+List<ParsedVibe> parseVibeJson(Object? j) {
   if (j is! Map<String, dynamic>) throw const FormatException('不是有效的 vibe 文件');
   switch (j['identifier']) {
     case 'novelai-vibe-transfer':

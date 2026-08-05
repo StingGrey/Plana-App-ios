@@ -107,15 +107,16 @@ void main() {
       'localMetaFp': 'deadbeef',
     };
 
-    test('转出的包能被 app 自己的 vibe 解析器吃下(往返)', () {
-      final b = WebBackup.parse(_json(_backupMap(vibes: [vibeData])));
-      final bundle = b.vibeBundleText();
-      expect(bundle, isNotNull);
+    /// 走 app 线上导入实际用的那条路:naiv4Raws() 的产物直接喂给 ParsedVibe
+    /// (importVibeRaws 内部就是这么读的),不是测试里另写一套。
+    ParsedVibe oneParsed(Map<String, dynamic> v) {
+      final raws = WebBackup.parse(_json(_backupMap(vibes: [v]))).naiv4Raws();
+      expect(raws, hasLength(1));
+      return ParsedVibe(raws.single);
+    }
 
-      // 关键:走 app 线上导入实际用的那个解析器,不是测试里另写一套
-      final parsed = parseVibeFileText(bundle!);
-      expect(parsed, hasLength(1));
-      final p = parsed.single;
+    test('转出的条目能被 app 自己的 vibe 解析器吃下(往返)', () {
+      final p = oneParsed(vibeData);
       expect(p.id, 'abc123');
       expect(p.name, '测试 vibe');
       expect(p.imageBase64, _png1x1);
@@ -123,22 +124,28 @@ void main() {
       expect(p.createdAt, 1700000000000);
     });
 
-    test('preview → thumbnail(两边字段名不同,搬错就没缩略图)', () {
+    test('整包也能被 bundle 解析器吃下(库导出/再导入同一套格式)', () {
       final b = WebBackup.parse(_json(_backupMap(vibes: [vibeData])));
-      final p = parseVibeFileText(b.vibeBundleText()!).single;
-      expect(p.thumbnailDataUrl, startsWith('data:image/jpeg;base64,'));
+      final parsed = parseVibeFileText(buildBundleText(b.naiv4Raws()));
+      expect(parsed, hasLength(1));
+      expect(parsed.single.id, 'abc123');
+    });
+
+    test('preview → thumbnail(两边字段名不同,搬错就没缩略图)', () {
+      expect(
+        oneParsed(vibeData).thumbnailDataUrl,
+        startsWith('data:image/jpeg;base64,'),
+      );
     });
 
     test('默认参数被收进 importInfo(拍平字段直接搬会丢默认值)', () {
-      final b = WebBackup.parse(_json(_backupMap(vibes: [vibeData])));
-      final p = parseVibeFileText(b.vibeBundleText()!).single;
+      final p = oneParsed(vibeData);
       expect(p.defaultStrength, 0.6);
       expect(p.defaultInfoExtracted, 0.8);
     });
 
     test('encodings 原样透传,导入即免重新编码', () {
-      final b = WebBackup.parse(_json(_backupMap(vibes: [vibeData])));
-      final p = parseVibeFileText(b.vibeBundleText()!).single;
+      final p = oneParsed(vibeData);
       expect(p.supportedModelKeys, ['v4-5full']);
       final items = p.encodingItems;
       expect(items, hasLength(1));
@@ -159,8 +166,8 @@ void main() {
       expect(raw.containsKey('importInfo'), isFalse);
     });
 
-    test('没有 vibe 时 bundle 为 null', () {
-      expect(WebBackup.parse(_json(_backupMap())).vibeBundleText(), isNull);
+    test('没有 vibe 时转出空列表', () {
+      expect(WebBackup.parse(_json(_backupMap())).naiv4Raws(), isEmpty);
     });
   });
 

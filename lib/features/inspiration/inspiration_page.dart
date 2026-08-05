@@ -7,10 +7,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
+import '../../core/net/remote_image.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/ui/scroll_memory.dart';
 import '../../core/ui/selection_bar.dart';
 import '../editor/editor_models.dart' show draftOf, outputOf, pickEditorText;
+import '../generate/gen_modules.dart';
 import '../generate/generate_state.dart';
 import '../generate/widgets/common.dart'
     show confirmDialog, hintSnack, sharedAxisRoute;
@@ -1279,6 +1281,15 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     );
   }
 
+  /// 角色模块对当前模型是否可见 —— 决定「加入角色」这个去处存不存在。
+  /// anima 下 NAI 四件套整组收走(角色卡都不渲染),此时加进去的角色既不进
+  /// 载荷也看不见,只会把提示词计数顶大,是个纯幽灵动作,故收起按钮。
+  bool get _charModuleOn {
+    final model = ref.watch(generateProvider.select((s) => s.params.model));
+    final ms = ref.watch(genModulesProvider).value ?? const GenModuleSettings();
+    return ms.isVisibleFor(GenModule.character, model);
+  }
+
   Widget _selectionBar(ColorScheme scheme, TagLibraryState lib) {
     final n = _sel.length;
     final publicScope = _def.hasPublic && _tabIndex == 1;
@@ -1309,8 +1320,9 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
               color: scheme.error,
               onTap: _busy ? null : () => _batchDelete(lib),
             ),
-      // 角色分类有两个去处,主动作是一体式分段按钮
-      primary: _cat == TagCategory.character
+      // 角色分类有两个去处,主动作是一体式分段按钮;角色模块不可见时
+      // (anima 等)只剩「主提示词」一个去处,退回普通整条按钮
+      primary: _cat == TagCategory.character && _charModuleOn
           ? _splitAction(scheme, lib, n)
           : FilledButton.icon(
               onPressed: () => _confirmToPrompt(lib),
@@ -1444,7 +1456,7 @@ class _TagCard extends StatelessWidget {
             children: [
               switch (previewUrl) {
                 null => _HueStripes(name: entry.name),
-                final u when u.startsWith('http') => Image.network(
+                final u when u.startsWith('http') => RemoteImage(
                   u,
                   fit: BoxFit.cover,
                   gaplessPlayback: true,

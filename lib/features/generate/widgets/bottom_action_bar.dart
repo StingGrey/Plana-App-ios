@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/net/anlas_provider.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../../core/ui/param_input.dart';
 import '../cost.dart';
 import '../gen_modules.dart';
 import '../generate_state.dart';
@@ -527,17 +528,30 @@ class _StepsSliderPill extends ConsumerWidget {
                 ),
               ),
             ),
-            SizedBox(
-              width: 26,
-              child: Text(
-                '$steps',
-                textAlign: TextAlign.right,
-                style: TextStyle(
-                  fontSize: 13,
-                  color: scheme.onSurface,
-                  fontFeatures: const [FontFeature.tabularFigures()],
-                ),
-              ),
+            ParamValueBox(
+              text: '$steps',
+              dense: true,
+              onTap: () async {
+                // 弹窗期间不能再动别的,提前把 notifier 和参数取好,
+                // 醒来直接写 —— 不留 await 之后再摸 ref 的口子
+                final notifier = ref.read(generateProvider.notifier);
+                final slider = ref.read(stepsSliderProvider.notifier);
+                final p = ref.read(generateProvider).params;
+                final v = await showParamInput(
+                  context,
+                  title: '步数 Steps',
+                  value: steps.toDouble(),
+                  min: min.toDouble(),
+                  max: 50,
+                  divisions: 50 - min,
+                );
+                if (v == null) return;
+                final n = v.round();
+                notifier.applyParams(
+                  isAnima ? p.copyWith(animaSteps: n) : p.copyWith(steps: n),
+                );
+                slider.endDrag();
+              },
             ),
           ],
         ),

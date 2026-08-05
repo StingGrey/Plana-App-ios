@@ -262,6 +262,38 @@ void main() {
     expect(deleteUnits(t, bodies, [0, 2]).$1, '​#n​');
   });
 
+  test('多选加权:跳选按连续段分别包裹,没选中的词不进括号', () {
+    const t = 'a, b, c, d';
+    const bodies = <String, String>{};
+    // 连续 = 一整段(与划词多选逐字节一致)
+    expect(batchWrapUnits(t, bodies, [0, 1], up: true), '{a, b}, c, d');
+    // 跳选 = 两段各包各的,中间没选中的 b 不受牵连
+    expect(batchWrapUnits(t, bodies, [0, 2], up: true), '{a}, b, {c}, d');
+    expect(
+      batchSetMultUnits(t, bodies, [0, 2], 1.2),
+      '1.2::a::, b, 1.2::c::, d',
+    );
+    // 清除:整段回干净名字串
+    expect(
+      batchClearWeightUnits('{a, b}, 1.3::c::, d', bodies, [0, 1, 2]),
+      'a, b, c, d',
+    );
+  });
+
+  test('多选加权:折叠占位符不单独套记号(套了就散)', () {
+    final bodies = {'n': 'x, y'};
+    const t = 'a, ​#n​, d';
+    // 孤零零的折叠段跳过,正文一个字不动
+    expect(batchWrapUnits(t, bodies, [1], up: true), t);
+    expect(batchSetMultUnits(t, bodies, [1], 1.2), t);
+    expect(batchWrapUnits(t, bodies, [1, 1], up: true), t);
+    // 段里还有别的词条:括号落在**组**上,占位符自身区间不变,折叠还是折叠
+    final g = batchWrapUnits(t, bodies, [0, 1], up: true);
+    expect(g, '{a, ​#n​}, d');
+    expect(topLevelUnits(g, bodies)[1].isFold, isTrue);
+    expect(outputOf(expandFolds(g, bodies)), '{a, x, y}, d');
+  });
+
   test('token 计数按展开后的定稿算:折叠体不因收起而漏计', () {
     const body =
         '1.1::kazutake_hazano::, 1.3::lobelia(saclia)::, 0.8::ezu (e104mjd)::';

@@ -13,6 +13,13 @@ final generateProvider = NotifierProvider<GenerateNotifier, GenerateState>(
   GenerateNotifier.new,
 );
 
+/// token 读数唯一的角色口径,规则见 [countedCharacters]:模块不可见
+/// (anima 等)时整组不计,免得计数自己变大。
+final countedCharactersProvider = Provider<List<CharacterPrompt>>((ref) {
+  final ms = ref.watch(genModulesProvider).value ?? const GenModuleSettings();
+  return countedCharacters(ref.watch(generateProvider), ms);
+});
+
 class GenerateNotifier extends Notifier<GenerateState> {
   int _idSeq = 100;
 
@@ -334,7 +341,13 @@ class GenerateNotifier extends Notifier<GenerateState> {
       if (next.length >= kMaxActiveLoras) break;
       final old = byName[p.name];
       next.add(
-        old == null ? p : p.copyWith(weight: old.weight, enabled: old.enabled),
+        old == null
+            ? p
+            : p.copyWith(
+                weight: old.weight,
+                enabled: old.enabled,
+                clipWeight: old.clipWeight,
+              ),
       );
     }
     state = state.copyWith(loras: next);
@@ -342,12 +355,73 @@ class GenerateNotifier extends Notifier<GenerateState> {
     return next.length;
   }
 
-  void updateLora(String name, {double? weight, bool? enabled}) {
+  void updateLora(
+    String name, {
+    double? weight,
+    bool? enabled,
+    double? clipWeight,
+    bool clearClipWeight = false,
+  }) {
     state = state.copyWith(
       loras: [
         for (final l in state.loras)
           if (l.name == name)
-            l.copyWith(weight: weight, enabled: enabled)
+            l.copyWith(
+              weight: weight,
+              enabled: enabled,
+              clipWeight: clipWeight,
+              clearClipWeight: clearClipWeight,
+            )
+          else
+            l,
+      ],
+    );
+  }
+
+  /// 占位条转正:按占位 name 找到那条,原地换成装好的真条目。
+  ///
+  /// 位置不动(用户已经在心里给它排好序了),并保留下载期间他改过的权重/启停;
+  /// 同一个 LoRA 已经从别处挂上了就把占位的撤掉,不留两条。
+  ///
+  /// **占位条不在了就什么都不做**(返回 false,调用方只报「已下载」)——
+  /// 那意味着用户在下载期间把它移除了,或者中途载入了别的工作区/快照。
+  /// 这两种情况下他手上的配置里都没有这一条,下载完再塞回去就是个幽灵改动:
+  /// 明明点了移除,过几分钟它自己又回来了。装好的本体在库里,要用去挂载即可。
+  bool promotePendingLora(String placeholder, ActiveLora real) {
+    final idx = state.loras.indexWhere((l) => l.name == placeholder);
+    if (idx < 0) return false;
+    final old = state.loras[idx];
+    final dup = state.loras.any((l) => l.name == real.name);
+    state = state.copyWith(
+      loras: [
+        for (var i = 0; i < state.loras.length; i++)
+          if (i != idx)
+            state.loras[i]
+          else if (!dup)
+            real.copyWith(
+              weight: old.weight,
+              enabled: old.enabled,
+              clipWeight: old.clipWeight,
+            ),
+      ],
+    );
+    return true;
+  }
+
+  /// 占位条下载失败:标红并停用,留在原地等用户处理(移除或重新导入)。
+  void markLoraFailed(String placeholder, String reason) {
+    if (!state.loras.any((l) => l.name == placeholder)) return;
+    state = state.copyWith(
+      loras: [
+        for (final l in state.loras)
+          if (l.name == placeholder)
+            l.copyWith(
+              enabled: false,
+              pending: LoraPending(
+                versionId: l.pending?.versionId ?? 0,
+                failed: reason,
+              ),
+            )
           else
             l,
       ],
@@ -370,6 +444,33 @@ class GenerateNotifier extends Notifier<GenerateState> {
       keepTriggers: [for (final l in rest) l.triggerWords],
     );
     if (cleaned != state.prompt) setPrompts(positive: cleaned);
+  }
+
+  // ---- 重绘放大(anima 专属) ----
+  /// 局部更新 hires 配置。[steps] 除 0(跟随主步数)外钳进服务端可接受的
+  /// [kHiresStepsMin]~[kHiresStepsMax] —— 否则滑杆停在 2、后端按 4 跑,读数骗人。
+  /// 从关到开时顺手展开面板,和挂 LoRA / 选底图的手感一致。
+  void updateHires({
+    bool? enabled,
+    double? scale,
+    double? denoise,
+    int? steps,
+    bool? useModel,
+    HiresUpscaler? model,
+  }) {
+    final cur = state.params.hires;
+    final next = cur.copyWith(
+      enabled: enabled,
+      scale: scale,
+      denoise: denoise,
+      steps: steps == null || steps == 0
+          ? steps
+          : steps.clamp(kHiresStepsMin, kHiresStepsMax),
+      useModel: useModel,
+      model: model,
+    );
+    state = state.copyWith(params: state.params.copyWith(hires: next));
+    if (next.enabled && !cur.enabled) openPanel(Panel.hires);
   }
 
   // ---- 图生图 ----
@@ -444,6 +545,10 @@ class GenerateNotifier extends Notifier<GenerateState> {
   void applyParams(GenParams params) => state = state.copyWith(params: params);
 
   /// 参数导入:按元数据回填生成参数(仅传入非空字段生效,copyWith 忽略 null)。
+  /// 元数据导入落地。只传要改的字段,null = 保持不动。
+  ///
+  /// NAI 与 Anima 是两套独立的采样参数(前者 steps/cfg/sampler/noiseSchedule,
+  /// 后者 anima*),width/height/seed 则两边共用 —— 调用方按图的模型类别决定传哪组。
   void applyImportedSettings({
     String? model,
     int? width,
@@ -455,6 +560,10 @@ class GenerateNotifier extends Notifier<GenerateState> {
     String? sampler,
     String? noiseSchedule,
     String? seed,
+    int? animaSteps,
+    double? animaCfg,
+    String? animaSampler,
+    String? animaScheduler,
   }) {
     state = state.copyWith(
       params: state.params.copyWith(
@@ -468,6 +577,10 @@ class GenerateNotifier extends Notifier<GenerateState> {
         sampler: sampler,
         noiseSchedule: noiseSchedule,
         seed: seed,
+        animaSteps: animaSteps,
+        animaCfg: animaCfg,
+        animaSampler: animaSampler,
+        animaScheduler: animaScheduler,
       ),
     );
   }

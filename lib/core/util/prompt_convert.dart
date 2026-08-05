@@ -13,6 +13,21 @@ String stripLoraTags(String input) {
       .trim();
 }
 
+/// 去掉 `<lora:…>` / `<lyco:…>` / `<hypernet:…>` 这类内联标签并收拾残留逗号。
+///
+/// 只动标签,**不动权重语法** —— 权重要不要转成 NAI 方言取决于导入目标,
+/// 在解析阶段就转会让详情页显示的不是图里的原文(对齐 web `stripSDTags`)。
+String stripInlineTags(String input) {
+  return input
+      .replaceAll(RegExp(r'<lora:[^>]+>', caseSensitive: false), '')
+      .replaceAll(RegExp(r'<lyco:[^>]+>', caseSensitive: false), '')
+      .replaceAll(RegExp(r'<hypernet:[^>]+>', caseSensitive: false), '')
+      .replaceAll(RegExp(r',\s*,'), ',')
+      .replaceAll(RegExp(r'^\s*,|,\s*$'), '')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+}
+
 String _jsNum(double v) =>
     v == v.roundToDouble() ? v.toInt().toString() : v.toString();
 

@@ -7,20 +7,25 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/auth/auth_mode.dart';
 import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
+import '../../core/net/remote_image.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/util/image_ops.dart';
 import '../../core/util/image_pick.dart';
+import '../../core/util/prompt_convert.dart' show convertSdToNai;
 import '../char_library/char_library.dart';
 import '../generate/generate_state.dart';
 import '../generate/models.dart';
 import '../generate/nai_request.dart' show naiModelId;
 import '../generate/widgets/common.dart';
+import '../lora/lora_install_queue.dart';
 import '../shell/shell_state.dart';
 import '../vibe_library/naiv4vibe_codec.dart' show kModelToEncodingKey;
 import '../vibe_library/vibe_library.dart';
 import 'image_metadata.dart';
+import 'import_category.dart';
 import 'metadata_detail_page.dart';
 import '../../core/util/haptics.dart';
 
@@ -108,9 +113,16 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   bool _loading = true;
   ImageMetadata? _meta;
 
+  /// 导入目标的模型类别(= 当前出图模型的类别,面板内可切换)。
+  /// null 表示还没读到(build 时按当前模型补上)。
+  ModelCategory? _target;
+
   // 提示词
   bool _usePrompt = false;
   bool _useNegative = false;
+
+  /// 把 a1111 权重语法转成 NAI 方言。只在「源是 a1111、目标是 NovelAI」时有意义。
+  bool _convertPrompt = true;
 
   // 角色
   final Set<int> _charChecked = {};
@@ -163,36 +175,178 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     setState(() {
       _meta = m;
       _loading = false;
+      _target ??= categoryOfModel(ref.read(generateProvider).params.model);
       if (m != null) _initSelections(m);
     });
+    if (m != null && m.loras.isNotEmpty) unawaited(_resolveLoras(m));
   }
+
+  // ---- LoRA 认领(元数据 → 本地库 / Civitai / 找不到) ----
+
+  /// 认领结果,与 `_meta!.loras` 同下标一一对应。
+  List<LoraResolveResult?> _loraHits = const [];
+  bool _resolvingLoras = false;
+
+  /// LoRA 区展开态(与 Vibe/生成设置同款折叠)。
+  bool _loraExpanded = true;
+
+  /// 完全覆盖(换成这一份)/ 额外添加(并进已挂的)。语义同角色、Vibe。
+  bool _loraAppend = false;
+
+  /// 勾了要挂载的行下标。库里有的和 Civitai 上有的默认都勾上(可取消)。
+  final _loraChecked = <int>{};
+
+  Future<void> _resolveLoras(ImageMetadata m) async {
+    setState(() {
+      _resolvingLoras = true;
+      _loraHits = List.filled(m.loras.length, null);
+    });
+    try {
+      final hits = await ref
+          .read(backendClientProvider)
+          .resolveLoras(
+            sessionId: (await ref.read(botSessionProvider.future))?.sessionId,
+            items: [
+              for (final l in m.loras)
+                (
+                  name: l.name,
+                  hash: l.hash ?? '',
+                  weight: l.weight,
+                  clipWeight: l.clipWeight,
+                ),
+            ],
+          );
+      if (!mounted) return;
+      setState(() {
+        _loraHits = [
+          for (var i = 0; i < m.loras.length; i++)
+            i < hits.length ? hits[i] : null,
+        ];
+        // 认领到的默认勾上 —— 点「导入」就是要这一份。
+        // Civitai 上有的一并勾:导入后先占位挂着、后台下载,不在这页做决策。
+        _loraChecked
+          ..clear()
+          ..addAll([
+            for (var i = 0; i < _loraHits.length; i++)
+              if (_loraHits[i]?.isLocal == true ||
+                  _loraHits[i]?.isCivitai == true)
+                i,
+          ]);
+      });
+    } catch (_) {
+      // 认领失败不影响其它导入项,LoRA 区退回纯展示
+    } finally {
+      if (mounted) setState(() => _resolvingLoras = false);
+    }
+  }
+
+  /// 认领结果 → 可挂载条目。权重/CLIP 权重按元数据带回;触发词已经在导入的
+  /// 提示词里了,不再重复拼(挂载项只带库里的全量清单供 UI 勾选)。
+  ActiveLora _activeLoraOf(LoraResolveResult h) => ActiveLora(
+    name: h.item!.name,
+    displayName: h.item!.displayName,
+    weight: h.weight ?? h.item!.recommendedWeight,
+    clipWeight: h.clipWeight,
+    hasTe: h.item!.hasTe,
+    triggerWords: h.item!.triggerWords,
+    previewUrl: h.item!.previewUrl,
+    type: h.item!.type,
+  );
+
+  /// 机房还没有的:入队后台下载 + 生成一条占位条目先挂上。
+  /// 导入这一步不再问「要不要下载」——用户导的就是这张图的那份配置。
+  /// 机房直拉慢则数分钟,队列跑在 provider 上,退出本页也继续;装好后就地转正。
+  ActiveLora? _pendingLoraOf(LoraResolveResult h) {
+    final vid = h.civitaiVersionId;
+    if (vid == null) return null;
+    final label = h.civitaiName.isNotEmpty ? h.civitaiName : h.name;
+    ref
+        .read(loraInstallQueueProvider.notifier)
+        .enqueue(
+          versionId: vid,
+          name: label,
+          weight: h.weight,
+          clipWeight: h.clipWeight,
+        );
+    return ActiveLora(
+      name: pendingLoraKey(vid),
+      displayName: label,
+      weight: h.weight ?? h.civitaiRecommendedWeight,
+      clipWeight: h.clipWeight,
+      triggerWords: h.civitaiTriggerWords,
+      previewUrl: h.civitaiPreviewUrl,
+      type: h.civitaiType,
+      pending: LoraPending(versionId: vid),
+    );
+  }
+
+  // ---- 类别路由 ----
+
+  ModelCategory get _targetCategory =>
+      _target ?? categoryOfModel(ref.read(generateProvider).params.model);
+
+  ModelCategory? get _imageCategory => categoryOfImage(_meta);
+
+  /// 跨类别(含「图没有对应的本机模型」,如 SD/A1111):只放行提示词。
+  bool get _crossCategory => isCrossCategory(_meta, _targetCategory);
+
+  bool get _inNai => !_crossCategory && _imageCategory == ModelCategory.nai;
+  bool get _inComfy => !_crossCategory && _imageCategory == ModelCategory.comfy;
+
+  /// 只在「源是 a1111 语法、目标是 NovelAI」时给转换开关,别的情况转了也白转。
+  bool get _showConvert => needsPromptConversion(_meta, _targetCategory);
+
+  /// Anima 走服务端 Modal 后端,只有 Bot 授权登录能用;切不过去就别给按钮。
+  bool get _canSwitchCategory =>
+      _imageCategory == ModelCategory.nai ||
+      (_imageCategory == ModelCategory.comfy &&
+          ref.read(authModeProvider).value == AuthMode.bot);
 
   void _initSelections(ImageMetadata m) {
     _usePrompt = m.prompt.isNotEmpty;
     _useNegative = m.negativePrompt.isNotEmpty;
-    if (m.isNovelAI) {
-      _charChecked
-        ..clear()
-        ..addAll([for (var i = 0; i < m.characters.length; i++) i]);
+    _convertPrompt = needsPromptConversion(m, _targetCategory);
+    _charChecked.clear();
+    _vibeChecked.clear();
+    _vibeBytes = const [];
+    if (_inNai) {
+      _charChecked.addAll([for (var i = 0; i < m.characters.length; i++) i]);
       _vibeBytes = [
         for (final v in m.vibes) v.image != null ? _tryB64(v.image!) : null,
       ];
-      _vibeChecked
-        ..clear()
-        ..addAll([
-          for (var i = 0; i < m.vibes.length; i++)
-            if (_vibeImportable(m, i)) i,
-        ]);
-      _useModel = _importModel != null;
-      _useRes = _hasRes;
-      _useSteps = m.steps != null;
-      _useCfg = m.scale != null;
-      _useCfgRescale = m.cfgRescale != null;
-      _useVariety = m.varietyPlus != null;
-      _useSampler = m.sampler != null;
-      _useScheduler = m.noiseSchedule != null;
-      _useSeed = false; // 默认不导入种子(对齐定稿 4/5)
+      _vibeChecked.addAll([
+        for (var i = 0; i < m.vibes.length; i++)
+          if (_vibeImportable(m, i)) i,
+      ]);
     }
+    // 超出本机支持面的单项不预勾(勾了也导不了,还让计数虚高)
+    final specs = _settingItems;
+    for (final e in specs) {
+      e.set(e.unsupportedReason == null);
+    }
+    _useSeed = false; // 默认不导入种子(对齐定稿 4/5)
+  }
+
+  /// 切到图片所属的模型类别,切完面板就地重算出完整字段。
+  void _switchCategory() {
+    final target = _imageCategory;
+    final m = _meta;
+    if (target == null || m == null || !_canSwitchCategory) return;
+    // 先把模型切过去:setModel 会套用该档推荐采样参数,必须发生在
+    // _initSelections 之前,否则导入的具体数值会被档位默认值盖掉。
+    final model = target == ModelCategory.comfy
+        ? (animaModelFromSource(m.source) ?? animaModels.first)
+        : (_modelFromSource(m.source) ?? models.first);
+    ref.read(generateProvider.notifier).setModel(model);
+    setState(() {
+      _target = target;
+      _initSelections(m);
+    });
+    hintSnack(
+      context,
+      '已切换到 ${categoryLabel(target)} 模型',
+      icon: Icons.swap_horiz,
+    );
   }
 
   // ---- Vibe 可导入性 ----
@@ -227,21 +381,134 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   bool get _hasSampler => _meta?.sampler != null;
   bool get _hasScheduler => _meta?.noiseSchedule != null;
   bool get _hasSeed => (_meta?.seed ?? '').isNotEmpty;
-  bool get _hasAnySettings =>
-      _hasModel ||
-      _hasRes ||
-      _hasSteps ||
-      _hasCfg ||
-      _hasCfgRescale ||
-      _hasVariety ||
-      _hasSampler ||
-      _hasScheduler ||
-      _hasSeed;
+
+  // ---- 生成设置清单(按类别分叉) ----
+
+  /// 当前类别下可导入的生成设置字段。跨类别时为空 —— 那种情况只放行提示词。
+  List<_SettingSpec> get _settingItems {
+    final m = _meta;
+    if (m == null || _crossCategory) return const [];
+    return _inComfy ? _animaSettingItems(m) : _naiSettingItems(m);
+  }
+
+  List<_SettingSpec> _naiSettingItems(ImageMetadata m) => [
+    if (_hasModel)
+      _SettingSpec('模型', _importModel!, _useModel, (v) => _useModel = v),
+    if (_hasRes)
+      _SettingSpec(
+        '分辨率',
+        '${m.width}×${m.height}',
+        _useRes,
+        (v) => _useRes = v,
+      ),
+    if (_hasSteps)
+      _SettingSpec('Steps', m.steps!, _useSteps, (v) => _useSteps = v),
+    if (_hasCfg) _SettingSpec('CFG', m.scale!, _useCfg, (v) => _useCfg = v),
+    if (_hasCfgRescale)
+      _SettingSpec(
+        'CFG Rescale',
+        m.cfgRescale!,
+        _useCfgRescale,
+        (v) => _useCfgRescale = v,
+      ),
+    // 叫 Variety+ 而不是「多样性」:创作页高级设置里就是这个名字,
+    // 两处对不上的话用户认不出导的是哪一项。
+    if (_hasVariety)
+      _SettingSpec(
+        'Variety+',
+        m.varietyPlus! ? '开' : '关',
+        _useVariety,
+        (v) => _useVariety = v,
+      ),
+    if (_hasSampler)
+      _SettingSpec(
+        'Sampler',
+        _samplerIdToDisplay[m.sampler!] ?? m.sampler!,
+        _useSampler,
+        (v) => _useSampler = v,
+      ),
+    if (_hasScheduler)
+      _SettingSpec(
+        'Scheduler',
+        m.noiseSchedule!,
+        _useScheduler,
+        (v) => _useScheduler = v,
+      ),
+    if (_hasSeed) _SettingSpec('Seed', m.seed, _useSeed, (v) => _useSeed = v),
+  ];
+
+  /// Anima(ComfyUI)类别的字段。只认我们前端真正支持的那一面:6 个采样器、
+  /// 5 个调度器、步数 6–50、CFG 1.0–7.0、三个模型档位。超出的**单项禁用并写明原因**,
+  /// 不静默钳到范围内 —— 悄悄改成一个用户没选的值,比明说导不了更坏。
+  List<_SettingSpec> _animaSettingItems(ImageMetadata m) {
+    final tier = animaModelFromSource(m.source);
+    final steps = int.tryParse(m.steps ?? '');
+    final cfg = double.tryParse(m.scale ?? '');
+    return [
+      if (m.source.isNotEmpty)
+        _SettingSpec(
+          '模型',
+          tier ?? m.source,
+          _useModel,
+          (v) => _useModel = v,
+          unsupportedReason: tier == null ? '不是 Anima 的模型' : null,
+        ),
+      if (_hasRes)
+        _SettingSpec(
+          '分辨率',
+          '${m.width}×${m.height}',
+          _useRes,
+          (v) => _useRes = v,
+        ),
+      if (steps != null)
+        _SettingSpec(
+          'Steps',
+          m.steps!,
+          _useSteps,
+          (v) => _useSteps = v,
+          unsupportedReason: animaStepsSupported(steps)
+              ? null
+              : '支持 ${animaStepsRange.min}–${animaStepsRange.max}',
+        ),
+      if (cfg != null)
+        _SettingSpec(
+          'CFG',
+          m.scale!,
+          _useCfg,
+          (v) => _useCfg = v,
+          unsupportedReason: animaCfgSupported(cfg)
+              ? null
+              : '支持 ${animaCfgRange.min}–${animaCfgRange.max}',
+        ),
+      if (m.sampler != null)
+        _SettingSpec(
+          'Sampler',
+          animaSamplerLabel(m.sampler) ?? m.sampler!,
+          _useSampler,
+          (v) => _useSampler = v,
+          unsupportedReason: animaSamplerLabel(m.sampler) == null
+              ? '不支持的采样器'
+              : null,
+        ),
+      if (m.noiseSchedule != null)
+        _SettingSpec(
+          'Scheduler',
+          animaSchedulerLabel(m.noiseSchedule) ?? m.noiseSchedule!,
+          _useScheduler,
+          (v) => _useScheduler = v,
+          unsupportedReason: animaSchedulerLabel(m.noiseSchedule) == null
+              ? '不支持的调度器'
+              : null,
+        ),
+      if (_hasSeed) _SettingSpec('Seed', m.seed, _useSeed, (v) => _useSeed = v),
+    ];
+  }
 
   /// 含 UI 不支持的值(未知 sampler / noise)时,整个生成设置禁止导入。
+  /// 只对 NovelAI 类别成立 —— Anima 侧是逐项禁用(见 [_animaSettingItems])。
   String? get _settingsUnsupportedReason {
     final m = _meta;
-    if (m == null) return null;
+    if (m == null || !_inNai) return null;
     final issues = <String>[];
     if (m.noiseSchedule != null && !_noiseSupported(m.noiseSchedule)) {
       issues.add('noise schedule: ${m.noiseSchedule}');
@@ -257,15 +524,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     if (_charChecked.isNotEmpty) return true;
     if (_vibeChecked.isNotEmpty) return true;
     if (_settingsUnsupportedReason == null &&
-        (_useModel ||
-            _useRes ||
-            _useSteps ||
-            _useCfg ||
-            _useCfgRescale ||
-            _useVariety ||
-            _useSampler ||
-            _useScheduler ||
-            _useSeed)) {
+        _settingItems.any((e) => e.on && e.unsupportedReason == null)) {
       return true;
     }
     return false;
@@ -278,16 +537,21 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     final notifier = ref.read(generateProvider.notifier);
     final msgs = <String>[];
 
-    // 提示词(替换)
+    // 提示词(替换)。需要时先把 a1111 权重语法转成 NAI 方言 ——
+    // 编辑器里存的始终是 NAI 语法,发 Anima 时由服务端翻回 ComfyUI 语法。
+    String prep(String s) =>
+        _convertPrompt && _showConvert ? convertSdToNai(s) : s;
     String? pos, neg;
-    if (_usePrompt && m.prompt.isNotEmpty) pos = m.prompt;
-    if (_useNegative && m.negativePrompt.isNotEmpty) neg = m.negativePrompt;
+    if (_usePrompt && m.prompt.isNotEmpty) pos = prep(m.prompt);
+    if (_useNegative && m.negativePrompt.isNotEmpty) {
+      neg = prep(m.negativePrompt);
+    }
     if (pos != null || neg != null) {
       notifier.setPrompts(positive: pos, negative: neg);
     }
 
     // 角色(站位跟着角色勾选一起走,不单独设开关)
-    if (m.isNovelAI && _charChecked.isNotEmpty) {
+    if (_inNai && _charChecked.isNotEmpty) {
       final idx = _charChecked.toList()..sort();
       final chars = [
         for (final i in idx)
@@ -303,8 +567,8 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
       notifier.addCharactersFrom(chars, replace: !_charAppend);
     }
 
-    // 生成设置(仅 NAI、无不支持值)
-    if (m.isNovelAI && _settingsUnsupportedReason == null) {
+    // 生成设置(NAI 类别、无不支持值)
+    if (_inNai && _settingsUnsupportedReason == null) {
       final applyRes = _useRes && _hasRes;
       notifier.applyImportedSettings(
         model: _useModel ? _importModel : null,
@@ -326,9 +590,53 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
       );
     }
 
+    // 生成设置(Anima 类别)。白名单/范围校验在字段清单里做过(超出的项压根勾不上),
+    // 这里只做落地。模型档位走 applyImportedSettings 而不是 setModel ——
+    // 后者会连带套用该档的推荐采样参数,把用户**没勾**的 Steps/CFG 一起改掉。
+    if (_inComfy) {
+      final applyRes = _useRes && _hasRes;
+      notifier.applyImportedSettings(
+        model: _useModel ? animaModelFromSource(m.source) : null,
+        width: applyRes ? m.width : null,
+        height: applyRes ? m.height : null,
+        animaSteps: _useSteps ? int.tryParse(m.steps ?? '') : null,
+        animaCfg: _useCfg ? double.tryParse(m.scale ?? '') : null,
+        animaSampler: _useSampler ? m.sampler : null,
+        animaScheduler: _useScheduler ? m.noiseSchedule : null,
+        seed: _useSeed && m.seed.isNotEmpty ? m.seed : null,
+      );
+
+      // LoRA:勾中的都挂上(权重/CLIP 权重按元数据带回)。库里没有的走占位 +
+      // 后台下载,装好就地转正。触发词已经在导入的提示词里了,不再重复拼。
+      final picked = <ActiveLora>[];
+      for (var i = 0; i < _loraHits.length; i++) {
+        final h = _loraHits[i];
+        if (h == null || !_loraChecked.contains(i)) continue;
+        if (h.isLocal && h.item != null) {
+          picked.add(_activeLoraOf(h));
+        } else if (h.isCivitai) {
+          final p = _pendingLoraOf(h);
+          if (p != null) picked.add(p);
+        }
+      }
+      if (picked.isNotEmpty) {
+        // applyLoraSelection 语义是「按这份整体替换」,追加时先并上已挂的
+        // (同名以导入的为准 —— 用户要的是图里那个权重)。
+        final toApply = _loraAppend
+            ? <ActiveLora>[
+                for (final old in ref.read(generateProvider).loras)
+                  if (!picked.any((p) => p.name == old.name)) old,
+                ...picked,
+              ]
+            : picked;
+        final n = notifier.applyLoraSelection(toApply);
+        msgs.add('$n 个 LoRA');
+      }
+    }
+
     // Vibe:有原图的带图导入(生成时按当前模型现场编码);仅编码的挂到
     // 来源模型的编码键下(换模型生成时无原图可重编码,会被停用提示)。
-    if (m.isNovelAI && _vibeChecked.isNotEmpty) {
+    if (_inNai && _vibeChecked.isNotEmpty) {
       if (!_vibeAppend) notifier.restoreVibes(const []);
       final idx = _vibeChecked.toList()..sort();
       final encKey = _vibeEncKey;
@@ -555,6 +863,11 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
       children: [
         _infoCard(scheme),
         const SizedBox(height: 16),
+        // 跨类别:说清这是哪个模型的图,给一键切过去;不切就只导提示词
+        if (_crossCategory) ...[
+          _crossCategoryBanner(scheme, m),
+          const SizedBox(height: 14),
+        ],
         Text(
           '导入到生成页',
           style: context.texts.titleMedium!.copyWith(
@@ -587,30 +900,318 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
           ),
           const SizedBox(height: 9),
         ],
+        // 权重语法转换:只在「源是 a1111、目标是 NovelAI」时出现
+        if (_showConvert) ...[_convertRow(scheme), const SizedBox(height: 9)],
         // 角色
-        if (m.isNovelAI && m.characters.isNotEmpty) ...[
+        if (_inNai && m.characters.isNotEmpty) ...[
           _charSection(scheme, m),
           const SizedBox(height: 9),
         ],
         // Vibe
-        if (m.isNovelAI && m.vibes.isNotEmpty) ...[
+        if (_inNai && m.vibes.isNotEmpty) ...[
           _vibeSection(scheme, m),
           const SizedBox(height: 9),
         ],
+        // LoRA:哈希→名称→Civitai 三级认领,库里没有的随导入后台下载。
+        // 排在生成设置之前 —— 缺 LoRA 往往要先下载(有等待),让人先看见先动手。
+        // 仅 anima → anima 出现:NAI 出图链路没有 LoraLoader,摆出来点了也不会生效。
+        if (_inComfy && m.loras.isNotEmpty) ...[
+          _loraSection(scheme, m),
+          const SizedBox(height: 9),
+        ],
         // 生成设置
-        if (m.isNovelAI && _hasAnySettings) ...[
+        if (_settingItems.isNotEmpty) ...[
           _settingsSection(scheme, m),
           const SizedBox(height: 9),
         ],
-        if (!m.isNovelAI)
-          Padding(
-            padding: const EdgeInsets.only(top: 2),
-            child: InfoNote(
-              '${_sourceLabel(m.sourceType)} 图片仅支持导入提示词。',
-              icon: Icons.info_outline,
+      ],
+    );
+  }
+
+  /// 跨类别横幅:哪个模型的图 + 当前是什么 + 一键切过去。
+  Widget _crossCategoryBanner(ColorScheme scheme, ImageMetadata m) {
+    final imageCat = _imageCategory;
+    final text = imageCat != null
+        ? '这是 ${categoryLabel(imageCat)} 模型的图片,当前为 ${categoryLabel(_targetCategory)} 模型,只能导入提示词。'
+        : '${_sourceLabel(m.sourceType)} 图片在本机没有对应的模型,只能导入提示词。';
+    return Container(
+      padding: const EdgeInsets.fromLTRB(13, 11, 13, 11),
+      decoration: BoxDecoration(
+        color: scheme.tertiaryContainer.withValues(alpha: .45),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.info_outline, size: 18, color: scheme.tertiary),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  text,
+                  style: context.texts.bodySmall!.copyWith(height: 1.5),
+                ),
+                if (imageCat != null) ...[
+                  const SizedBox(height: 9),
+                  if (_canSwitchCategory)
+                    FilledButton.tonalIcon(
+                      onPressed: _switchCategory,
+                      icon: const Icon(Icons.swap_horiz, size: 17),
+                      label: Text('切换到 ${categoryLabel(imageCat)} 模型'),
+                      style: FilledButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    )
+                  else
+                    Text(
+                      'Anima 需要 Bot 授权登录后可用,无法切换',
+                      style: context.texts.bodySmall!.copyWith(
+                        fontSize: 11,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                ],
+              ],
             ),
           ),
-      ],
+        ],
+      ),
+    );
+  }
+
+  /// 自动转换提示词格式开关。
+  Widget _convertRow(ColorScheme scheme) {
+    return Material(
+      color: scheme.surfaceContainer,
+      borderRadius: BorderRadius.circular(16),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => setState(() => _convertPrompt = !_convertPrompt),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 13, 12),
+          child: Row(
+            children: [
+              Icon(Icons.translate, size: 20, color: scheme.onSurfaceVariant),
+              const SizedBox(width: 11),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '自动转换提示词格式',
+                      style: context.texts.bodyLarge!.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '把 (tag:1.2) 转成 NovelAI 的 1.2::tag::',
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 10),
+              _checkBox(scheme, _convertPrompt),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// LoRA 区:与 Vibe 同一副骨架(_section 外壳 + 42px 缩略图行 + 同款勾选框),
+  /// 不再是之前那种细行小字的自制样式。
+  Widget _loraSection(ColorScheme scheme, ImageMetadata m) {
+    // 能挂的 = 库里有的 + Civitai 上有的(后者导入后自动下载)
+    final mountable = [
+      for (var i = 0; i < _loraHits.length; i++)
+        if (_loraHits[i]?.isLocal == true || _loraHits[i]?.isCivitai == true) i,
+    ];
+    final allOn =
+        mountable.isNotEmpty && _loraChecked.length == mountable.length;
+    return _section(
+      scheme,
+      icon: Icons.layers_outlined,
+      iconColor: scheme.primary,
+      title: 'LoRA',
+      count: '${_loraChecked.length}/${mountable.length}',
+      allOn: allOn,
+      onToggleAll: mountable.isEmpty
+          ? null
+          : () => setState(() {
+              if (allOn) {
+                _loraChecked.clear();
+              } else {
+                _loraChecked
+                  ..clear()
+                  ..addAll(mountable);
+              }
+            }),
+      expanded: _loraExpanded,
+      onToggleExpand: () => setState(() => _loraExpanded = !_loraExpanded),
+      child: Column(
+        children: [
+          _overrideSeg(
+            scheme,
+            _loraAppend,
+            (v) => setState(() => _loraAppend = v),
+          ),
+          const SizedBox(height: 9),
+          if (_resolvingLoras)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 9),
+              child: Row(
+                children: [
+                  const SizedBox(
+                    width: 13,
+                    height: 13,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  const SizedBox(width: 9),
+                  Text(
+                    '正在认领…',
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          for (var i = 0; i < m.loras.length; i++) ...[
+            _loraRow(scheme, m.loras[i], _loraHits.elementAtOrNull(i), i),
+            if (i != m.loras.length - 1) const SizedBox(height: 9),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// 一条 LoRA:缩略图 + 名字 + 状态副行 + 右侧动作(勾选 / 不可用)。
+  Widget _loraRow(
+    ColorScheme scheme,
+    LoraInfo lora,
+    LoraResolveResult? hit,
+    int index,
+  ) {
+    final selectable = hit?.isLocal == true || hit?.isCivitai == true;
+    final picked = selectable && _loraChecked.contains(index);
+    // 非 Anima 底模装了也用不上(不生效或画崩),必须显眼
+    final wrongBase =
+        hit != null &&
+        hit.isCivitai &&
+        hit.civitaiBaseModel.isNotEmpty &&
+        !hit.civitaiBaseModel.toLowerCase().contains('anima');
+
+    // 副行:状态 + 权重,和 Vibe 行的参数副行同一套排版
+    final weightText = lora.clipWeight == null
+        ? '权重 ${lora.weight}'
+        : '权重 ${lora.weight} · CLIP ${lora.clipWeight}';
+    final String status;
+    Color statusColor = scheme.onSurfaceVariant;
+    if (hit == null) {
+      status = _resolvingLoras ? '认领中' : '未认领';
+    } else if (hit.isLocal) {
+      status = hit.matchedBy == 'name' ? '名称匹配·版本可能不同' : '库中已有';
+      if (hit.matchedBy == 'name') statusColor = scheme.tertiary;
+    } else if (hit.isCivitai) {
+      status = wrongBase
+          ? 'Civitai · 底模 ${hit.civitaiBaseModel}'
+          : 'Civitai · 导入后自动下载';
+      if (wrongBase) statusColor = scheme.error;
+    } else {
+      status = (lora.hash?.isNotEmpty ?? false)
+          ? '库中与 Civitai 都没有'
+          : '无哈希,只能靠名字找';
+    }
+
+    final preview = hit?.item?.previewUrl.isNotEmpty == true
+        ? hit!.item!.previewUrl
+        : (hit?.civitaiPreviewUrl ?? '');
+
+    return Opacity(
+      opacity: hit == null || hit.isLocal || hit.isCivitai ? 1 : .5,
+      child: InkWell(
+        onTap: selectable
+            ? () => setState(() {
+                if (!_loraChecked.remove(index)) _loraChecked.add(index);
+              })
+            : null,
+        borderRadius: BorderRadius.circular(11),
+        child: Container(
+          padding: const EdgeInsets.all(9),
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerHigh,
+            borderRadius: BorderRadius.circular(11),
+          ),
+          child: Row(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(9),
+                child: SizedBox(
+                  width: 42,
+                  height: 42,
+                  child: preview.isEmpty
+                      ? Container(
+                          color: scheme.surfaceContainerHighest,
+                          child: Icon(
+                            Icons.auto_awesome_outlined,
+                            size: 20,
+                            color: scheme.outline,
+                          ),
+                        )
+                      : RemoteImage(
+                          preview,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, _, _) => Container(
+                            color: scheme.surfaceContainerHighest,
+                            child: Icon(
+                              Icons.auto_awesome_outlined,
+                              size: 20,
+                              color: scheme.outline,
+                            ),
+                          ),
+                        ),
+                ),
+              ),
+              const SizedBox(width: 11),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      hit?.label ?? lora.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: context.texts.bodyMedium!.copyWith(
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '$status · $weightText',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: mono(context, size: 10.5, color: statusColor),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              if (selectable)
+                _checkBox(scheme, picked, size: 20)
+              else if (hit != null && !_resolvingLoras)
+                Icon(Icons.block, size: 18, color: scheme.outline),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -1017,68 +1618,28 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   // ---- 生成设置 section ----
   Widget _settingsSection(ColorScheme scheme, ImageMetadata m) {
     final unsupported = _settingsUnsupportedReason;
-    final items = <_SettingSpec>[
-      if (_hasModel)
-        _SettingSpec('模型', _importModel!, _useModel, (v) => _useModel = v),
-      if (_hasRes)
-        _SettingSpec(
-          '分辨率',
-          '${m.width}×${m.height}',
-          _useRes,
-          (v) => _useRes = v,
-        ),
-      if (_hasSteps)
-        _SettingSpec('Steps', m.steps!, _useSteps, (v) => _useSteps = v),
-      if (_hasCfg) _SettingSpec('CFG', m.scale!, _useCfg, (v) => _useCfg = v),
-      if (_hasCfgRescale)
-        _SettingSpec(
-          'CFG Rescale',
-          m.cfgRescale!,
-          _useCfgRescale,
-          (v) => _useCfgRescale = v,
-        ),
-      // 叫 Variety+ 而不是「多样性」:创作页高级设置里就是这个名字,
-      // 两处对不上的话用户认不出导的是哪一项。
-      if (_hasVariety)
-        _SettingSpec(
-          'Variety+',
-          m.varietyPlus! ? '开' : '关',
-          _useVariety,
-          (v) => _useVariety = v,
-        ),
-      if (_hasSampler)
-        _SettingSpec(
-          'Sampler',
-          _samplerIdToDisplay[m.sampler!] ?? m.sampler!,
-          _useSampler,
-          (v) => _useSampler = v,
-        ),
-      if (_hasScheduler)
-        _SettingSpec(
-          'Scheduler',
-          m.noiseSchedule!,
-          _useScheduler,
-          (v) => _useScheduler = v,
-        ),
-      if (_hasSeed) _SettingSpec('Seed', m.seed, _useSeed, (v) => _useSeed = v),
-    ];
+    final items = _settingItems;
+    // 计数只算真能导的项:超出支持面的格子勾不上,算进分母会让「3/8」看着像漏勾了
+    final selectable = items.where((e) => e.unsupportedReason == null).toList();
     final checkedCount = unsupported != null
         ? 0
-        : items.where((e) => e.on).length;
+        : selectable.where((e) => e.on).length;
     final allOn =
-        unsupported == null && items.isNotEmpty && items.every((e) => e.on);
+        unsupported == null &&
+        selectable.isNotEmpty &&
+        selectable.every((e) => e.on);
     return _section(
       scheme,
       icon: Icons.tune,
       iconColor: scheme.primary,
       title: '生成设置',
-      count: '$checkedCount/${items.length}',
+      count: '$checkedCount/${selectable.length}',
       allOn: allOn,
-      onToggleAll: unsupported != null
+      onToggleAll: unsupported != null || selectable.isEmpty
           ? null
           : () => setState(() {
               final target = !allOn;
-              for (final e in items) {
+              for (final e in selectable) {
                 e.set(target);
               }
             }),
@@ -1118,12 +1679,13 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   }
 
   Widget _settingTile(ColorScheme scheme, _SettingSpec e) {
+    final blocked = e.unsupportedReason != null;
     return Material(
       color: scheme.surfaceContainerHigh,
       borderRadius: BorderRadius.circular(11),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        onTap: () => setState(() => e.set(!e.on)),
+        onTap: blocked ? null : () => setState(() => e.set(!e.on)),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 11),
           child: Row(
@@ -1141,13 +1703,33 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
                       e.value,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: mono(context, size: 13),
+                      style:
+                          mono(
+                            context,
+                            size: 13,
+                            color: blocked ? scheme.outline : null,
+                          ).copyWith(
+                            decoration: blocked
+                                ? TextDecoration.lineThrough
+                                : null,
+                          ),
                     ),
+                    // 只废掉这一格并说明原因,不牵连整组其它字段
+                    if (blocked)
+                      Text(
+                        e.unsupportedReason!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 10, color: scheme.error),
+                      ),
                   ],
                 ),
               ),
               const SizedBox(width: 8),
-              _checkBox(scheme, e.on, size: 20),
+              if (blocked)
+                Icon(Icons.block, size: 18, color: scheme.outline)
+              else
+                _checkBox(scheme, e.on, size: 20),
             ],
           ),
         ),
@@ -1458,9 +2040,19 @@ class _RawEntry extends StatelessWidget {
 }
 
 class _SettingSpec {
-  _SettingSpec(this.label, this.value, this.on, this._setter);
+  _SettingSpec(
+    this.label,
+    this.value,
+    this.on,
+    this._setter, {
+    this.unsupportedReason,
+  });
   final String label;
   final String value;
+
+  /// 该项超出本机支持面时的原因(采样器不在白名单、步数超范围…)。
+  /// 有值 = 这一格禁选并显示原因,只废掉这一项,不牵连整组其它字段。
+  final String? unsupportedReason;
   bool on;
   final void Function(bool) _setter;
   void set(bool v) {

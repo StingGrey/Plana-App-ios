@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/auth/bot_session_store.dart';
 import '../../core/net/anlas_provider.dart';
 import '../../core/net/backend_client.dart';
+import '../../core/net/remote_image.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/ui/scroll_memory.dart';
 import '../../core/ui/selection_bar.dart';
@@ -24,6 +25,7 @@ import 'naiv4vibe_codec.dart' show buildBundleText, kModelToEncodingKey;
 import 'vibe_backup_sheet.dart';
 import 'public_vibes.dart';
 import 'vibe_detail_sheet.dart';
+import 'vibe_import.dart' show ingestVibeFiles;
 import 'vibe_library.dart';
 import '../../core/util/haptics.dart';
 
@@ -299,11 +301,13 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
   // ---- 导入(右上角) ----
 
   Future<void> _importImages() async {
-    final files = await pickImageFiles(context);
-    if (files.isEmpty || !mounted) return;
+    final picked = await pickImagesOrFiles(context);
+    if (picked.isEmpty || !mounted) return;
+    // 图库里改走「从文件选」的,一律按文件分流(vibe 文件也放行)
+    if (picked.files.isNotEmpty) return _ingest(picked.files);
     setState(() => _busy = true);
     var n = 0;
-    for (final f in files) {
+    for (final f in picked.images) {
       try {
         await _lib.importImageBytes(f.bytes, f.baseName);
         n++;
@@ -315,48 +319,32 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
   }
 
   Future<void> _importFiles() async {
+    // withData: false —— 整包 vibe 可能上百 MB(图是 base64),拿路径流式解析;
+    // 图片则按需逐张读字节,不把整批一次性堆在内存里。
     final res = await FilePicker.platform.pickFiles(
       type: FileType.any,
       allowMultiple: true,
-      withData: true,
     );
     final files = res?.files ?? const <PlatformFile>[];
     if (files.isEmpty || !mounted) return;
+    await _ingest(files);
+  }
+
+  /// 选中的文件按内容分流入库(vibe 文件 / 图片),完事报一次数。
+  Future<void> _ingest(List<PlatformFile> files) async {
     setState(() => _busy = true);
-    var vibes = 0, images = 0, failed = 0;
-    for (final f in files) {
-      final bytes = f.bytes;
-      if (bytes == null || bytes.isEmpty) {
-        failed++;
-        continue;
-      }
-      final base = f.name.replaceAll(RegExp(r'\.[^.]+$'), '');
-      try {
-        // 嗅探:JSON 开头按 vibe 文件解析,否则按图片入库
-        if (bytes.first == 0x7B /* { */ ) {
-          vibes += (await _lib.importVibeText(
-            utf8.decode(bytes),
-            fallbackName: base,
-          )).length;
-        } else {
-          await _lib.importImageBytes(bytes, base);
-          images++;
-        }
-      } catch (_) {
-        failed++;
-      }
-    }
+    final got = await ingestVibeFiles(_lib, files);
     if (!mounted) return;
     setState(() => _busy = false);
     final parts = [
-      if (vibes > 0) '$vibes 条 Vibe',
-      if (images > 0) '$images 张图',
-      if (failed > 0) '$failed 个失败',
+      if (got.vibes > 0) '${got.vibes} 条 Vibe',
+      if (got.images > 0) '${got.images} 张图',
+      if (got.failed > 0) '${got.failed} 个失败',
     ];
     hintSnack(
       context,
       parts.isEmpty ? '没有可导入的内容' : '导入完成:${parts.join(' · ')}',
-      icon: failed > 0 ? Icons.error_outline : Icons.check_circle_outline,
+      icon: got.failed > 0 ? Icons.error_outline : Icons.check_circle_outline,
     );
   }
 
@@ -1938,7 +1926,7 @@ class _PublicVibeCard extends StatelessWidget {
       onLongPress: onLongPress,
       tagLabel: null,
       thumbnail: meta.hasImage
-          ? Image.network(
+          ? RemoteImage(
               meta.thumbnailUrl,
               fit: BoxFit.cover,
               loadingBuilder: (_, child, progress) => progress == null

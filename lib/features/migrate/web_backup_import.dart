@@ -20,11 +20,15 @@ typedef WebBackupImportOutcome = ({
 /// 独立于任何页面:哪个入口拿到备份文件都能调(专用导入页、灵感库的手动导入),
 /// 所以不存在"从某个入口进来只能导一部分"的阉割版 —— 面板里列全五类,
 /// 勾什么导什么。[notice] 用于说明来源(如"这是 web 端的全量备份")。
+///
+/// [onProgress] 报「哪一类、第几条/共几条」:vibe 带图,几百条要跑上几分钟,
+/// 没有动静的话用户会以为卡死了去杀进程。
 Future<WebBackupImportOutcome?> runWebBackupImport(
   BuildContext context,
   WidgetRef ref,
   WebBackup b, {
   String? notice,
+  void Function(String label, int done, int total)? onProgress,
 }) async {
   final tagLib = ref.read(tagLibraryProvider.notifier);
   final cats = b.tagCategories();
@@ -94,13 +98,15 @@ Future<WebBackupImportOutcome?> runWebBackupImport(
   final rows = <(String, String)>[];
   final errors = <String>[];
 
-  // Vibe:整包转成 .naiv4vibebundle,一次交给库导入(自带编码同时灌进缓存)
-  final bundle = picked.contains('vibe') ? b.vibeBundleText() : null;
-  if (bundle != null) {
+  // Vibe:逐条转成 .naiv4vibe JSON 交给库导入(自带编码同时灌进缓存)
+  if (picked.contains('vibe') && b.vibes.isNotEmpty) {
     try {
       final got = await ref
           .read(vibeLibraryProvider.notifier)
-          .importVibeText(bundle);
+          .importVibeRaws(
+            b.naiv4Raws(),
+            onProgress: (d, t) => onProgress?.call('Vibe', d, t),
+          );
       rows.add(('Vibe', '${got.length} 条'));
     } catch (e) {
       errors.add('Vibe 导入失败: $e');
@@ -118,6 +124,7 @@ Future<WebBackupImportOutcome?> runWebBackupImport(
       } catch (e) {
         errors.add('角色参考「${c.name}」失败: $e');
       }
+      onProgress?.call('角色参考', n, b.crs.length);
     }
     rows.add(('角色参考', '$n 张'));
   }

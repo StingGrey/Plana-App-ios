@@ -40,8 +40,9 @@ class EditorTopBar extends ConsumerWidget {
     final parts = charName != null
         ? const <String>[]
         : [
-            for (final c in ref.watch(generateProvider).characters)
-              if (c.enabled) st.activePositive ? c.positive : c.negative,
+            // 与生成页同一口径:模块不可见(anima 等)时角色整组不计
+            for (final c in ref.watch(countedCharactersProvider))
+              st.activePositive ? c.positive : c.negative,
           ];
     // activeOutput 而非 outputOf(activeText):正文里折叠只是占位符 `#名字`,
     // 直接算会把整段折叠体漏掉——读数得按占位符展开后的真实定稿来。

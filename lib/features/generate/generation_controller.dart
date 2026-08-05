@@ -104,6 +104,21 @@ final generationProvider = NotifierProvider<GenerationNotifier, GenStatus>(
   GenerationNotifier.new,
 );
 
+/// 生成过程中的一次性非致命提醒(目前只有 LoRA 超上限被丢弃)。
+/// 单独开一个 provider 而不是塞进 [GenStatus]:警告在出图途中到达,而 GenStatus
+/// 每来一帧进度就整体重建,挂在上面会被立刻冲掉。app_shell 监听后弹 snack 并置空。
+final genNoticeProvider = NotifierProvider<GenNoticeNotifier, String?>(
+  GenNoticeNotifier.new,
+);
+
+class GenNoticeNotifier extends Notifier<String?> {
+  @override
+  String? build() => null;
+
+  void show(String msg) => state = msg;
+  void clear() => state = null;
+}
+
 class GenerationNotifier extends Notifier<GenStatus> {
   @override
   GenStatus build() => const GenStatus();
@@ -580,6 +595,7 @@ class GenerationNotifier extends Notifier<GenStatus> {
             );
             _pushIndeterminate(text, pos > 0 ? '排队$pos' : '排队');
           },
+          onWarning: (msg) => ref.read(genNoticeProvider.notifier).show(msg),
           onStage: (note) {
             // anima Modal 冷启动等特殊阶段:出图前以文案示意
             if (state.step > 0) return;

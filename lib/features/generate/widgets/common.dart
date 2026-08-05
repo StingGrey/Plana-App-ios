@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/ui/param_help.dart';
+import '../../../core/ui/param_input.dart';
 import '../../../core/util/haptics.dart';
 
 // ExpandBody 已挪到 core/ui(多选底栏等非 generate 的地方也在用)。
@@ -14,6 +15,9 @@ export '../../../core/ui/expand_body.dart';
 // 参数说明:滑杆的 help 参数收 ParamHelp,顺手把 Help 表转出去,
 // 调用点 `import 'common.dart'` 就能写 `help: Help.steps`。
 export '../../../core/ui/param_help.dart';
+// 读数框 / 手输弹窗 / quantizeToDivisions —— 药丸滑杆(重绘、步数)也在用,
+// 所以本体在 core/ui,这里只转出去。
+export '../../../core/ui/param_input.dart';
 
 /// 拖动排序的浮起样式:替换 ReorderableListView 默认代理
 /// (Material 白底 + 阴影),改为微放大、无底色 —— 圆角卡片/缩略图不穿帮。
@@ -100,19 +104,6 @@ class CountBadge extends StatelessWidget {
   }
 }
 
-/// 把 [v] 量化到 [divisions] 等分的刻度上。算法与 Flutter 自己的 `_discretize`
-/// 一致(归一化 → 取整 → 插值回去),换掉离散 Slider 后取值分毫不差。
-double quantizeToDivisions(
-  double v, {
-  required double min,
-  required double max,
-  int? divisions,
-}) {
-  if (divisions == null || divisions <= 0 || max <= min) return v;
-  final t = ((v - min) / (max - min)).clamp(0.0, 1.0);
-  return min + (t * divisions).round() / divisions * (max - min);
-}
-
 /// 参数滑杆:标签 + 数值读数 + Slider,展开卡与 Sheet 通用
 ///
 /// [divisions] 只定步长,**绝不下传给底层 Slider**:离散 Slider 每次都用 75ms
@@ -128,6 +119,7 @@ class ParamSlider extends StatelessWidget {
     this.min = 0,
     this.max = 1,
     this.divisions,
+    this.inputDivisions,
     this.valueText,
     this.caption,
     this.trailing,
@@ -138,12 +130,16 @@ class ParamSlider extends StatelessWidget {
   final String label;
   final double value;
 
-  /// null = 只读(滑杆走 M3 禁用态);标签上的说明照样能点开。
+  /// null = 只读(滑杆走 M3 禁用态,读数框也不再可点);标签上的说明照样能点开。
   final ValueChanged<double>? onChanged;
   final ValueChanged<double>? onChangeEnd;
   final double min;
   final double max;
   final int? divisions;
+
+  /// 手输弹窗的步长,默认跟 [divisions] 走。
+  /// [LiveParamSlider] 拖动要连续所以不下传 divisions,但手输仍该落在刻度上。
+  final int? inputDivisions;
   final String? valueText;
   final String? caption;
   final Widget? trailing;
@@ -154,6 +150,23 @@ class ParamSlider extends StatelessWidget {
 
   double _snap(double v) =>
       quantizeToDivisions(v, min: min, max: max, divisions: divisions);
+
+  /// 读数框弹出手输。拖动是 onChanged 一路走到 onChangeEnd,手输也照这条路
+  /// 发一遍(两个回调都发):LiveParamSlider 那种「拖动本地、松手提交」的
+  /// 分工才不用为手输另开一条口子。
+  Future<void> _input(BuildContext context) async {
+    final v = await showParamInput(
+      context,
+      title: label,
+      value: value,
+      min: min,
+      max: max,
+      divisions: inputDivisions ?? divisions,
+    );
+    if (v == null) return;
+    onChanged?.call(v);
+    onChangeEnd?.call(v);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -174,13 +187,10 @@ class ParamSlider extends StatelessWidget {
                   : HelpLabel(text: label, help: help!, style: labelStyle),
             ),
             if (trailing != null) ...[trailing!, const SizedBox(width: 8)],
-            Text(
-              valueText ?? value.toStringAsFixed(2),
-              style: mono(
-                context,
-                size: dense ? 11 : 13,
-                color: context.scheme.primary,
-              ),
+            ParamValueBox(
+              text: valueText ?? value.toStringAsFixed(2),
+              dense: dense,
+              onTap: onChanged == null ? null : () => _input(context),
             ),
           ],
         ),
@@ -230,6 +240,8 @@ class LiveParamSlider extends StatefulWidget {
     this.caption,
     this.dense = false,
     this.help,
+    this.valueTextOf,
+    this.enabled = true,
   });
 
   final String label;
@@ -242,6 +254,14 @@ class LiveParamSlider extends StatefulWidget {
   final bool dense;
   final ParamHelp? help;
 
+  /// false = 只读:滑杆走 M3 禁用态、读数框不可点(仍显示当前值,说明照样能点开)。
+  /// 给「常驻显示但当前不该改」的参数用,别为此把整块藏起来。
+  final bool enabled;
+
+  /// 读数格式化;拿到的是**拖动中的实时值**(未量化)。null = 默认两位小数。
+  /// [ParamSlider.valueText] 是死串,这里必须是函数——拖动时读数得跟着走。
+  final String Function(double)? valueTextOf;
+
   @override
   State<LiveParamSlider> createState() => _LiveParamSliderState();
 }
@@ -251,27 +271,33 @@ class _LiveParamSliderState extends State<LiveParamSlider> {
 
   @override
   Widget build(BuildContext context) {
+    final live = _drag ?? widget.value;
     return ParamSlider(
       label: widget.label,
-      value: _drag ?? widget.value,
+      value: live,
       min: widget.min,
       max: widget.max,
-      // 拖动时连读数都不量化(本地值,不外发);松手才按步长落位
+      valueText: widget.valueTextOf?.call(live),
+      // 拖动时连读数都不量化(本地值,不外发);松手才按步长落位。
+      // 手输走弹窗、没有「拖」的过程,步长照给。
+      inputDivisions: widget.divisions,
       caption: widget.caption,
       dense: widget.dense,
       help: widget.help,
-      onChanged: (v) => setState(() => _drag = v),
-      onChangeEnd: (v) {
-        widget.onCommit(
-          quantizeToDivisions(
-            v,
-            min: widget.min,
-            max: widget.max,
-            divisions: widget.divisions,
-          ),
-        );
-        setState(() => _drag = null); // 同帧父级会带新值下来,不闪
-      },
+      onChanged: widget.enabled ? (v) => setState(() => _drag = v) : null,
+      onChangeEnd: widget.enabled
+          ? (v) {
+              widget.onCommit(
+                quantizeToDivisions(
+                  v,
+                  min: widget.min,
+                  max: widget.max,
+                  divisions: widget.divisions,
+                ),
+              );
+              setState(() => _drag = null); // 同帧父级会带新值下来,不闪
+            }
+          : null,
     );
   }
 }
@@ -532,16 +558,22 @@ class RefThumb extends StatelessWidget {
   }
 }
 
-/// 参考图启用/停用开关(裸电源图标)—— Vibe / 角色参考 共用
+/// 启用/停用开关(裸电源图标)—— Vibe / 角色参考 / LoRA / 重绘放大 共用
 class RefEnableToggle extends StatelessWidget {
   const RefEnableToggle({
     super.key,
     required this.enabled,
     required this.onTap,
+    this.onTooltip = '停用此参考图',
+    this.offTooltip = '启用',
   });
 
   final bool enabled;
   final VoidCallback onTap;
+
+  /// 已启用/已停用时的长按提示(非参考图的调用方要改写)。
+  final String onTooltip;
+  final String offTooltip;
 
   @override
   Widget build(BuildContext context) {
@@ -562,7 +594,7 @@ class RefEnableToggle extends StatelessWidget {
               ? scheme.primary.withValues(alpha: .12)
               : Colors.transparent,
         ),
-        tooltip: enabled ? '停用此参考图' : '启用',
+        tooltip: enabled ? onTooltip : offTooltip,
         padding: EdgeInsets.zero,
         visualDensity: VisualDensity.compact,
       ),

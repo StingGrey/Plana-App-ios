@@ -170,6 +170,28 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
     return f.path;
   }
 
+  /// 清空本机预览图(存储管理用):删文件的同时把路径从条目上摘掉 ——
+  /// 只删文件会留下一堆指向不存在文件的 previews,卡片永远显示占位块。
+  /// 收藏公共条目带来的远端 URL(http 开头)不动,那不是本机产物。
+  Future<void> clearLocalPreviews() async {
+    final next = <TagEntry>[];
+    var touched = false;
+    for (final e in _s.entries) {
+      final remote = [
+        for (final p in e.previews)
+          if (p.startsWith('http')) p,
+      ];
+      if (remote.length == e.previews.length) {
+        next.add(e);
+        continue;
+      }
+      _gcPreviewFiles(e.previews);
+      touched = true;
+      next.add(e.copyWith(previews: remote));
+    }
+    if (touched) await _set(_s.copyWith(entries: next));
+  }
+
   void _gcPreviewFiles(List<String> old, {List<String> keep = const []}) {
     for (final p in old) {
       if (p.startsWith('http') || keep.contains(p)) continue;

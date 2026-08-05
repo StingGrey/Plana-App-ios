@@ -25,8 +25,9 @@ final galleryThumbProvider = FutureProvider.autoDispose
       (ref, id) => ref.watch(appStoresProvider).gallery.readThumb(id),
     );
 
-/// 图库大图是否处于缩放/双指交互态;shell 据此锁 PageView 横滑,
-/// 避免缩放拖动被翻页手势抢走。
+/// 图库大图是否已放大(scale > 1)。画布据此撤掉分页 PageView 的翻页物理,
+/// 把横向拖动整个让回 InteractiveViewer 做平移 —— 否则缩放后想拖着看细节,
+/// 拖动会被翻页抢走(不跟手的根源)。shell 的 tab 横滑已关,与这里无关。
 final galleryZoomedProvider = NotifierProvider<GalleryZoomedNotifier, bool>(
   GalleryZoomedNotifier.new,
 );

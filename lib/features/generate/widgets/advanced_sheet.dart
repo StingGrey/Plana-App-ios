@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -32,11 +34,20 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
   late GenParams draft;
   late final TextEditingController seedCtrl;
 
+  /// 每次随机。**显式状态**,不再从输入框空不空反推 —— 反推的话「全选删掉
+  /// 想重打一个」会在删空那一刻把输入框锁死,手打到一半被夺走。
+  late bool randomSeed;
+
+  /// 上一颗钉死的种子:开随机时输入框清空,关掉原样还回来,不用重打。
+  String _lastFixed = '';
+
   @override
   void initState() {
     super.initState();
     draft = ref.read(generateProvider).params;
     seedCtrl = TextEditingController(text: draft.seed);
+    randomSeed = draft.seed.trim().isEmpty;
+    _lastFixed = draft.seed.trim();
   }
 
   @override
@@ -47,12 +58,29 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
 
   void _set(GenParams next) => setState(() => draft = next);
 
+  /// 开随机:种子留空(下发时才掷),输入框连内容一起收走。
+  /// 关随机:把上一颗还回来;没有就现掷一颗(范围与出图时一致),
+  /// 免得「固定」着一个空框、实际还是每次随机。
+  void _setRandomSeed(bool v) {
+    Haptics.selection();
+    if (v) {
+      _lastFixed = seedCtrl.text.trim();
+      seedCtrl.clear();
+    } else {
+      seedCtrl.text = _lastFixed.isNotEmpty
+          ? _lastFixed
+          : '${Random().nextInt(4294967296)}';
+    }
+    setState(() {
+      randomSeed = v;
+      draft = draft.copyWith(seed: seedCtrl.text);
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final isAnima = isAnimaModel(draft.model);
-    // 空 = 每次生成都随机(下发时才掷);填了值 = 钉死这一颗
-    final randomSeed = seedCtrl.text.trim().isEmpty;
     return Column(
       children: [
         Padding(
@@ -103,9 +131,9 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                 ParamSlider(
                   label: '步数 Steps',
                   value: draft.animaSteps.toDouble(),
-                  min: 6,
-                  max: 50,
-                  divisions: 44,
+                  min: animaStepsRange.min.toDouble(),
+                  max: animaStepsRange.max.toDouble(),
+                  divisions: animaStepsRange.max - animaStepsRange.min,
                   valueText: '${draft.animaSteps}',
                   onChanged: (v) => _set(draft.copyWith(animaSteps: v.round())),
                 ),
@@ -113,9 +141,10 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                 ParamSlider(
                   label: '提示词引导 CFG',
                   value: draft.animaCfg,
-                  min: 1,
-                  max: 7,
-                  divisions: 12, // step 0.5(对齐 web)
+                  min: animaCfgRange.min,
+                  max: animaCfgRange.max,
+                  divisions: ((animaCfgRange.max - animaCfgRange.min) * 2)
+                      .round(), // step 0.5(对齐 web)
                   valueText: draft.animaCfg.toStringAsFixed(1),
                   onChanged: (v) => _set(draft.copyWith(animaCfg: v)),
                 ),
@@ -279,41 +308,64 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
               const SizedBox(height: 14),
               _SectionLabel('修正'),
               const SizedBox(height: 10),
+              // 「随机」是开关不是动作:开着 = 每次随机,输入框一并锁死(灰掉、
+              // 点不进去),要手填种子先关掉它。骰子原先挂在输入框的 suffixIcon
+              // 上,而 isDense 的框只有 ~40dp 高、IconButton 要 48dp:越界那截
+              // 落在父框外不参与命中测试,蹭到上下边就「点了没反应」。
               Row(
                 children: [
                   Expanded(
                     child: TextField(
                       controller: seedCtrl,
+                      enabled: !randomSeed,
                       keyboardType: TextInputType.number,
                       style: mono(context, size: 13),
                       decoration: InputDecoration(
                         labelText: '种子 Seed',
                         hintText: '每次随机',
+                        // 标签常驻浮起,框里才腾得出「每次随机」这行灰字 ——
+                        // 否则锁死状态下框里空空一片,只剩个灰标签
+                        floatingLabelBehavior: FloatingLabelBehavior.always,
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(12),
                         ),
                         isDense: true,
-                        // 骰子是**状态**不是动作:亮着 = 当前每次随机。
-                        // 填过种子后点它清空,这是回到「每次随机」的唯一确切入口
-                        // (旧版是掷一个具体数填进去,那反而把种子钉死了)。
-                        suffixIcon: IconButton(
-                          tooltip: randomSeed ? '当前:每次随机' : '改为每次随机',
-                          icon: Icon(
-                            randomSeed ? Icons.casino : Icons.casino_outlined,
-                            size: 18,
-                            color: randomSeed
-                                ? scheme.primary
-                                : scheme.onSurfaceVariant,
-                          ),
-                          onPressed: randomSeed
-                              ? null
-                              : () {
-                                  seedCtrl.clear();
-                                  _set(draft.copyWith(seed: ''));
-                                },
-                        ),
                       ),
                       onChanged: (v) => _set(draft.copyWith(seed: v)),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  // 与输入框等高的裸图标键:亮=每次随机,灰空心=手填。
+                  // 不再塞进 suffixIcon,48dp 点击区完整落在框外自己的地盘上。
+                  SizedBox(
+                    width: 48,
+                    height: 48,
+                    child: IconButton(
+                      padding: EdgeInsets.zero,
+                      tooltip: randomSeed ? '每次随机 · 点击手填种子' : '手填种子 · 点击改为每次随机',
+                      onPressed: () => _setRandomSeed(!randomSeed),
+                      // 图标字体只有一档笔画,选中态靠外面这圈主色底托 + 描边撑。
+                      // 方角:挨着输入框,圆角对齐它的 12
+                      style: IconButton.styleFrom(
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        backgroundColor: randomSeed
+                            ? scheme.primary.withValues(alpha: .12)
+                            : Colors.transparent,
+                        side: randomSeed
+                            ? BorderSide(
+                                color: scheme.primary.withValues(alpha: .45),
+                              )
+                            : BorderSide.none,
+                      ),
+                      icon: Icon(
+                        randomSeed ? Icons.casino : Icons.casino_outlined,
+                        size: 22,
+                        color: randomSeed
+                            ? scheme.primary
+                            : scheme.onSurfaceVariant,
+                      ),
                     ),
                   ),
                   // 输入框的浮动标签挂不住点击区,说明单独给个问号
@@ -367,6 +419,8 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                     }
                     _set(next);
                     seedCtrl.clear();
+                    randomSeed = true; // _set 已经 setState,这里跟着回默认
+                    _lastFixed = '';
                   },
                   style: OutlinedButton.styleFrom(
                     minimumSize: const Size.fromHeight(48),
@@ -384,7 +438,9 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                     ref
                         .read(generateProvider.notifier)
                         .applyParams(
-                          draft.copyWith(seed: seedCtrl.text.trim()),
+                          draft.copyWith(
+                            seed: randomSeed ? '' : seedCtrl.text.trim(),
+                          ),
                         );
                     Navigator.pop(context);
                   },

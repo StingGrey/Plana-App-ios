@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/store/app_stores.dart';
@@ -72,8 +73,9 @@ class _EditorPageState extends ConsumerState<EditorPage>
   List<String> _related = const []; // 当前词的关联标签(异步拉取)
   String? _relatedFor; // _related 归属的词名(防过期回调窜词)
   bool _relatedLoading = false; // 关联标签拉取中(词条栏「关联」显示转圈)
-  bool _sortMode = false; // 多选模式:正文换成 chip 流,点选后批量移动/禁用/删除
+  bool _sortMode = false; // 多选模式:正文换成 chip 流,点选后批量移动/加权/删除
   Set<int> _sortSel = {}; // 多选模式已选顶层单元下标
+  double _sortMult = 1.0; // 多选模式批量面板的统一数值权重读数
   String? _charName; // 编辑角色时的名字(顶栏标题);主提示词会话为 null
 
   EditorNotifier get _notifier => ref.read(editorProvider.notifier);
@@ -341,15 +343,11 @@ class _EditorPageState extends ConsumerState<EditorPage>
       if (first >= 0 && last > first) {
         setState(() {
           _panelTok = null;
+          // 新进多选才重算起步读数;同一批里连点 ± 保持读数连贯
           if (_multiRange == null) {
-            // 新进多选:成员共享同一组倍率(如「选中整组」)时从它起步,
-            // 调整才是在原权重基础上加减;否则从 1 起。
-            final gm = toks[first].groupMult;
-            var shared = (gm - 1).abs() > 0.0001;
-            for (var i = first + 1; i <= last && shared; i++) {
-              if ((toks[i].groupMult - gm).abs() > 0.0001) shared = false;
-            }
-            _multiMult = shared ? (gm * 100).roundToDouble() / 100 : 1.0;
+            _multiMult = _sharedMult(toks, {
+              for (var i = first; i <= last; i++) i,
+            });
           }
           _multiRange = (first, last);
         });
@@ -694,6 +692,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
     setState(() {
       _sortMode = entering;
       _sortSel = {};
+      _sortMult = 1.0;
       if (entering) {
         _panelTok = null;
         _multiRange = null;
@@ -702,36 +701,143 @@ class _EditorPageState extends ConsumerState<EditorPage>
     if (!entering) _focus.requestFocus();
   }
 
+  /// 换一批选中:重算起步读数(批量数值是**统一设定**不是相对加减,留着上
+  /// 一批的读数会指着不相干的词)。
+  void _setSortSel(Set<int> next) => setState(() {
+    _sortSel = next;
+    _sortMult = _sharedMult(parseToks(_controller.text), next);
+  });
+
+  /// 一批词条的起步读数:全员同处一个权重组(如刚点过「选中整组」)时从组
+  /// 倍率起步,调整才是在原权重基础上加减;各不相同或本无组 → 从 1 起。
+  /// 两处多选共用,顶层单元与词条一一对应,下标可直接用。
+  double _sharedMult(List<Tok> toks, Iterable<int> sel) {
+    double? gm;
+    for (final i in sel) {
+      if (i < 0 || i >= toks.length) continue;
+      final m = toks[i].groupMult;
+      if (gm == null) {
+        gm = m;
+      } else if ((m - gm).abs() > 0.0001) {
+        return 1.0;
+      }
+    }
+    if (gm == null || (gm - 1).abs() <= 0.0001) return 1.0;
+    return (gm * 100).roundToDouble() / 100;
+  }
+
+  /// 「选中整组」的落点:覆盖这批单元、且**还能带进新单元**的最外层权重组
+  /// → (组区间, 该组盖住的全部单元)。只多包住几个记号字符不算 —— 那样点了
+  /// 等于没点,按钮就不该出现。
+  (WeightSpan, Set<int>)? _groupSelOf(List<TopUnit> units, Set<int> sel) {
+    if (sel.isEmpty) return null;
+    var a = -1, b = -1;
+    for (final i in sel) {
+      if (a < 0 || units[i].start < a) a = units[i].start;
+      if (units[i].end > b) b = units[i].end;
+    }
+    final spans = <WeightSpan>[];
+    parseToks(_controller.text, weightSpans: spans);
+    (WeightSpan, Set<int>)? best;
+    for (final s in spans) {
+      if (s.start > a || s.end < b) continue;
+      final covered = {
+        for (var i = 0; i < units.length; i++)
+          if (units[i].end > s.start && units[i].start < s.end) i,
+      };
+      if (covered.length <= sel.length) continue;
+      if (best == null || s.end - s.start > best.$1.end - best.$1.start) {
+        best = (s, covered);
+      }
+    }
+    return best;
+  }
+
+  /// 复制所选:折叠摊平成成员(占位符出了这个 app 没意义),其余原文照搬,
+  /// 权重/禁用记号一并带走,逗号拼接。
+  void _copyUnits(Set<int> sel) {
+    final text = _controller.text;
+    final units = topLevelUnits(text, _foldBodies);
+    final ordered =
+        sel.where((i) => i >= 0 && i < units.length).toList()..sort();
+    final parts = [
+      for (final i in ordered)
+        if (units[i].isFold)
+          _foldBodies[units[i].fold!.name] ?? ''
+        else
+          text.substring(units[i].start, units[i].end),
+    ];
+    final out = [
+      for (final p in parts)
+        if (p.trim().isNotEmpty) p.trim(),
+    ].join(', ');
+    if (out.isEmpty) return;
+    Clipboard.setData(ClipboardData(text: out));
+    hintSnack(context, '已复制 ${ordered.length} 项', icon: Icons.check);
+  }
+
   /// 多选移动落地:所选顶层单元整批搬到间隙 [to]。折叠占位符作为一整块
   /// 移动;保留分隔/换行排版。搬完清空选中(这一批已经放到位了)。
   void _moveUnits(int to) {
     final next = moveUnits(_controller.text, _foldBodies, _sortSel, to);
-    setState(() => _sortSel = {});
+    _setSortSel({});
     _applyText(next, _controller.selection.baseOffset.clamp(0, next.length));
   }
 
-  /// 批量禁用/启用:以所选里**第一枚散标签**的状态定目标,全体对齐
-  /// (与划词批量同一条语义)。折叠单元跳过,选中保留以便继续操作。
+  /// 批量禁用/启用的目标态:所选里**第一枚散标签**的反态,全体向它对齐
+  /// (web 同款语义);全是折叠 → null,没得禁用。两处多选共用。
+  bool? _disableTarget(List<TopUnit> units, Iterable<int> sel) {
+    final ordered = sel.toList()..sort();
+    for (final i in ordered) {
+      if (i < 0 || i >= units.length) continue;
+      if (units[i].tok case final t?) return !t.disabled;
+    }
+    return null;
+  }
+
+  // ---- 多选模式批量操作(chip 点选;选中保留以便接着操作)----
+  // 与划词多选走同一套单元级操作,差别只在选中集可以跳选 —— 权重按连续段
+  // 分段落地(batchWrapUnits 等),没选中的词不会被卷进同一层括号。
+
+  /// 改完文本刷新面板:chip 流挂着 controller 会自己重画,dock 上的面板读的
+  /// 是正文算出来的能力位(可加权/可禁用/有启用项),得跟着重建一次。
+  void _applySort(String next) {
+    _applyText(next, _controller.selection.baseOffset);
+    if (mounted) setState(() {});
+  }
+
+  void _sortWrap(bool up) {
+    if (_sortSel.isEmpty) return;
+    _applySort(batchWrapUnits(_controller.text, _foldBodies, _sortSel, up: up));
+  }
+
+  void _sortStepMult(bool up) {
+    if (_sortSel.isEmpty) return;
+    final step = _settings.weightStep;
+    final next =
+        ((_sortMult + (up ? step : -step)) * 100).roundToDouble() / 100;
+    _sortMult = next;
+    _applySort(batchSetMultUnits(_controller.text, _foldBodies, _sortSel, next));
+  }
+
+  void _sortClearWeight() {
+    if (_sortSel.isEmpty) return;
+    _sortMult = 1.0;
+    _applySort(batchClearWeightUnits(_controller.text, _foldBodies, _sortSel));
+  }
+
   void _sortToggleDisabled() {
     final units = topLevelUnits(_controller.text, _foldBodies);
-    final sel = _sortSel.where((i) => i < units.length).toList()..sort();
-    Tok? first;
-    for (final i in sel) {
-      if (units[i].tok case final t?) {
-        first = t;
-        break;
-      }
-    }
-    if (first == null) return; // 全是折叠,没得禁用
-    _applyText(
-      setUnitsDisabled(_controller.text, _foldBodies, sel, !first.disabled),
-      _controller.selection.baseOffset,
+    final target = _disableTarget(units, _sortSel);
+    if (target == null) return; // 全是折叠,没得禁用
+    _applySort(
+      setUnitsDisabled(_controller.text, _foldBodies, _sortSel, target),
     );
   }
 
   void _sortDelete() {
     final (text, cursor) = deleteUnits(_controller.text, _foldBodies, _sortSel);
-    setState(() => _sortSel = {});
+    _setSortSel({});
     _applyText(text, cursor);
   }
 
@@ -765,10 +871,16 @@ class _EditorPageState extends ConsumerState<EditorPage>
     setState(() => _multiRange = (first, last));
   }
 
+  /// 选区区间 → 顶层单元下标集:单元与词条一一对应(一个逗号段一枚),
+  /// 两处多选下标同一个空间,批量操作因此能共用同一套函数。
+  Set<int> _rangeSel((int, int) r) => {for (var i = r.$1; i <= r.$2; i++) i};
+
   void _multiWrap(bool up) {
     final r = _multiRange;
     if (r == null) return;
-    _applyBatchKeep(batchWrap(_controller.text, r.$1, r.$2, up: up));
+    _applyBatchKeep(
+      batchWrapUnits(_controller.text, _foldBodies, _rangeSel(r), up: up),
+    );
   }
 
   void _multiStepMult(bool up) {
@@ -778,24 +890,43 @@ class _EditorPageState extends ConsumerState<EditorPage>
     final next =
         ((_multiMult + (up ? step : -step)) * 100).roundToDouble() / 100;
     _multiMult = next;
-    _applyBatchKeep(batchSetMult(_controller.text, r.$1, r.$2, next));
+    _applyBatchKeep(
+      batchSetMultUnits(_controller.text, _foldBodies, _rangeSel(r), next),
+    );
   }
 
   void _multiClear() {
     final r = _multiRange;
     if (r == null) return;
     _multiMult = 1.0;
-    _applyBatchKeep(batchClearWeight(_controller.text, r.$1, r.$2));
+    _applyBatchKeep(
+      batchClearWeightUnits(_controller.text, _foldBodies, _rangeSel(r)),
+    );
   }
 
-  /// 批量禁用/启用:第一枚的状态决定目标(web 同款),全体对齐。
+  /// 划词批量的「选中整组」:选区扩到整个权重组,经选区监听重进面板。
+  /// 先清 `_multiRange` —— 路由只在「新进多选」时重算起步读数,不清的话扩完
+  /// 读数还停在上一批,而调组权重得从组倍率起步才对得上。
+  void _multiSelectGroup(WeightSpan g, Set<int> _) {
+    setState(() => _multiRange = null);
+    _controller.selection = TextSelection(
+      baseOffset: g.start,
+      extentOffset: g.end,
+    );
+  }
+
+  /// 批量禁用/启用:与多选模式同一条语义(第一枚散标签定目标,折叠跳过)。
+  /// 从前按词条区间套 `~`,选区扫过折叠占位符时会把折叠拆散。
   void _multiToggleDisabled() {
     final r = _multiRange;
     if (r == null) return;
-    final toks = parseToks(_controller.text);
-    if (r.$1 >= toks.length) return;
-    final target = !toks[r.$1].disabled;
-    _applyBatchKeep(batchSetDisabled(_controller.text, r.$1, r.$2, target));
+    final sel = _rangeSel(r);
+    final units = topLevelUnits(_controller.text, _foldBodies);
+    final target = _disableTarget(units, sel);
+    if (target == null) return;
+    _applyBatchKeep(
+      setUnitsDisabled(_controller.text, _foldBodies, sel, target),
+    );
   }
 
   void _multiDelete() {
@@ -976,8 +1107,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
                             controller: _controller,
                             foldBodies: foldBodies,
                             selection: _sortSel,
-                            onSelectionChanged: (s) =>
-                                setState(() => _sortSel = s),
+                            onSelectionChanged: _setSortSel,
                             onMove: _moveUnits,
                             abnormalThreshold: settings.abnormalThreshold,
                           )
@@ -1036,51 +1166,87 @@ class _EditorPageState extends ConsumerState<EditorPage>
     );
   }
 
+  /// 批量面板(两处多选共用):选中集 → 能力位 → 面板。越界下标(正文刚被
+  /// 改短)先滤掉,面板只反映当前正文。
+  Widget _batchPanel(
+    Key key,
+    Set<int> sel,
+    double mult, {
+    required void Function(WeightSpan g, Set<int> covered) onSelectGroup,
+    required void Function(bool up) onWrap,
+    required void Function(bool up) onStepMult,
+    required VoidCallback onClearWeight,
+    required VoidCallback onToggleDisabled,
+    required VoidCallback onDelete,
+    required VoidCallback onClose,
+  }) {
+    final units = topLevelUnits(_controller.text, _foldBodies);
+    final live = {
+      for (final i in sel)
+        if (i >= 0 && i < units.length) i,
+    };
+    var canDisable = false;
+    var anyEnabled = false;
+    for (final i in live) {
+      if (units[i].tok case final t?) {
+        // 折叠单元不能禁用(套 ~ 会把折叠拆散),全是折叠时这个键就该灰着
+        canDisable = true;
+        if (!t.disabled) anyEnabled = true;
+      }
+    }
+    final group = _groupSelOf(units, live);
+    return BatchPanel(
+      key: key,
+      count: live.length,
+      mult: mult,
+      canWeight: weightRuns(units, live).isNotEmpty,
+      canDisable: canDisable,
+      anyEnabled: anyEnabled,
+      groupMult: group?.$1.mult,
+      onSelectGroup: group == null
+          ? null
+          : () => onSelectGroup(group.$1, group.$2),
+      onCopy: () => _copyUnits(live),
+      onWrap: onWrap,
+      onStepMult: onStepMult,
+      onClearWeight: onClearWeight,
+      onToggleDisabled: onToggleDisabled,
+      onDelete: onDelete,
+      onClose: onClose,
+    );
+  }
+
   Widget _dock() {
     // key 稳定=同一形态内更新不重播入场动画(如长按连续调权重);切形态才动画
+    //
+    // 两处多选共用同一张批量面板:多选模式点 chip 攒集合(可跳选),划词多选
+    // 扫出连续区间 —— 到了面板都只是「选中了哪些顶层单元」。
     if (_sortMode) {
-      // 说明文本换成真能用的批量操作条:选中数 + 禁用 + 删除。
-      final units = topLevelUnits(_controller.text, _foldBodies);
-      final sel = _sortSel.where((i) => i < units.length).toList()..sort();
-      var anyEnabled = false;
-      var anyTag = false;
-      for (final i in sel) {
-        if (units[i].tok case final t?) {
-          anyTag = true;
-          if (!t.disabled) anyEnabled = true;
-        }
-      }
-      return SortBatchBar(
-        key: const ValueKey('dock-sort'),
-        count: sel.length,
-        // 折叠单元不能禁用(套 ~ 会把折叠拆散),全是折叠时这个键就该灰着
-        canDisable: anyTag,
-        anyEnabled: anyEnabled,
+      return _batchPanel(
+        const ValueKey('dock-sort'),
+        _sortSel,
+        _sortMult,
+        // 扩到整组:组盖住的单元全部收进选中(读数随之落到组倍率)
+        onSelectGroup: (_, covered) => _setSortSel(covered),
+        onWrap: _sortWrap,
+        onStepMult: _sortStepMult,
+        onClearWeight: _sortClearWeight,
         onToggleDisabled: _sortToggleDisabled,
         onDelete: _sortDelete,
-        onClear: () => setState(() => _sortSel = {}),
+        onClose: () => _setSortSel({}),
       );
     }
     if (_multiRange != null) {
-      final toks = parseToks(_controller.text);
       final r = _multiRange!;
-      if (r.$1 < toks.length) {
-        final last = r.$2 < toks.length ? r.$2 : toks.length - 1;
-        var anyEnabled = false;
-        for (var i = r.$1; i <= last; i++) {
-          if (!toks[i].disabled) {
-            anyEnabled = true;
-            break;
-          }
-        }
-        return MultiTagPanel(
-          key: const ValueKey('dock-multi'),
-          count: last - r.$1 + 1,
-          mult: _multiMult,
-          anyEnabled: anyEnabled,
+      if (r.$1 < parseToks(_controller.text).length) {
+        return _batchPanel(
+          const ValueKey('dock-multi'),
+          _rangeSel(r),
+          _multiMult,
+          onSelectGroup: _multiSelectGroup,
           onWrap: _multiWrap,
           onStepMult: _multiStepMult,
-          onClear: _multiClear,
+          onClearWeight: _multiClear,
           onToggleDisabled: _multiToggleDisabled,
           onDelete: _multiDelete,
           onClose: _multiClose,

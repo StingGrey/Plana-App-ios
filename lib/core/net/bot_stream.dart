@@ -14,6 +14,7 @@ import 'gen_abort.dart';
 /// - [onProgress] `(step, total, preview?)`:逐步进度,WS 携带预览图 base64。
 /// - [onQueue] `(queuePos)`:排队中。
 /// - [onStage] `(note)`:特殊阶段文案(anima Modal 冷启动 status=starting)。
+/// - [onWarning] `(msg)`:非致命提醒(如 LoRA 超上限被丢弃),图照常出,只触发一次。
 Future<Uint8List> streamBotTask({
   required String baseUrl,
   required String sessionId,
@@ -22,11 +23,14 @@ Future<Uint8List> streamBotTask({
   void Function(int step, int total, Uint8List? preview)? onProgress,
   void Function(int queuePos)? onQueue,
   void Function(String note)? onStage,
+  void Function(String msg)? onWarning,
   GenAbort? abort,
   Duration timeout = const Duration(minutes: 5),
 }) async {
   final completer = Completer<Uint8List>();
   var lastStep = -1;
+  // WS 和轮询都会带同一条 warning,只报一次
+  var warned = false;
 
   void done(Uint8List bytes) {
     if (!completer.isCompleted) {
@@ -50,6 +54,13 @@ Future<Uint8List> streamBotTask({
     logi('[bot] $taskId abort hook fired');
     fail(BackendException('已取消生成'));
   });
+
+  void warn(String? msg) {
+    if (warned || msg == null || msg.isEmpty) return;
+    warned = true;
+    logi('[bot] $taskId warning: $msg');
+    onWarning?.call(msg);
+  }
 
   // 单调递增守卫:防 WS/轮询交错导致进度回退。
   void progress(int step, int total, Uint8List? preview) {
@@ -88,6 +99,7 @@ Future<Uint8List> streamBotTask({
         break;
       case 'task_update':
         logi('[bot] $taskId ws: status=${m['status']}');
+        warn(m['warning'] as String?);
         switch (m['status']) {
           case 'completed':
             final r = m['result'];
@@ -150,6 +162,7 @@ Future<Uint8List> streamBotTask({
         logi('[bot] $taskId poll: status=${t.status} ${t.step}/${t.totalSteps}');
       }
       if (!t.success) return; // 尚未可见,继续
+      warn(t.warning);
       if (t.completed) {
         final b64 = t.imageBase64;
         if (b64 != null && b64.isNotEmpty) {

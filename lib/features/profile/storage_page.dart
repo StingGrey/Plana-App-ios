@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/net/remote_image.dart';
 import '../../core/store/app_stores.dart';
 import '../../core/store/cache_sweep.dart';
 import '../../core/store/storage_settings.dart';
@@ -11,6 +12,8 @@ import '../char_library/char_library.dart';
 import '../gallery/gallery_state.dart';
 import '../generate/vibe_cache.dart';
 import '../generate/widgets/common.dart' show confirmDialog, hintSnack;
+import '../inspiration/codex/codex_providers.dart';
+import '../inspiration/tag_library.dart';
 import '../vibe_library/vibe_library.dart';
 import 'widgets/settings_ui.dart';
 
@@ -33,11 +36,14 @@ class _CatSpec {
 
 const _cleanable = <_CatSpec>[
   _CatSpec('temp', Icons.folder_delete_outlined, '导入临时文件', '清理'),
+  _CatSpec('imgCache', Icons.image_outlined, '在线图片缓存', '清空'),
+  _CatSpec('codexCache', Icons.menu_book_outlined, '法典数据缓存', '清空'),
   _CatSpec('gallery', Icons.photo_library_outlined, '图库作品', '清空'),
   _CatSpec('blobs', Icons.layers_outlined, '参考图快照', '清理'),
   _CatSpec('vibeEnc', Icons.bolt_outlined, 'Vibe 编码缓存', '清空'),
   _CatSpec('vibeLib', Icons.palette_outlined, 'Vibe 库', '清空'),
   _CatSpec('charLib', Icons.person_outline, '角色参考库', '清空'),
+  _CatSpec('tagPrev', Icons.lightbulb_outline, '灵感预览图', '清空'),
 ];
 
 /// 单独成组,**不能混进「可清理」** —— 那一组里的东西删掉都能免费重建,
@@ -115,6 +121,26 @@ class _StoragePageState extends ConsumerState<StoragePage> {
     switch (key) {
       case 'temp':
         await _run(key, () => sweepPickerCache(minAge: Duration.zero));
+      case 'imgCache':
+        // 纯缓存,删了只是下次重下,不必确认
+        await _run(key, RemoteImageStore.clear);
+      case 'codexCache':
+        await _run(key, () => ref.read(codexServiceProvider).clearCache());
+      case 'tagPrev':
+        final n = _report?['tagPrev']?.count;
+        final ok = await confirmDialog(
+          context,
+          title: '清空灵感预览图',
+          message:
+              '将删除本机生成的${n == null ? '' : ' $n 张'}条目预览图,'
+              '并从条目上摘除引用;条目本身与提示词不受影响,预览需重新生成。',
+          confirmLabel: '清空',
+        );
+        if (!ok) return;
+        await _run(
+          key,
+          () => ref.read(tagLibraryProvider.notifier).clearLocalPreviews(),
+        );
       case 'gallery':
         final n = _report?['gallery']?.count;
         final ok = await confirmDialog(

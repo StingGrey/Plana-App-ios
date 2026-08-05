@@ -1,10 +1,9 @@
-import 'dart:convert';
-
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/theme/app_theme.dart';
+import '../../core/util/file_read.dart';
 import '../generate/widgets/common.dart' show hintSnack;
 import 'web_backup.dart';
 import 'web_backup_import.dart';
@@ -28,37 +27,42 @@ class _WebBackupPageState extends ConsumerState<WebBackupPage> {
   /// 导入完成后的结果行(逐类计数 + 跳过说明),null = 还没导过。
   List<(String, String)>? _result;
 
+  /// 进行中的逐条进度(「Vibe 42/300」),空 = 还没开始报数。
+  String _progress = '';
+
   Future<void> _pick() async {
     if (_busy) return;
     setState(() {
       _error = null;
       _result = null;
     });
+    // withData: false —— 备份可能上百 MB,拿路径流式解析,别整份读进内存
     final res = await FilePicker.platform.pickFiles(
       type: FileType.any, // 备份是 .json,但各家文件管理器的 mime 过滤不可靠
-      withData: true,
     );
     final file = res?.files.firstOrNull;
-    final bytes = file?.bytes;
-    if (bytes == null || !mounted) return;
+    if (file == null || !mounted) return;
+    // 大文件解析要一会儿:先撤掉上一份的清单,免得下面的按钮跟着报「正在导入」
+    setState(() {
+      _busy = true;
+      _backup = null;
+      _fileName = null;
+    });
     try {
-      final b = WebBackup.parse(utf8.decode(bytes));
+      final b = WebBackup.fromDecoded(await readPickedJson(file));
+      if (!mounted) return;
       setState(() {
         _backup = b;
-        _fileName = file!.name;
+        _fileName = file.name;
       });
     } on FormatException catch (e) {
-      setState(() {
-        _backup = null;
-        _fileName = null;
-        _error = e.message;
-      });
+      if (!mounted) return;
+      setState(() => _error = e.message.isEmpty ? '不是有效的 JSON 文件' : e.message);
     } catch (_) {
-      setState(() {
-        _backup = null;
-        _fileName = null;
-        _error = '文件读取失败(不是 UTF-8 文本?)';
-      });
+      if (!mounted) return;
+      setState(() => _error = '文件读取失败(不是 UTF-8 文本?)');
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
@@ -67,10 +71,18 @@ class _WebBackupPageState extends ConsumerState<WebBackupPage> {
     if (b == null || _busy) return;
     // 自选面板 + 落库全在 runWebBackupImport 里(与灵感库手动导入共用同一套)
     setState(() => _busy = true);
-    final out = await runWebBackupImport(context, ref, b);
+    final out = await runWebBackupImport(
+      context,
+      ref,
+      b,
+      onProgress: (label, done, total) {
+        if (mounted) setState(() => _progress = '$label $done/$total');
+      },
+    );
     if (!mounted) return;
     setState(() {
       _busy = false;
+      _progress = '';
       if (out == null) return; // 用户在自选面板取消
       _result = out.rows;
       _error = out.errors.isEmpty ? null : out.errors.join('\n');
@@ -104,7 +116,11 @@ class _WebBackupPageState extends ConsumerState<WebBackupPage> {
           FilledButton.tonalIcon(
             onPressed: _busy ? null : _pick,
             icon: const Icon(Icons.folder_open_outlined, size: 19),
-            label: Text(b == null ? '选择备份文件' : '重新选择'),
+            label: Text(
+              b != null
+                  ? '重新选择'
+                  : (_busy ? '正在读取…' : '选择备份文件'), // 上百 MB 的备份解析要几秒
+            ),
             style: FilledButton.styleFrom(
               minimumSize: const Size.fromHeight(48),
             ),
@@ -146,7 +162,11 @@ class _WebBackupPageState extends ConsumerState<WebBackupPage> {
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : const Icon(Icons.download_outlined, size: 19),
-              label: Text(_busy ? '正在导入…' : '选择内容并导入'),
+              label: Text(
+                !_busy
+                    ? '选择内容并导入'
+                    : (_progress.isEmpty ? '正在导入…' : '正在导入 $_progress'),
+              ),
               style: FilledButton.styleFrom(
                 minimumSize: const Size.fromHeight(48),
               ),

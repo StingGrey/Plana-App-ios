@@ -16,7 +16,7 @@ export 'models.dart' show GenProvider, isAnimaModel, providerOfModel;
 ///   面板发起的生成也不发其数据(工作区数据保留,条件恢复即回来);
 /// - 图库快照按剥离后状态入库,「重新生成」忠实复现。
 /// 新增模块 = 注册表加行(标 provider)+ 主页 `_moduleCard` 加卡。
-enum GenModule { character, vibe, charRef, img2img, lora }
+enum GenModule { character, vibe, charRef, img2img, lora, hires, animaNl }
 
 /// 注册表条目:图标与名称同主页卡片,管理页与卡片一眼对上。
 class GenModuleDef {
@@ -52,9 +52,21 @@ const kGenModuleDefs = <GenModuleDef>[
   ),
   GenModuleDef(GenModule.img2img, Icons.image_outlined, '图生图'),
   GenModuleDef(
+    GenModule.animaNl,
+    Icons.format_align_left,
+    '自然语言描述',
+    provider: GenProvider.anima,
+  ),
+  GenModuleDef(
     GenModule.lora,
     Icons.auto_awesome_outlined,
     'LoRA',
+    provider: GenProvider.anima,
+  ),
+  GenModuleDef(
+    GenModule.hires,
+    Icons.bolt_outlined,
+    '重绘放大',
     provider: GenProvider.anima,
   ),
 ];
@@ -70,7 +82,7 @@ const kDefaultOrderByProvider = <GenProvider, List<GenModule>>{
     GenModule.charRef,
     GenModule.img2img,
   ],
-  GenProvider.anima: [GenModule.lora],
+  GenProvider.anima: [GenModule.animaNl, GenModule.lora, GenModule.hires],
 };
 
 class GenModuleSettings {
@@ -188,7 +200,34 @@ GenerateState stripHiddenModules(GenerateState s, GenModuleSettings ms) {
   if (!on(GenModule.lora) && out.loras.isNotEmpty) {
     out = out.copyWith(loras: const []);
   }
+  // 自然语言描述没有可剥的数据:产出的句子由用户逐段点进正向词,那之后就是
+  // 提示词本身(NAI 下照样发)。模块隐藏只是收走卡片,不该反手改用户的词。
+  // hires 没有独立数据,「剥离」= 关掉开关(配置本身留着,模块恢复即回来)
+  if (!on(GenModule.hires) && out.params.hires.enabled) {
+    out = out.copyWith(
+      params: out.params.copyWith(
+        hires: out.params.hires.copyWith(enabled: false),
+      ),
+    );
+  }
   return out;
+}
+
+/// 真正会进载荷、因而该计入 token 读数的角色串。
+///
+/// 除了各自的启用位,还整组过一遍模块可见性:角色模块对当前模型不可见时
+/// (anima 下的 NAI 四件套、模块被用户关掉、型号不支持)一律为空 —— 这些角色
+/// 已被 [stripHiddenModules] 从请求里剥掉,卡片也不渲染,读数里再算它们就是
+/// 「切到 anima 数字自己变大」的幽灵。
+///
+/// 等价于切走时把 NAI 角色整组禁用、切回来再放开,但不动存量数据:手动关掉的
+/// 角色切回去还是关着,anima 下被杀进程也不会把启用位丢掉。
+List<CharacterPrompt> countedCharacters(GenerateState s, GenModuleSettings ms) {
+  if (!ms.isVisibleFor(GenModule.character, s.params.model)) return const [];
+  return [
+    for (final c in s.characters)
+      if (c.enabled) c,
+  ];
 }
 
 const _key = 'gen_modules';

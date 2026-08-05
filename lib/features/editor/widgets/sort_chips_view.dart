@@ -462,10 +462,13 @@ class _TagChip extends StatelessWidget {
                     const SizedBox(width: 5),
                     Text(
                       '×${fmtMult(mult)}',
+                      // 读数只报数,不跟着权重变红蓝 —— 高低看 chip 底色与边框
                       style: TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.w700,
-                        color: weightColor,
+                        color: tok.disabled
+                            ? scheme.outline
+                            : scheme.onSurface,
                       ),
                     ),
                   ],

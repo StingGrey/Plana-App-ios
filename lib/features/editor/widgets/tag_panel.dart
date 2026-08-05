@@ -267,7 +267,14 @@ class _TagPanelState extends State<TagPanel> {
                   child: Text(
                     '×${fmtMult(tok.ownMult)}',
                     textAlign: TextAlign.center,
-                    style: mono(context, size: 16, color: wc),
+                    // 读数只报数,不跟着权重变红蓝 —— 高低看名字色与正文色带
+                    style: mono(
+                      context,
+                      size: 16,
+                      color: tok.disabled
+                          ? scheme.onSurfaceVariant
+                          : scheme.onSurface,
+                    ),
                   ),
                 ),
                 _RepeatBtn(
@@ -539,7 +546,7 @@ class _Header extends StatelessWidget {
   }
 }
 
-// ---- 面板共享控件(单词条 TagPanel 与多选 MultiTagPanel 共用)----
+// ---- 面板共享控件(单词条 TagPanel 与多选 BatchPanel 共用)----
 
 /// 括号快捷键按钮(`[ ]` / `{ }`,语义色填充)。
 Widget _weightBtn(
@@ -659,187 +666,76 @@ Widget _circleIcon(
   );
 }
 
-/// 划词多选批量面板(web multiSelectPanel 移植):选区盖住 ≥2 枚词条时
-/// 替换词条栏。操作逐词应用,应用后选区保持、面板不关(删除/关闭除外)。
-class MultiTagPanel extends StatelessWidget {
-  const MultiTagPanel({
+/// 多选批量面板 —— **划词多选与多选模式共用同一张**:已选数 + 整体权重
+/// + 清除权重 / 禁用 / 删除。
+///
+/// 面板不认识「怎么选的」:划词是选区扫出的连续区间,多选模式是点 chip 攒出
+/// 的集合(可跳选),到这里都只剩已选数与几个能力位。移动不在这里 —— 那是
+/// 多选模式画布上点 chip 间隙的 ⊕,就地完成。
+///
+/// 未选中(只可能出现在多选模式)时按钮全灰,但面板留着占位,不让画布高度
+/// 在选/不选之间来回跳。
+class BatchPanel extends StatelessWidget {
+  const BatchPanel({
     super.key,
     required this.count,
     required this.mult,
+    required this.canWeight,
+    required this.canDisable,
     required this.anyEnabled,
+    this.groupMult,
+    this.onSelectGroup,
+    required this.onCopy,
     required this.onWrap,
     required this.onStepMult,
-    required this.onClear,
+    required this.onClearWeight,
     required this.onToggleDisabled,
     required this.onDelete,
     required this.onClose,
   });
 
-  /// 选中的词条数。
+  /// 已选单元数(0 = 多选模式里还没点;划词多选恒 ≥2)。
   final int count;
 
-  /// 面板本地的统一数值权重读数(进入多选时重置 1.0)。
+  /// 面板本地的统一数值权重读数(换一批选中即重置 1.0)。
   final double mult;
+
+  /// 所选里有能加权的连续段(全是零散折叠单元时没有,见 weightRuns)。
+  final bool canWeight;
+
+  /// 所选里有散标签(折叠单元不能禁用)。
+  final bool canDisable;
 
   /// 选中里还有启用的 → 动作为「全部禁用」;全禁 → 「全部启用」。
   final bool anyEnabled;
 
+  /// 这一批处在更外层权重组里时的组倍率(与 [onSelectGroup] 同进同退)。
+  final double? groupMult;
+
+  /// 把选中扩到整个权重组(扩了才能调组权重);null=没有更外层的组。
+  final VoidCallback? onSelectGroup;
+
+  /// 复制所选(折叠摊平成成员,权重/禁用记号照搬)。
+  final VoidCallback onCopy;
+
   final void Function(bool up) onWrap;
   final void Function(bool up) onStepMult;
-  final VoidCallback onClear;
+  final VoidCallback onClearWeight;
   final VoidCallback onToggleDisabled;
   final VoidCallback onDelete;
+
+  /// 划词:关面板并折叠选区;多选模式:清空选中(模式本身由底栏退出)。
   final VoidCallback onClose;
 
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final pal = context.editor;
-
-    return Material(
-      color: scheme.surfaceContainer,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 10, 12, 12),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.select_all, size: 18, color: scheme.primary),
-                const SizedBox(width: 7),
-                Expanded(
-                  child: Text(
-                    '已选 $count 枚词条',
-                    style: context.texts.titleMedium!.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-                _circleIcon(context, icon: Icons.close, onTap: onClose),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Text(
-                  '整体',
-                  style: context.texts.bodyMedium!.copyWith(
-                    color: scheme.onSurfaceVariant,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                _weightBtn(
-                  context,
-                  '[ ]',
-                  pal.weightDown,
-                  scheme.onError,
-                  enabled: true,
-                  onTap: () => onWrap(false),
-                ),
-                const SizedBox(width: 6),
-                _weightBtn(
-                  context,
-                  '{ }',
-                  pal.weightUp,
-                  scheme.onError,
-                  enabled: true,
-                  onTap: () => onWrap(true),
-                ),
-                const Spacer(),
-                _RepeatBtn(
-                  icon: Icons.remove,
-                  enabled: true,
-                  step: () => onStepMult(false),
-                ),
-                SizedBox(
-                  width: 60,
-                  child: Text(
-                    '×${fmtMult(mult)}',
-                    textAlign: TextAlign.center,
-                    style: mono(context, size: 16, color: scheme.onSurface),
-                  ),
-                ),
-                _RepeatBtn(
-                  icon: Icons.add,
-                  enabled: true,
-                  step: () => onStepMult(true),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: _action(
-                    context,
-                    '清除权重',
-                    enabled: true,
-                    onTap: onClear,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: _action(
-                    context,
-                    anyEnabled ? '全部禁用' : '全部启用',
-                    icon: anyEnabled ? Icons.visibility_off : Icons.visibility,
-                    enabled: true,
-                    onTap: onToggleDisabled,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: _action(
-                    context,
-                    '删除',
-                    icon: Icons.delete_outline,
-                    danger: true,
-                    enabled: true,
-                    onTap: onDelete,
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// 多选模式(chip 流)的批量操作条:已选数 + 禁用 + 删除。
-///
-/// 移动不在这里 —— 那是点 chip 间隙的 ⊕,在画布上就地完成。这条只放"选完
-/// 之后对这一批做什么"。未选中时按钮全灰,但条本身留着占位,不让画布高度
-/// 在选/不选之间来回跳。
-class SortBatchBar extends StatelessWidget {
-  const SortBatchBar({
-    super.key,
-    required this.count,
-    required this.canDisable,
-    required this.anyEnabled,
-    required this.onToggleDisabled,
-    required this.onDelete,
-    required this.onClear,
-  });
-
-  final int count;
-
-  /// 所选里有散标签(折叠单元不能禁用)。
-  final bool canDisable;
-
-  /// 所选里还有启用的 → 动作为「全部禁用」;全禁 → 「全部启用」。
-  final bool anyEnabled;
-
-  final VoidCallback onToggleDisabled;
-  final VoidCallback onDelete;
-  final VoidCallback onClear;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = context.scheme;
     final has = count > 0;
+    final weight = has && canWeight;
+    // 没得禁用时读数无意义,标签保持「全部禁用」的默认相,不跳字
+    final off = anyEnabled || !canDisable;
+
     return Material(
       color: scheme.surfaceContainer,
       child: Padding(
@@ -865,20 +761,133 @@ class SortBatchBar extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (has)
-                  _circleIcon(context, icon: Icons.close, onTap: onClear),
+                if (has) ...[
+                  _circleIcon(
+                    context,
+                    icon: Icons.content_copy,
+                    onTap: onCopy,
+                  ),
+                  const SizedBox(width: 4),
+                  _circleIcon(context, icon: Icons.close, onTap: onClose),
+                ],
               ],
             ),
-            const SizedBox(height: 10),
+            // 这一批还在更大的权重组里:一键把选中扩到整组,才好调组权重
+            // (单词条栏同款入口)。
+            if (onSelectGroup != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 5),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.layers_outlined,
+                      size: 15,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        '处于权重组 ×${fmtMult(groupMult ?? 1)}',
+                        style: context.texts.labelSmall!.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                    Material(
+                      color: scheme.secondaryContainer,
+                      borderRadius: BorderRadius.circular(9),
+                      clipBehavior: Clip.antiAlias,
+                      child: InkWell(
+                        onTap: onSelectGroup,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 9,
+                            vertical: 5,
+                          ),
+                          child: Text(
+                            '选中整组',
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w600,
+                              color: scheme.onSecondaryContainer,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            const SizedBox(height: 8),
+            // 权重:括号快捷键(左)· 统一数值加减(右,长按持续步进)
+            Row(
+              children: [
+                Text(
+                  '整体',
+                  style: context.texts.bodyMedium!.copyWith(
+                    color: weight ? scheme.onSurfaceVariant : scheme.outline,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                _weightBtn(
+                  context,
+                  '[ ]',
+                  pal.weightDown,
+                  scheme.onError,
+                  enabled: weight,
+                  onTap: () => onWrap(false),
+                ),
+                const SizedBox(width: 6),
+                _weightBtn(
+                  context,
+                  '{ }',
+                  pal.weightUp,
+                  scheme.onError,
+                  enabled: weight,
+                  onTap: () => onWrap(true),
+                ),
+                const Spacer(),
+                _RepeatBtn(
+                  icon: Icons.remove,
+                  enabled: weight,
+                  step: () => onStepMult(false),
+                ),
+                SizedBox(
+                  width: 60,
+                  child: Text(
+                    '×${fmtMult(mult)}',
+                    textAlign: TextAlign.center,
+                    style: mono(
+                      context,
+                      size: 16,
+                      color: weight ? scheme.onSurface : scheme.outlineVariant,
+                    ),
+                  ),
+                ),
+                _RepeatBtn(
+                  icon: Icons.add,
+                  enabled: weight,
+                  step: () => onStepMult(true),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
             Row(
               children: [
                 Expanded(
                   child: _action(
                     context,
-                    anyEnabled || !canDisable ? '全部禁用' : '全部启用',
-                    icon: anyEnabled || !canDisable
-                        ? Icons.visibility_off
-                        : Icons.visibility,
+                    '清除权重',
+                    enabled: weight,
+                    onTap: onClearWeight,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _action(
+                    context,
+                    off ? '全部禁用' : '全部启用',
+                    icon: off ? Icons.visibility_off : Icons.visibility,
                     enabled: has && canDisable,
                     onTap: onToggleDisabled,
                   ),

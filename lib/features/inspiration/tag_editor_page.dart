@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
+import '../../core/net/remote_image.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/util/image_pick.dart';
 import '../gallery/gallery_state.dart';
@@ -1402,7 +1403,7 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
     } else if (s.ref?.isNotEmpty ?? false) {
       final r = s.ref!;
       content = r.startsWith('http')
-          ? Image.network(
+          ? RemoteImage(
               r,
               fit: BoxFit.cover,
               errorBuilder: (_, _, _) => _emptySlotIcon(scheme),

@@ -18,13 +18,12 @@ class PromptCard extends ConsumerWidget {
     final state = ref.watch(generateProvider);
     final notifier = ref.read(generateProvider.notifier);
     final scheme = context.scheme;
-    // web totalTokenCount 口径:主串 + 启用角色串 + 激活预设(都实际参与生成)
+    // web totalTokenCount 口径:主串 + 启用角色串 + 激活预设(都实际参与生成)。
+    // 角色串取 countedCharactersProvider —— 模块不可见(anima 等)时为空,
+    // 不然会出现「切到 anima 计数凭空变大」的幽灵。
     final tok = ref.watch(naiTokenizerProvider).value;
     final preset = ref.watch(promptPresetsProvider).value?.active;
-    final chars = [
-      for (final c in state.characters)
-        if (c.enabled) c,
-    ];
+    final chars = ref.watch(countedCharactersProvider);
     final promptTokens = totalPromptTokens(
       tok,
       main: state.prompt,

@@ -11,18 +11,22 @@ import '../../core/store/app_stores.dart';
 import '../../core/store/prefs_store.dart';
 import '../../core/theme/app_theme.dart';
 import '../gallery/gallery_page.dart';
-import '../gallery/gallery_state.dart';
 import '../generate/generate_page.dart';
 import '../generate/generation_controller.dart';
 import '../generate/widgets/common.dart' show hintSnack;
-import '../inpaint/inpaint_overlay.dart';
 import '../inspiration/inspiration_page.dart';
 import '../profile/profile_page.dart';
 import '../update/update_service.dart';
 import '../update/update_sheet.dart' show showUpdateSheet;
 import 'shell_state.dart';
 
-/// 全局骨架:4 tab 底部导航 + PageView 左右滑动切页(手势滑 + 点按/程序跳转都走同一索引)。
+/// 全局骨架:4 tab 底部导航 + PageView 切页。
+///
+/// **横滑翻 tab 已关掉**(physics 恒为 NeverScrollable),切页只认底部导航点按与
+/// 程序跳转(生成完跳图库、缺 token 跳我的)。PageView 留着只为那段横向推移动画。
+/// 关掉的理由:页内本来就需要横向手势(图库大图翻页、缩放平移),tab 级横滑与它们
+/// 长期抢竞技场 —— 以前靠「碰一下图就锁 shell」的补丁压着,页内一有正经翻页需求
+/// 就压不住了。整个横向手势层交给页面自己,shell 不再参与。
 class AppShell extends ConsumerStatefulWidget {
   const AppShell({super.key});
 
@@ -100,14 +104,8 @@ class _AppShellState extends ConsumerState<AppShell> {
   @override
   Widget build(BuildContext context) {
     final index = ref.watch(shellIndexProvider);
-    // 图库 tab 上重绘编辑中 / 大图缩放中:锁 PageView 横滑
-    // (防抢涂抹与拖动手势);其他 tab 横滑自由。
-    final lockSwipe =
-        (ref.watch(inpaintSessionProvider) != null ||
-            ref.watch(galleryZoomedProvider)) &&
-        index == kTabGallery;
 
-    // 索引变化(导航点按 / 生成后跳图库)→ 滑到对应页(手势滑动来的已就位,跳过)。
+    // 索引变化(导航点按 / 生成后跳图库)→ 滑到对应页。
     ref.listen<int>(shellIndexProvider, (prev, next) {
       if (!_pc.hasClients) return;
       final current = _pc.page?.round() ?? _pc.initialPage;
@@ -139,12 +137,21 @@ class _AppShellState extends ConsumerState<AppShell> {
       ref.read(generationProvider.notifier).clearError();
     });
 
+    // 生成侧非致命提醒(LoRA 超上限被丢弃等):图照常出,但得说一声,
+    // 否则用户对着一个根本没生效的 LoRA 查半天。
+    ref.listen<String?>(genNoticeProvider, (prev, next) {
+      if (next == null || next.isEmpty) return;
+      hintSnack(context, next, icon: Icons.info_outline);
+      ref.read(genNoticeProvider.notifier).clear();
+    });
+
     return Scaffold(
       body: SafeArea(
         bottom: false,
         child: PageView(
           controller: _pc,
-          physics: lockSwipe ? const NeverScrollableScrollPhysics() : null,
+          // 只让程序 animateToPage 驱动;用户横滑一律不吃
+          physics: const NeverScrollableScrollPhysics(),
           onPageChanged: (i) => ref.read(shellIndexProvider.notifier).select(i),
           children: _pages,
         ),

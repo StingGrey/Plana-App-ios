@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
@@ -25,6 +26,7 @@ class BotTask {
     this.totalSteps = 0,
     this.imageBase64,
     this.error,
+    this.warning,
     this.queuePosition = 0,
   });
 
@@ -34,6 +36,9 @@ class BotTask {
   final int totalSteps;
   final String? imageBase64; // 完成时的结果图
   final String? error;
+
+  /// 非致命提醒:图照常出,但有东西没生效(目前只有 LoRA 超上限被丢弃)。
+  final String? warning;
   final int queuePosition;
 
   bool get completed => status == 'completed';
@@ -52,6 +57,7 @@ class BotTask {
       totalSteps: (j['total_steps'] as num?)?.toInt() ?? 0,
       imageBase64: img,
       error: j['error'] as String?,
+      warning: j['warning'] as String?,
       queuePosition: (j['queue_position'] as num?)?.toInt() ?? 0,
     );
   }
@@ -76,7 +82,7 @@ class PublicVibeMeta {
   final String name;
   final String filename;
 
-  /// 公开缩略图端点绝对 URL(直接喂 Image.network)。
+  /// 公开缩略图端点绝对 URL(直接喂 RemoteImage)。
   final String thumbnailUrl;
   final List<String> supportedModels;
   final double? defaultStrength;
@@ -514,6 +520,10 @@ class LoraCardInfo {
     this.addedBy = 'web',
     this.favorited = false,
     this.favoriteCount = 0,
+    this.visibility = 'public',
+    this.isOwner = false,
+    this.syncError,
+    this.hasTe,
   });
 
   /// LR 编号(LR1…),生成载荷与收藏操作都用它。
@@ -528,14 +538,52 @@ class LoraCardInfo {
   final String sourceUrl;
   final double? sizeMb;
 
-  /// synced = 已在机房就绪;其余值(pending/failed)不可挂载。
+  /// synced = 已在机房就绪;其余值(pending/uploading/failed)不可挂载。
   final String syncStatus;
   final int usageCount;
   final String addedBy;
   final bool favorited;
   final int favoriteCount;
 
+  /// public / private —— 私有条目只有上传者本人拉得到,也不进公共库。
+  final String visibility;
+
+  /// 当前账号是不是这条的上传者(重试推送只有本人能做)。
+  final bool isOwner;
+
+  /// 推送机房失败的原因([syncStatus] == 'failed' 时才有)。
+  final String? syncError;
+
+  /// 有没有文本编码器权重。false = 只训了画面侧,CLIP 强度调了不会有任何变化;
+  /// null = 服务端还没探测过(老条目),按可调处理。
+  final bool? hasTe;
+
   bool get ready => syncStatus == 'synced';
+  bool get isPrivate => visibility == 'private';
+
+  /// 用户自己上传的文件还在 server→机房的推送途中。
+  bool get pushing => syncStatus == 'uploading';
+
+  /// 就地改收藏关系用;只列会变的那两个字段,其余原样带过。
+  LoraCardInfo copyWith({bool? favorited, int? favoriteCount}) => LoraCardInfo(
+    name: name,
+    displayName: displayName,
+    type: type,
+    triggerWords: triggerWords,
+    recommendedWeight: recommendedWeight,
+    previewUrl: previewUrl,
+    sourceUrl: sourceUrl,
+    sizeMb: sizeMb,
+    syncStatus: syncStatus,
+    usageCount: usageCount,
+    addedBy: addedBy,
+    favorited: favorited ?? this.favorited,
+    favoriteCount: favoriteCount ?? this.favoriteCount,
+    visibility: visibility,
+    isOwner: isOwner,
+    syncError: syncError,
+    hasTe: hasTe,
+  );
 
   factory LoraCardInfo.fromJson(Map<String, dynamic> j) => LoraCardInfo(
     name: j['name']?.toString() ?? '',
@@ -557,7 +605,97 @@ class LoraCardInfo {
     addedBy: j['added_by']?.toString() ?? 'web',
     favorited: j['favorited'] == true,
     favoriteCount: (j['favorite_count'] as num?)?.toInt() ?? 0,
+    visibility: j['visibility']?.toString() ?? 'public',
+    isOwner: j['is_owner'] == true,
+    syncError: (j['sync_error']?.toString().trim().isNotEmpty ?? false)
+        ? j['sync_error'].toString()
+        : null,
+    hasTe: j['has_te'] is bool ? j['has_te'] as bool : null,
   );
+}
+
+/// 图片元数据里一条 LoRA 引用的认领结果(`POST /api/lora/resolve`)。
+class LoraResolveResult {
+  const LoraResolveResult({
+    required this.name,
+    required this.hash,
+    required this.status,
+    this.matchedBy,
+    this.weight,
+    this.clipWeight,
+    this.item,
+    this.civitaiVersionId,
+    this.civitaiName = '',
+    this.civitaiBaseModel = '',
+    this.civitaiPreviewUrl = '',
+    this.civitaiTriggerWords = const [],
+    this.civitaiType = 'concept',
+    this.civitaiRecommendedWeight = 0.8,
+  });
+
+  /// 元数据里的原始名字与哈希(原样回传,便于对上是哪一行)。
+  final String name;
+  final String hash;
+
+  /// local = 库里有 / civitai = 库里没有但 Civitai 上找到了 / missing = 都没有。
+  final String status;
+
+  /// hash = 按文件哈希命中(同一个文件);name = 按名字命中(可能不是同一版本)。
+  final String? matchedBy;
+  final double? weight;
+  final double? clipWeight;
+
+  /// status=local 时的本地库条目。
+  final LoraCardInfo? item;
+
+  /// status=civitai 时可一键装库的版本号。
+  final int? civitaiVersionId;
+  final String civitaiName;
+
+  /// 非 Anima 底模的要警告 —— 装了也用不上(画崩或不生效)。
+  final String civitaiBaseModel;
+  final String civitaiPreviewUrl;
+
+  /// 下面三个是「还没入库就先占位挂上」用的:下载完成前也得有名字、类型、
+  /// 触发词可显示,不然占位条只能是个空壳。
+  final List<String> civitaiTriggerWords;
+  final String civitaiType;
+  final double civitaiRecommendedWeight;
+
+  bool get isLocal => status == 'local';
+  bool get isCivitai => status == 'civitai';
+
+  /// 展示名:优先真名,退回元数据里的原名。
+  String get label =>
+      item?.displayName ?? (civitaiName.isNotEmpty ? civitaiName : name);
+
+  factory LoraResolveResult.fromJson(Map<String, dynamic> j) {
+    final civitai = j['civitai'];
+    final c = civitai is Map<String, dynamic> ? civitai : const {};
+    final it = j['item'];
+    return LoraResolveResult(
+      name: j['name']?.toString() ?? '',
+      hash: j['hash']?.toString() ?? '',
+      status: j['status']?.toString() ?? 'missing',
+      matchedBy: j['matched_by']?.toString(),
+      weight: (j['weight'] as num?)?.toDouble(),
+      clipWeight: (j['clip_weight'] as num?)?.toDouble(),
+      item: it is Map<String, dynamic> ? LoraCardInfo.fromJson(it) : null,
+      civitaiVersionId: (c['version_id'] as num?)?.toInt(),
+      civitaiName: c['display_name']?.toString() ?? '',
+      civitaiBaseModel: c['base_model']?.toString() ?? '',
+      civitaiPreviewUrl: c['preview_url']?.toString() ?? '',
+      civitaiTriggerWords: [
+        for (final t in c['trigger_words'] is List
+            ? c['trigger_words'] as List
+            : const [])
+          if (t is String && t.isNotEmpty) t,
+      ],
+      civitaiType: c['type']?.toString() ?? 'concept',
+      civitaiRecommendedWeight:
+          (c['recommended_weight'] as num?)?.toDouble() ?? 0.8,
+    );
+  }
 }
 
 /// Civitai 在线搜索结果一条(`GET /api/lora/search`,服务端代理)。
@@ -628,6 +766,23 @@ class CivitaiLoraInfo {
   );
 }
 
+/// 一次自然语言补强的产出(`POST /api/agent/web/anima-nl`)。
+/// [text] 是要追加到正向词末尾的一整段英文(服务端已压平换行、剥掉引号/列表号,
+/// 并清掉会破坏提示词结构的 `<<` `>>` `~`);[noteZh] 只给用户看,不进提示词。
+class AnimaNlResult {
+  const AnimaNlResult({this.text = '', this.noteZh = ''});
+
+  final String text;
+  final String noteZh;
+
+  Map<String, dynamic> toJson() => {'text': text, 'note_zh': noteZh};
+
+  factory AnimaNlResult.fromJson(Map<String, dynamic> j) => AnimaNlResult(
+    text: j['text']?.toString().trim() ?? '',
+    noteZh: j['note_zh']?.toString().trim() ?? '',
+  );
+}
+
 /// Plana 后端客户端(当前仅含 bot 授权四端点里 App 要用的三个;
 /// verify 由 Bot 侧调用,App 不实现)。端点契约由后端项目定义,不在本仓库内。
 ///
@@ -662,6 +817,11 @@ class BackendClient {
       throw BackendException('无法连接后端,请检查地址与网络');
     }
 
+    return _decode(resp);
+  }
+
+  /// 响应体 → JSON 对象;非 2xx 抛 [BackendException](优先用 body 里的 detail)。
+  Map<String, dynamic> _decode(http.Response resp) {
     if (resp.statusCode < 200 || resp.statusCode >= 300) {
       var detail = '请求失败(${resp.statusCode})';
       try {
@@ -799,7 +959,7 @@ class BackendClient {
 
   // ── 公共 Vibe 库 ──────────────────────────────────────────────
 
-  /// 缩略图端点绝对 URL(公开,`<img>`/Image.network 直接引用)。
+  /// 缩略图端点绝对 URL(公开,`<img>`/RemoteImage 直接引用)。
   String publicVibeThumbUrl(String filename) =>
       '$baseUrl/api/vibes/thumbnail/${Uri.encodeComponent(filename)}';
 
@@ -1583,6 +1743,60 @@ class BackendClient {
     );
   }
 
+  /// 正在直拉的 LoRA 进度(`GET /api/lora/install/progress`)。
+  /// 下载在 Modal 机房进行,容器把已下字节写进共享 Dict,server 转发过来。
+  /// total=0 表示对面没给 content-length,只能显示「已下多少 MB」。
+  Future<
+    List<({int versionId, String name, int downloaded, int total, bool stale})>
+  >
+  loraInstallProgress() async {
+    final j = await _getJson('/lora/install/progress');
+    return [
+      for (final e in j['items'] is List ? j['items'] as List : const [])
+        if (e is Map<String, dynamic>)
+          (
+            versionId: (e['version_id'] as num?)?.toInt() ?? 0,
+            name: e['name']?.toString() ?? '',
+            downloaded: (e['downloaded'] as num?)?.toInt() ?? 0,
+            total: (e['total'] as num?)?.toInt() ?? 0,
+            stale: e['stale'] == true,
+          ),
+    ];
+  }
+
+  /// 认领图片元数据里的 LoRA 引用(`POST /api/lora/resolve`)。
+  ///
+  /// 服务端三级判定:SHA 前缀 → 名称 → Civitai by-hash → 找不到。别人的私有
+  /// LoRA 一律按未命中返回(不暴露其存在)。带上会话才能认领到自己的私有条目。
+  Future<List<LoraResolveResult>> resolveLoras({
+    String? sessionId,
+    required List<
+      ({String name, String hash, double? weight, double? clipWeight})
+    >
+    items,
+  }) async {
+    final j = await _postJson(
+      '/lora/resolve',
+      {
+        'items': [
+          for (final it in items)
+            {
+              'name': it.name,
+              'hash': it.hash,
+              'weight': it.weight,
+              'clip_weight': it.clipWeight,
+            },
+        ],
+      },
+      sessionId,
+      _timeout * 2, // 未命中的会去查 Civitai,比普通接口慢
+    );
+    return [
+      for (final e in j['items'] is List ? j['items'] as List : const [])
+        if (e is Map<String, dynamic>) LoraResolveResult.fromJson(e),
+    ];
+  }
+
   /// 在线「下载到我的库」:库里没有 → 机房直拉 Civitai 入 Volume + 写注册表;
   /// 已有 → 仅加收藏(服务端按 sha/版本去重,不重复下载)。
   /// 直拉在服务端同步完成,大文件要等 —— 超时放宽到 3 分钟。
@@ -1601,6 +1815,120 @@ class BackendClient {
       lrId: j['lr_id']?.toString(),
       message: j['message']?.toString() ?? '',
     );
+  }
+
+  /// 上传自己的 LoRA(`POST /api/lora/upload`,multipart)。
+  ///
+  /// 文件从磁盘边读边发,不整份读进内存(动辄几百 MB);[onProgress] 回报已发出
+  /// 的比例(0~1)。**不设总时限** —— 大文件走移动网络本来就慢,断线由 socket
+  /// 自己报错。
+  ///
+  /// 服务端收完只做校验与登记就返回,推进机房是它的后台任务:拿到 lrId 后要
+  /// 轮询 [loraUploadStatus] 到 synced 才算就绪。[dedup] = SHA 撞上库里已有
+  /// 条目,没新建,已替你收藏那条。
+  ///
+  /// [triggerGroups] 每条是一个「组/套装」(组内可含逗号),与注册表语义一致。
+  Future<({bool ok, String? lrId, bool dedup, String message})> uploadLora({
+    required String sessionId,
+    required String filePath,
+    required String fileName,
+    required int fileSize,
+    required String displayName,
+    required List<String> triggerGroups,
+    required String type,
+    required bool public,
+    void Function(double progress)? onProgress,
+  }) async {
+    if (baseUrl.isEmpty) throw BackendException('未配置后端地址');
+    var sent = 0;
+    final body = File(filePath).openRead().map((chunk) {
+      sent += chunk.length;
+      if (fileSize > 0) onProgress?.call(sent / fileSize);
+      return chunk;
+    });
+    final req = http.MultipartRequest('POST', _u('/lora/upload'))
+      ..headers['Authorization'] = 'Bearer $sessionId'
+      ..fields['display_name'] = displayName
+      ..fields['trigger_words'] = jsonEncode(triggerGroups)
+      ..fields['lora_type'] = type
+      ..fields['visibility'] = public ? 'public' : 'private'
+      ..files.add(
+        http.MultipartFile('file', body, fileSize, filename: fileName),
+      );
+
+    final http.Response resp;
+    try {
+      resp = await http.Response.fromStream(await req.send());
+    } catch (_) {
+      throw BackendException('上传中断,请检查网络后重试');
+    }
+    final j = _decode(resp);
+    return (
+      ok: j['ok'] == true,
+      lrId: j['lr_id']?.toString(),
+      dedup: j['dedup'] == true,
+      message: j['message']?.toString() ?? '',
+    );
+  }
+
+  /// 上传件推进机房的进度:uploading / synced / failed / missing(条目已不在)。
+  Future<({bool ok, String status, String? error})> loraUploadStatus(
+    String lrId,
+  ) async {
+    final j = await _getJson(
+      '/lora/upload/${Uri.encodeComponent(lrId)}/status',
+    );
+    return (
+      ok: j['ok'] == true,
+      status: j['status']?.toString() ?? 'missing',
+      error: j['error']?.toString(),
+    );
+  }
+
+  /// 推送失败后重来(复用服务端留着的那份临时文件,不用重传)。仅上传者本人。
+  Future<({bool ok, String message})> retryLoraUpload({
+    required String sessionId,
+    required String lrId,
+  }) async {
+    final j = await _postJson(
+      '/lora/${Uri.encodeComponent(lrId)}/retry_upload',
+      const {},
+      sessionId,
+    );
+    return (ok: j['ok'] == true, message: j['message']?.toString() ?? '');
+  }
+
+  /// 自然语言补强(anima 专属;登录:Bearer 头)。读当前正向词,产出可追加到
+  /// 其末尾的英文句子 —— anima 是 tag + 自然语言混训,句子负责空间关系/构图/
+  /// 光影/动作因果。一次 LLM 往返、非流式。
+  ///
+  /// [mode] 只接受 `characters`(多角色区分)/ `enhance`(整体补强);
+  /// [positive] 须是剥净仅编辑期语法的定稿(app 里即 `GenerateState.prompt`),
+  /// 空则服务端 400。[loras] 形如 `[{name, trigger_words}]`,仅作角色识别线索。
+  ///
+  /// 超时给 60s:服务端自己 45s 掐(504 带人话 detail),本地先断就只剩
+  /// 「连接后端超时」这句没信息量的兜底。
+  Future<AnimaNlResult> animaNl({
+    required String sessionId,
+    required String mode,
+    required String positive,
+    String extra = '',
+    String existingNl = '',
+    List<Map<String, dynamic>> loras = const [],
+  }) async {
+    final j = await _postJson(
+      '/agent/web/anima-nl',
+      {
+        'mode': mode,
+        'positive': positive,
+        'extra': extra,
+        'existing_nl': existingNl,
+        'loras': loras,
+      },
+      sessionId,
+      const Duration(seconds: 60),
+    );
+    return AnimaNlResult.fromJson(j);
   }
 }
 

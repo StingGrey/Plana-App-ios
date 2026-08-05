@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../../core/net/remote_image.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../editor/editor_models.dart' show draftOf, outputOf, pickEditorText;
 import '../../generate/generate_state.dart';
@@ -986,7 +987,7 @@ class _CodexHeroImagesState extends ConsumerState<_CodexHeroImages>
     if (url == null) return fallback;
     return ColoredBox(
       color: scheme.surfaceContainerHighest,
-      child: Image.network(
+      child: RemoteImage(
         url,
         fit: _fit,
         gaplessPlayback: true,
@@ -1115,7 +1116,7 @@ class _CodexHeroImagesState extends ConsumerState<_CodexHeroImages>
     return ColoredBox(
       // 定高后比例不一,contain 会留边,底色补上才像一张完整的卡
       color: scheme.surfaceContainerHighest,
-      child: Image.network(
+      child: RemoteImage(
         url,
         fit: _fit,
         gaplessPlayback: true,

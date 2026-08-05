@@ -9,6 +9,7 @@ import '../../../core/auth/bot_session_store.dart';
 import '../../../core/net/backend_client.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/ui/import_picker.dart';
+import '../../../core/util/file_read.dart';
 import '../../generate/widgets/common.dart' show confirmDialog, hintSnack;
 import '../../migrate/web_backup.dart';
 import '../../migrate/web_backup_import.dart';
@@ -593,15 +594,13 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
 
   Future<void> _importFile(TagCategoryDef d) async {
     if (_busy != null) return;
-    final res = await FilePicker.platform.pickFiles(
-      type: FileType.any,
-      withData: true,
-    );
-    final bytes = res?.files.firstOrNull?.bytes;
-    if (bytes == null || !mounted) return;
+    // withData: false —— 全量备份可能上百 MB,拿路径流式解析,别整份读进内存
+    final res = await FilePicker.platform.pickFiles(type: FileType.any);
+    final file = res?.files.firstOrNull;
+    if (file == null || !mounted) return;
     setState(() => _busy = 'file');
     try {
-      final j = jsonDecode(utf8.decode(bytes));
+      final j = await readPickedJson(file);
       if (j is! Map<String, dynamic>) {
         throw const FormatException('不是有效的 JSON 备份文件');
       }
@@ -611,7 +610,7 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
       // 面板里五类全列出来,勾什么导什么,不因为入口在灵感库就砍掉别的类。
       if (j['meta'] is Map &&
           (j['meta'] as Map)['identifier'] == kWebBackupIdentifier) {
-        final wb = WebBackup.parse(utf8.decode(bytes));
+        final wb = WebBackup.fromDecoded(j);
         if (wb.isEmpty) {
           throw const FormatException('这份 web 备份里没有可导入的内容');
         }

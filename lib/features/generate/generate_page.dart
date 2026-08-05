@@ -4,9 +4,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/ui/scroll_memory.dart';
 import 'gen_modules.dart';
 import 'generate_state.dart';
+import 'widgets/anima_nl_card.dart';
 import 'widgets/bottom_action_bar.dart';
 import 'widgets/char_ref_card.dart';
 import 'widgets/character_card.dart';
+import 'widgets/hires_card.dart';
 import 'widgets/img2img_card.dart';
 import 'widgets/lora_card.dart';
 import 'widgets/prompt_card.dart';
@@ -102,4 +104,6 @@ Widget _moduleCard(GenModule m, int index) => switch (m) {
   GenModule.charRef => CharRefCard(reorderIndex: index),
   GenModule.img2img => Img2ImgCard(reorderIndex: index),
   GenModule.lora => LoraCard(reorderIndex: index),
+  GenModule.hires => HiresCard(reorderIndex: index),
+  GenModule.animaNl => AnimaNlCard(reorderIndex: index),
 };

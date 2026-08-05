@@ -1,12 +1,14 @@
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
+import 'package:file_picker/file_picker.dart' show PlatformFile;
 import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/util/image_pick.dart';
+import '../../vibe_library/vibe_import.dart' show ingestVibeFiles;
 import '../../vibe_library/vibe_library.dart';
 import '../../vibe_library/vibe_library_page.dart';
 import '../generate_state.dart';
@@ -32,8 +34,14 @@ class _VibeCardState extends ConsumerState<VibeCard> {
   String? _selectedId;
 
   Future<void> _onAdd() async {
-    final files = await pickImageFiles(context);
-    if (files.isEmpty || !mounted) return;
+    final picked = await pickImagesOrFiles(context);
+    if (picked.isEmpty || !mounted) return;
+    // 图库里改走「从文件选」的:不限扩展名,vibe 文件也可能在里面
+    if (picked.files.isNotEmpty) return _addFiles(picked.files);
+    await _addImages(picked.images);
+  }
+
+  Future<void> _addImages(List<PickedImage> files) async {
     // 互斥态在加图前取一次:加 Vibe 会顺手停掉角色参考
     final hadCharRefs = ref.read(generateProvider).enabledCharRefs > 0;
     String? lastId;
@@ -64,6 +72,49 @@ class _VibeCardState extends ConsumerState<VibeCard> {
     }
     if (lastId == null) return;
     if (hadCharRefs) _mutexHint(); // 整批只提示一次
+    setState(() => _selectedId = lastId);
+  }
+
+  /// 从文件浏览器选来的:图片按参考图入库,vibe 文件按 vibe 解析(整包里的多条
+  /// 一并加进来),都先落 Vibe 库再取用 —— 纯编码 vibe 没有图,只能这么走。
+  Future<void> _addFiles(List<PlatformFile> files) async {
+    final lib = ref.read(vibeLibraryProvider.notifier);
+    final got = await ingestVibeFiles(lib, files);
+    if (!mounted) return;
+    final hadCharRefs = ref.read(generateProvider).enabledCharRefs > 0;
+    var failed = got.failed;
+    String? lastId;
+    for (final e in got.entries) {
+      final data = await lib.loadForGenerate(e);
+      if (!mounted) return;
+      if (data == null) {
+        failed++; // 落库了但当前拿不出可生成内容(如无任何编码的纯编码条目)
+        continue;
+      }
+      final id = ref
+          .read(generateProvider.notifier)
+          .addVibe(
+            image: data.image,
+            name: e.name,
+            imageHash: data.imageHash,
+            strength: e.defaultStrength ?? 0.6,
+            infoExtracted: data.image != null
+                ? (e.defaultInfoExtracted ?? 1.0)
+                : data.fixedInfoExtracted,
+            encodedByModel: data.encodedByModel,
+            sourceId: e.id,
+          );
+      if (id.isNotEmpty) lastId = id;
+    }
+    // 提示只留一条(新提示顶掉旧的):有失败先说失败,否则才提互斥
+    if (failed > 0) {
+      hintSnack(context, '$failed 个文件无法导入', icon: Icons.error_outline);
+    } else if (lastId == null) {
+      hintSnack(context, '没有可导入的内容', icon: Icons.error_outline);
+    } else if (hadCharRefs) {
+      _mutexHint();
+    }
+    if (lastId == null) return;
     setState(() => _selectedId = lastId);
   }
 

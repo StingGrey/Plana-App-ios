@@ -477,34 +477,81 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
     String fallbackName = '',
     String? originFilename,
   }) async {
-    await future;
     final parsed = parseVibeFileText(text);
+    return importVibeRaws(
+      [for (final p in parsed) p.raw],
+      fallbackName: fallbackName,
+      originFilename: parsed.length == 1 ? originFilename : null,
+    );
+  }
+
+  /// 同 [importVibeText],但吃已解析好的 JSON(流式读大文件用)。
+  Future<List<VibeEntry>> importVibeJson(
+    Object? j, {
+    String fallbackName = '',
+    void Function(int done, int total)? onProgress,
+  }) => importVibeRaws(
+    [for (final p in parseVibeJson(j)) p.raw],
+    fallbackName: fallbackName,
+    onProgress: onProgress,
+  );
+
+  /// 批量导入原始 vibe JSON(每个 map = 一个 .naiv4vibe 文件的内容)。
+  ///
+  /// 逐条落盘,索引与列表刷新**只在最后做一次**:上百条时既省掉 n 次全量索引
+  /// 重写,也省掉 n 次列表重建。调用方也不必先把整批拼成一个大 JSON 串再交进来
+  /// —— 那会让同一批 base64 图在内存里多存一到两份,几百条直接 OOM。
+  Future<List<VibeEntry>> importVibeRaws(
+    List<Map<String, dynamic>> raws, {
+    String fallbackName = '',
+    String? originFilename,
+    void Function(int done, int total)? onProgress,
+  }) async {
+    await future;
+    final kept = [..._entries]; // 库里原有的,按 id 就地覆盖
+    final keptAt = {for (var i = 0; i < kept.length; i++) kept[i].id: i};
+    final fresh = <VibeEntry>[]; // 本批新增的,最后整体插到最前
+    final freshAt = <String, int>{};
     final out = <VibeEntry>[];
-    var n = 0;
-    for (final p in parsed) {
-      final singleText = jsonEncode(p.raw);
+
+    for (var n = 0; n < raws.length; n++) {
+      final p = ParsedVibe(raws[n]);
       final id = p.id.isNotEmpty
           ? p.id
           : (p.imageBase64 != null
                 ? naiVibeIdOfBase64(p.imageBase64!)
                 : 'enc_${DateTime.now().millisecondsSinceEpoch}_$n');
       final fileName = '${_safeName(id)}.naiv4vibe';
+      final singleText = jsonEncode(p.raw);
       await File('${_filesDir.path}/$fileName').writeAsString(singleText);
-      final existing = _byId(id);
       final entry = await _entryFromParsed(
         p,
         id: id,
         fileName: fileName,
         sizeBytes: singleText.length,
         fallbackName: fallbackName,
-        originFilename: parsed.length == 1 ? originFilename : null,
-        existing: existing,
+        originFilename: originFilename,
+        existing: switch ((keptAt[id], freshAt[id])) {
+          (final int i, _) => kept[i],
+          (_, final int i) => fresh[i],
+          _ => null,
+        },
       );
       await _seedEncodings(p, entry.imageHash);
-      await _upsert(entry);
+      if (keptAt[id] case final int i) {
+        kept[i] = entry;
+      } else if (freshAt[id] case final int i) {
+        fresh[i] = entry; // 同一批里重复的 id,后一条覆盖前一条
+      } else {
+        freshAt[id] = fresh.length;
+        fresh.add(entry);
+      }
       out.add(entry);
-      n++;
+      onProgress?.call(n + 1, raws.length);
     }
+
+    // 与逐条 upsert 同序:新增的排在最前,后导入的更靠前
+    await _setEntries([...fresh.reversed, ...kept]);
     await enforceCap();
     return out;
   }
@@ -733,9 +780,21 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
     int recency(VibeEntry e) => e.lastUsedAt > 0 ? e.lastUsedAt : e.createdAt;
     final sorted = [..._entries]
       ..sort((a, b) => recency(b).compareTo(recency(a)));
+    final drop = <String>{};
+    // 文件逐个删,索引写一次(整包导入后可能一次裁掉上百条)
     for (final e in sorted.sublist(cap)) {
-      await delete(e.id);
+      try {
+        await fileOf(e).delete();
+      } catch (_) {}
+      try {
+        await thumbOf(e).delete();
+      } catch (_) {}
+      drop.add(e.id);
     }
+    await _setEntries([
+      for (final e in _entries)
+        if (!drop.contains(e.id)) e,
+    ]);
   }
 
   /// 生成成功后回写「最近使用」。

@@ -4,6 +4,8 @@ import 'dart:ui' as ui;
 
 import 'package:archive/archive.dart';
 
+import '../../core/util/prompt_convert.dart' show stripInlineTags;
+
 /// 图片元数据解析。移植自 web 桌面端 `utils/imageMetadata.ts`:
 /// 支持 PNG tEXt/iTXt 块(NovelAI Comment / SD parameters / ComfyUI prompt)、
 /// EXIF UserComment(WebP/JPEG)与 NovelAI alpha 通道 LSB 隐写(stealth_pngcomp)。
@@ -11,11 +13,34 @@ import 'package:archive/archive.dart';
 /// 图片来源类型:决定可导入的内容(仅 novelai 可导入角色/Vibe/生成设置)。
 enum ImageSourceType { novelai, stableDiffusion, comfyui, unknown }
 
+/// 提示词的权重方言。编辑器里存的始终是 NAI 语法,
+/// 导入 a1111 语法(SD/ComfyUI)时才需要转换,转不转由导入目标决定。
+enum PromptSyntax { nai, a1111 }
+
 /// Lora 信息(SD/ComfyUI 提示词内联)。
 class LoraInfo {
-  const LoraInfo({required this.name, required this.weight});
+  const LoraInfo({
+    required this.name,
+    required this.weight,
+    this.clipWeight,
+    this.hash,
+  });
   final String name;
   final double weight;
+
+  /// `<lora:名:unet:clip>` 的第二个权重(A1111 双权重语法),null=跟随 weight。
+  final double? clipWeight;
+
+  /// 来自 `Lora hashes` 字段的 SHA256 前缀(通常 12 位)——跨部署认领 LoRA 的身份证。
+  /// 图里的 lora_name 只是某个部署的内部编号(web/LRxx),换台机器就认不出。
+  final String? hash;
+
+  LoraInfo copyWith({String? hash}) => LoraInfo(
+    name: name,
+    weight: weight,
+    clipWeight: clipWeight,
+    hash: hash ?? this.hash,
+  );
 }
 
 /// 元数据里的一个 Vibe。image=原始图 base64;encoding=纯编码;
@@ -55,6 +80,7 @@ class ImageMetadata {
   const ImageMetadata({
     required this.source,
     required this.sourceType,
+    this.promptSyntax = PromptSyntax.nai,
     required this.prompt,
     required this.negativePrompt,
     required this.width,
@@ -74,6 +100,9 @@ class ImageMetadata {
 
   final String source;
   final ImageSourceType sourceType;
+
+  /// 提示词原文的权重语法(默认 nai,兼容历史/手工构造的元数据)。
+  final PromptSyntax promptSyntax;
   final String prompt;
   final String negativePrompt;
   final int width;
@@ -96,6 +125,28 @@ class ImageMetadata {
   final Object? raw;
 
   bool get isNovelAI => sourceType == ImageSourceType.novelai;
+
+  /// 换一份 LoRA 清单(ComfyUI 图用 A1111 块里的真名+哈希覆盖内部编号)。
+  ImageMetadata copyWithLoras(List<LoraInfo> newLoras) => ImageMetadata(
+    source: source,
+    sourceType: sourceType,
+    promptSyntax: promptSyntax,
+    prompt: prompt,
+    negativePrompt: negativePrompt,
+    width: width,
+    height: height,
+    seed: seed,
+    steps: steps,
+    sampler: sampler,
+    scale: scale,
+    noiseSchedule: noiseSchedule,
+    cfgRescale: cfgRescale,
+    varietyPlus: varietyPlus,
+    characters: characters,
+    vibes: vibes,
+    loras: newLoras,
+    raw: raw,
+  );
 }
 
 // ============ PNG tEXt/iTXt 文本块 ============
@@ -131,9 +182,28 @@ _PngTextChunks _extractPngTextChunks(Uint8List bytes) {
       final nullIndex = text.indexOf('\u0000');
       if (nullIndex > 0) {
         final key = text.substring(0, nullIndex).toLowerCase();
-        // iTXt 在 key 后还有 compression/language 等字段,但 NAI/SD 写的是
-        // 未压缩 iTXt,value 仍可用「第一个 \0 之后」近似取到(与 web 一致)。
-        final value = text.substring(nullIndex + 1);
+        // iTXt 布局:keyword\0 压缩标志 压缩方法 语言标签\0 翻译关键字\0 文本。
+        // 只按第一个 \0 切会把「标志+方法+两个空串终止符」留在正文头上 ——
+        // parameters 是正则扫描无所谓,但 prompt 要 jsonDecode:**含中文的图
+        // (PIL 遇非 latin-1 就写 iTXt)会整块解析失败**。按规范逐段跳过。
+        String value;
+        if (type == 'iTXt') {
+          var p = nullIndex + 1;
+          final compressed = p < text.length && text.codeUnitAt(p) != 0;
+          p += 2; // 压缩标志 + 压缩方法
+          for (var seg = 0; seg < 2 && p < text.length; seg++) {
+            final end = text.indexOf('\u0000', p);
+            if (end < 0) {
+              p = text.length;
+              break;
+            }
+            p = end + 1;
+          }
+          // 压缩的 iTXt 极罕见(我们和 ComfyUI 都不写),解不了就当没有
+          value = compressed ? '' : text.substring(p.clamp(0, text.length));
+        } else {
+          value = text.substring(nullIndex + 1);
+        }
         switch (key) {
           case 'parameters':
             result.parameters = value;
@@ -304,6 +374,7 @@ ImageMetadata? _parseNai(Map<String, dynamic> data) {
     return ImageMetadata(
       source: source,
       sourceType: ImageSourceType.novelai,
+      promptSyntax: PromptSyntax.nai,
       prompt: (comment['prompt'] ?? '').toString(),
       negativePrompt: negative,
       width: (comment['width'] as num?)?.toInt() ?? 0,
@@ -335,8 +406,12 @@ List<LoraInfo> _extractLoras(String prompt) {
     r'<lora:([^:>]+):([^>]+)>',
     caseSensitive: false,
   ).allMatches(prompt)) {
+    // 单权重 <lora:名:0.8> 与双权重 <lora:名:0.8:0.6>(后者是 unet:clip)
+    final parts = m.group(2)!.split(':').map((s) => double.tryParse(s.trim()));
+    final w = parts.isNotEmpty ? parts.first : null;
+    final c = parts.length > 1 ? parts.elementAt(1) : null;
     loras.add(
-      LoraInfo(name: m.group(1)!, weight: double.tryParse(m.group(2)!) ?? 1.0),
+      LoraInfo(name: m.group(1)!, weight: w ?? 1.0, clipWeight: c),
     );
   }
   for (final m in RegExp(
@@ -351,75 +426,6 @@ List<LoraInfo> _extractLoras(String prompt) {
     );
   }
   return loras;
-}
-
-/// SD 权重 (text:1.2)→NAI 1.2::text::;(text)→{text}(递归)。
-String _sdWeightToNai(String text) {
-  final res = StringBuffer();
-  var i = 0;
-  final n = text.length;
-  while (i < n) {
-    final ch = text[i];
-    if (ch == '(') {
-      var k = i - 1;
-      while (k >= 0 && RegExp(r'\s').hasMatch(text[k])) {
-        k--;
-      }
-      if (i == 0 || k < 0 || text[k] == ',' || text[k] == '，') {
-        var depth = 1;
-        var j = i + 1;
-        while (j < n && depth > 0) {
-          if (text[j] == '(') {
-            depth++;
-          } else if (text[j] == ')') {
-            depth--;
-          }
-          j++;
-        }
-        if (depth == 0) {
-          final inner = text.substring(i + 1, j - 1);
-          final colonCount = ':'.allMatches(inner).length;
-          if (colonCount == 1) {
-            final colonIdx = inner.indexOf(':');
-            final left = inner.substring(0, colonIdx);
-            final right = inner.substring(colonIdx + 1);
-            if (RegExp(r'^\d+(?:\.\d+)?$').hasMatch(right)) {
-              res.write('$right::$left::');
-              i = j;
-              continue;
-            }
-          }
-          res.write('{${_sdWeightToNai(inner)}}');
-          i = j;
-          continue;
-        }
-      }
-    }
-    res.write(ch);
-    i++;
-  }
-  return res.toString();
-}
-
-String _cleanSdPrompt(String prompt) {
-  var cleaned = prompt.replaceAll(
-    RegExp(r'<lora:[^>]+>', caseSensitive: false),
-    '',
-  );
-  cleaned = cleaned.replaceAll(
-    RegExp(r'<hypernet:[^>]+>', caseSensitive: false),
-    '',
-  );
-  cleaned = cleaned.replaceAll(
-    RegExp(r'<lyco:[^>]+>', caseSensitive: false),
-    '',
-  );
-  cleaned = cleaned
-      .replaceAll(RegExp(r',\s*,'), ',')
-      .replaceAll(RegExp(r'^\s*,|,\s*$'), '')
-      .trim();
-  cleaned = cleaned.replaceAll(RegExp(r'\s+'), ' ');
-  return _sdWeightToNai(cleaned);
 }
 
 ImageMetadata? _parseSd(String parametersStr) {
@@ -452,11 +458,35 @@ ImageMetadata? _parseSd(String parametersStr) {
       }
     }
 
-    final loras = _extractLoras(positive);
-    positive = _cleanSdPrompt(positive);
-    negative = _cleanSdPrompt(negative);
+    var loras = _extractLoras(positive);
+    // 只摘掉内联标签,权重语法保持原文 —— 转成 NAI 方言是导入时按目标决定的事
+    positive = stripInlineTags(positive);
+    negative = stripInlineTags(negative);
 
     String? grab(RegExp re) => re.firstMatch(settingsPart)?.group(1)?.trim();
+
+    // `Lora hashes: "名: 哈希, 名2: 哈希2"` → 按名字贴回各条。
+    // 哈希是跨部署认领的唯一可靠依据(名字可能重、可能被改过)。
+    final loraHashes = grab(
+      RegExp(r'Lora hashes:\s*"([^"]+)"', caseSensitive: false),
+    );
+    if (loraHashes != null && loras.isNotEmpty) {
+      final byName = <String, String>{};
+      for (final pair in loraHashes.split(',')) {
+        final i = pair.lastIndexOf(':');
+        if (i <= 0) continue;
+        final n = pair.substring(0, i).trim().toLowerCase();
+        final h = pair.substring(i + 1).trim();
+        if (n.isNotEmpty && h.isNotEmpty) byName[n] = h;
+      }
+      loras = [
+        for (final l in loras)
+          byName[l.name.trim().toLowerCase()] == null
+              ? l
+              : l.copyWith(hash: byName[l.name.trim().toLowerCase()]),
+      ];
+    }
+
     final steps = grab(RegExp(r'Steps:\s*(\d+)', caseSensitive: false));
     final sampler = grab(RegExp(r'Sampler:\s*([^,]+)', caseSensitive: false));
     final scheduleType = grab(
@@ -491,6 +521,7 @@ ImageMetadata? _parseSd(String parametersStr) {
     return ImageMetadata(
       source: source,
       sourceType: ImageSourceType.stableDiffusion,
+      promptSyntax: PromptSyntax.a1111,
       prompt: positive,
       negativePrompt: negative,
       width: width,
@@ -509,93 +540,292 @@ ImageMetadata? _parseSd(String parametersStr) {
 }
 
 // ============ ComfyUI ============
+//
+// ComfyUI 的 api-format `prompt` 是一张真图:节点之间用 `["12", 0]` 这样的引用连边。
+// 所以解析必须**走图**,不能遍历节点碰运气 ——
+//   · 正/负向就写在 KSampler 的 `positive` / `negative` 链接里,不需要靠
+//     「文本里有没有 worst quality」去猜(正向里一个 "bad end" 就会把整段猜反);
+//   · 带 hires fix 的图有两段 KSampler,遍历会取到随机一段;
+//   · LoRA 是 LoraLoader 节点,不在提示词文本里,只扫 `<lora:>` 永远扫不到。
+//
+// 第三方节点包(Impact、Efficiency、rgthree…)的类型是无穷的,覆盖官方原生节点即可,
+// **解不出就留空,绝不猜**。逻辑与 web `utils/imageMetadata.ts` 同构。
 
+/// 节点引用形如 ["12", 0]。
+bool _isNodeRef(Object? v) =>
+    v is List &&
+    v.length == 2 &&
+    (v[0] is String || v[0] is num) &&
+    v[1] is num;
+
+String _refId(Object? ref) => (ref as List)[0].toString();
+
+String _comfyClass(Map? node) => (node?['class_type'] ?? '').toString();
+
+String _stripModelExt(String name) => name.replaceAll(
+  RegExp(r'\.(safetensors|ckpt|pt|pth|bin)$', caseSensitive: false),
+  '',
+);
+
+double? _asNum(Object? v) {
+  if (v is num) return v.toDouble();
+  if (v is String) return double.tryParse(v);
+  return null;
+}
+
+/// 数值转文本:整数不带 .0(与 web `String(number)` 一致)。
+String? _numText(double? v) {
+  if (v == null) return null;
+  return v == v.roundToDouble() ? v.toInt().toString() : v.toString();
+}
+
+/// 取标量值。数值可能直接写在 inputs 里,也可能引用一个 primitive 节点
+/// (PrimitiveNode / Constant Number / Seed 之类),需要顺着引用取。
+Object? _resolveScalar(Map graph, Object? value, [int depth = 0]) {
+  if (!_isNodeRef(value)) return value;
+  if (depth > 8) return null;
+  final node = graph[_refId(value)];
+  final inputs = node is Map ? node['inputs'] : null;
+  if (inputs is! Map) return null;
+  for (final key in const [
+    'value',
+    'number',
+    'int',
+    'float',
+    'seed',
+    'Value',
+    'text',
+    'string',
+  ]) {
+    if (inputs.containsKey(key)) {
+      return _resolveScalar(graph, inputs[key], depth + 1);
+    }
+  }
+  return null;
+}
+
+/// 从一个引用出发沿 inputs 逆向 BFS,返回第一个命中的节点(带 id)。
+MapEntry<String, Map>? _findUpstream(
+  Map graph,
+  Object? start,
+  bool Function(Map node) match,
+) {
+  final queue = <Object?>[start];
+  final seen = <String>{};
+  while (queue.isNotEmpty && seen.length < 300) {
+    final ref = queue.removeAt(0);
+    if (!_isNodeRef(ref)) continue;
+    final id = _refId(ref);
+    if (!seen.add(id)) continue;
+    final node = graph[id];
+    if (node is! Map) continue;
+    if (match(node)) return MapEntry(id, node);
+    final inputs = node['inputs'];
+    if (inputs is Map) {
+      for (final v in inputs.values) {
+        if (_isNodeRef(v)) queue.add(v);
+      }
+    }
+  }
+  return null;
+}
+
+/// 某个节点的全部上游 id(含自身)。
+Set<String> _collectUpstreamIds(Map graph, String startId) {
+  final seen = <String>{};
+  final queue = <String>[startId];
+  while (queue.isNotEmpty && seen.length < 300) {
+    final id = queue.removeAt(0);
+    if (!seen.add(id)) continue;
+    final node = graph[id];
+    final inputs = node is Map ? node['inputs'] : null;
+    if (inputs is Map) {
+      for (final v in inputs.values) {
+        if (_isNodeRef(v)) queue.add(_refId(v));
+      }
+    }
+  }
+  return seen;
+}
+
+/// 采样节点按**结构**认,不按名字认:有 positive+negative(KSampler / SamplerCustom)
+/// 或 steps+cfg 的就是。按名字匹配会把 KSamplerSelect 这种只挑采样器名的也算进来。
+bool _isComfySampler(Object? node) {
+  if (node is! Map) return false;
+  final i = node['inputs'];
+  if (i is! Map) return false;
+  return (i.containsKey('positive') && i.containsKey('negative')) ||
+      (i.containsKey('steps') && i.containsKey('cfg'));
+}
+
+/// 找出出图的那个采样节点:优先从输出节点回溯,其次取最下游的。
+MapEntry<String, Map>? _findMainSampler(Map graph) {
+  final outRe = RegExp(
+    r'SaveImage|PreviewImage|SaveAnimated|SaveImageWebsocket',
+    caseSensitive: false,
+  );
+  String? outputId;
+  for (final id in graph.keys) {
+    if (outRe.hasMatch(_comfyClass(graph[id] as Map?))) {
+      outputId = id.toString();
+      break;
+    }
+  }
+  if (outputId != null) {
+    final found = _findUpstream(graph, [outputId, 0], _isComfySampler);
+    if (found != null) return found;
+  }
+
+  // 没有输出节点(被裁过的 api json):取不被其他采样节点当上游的那个 = 链路末端
+  final samplerIds = [
+    for (final id in graph.keys)
+      if (_isComfySampler(graph[id])) id.toString(),
+  ];
+  if (samplerIds.isEmpty) return null;
+  if (samplerIds.length == 1) {
+    return MapEntry(samplerIds.first, graph[samplerIds.first] as Map);
+  }
+  final upstreams = {
+    for (final id in samplerIds) id: _collectUpstreamIds(graph, id),
+  };
+  final tail = samplerIds.where(
+    (a) => !samplerIds.any((b) => b != a && upstreams[b]!.contains(a)),
+  );
+  final pick = tail.isNotEmpty ? tail.first : samplerIds.last;
+  return MapEntry(pick, graph[pick] as Map);
+}
+
+/// 顺着 conditioning 链找到文本。中间可能夹着 Combine/Concat/SetArea 等节点。
+String? _resolveConditioningText(Map graph, Object? ref, [int depth = 0]) {
+  if (!_isNodeRef(ref) || depth > 12) return null;
+  final node = graph[_refId(ref)];
+  if (node is! Map) return null;
+  final inputs = node['inputs'];
+  if (inputs is! Map) return null;
+
+  // 编码节点自带文本(SDXL 双编码器取 text_g,与官方 UI 显示一致)
+  for (final key in const ['text', 'text_g', 'text_l', 'prompt', 'string']) {
+    final v = inputs[key];
+    if (v is String) return v;
+    if (_isNodeRef(v)) {
+      final resolved = _resolveScalar(graph, v);
+      if (resolved is String) return resolved;
+    }
+  }
+
+  // 中间节点:只沿 conditioning 类输入继续找,避免窜到 model/clip 分支上
+  final condRe = RegExp('cond', caseSensitive: false);
+  for (final entry in inputs.entries) {
+    if (!_isNodeRef(entry.value)) continue;
+    if (!condRe.hasMatch(entry.key.toString())) continue;
+    final text = _resolveConditioningText(graph, entry.value, depth + 1);
+    if (text != null) return text;
+  }
+  return null;
+}
+
+/// 沿 model 链收集 LoraLoader。
+List<LoraInfo> _collectComfyLoras(Map graph, Object? modelRef) {
+  final loras = <LoraInfo>[];
+  final seen = <String>{};
+  Object? ref = modelRef;
+  final loraRe = RegExp('LoraLoader', caseSensitive: false);
+  while (_isNodeRef(ref) && seen.length < 60) {
+    final id = _refId(ref);
+    if (!seen.add(id)) break;
+    final node = graph[id];
+    if (node is! Map) break;
+    final inputs = node['inputs'];
+    if (inputs is! Map) break;
+    final name = inputs['lora_name'];
+    if (loraRe.hasMatch(_comfyClass(node)) && name is String) {
+      final weight =
+          _asNum(
+            _resolveScalar(
+              graph,
+              inputs['strength_model'] ?? inputs['strength'],
+            ),
+          ) ??
+          1.0;
+      // 强度 0 = 挂着但没启用(Anima 模板里两个内置 LoRA 默认就是 0),不算数
+      if (weight != 0) {
+        loras.add(LoraInfo(name: _stripModelExt(name), weight: weight));
+      }
+    }
+    ref = inputs['model'] ?? inputs['MODEL'];
+  }
+  return loras.reversed.toList(); // 沿链是从下游往上走,反转回加载顺序
+}
+
+/// 解析 ComfyUI 格式的 prompt JSON。
+///
+/// 注意:`sampler` / `noiseSchedule` 存的是 ComfyUI 的原生取值(`euler` / `simple`),
+/// 与 NovelAI 图存的 NAI id 不是一套枚举 —— 消费方按 sourceType 分流。
 ImageMetadata? _parseComfy(String promptJson, String? workflowJson) {
   try {
-    final prompt = jsonDecode(promptJson) as Map<String, dynamic>;
-    var positive = '';
-    var negative = '';
-    var model = 'ComfyUI';
-    var width = 0, height = 0;
-    String seed = '', steps = '', sampler = '', scale = '';
+    final decoded = jsonDecode(promptJson);
+    if (decoded is! Map) return null;
+    final graph = decoded;
 
-    dynamic resolve(dynamic value) {
-      if (value is List && value.length == 2) {
-        final refNode = prompt[value[0].toString()];
-        if (refNode is Map) {
-          final cls = (refNode['class_type'] ?? '').toString();
-          final inp = refNode['inputs'];
-          if (inp is Map &&
-              (cls == 'Constant Number' || cls.contains('Number'))) {
-            return inp['number'] ?? inp['value'] ?? inp['int'] ?? inp['float'];
-          }
-        }
-      }
-      return value;
-    }
+    final main = _findMainSampler(graph);
+    final inputs = main?.value['inputs'];
+    final si = inputs is Map ? inputs : const {};
 
-    for (final entry in prompt.entries) {
-      final node = entry.value;
-      if (node is! Map) continue;
-      final cls = (node['class_type'] ?? '').toString();
-      final inputs = node['inputs'] is Map ? node['inputs'] as Map : const {};
+    final positive = _resolveConditioningText(graph, si['positive']) ?? '';
+    final negative = _resolveConditioningText(graph, si['negative']) ?? '';
 
-      if (cls.contains('CheckpointLoader') || cls.contains('UNETLoader')) {
-        if (inputs['ckpt_name'] != null) {
-          model = inputs['ckpt_name'].toString().replaceAll(
-            RegExp(r'\.[^/.]+$'),
-            '',
-          );
-        } else if (inputs['unet_name'] != null) {
-          model = inputs['unet_name'].toString().replaceAll(
-            RegExp(r'\.[^/.]+$'),
-            '',
-          );
-        }
-      }
-      if (cls == 'CLIPTextEncode' || cls.contains('TextEncode')) {
-        final t = inputs['text'];
-        if (t is String) {
-          if (t.contains('worst quality') ||
-              t.contains('low quality') ||
-              t.contains('bad')) {
-            if (negative.isEmpty) negative = t;
-          } else {
-            if (positive.isEmpty) positive = t;
-          }
-        }
-      }
-      if (cls == 'KSampler' || cls.contains('Sampler')) {
-        final s = resolve(inputs['seed']);
-        final st = resolve(inputs['steps']);
-        final cfg = resolve(inputs['cfg']);
-        if (s is num) seed = s.toString();
-        if (st is num) steps = st.toString();
-        if (cfg is num) scale = cfg.toString();
-        if (inputs['sampler_name'] != null) {
-          sampler = inputs['sampler_name'].toString();
-        }
-      }
-      if (cls == 'EmptyLatentImage' || cls.contains('LatentImage')) {
-        final w = resolve(inputs['width']);
-        final h = resolve(inputs['height']);
-        if (w is num && w > 0) width = w.toInt();
-        if (h is num && h > 0) height = h.toInt();
-      }
-    }
+    final seed = _asNum(
+      _resolveScalar(graph, si['seed'] ?? si['noise_seed']),
+    );
+    final steps = _asNum(_resolveScalar(graph, si['steps']));
+    final cfg = _asNum(_resolveScalar(graph, si['cfg']));
+    final samplerName = _resolveScalar(graph, si['sampler_name']);
+    final scheduler = _resolveScalar(graph, si['scheduler']);
+
+    // 尺寸:沿 latent 链找带 width/height 的节点(EmptyLatentImage / EmptySD3LatentImage…)
+    final latent = _findUpstream(
+      graph,
+      si['latent_image'] ?? si['latent'],
+      (n) {
+        final i = n['inputs'];
+        return i is Map &&
+            _asNum(i['width']) != null &&
+            _asNum(i['height']) != null;
+      },
+    );
+    final latentInputs = latent?.value['inputs'];
+    final li = latentInputs is Map ? latentInputs : const {};
+    final width = _asNum(_resolveScalar(graph, li['width']))?.toInt() ?? 0;
+    final height = _asNum(_resolveScalar(graph, li['height']))?.toInt() ?? 0;
+
+    // 模型:沿 model 链走到底的加载器
+    final loader = _findUpstream(graph, si['model'], (n) {
+      final i = n['inputs'];
+      return i is Map && (i['ckpt_name'] is String || i['unet_name'] is String);
+    });
+    final loaderInputs = loader?.value['inputs'];
+    final di = loaderInputs is Map ? loaderInputs : const {};
+    final modelFile = di['ckpt_name'] ?? di['unet_name'];
+    final source = modelFile is String
+        ? _stripModelExt(modelFile)
+        : 'ComfyUI';
 
     return ImageMetadata(
-      source: model,
+      source: source,
       sourceType: ImageSourceType.comfyui,
+      // ComfyUI 用的是 A1111 那套 (text:1.2) 权重语法,转不转由导入目标决定
+      promptSyntax: PromptSyntax.a1111,
       prompt: positive,
       negativePrompt: negative,
       width: width,
       height: height,
-      seed: seed,
-      steps: steps.isEmpty ? null : steps,
-      sampler: sampler.isEmpty ? null : sampler,
-      scale: scale.isEmpty ? null : scale,
-      raw: {'type': 'comfyui', 'prompt': prompt},
+      seed: _numText(seed) ?? '',
+      steps: _numText(steps),
+      sampler: samplerName is String ? samplerName : null,
+      noiseSchedule: scheduler is String ? scheduler : null,
+      scale: _numText(cfg),
+      loras: _collectComfyLoras(graph, si['model']),
+      raw: {'type': 'comfyui', 'prompt': graph},
     );
   } catch (_) {
     return null;
@@ -854,7 +1084,20 @@ Future<ImageMetadata?> extractImageMetadata(Uint8List bytes) async {
 
     if (chunks.prompt != null) {
       final r = _parseComfy(chunks.prompt!, chunks.workflow);
-      if (r != null) return r;
+      if (r != null) {
+        // 本项目出的图两块都有:ComfyUI 图给准确的生成参数,A1111 parameters 块给
+        // LoRA 的**真名 + 哈希**(工作流里的 lora_name 只是内部编号 web/LRxx,
+        // 换个部署就认不出是什么)。
+        if (chunks.parameters != null) {
+          try {
+            final sd = _parseSd(chunks.parameters!);
+            if (sd != null && sd.loras.isNotEmpty) {
+              return r.copyWithLoras(sd.loras);
+            }
+          } catch (_) {}
+        }
+        return r;
+      }
     }
     if (chunks.comment != null) {
       try {

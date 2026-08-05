@@ -89,6 +89,13 @@ class WebBackup {
     } catch (_) {
       throw const FormatException('不是有效的 JSON 文件');
     }
+    return fromDecoded(j);
+  }
+
+  /// 已解析好的 JSON → 备份对象。备份文件可能上百 MB(vibe 的图是 base64),
+  /// 手上已经有对象树时走这里,别再拿原文本重解析一遍 —— 那等于把整份数据
+  /// 在内存里又存了一份。流式读文件见 `core/util/file_read.dart`。
+  static WebBackup fromDecoded(Object? j) {
     if (j is! Map<String, dynamic>) throw const FormatException('不是有效的备份文件');
 
     final meta = j['meta'];
@@ -155,12 +162,14 @@ class WebBackup {
     return (out, active is String && active.isNotEmpty ? active : null);
   }
 
-  /// Vibe → `.naiv4vibebundle` 文本,交给 Vibe 库现成的 importVibeText 落库。
-  /// 无 vibe 时返回 null。
-  String? vibeBundleText() {
-    if (vibes.isEmpty) return null;
-    return buildBundleText([for (final v in vibes) vibeDataToNaiv4(v)]);
-  }
+  /// Vibe → `.naiv4vibe` 文件 JSON 列表,交给 Vibe 库的 importVibeRaws 落库。
+  ///
+  /// 只搬字段、与源 map 共享同一批 base64 字符串,几乎不占额外内存。
+  /// 不再拼成一个 `.naiv4vibebundle` 大字符串 —— 拼包 + 重新解析会让同一批
+  /// 数据在内存里堆到三份,几百条带图的 vibe 足以把 app 撑爆。
+  List<Map<String, dynamic>> naiv4Raws() => [
+    for (final v in vibes) vibeDataToNaiv4(v),
+  ];
 }
 
 /// web `VibeData`(IndexedDB) → `.naiv4vibe` 文件 JSON(web `Naiv4VibeFile`)。

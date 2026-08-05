@@ -90,14 +90,19 @@ Future<EncodedState> encodeGenerateState(
     'vibes': vibes,
     'charRefs': charRefs,
     // LoRA 无图片字节(previewUrl 是远端直链),整条直接进 JSON
-    if (s.loras.isNotEmpty)
+    // 下载中的占位条不入存档:安装队列在内存里,重启就没了,存回来只会是一条
+    // 永远停在「排队中」、还悄悄不参与生成的僵尸条目。
+    if (s.loras.any((l) => l.pending == null))
       'loras': [
         for (final l in s.loras)
+          if (l.pending == null)
           {
             'name': l.name,
             'displayName': l.displayName,
             'weight': l.weight,
             'enabled': l.enabled,
+            if (l.clipWeight != null) 'clipWeight': l.clipWeight,
+            if (l.hasTe != null) 'hasTe': l.hasTe,
             'triggerWords': l.triggerWords,
             if (l.previewUrl.isNotEmpty) 'previewUrl': l.previewUrl,
             'type': l.type,
@@ -126,6 +131,16 @@ Future<EncodedState> encodeGenerateState(
       'animaCfg': p.animaCfg,
       'animaSampler': p.animaSampler,
       'animaScheduler': p.animaScheduler,
+      // 整块常驻(不只在 enabled 时写):同一份 codec 也在存创作页工作区,
+      // 只存开着的那份,用户关掉开关重启后调好的倍率/强度就没了。
+      'hires': {
+        'enabled': p.hires.enabled,
+        'scale': p.hires.scale,
+        'denoise': p.hires.denoise,
+        'steps': p.hires.steps,
+        'useModel': p.hires.useModel,
+        'model': p.hires.model.name,
+      },
     },
     'anlas': s.anlas,
     'openPanels': [for (final pn in s.openPanels) pn.name],
@@ -255,6 +270,8 @@ Future<GenerateState> decodeGenerateState(
               : name,
           weight: (e['weight'] as num?)?.toDouble() ?? 0.8,
           enabled: e['enabled'] != false,
+          clipWeight: (e['clipWeight'] as num?)?.toDouble(), // 缺省 null=跟随 weight
+          hasTe: e['hasTe'] is bool ? e['hasTe'] as bool : null,
           triggerWords: e['triggerWords'] is List
               ? [
                   for (final t in e['triggerWords'] as List)
@@ -286,6 +303,20 @@ Future<GenerateState> decodeGenerateState(
   var params = const GenParams();
   if (j['params'] is Map) {
     final e = j['params'] as Map;
+    var hires = params.hires;
+    if (e['hires'] is Map) {
+      final he = e['hires'] as Map;
+      hires = HiresConfig(
+        enabled: he['enabled'] == true,
+        scale: (he['scale'] as num?)?.toDouble() ?? hires.scale,
+        denoise: (he['denoise'] as num?)?.toDouble() ?? hires.denoise,
+        steps: (he['steps'] as num?)?.toInt() ?? hires.steps,
+        // 老存档没这键 → 默认「先超分后重绘」(与新建时一致)
+        useModel: he['useModel'] != false,
+        model:
+            _enumByName(HiresUpscaler.values, he['model']) ?? hires.model,
+      );
+    }
     params = GenParams(
       model: e['model'] is String ? e['model'] as String : params.model,
       width: (e['width'] as num?)?.toInt() ?? params.width,
@@ -310,6 +341,7 @@ Future<GenerateState> decodeGenerateState(
       animaScheduler: e['animaScheduler'] is String
           ? e['animaScheduler'] as String
           : params.animaScheduler,
+      hires: hires,
     );
   }
 

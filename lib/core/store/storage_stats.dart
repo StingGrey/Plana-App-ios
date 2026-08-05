@@ -71,7 +71,11 @@ Future<int?> _countIn(Directory d, {String? suffix}) async {
 }
 
 /// 全量扫描。key 清单:gallery / blobs / vibeLib / vibeEnc / charLib /
-/// lexicon / models / temp。
+/// imgCache / codexCache / tagPrev / lexicon / models / temp。
+///
+/// 分类要跟着新目录一起加 —— 漏一个,那块占用就只能沉进 [StorageReport.otherBytes]
+/// 里,用户看着「其他」莫名涨几十 MB 又找不到清理入口(法典缓存单部最大 ~11 MB,
+/// 就这么隐身过一阵)。
 Future<StorageReport> scanStorage() async {
   final sup = await getApplicationSupportDirectory();
   final tmp = await getTemporaryDirectory();
@@ -126,6 +130,21 @@ Future<StorageReport> scanStorage() async {
       key: 'charLib',
       bytes: await _sizeOf(sub('charref_library')),
       count: await _countIn(Directory('${sup.path}/charref_library/files')),
+    ),
+    StorageCategory(
+      key: 'imgCache',
+      bytes: await _sizeOf(sub('img_cache')),
+      count: await _countIn(sub('img_cache')),
+    ),
+    StorageCategory(
+      key: 'codexCache',
+      bytes: await _sizeOf(sub('codex_cache')),
+      count: await _countIn(sub('codex_cache'), suffix: '.json'),
+    ),
+    StorageCategory(
+      key: 'tagPrev',
+      bytes: await _sizeOf(sub('tag_previews')),
+      count: await _countIn(sub('tag_previews'), suffix: '.jpg'),
     ),
     StorageCategory(
       key: 'lexicon',

@@ -363,6 +363,11 @@ const animaSchedulers = <AnimaOption>[
   AnimaOption('beta', 'Beta'),
 ];
 
+/// UI 推荐范围(对齐 web ANIMA_STEPS_RANGE / ANIMA_CFG_RANGE)。
+/// 高级设置的滑块与元数据导入的可用性判断共用这一份,免得两处各自漂。
+const animaStepsRange = (min: 6, max: 50);
+const animaCfgRange = (min: 1.0, max: 7.0);
+
 /// 各档位推荐采样参数(切档时自动套用;须与服务端 _ANIMA_SLOW_DEFAULTS 一致)。
 ({int steps, double cfg, String sampler, String scheduler}) animaTierDefaults(
   String tier,
@@ -374,11 +379,27 @@ const animaSchedulers = <AnimaOption>[
 
 // ── LoRA(anima 专属功能模块) ──────────────────────────────
 
-/// 同时挂载上限(与服务端 _run_anima_task 的 5 个上限一致)。
-const kMaxActiveLoras = 5;
+/// 同时挂载上限(与服务端 lora_resolver.MAX_LORAS_PER_GEN 一致)。
+/// 是资源护栏不是画质建议——真正决定画质的是各条权重之和(LoRA 的效果直接相加,
+/// 不会因为挂得多就自动摊薄),那个交给用户自己把握。
+const kMaxActiveLoras = 20;
 
 /// 权重钳制,与服务端 resolve_ui_loras / web LoraNumberInput 一致。
 const kLoraWeightMax = 2.0;
+
+/// 机房还没有这个文件——导入时先占位挂上,后台下载完再就地转正。
+class LoraPending {
+  const LoraPending({required this.versionId, this.failed});
+
+  /// Civitai 版本号,与安装队列里的任务对齐(实时进度按它去队列取)。
+  final int versionId;
+
+  /// 下载失败原因;有值 = 停在失败态,等用户重试或移除。
+  final String? failed;
+}
+
+/// 占位条目的 name:转正前没有真 LR 编号,用它做去重与选中标识。
+String pendingLoraKey(int versionId) => 'pending:$versionId';
 
 /// 类型徽标文案(character/style/concept → 中文;未知原样显示)。
 String loraTypeLabel(String type) => switch (type) {
@@ -396,6 +417,9 @@ class ActiveLora {
     required this.displayName,
     this.weight = 0.8,
     this.enabled = true,
+    this.clipWeight,
+    this.hasTe,
+    this.pending,
     this.triggerWords = const [],
     this.previewUrl = '',
     this.type = 'concept',
@@ -406,6 +430,20 @@ class ActiveLora {
   final double weight;
   final bool enabled;
 
+  /// LoraLoader 的 strength_clip,与 strength_model 分离;null = 跟随 [weight](默认)。
+  /// 叠多个 LoRA 后「prompt 不听话」是文本编码器被一起 patch 推偏导致的,
+  /// 单独压低它能保住画面特征同时把语义拉回来。
+  final double? clipWeight;
+
+  /// 有没有文本编码器权重(服务端读 safetensors 头探得)。false = 只训了画面侧,
+  /// [clipWeight] 调了不会有任何变化 → UI 不给调;null = 未知,按可调处理。
+  final bool? hasTe;
+
+  /// 非 null = 机房还没有这个文件(导入时占位挂上,后台下载中)。
+  /// 期间 [name] 是 [pendingLoraKey] 生成的占位串,**绝不能进生成载荷**——
+  /// 服务端查无此 LoRA 会静默丢弃,等于白跑一次生成。
+  final LoraPending? pending;
+
   /// 全部可选触发词条目(一条可能是逗号分隔的整套 tag)。
   /// 是否写进正向词由用户在卡片上逐条点选(前端所见即所得),
   /// 载荷 triggers 恒传空数组告知服务端不要再拼。
@@ -413,14 +451,101 @@ class ActiveLora {
   final String previewUrl;
   final String type;
 
-  ActiveLora copyWith({double? weight, bool? enabled}) => ActiveLora(
+  /// [clearClipWeight] = true 时把 CLIP 强度退回「跟随 weight」——
+  /// 命名参数传 null 表示「不改」,所以清空需要独立开关。
+  ActiveLora copyWith({
+    double? weight,
+    bool? enabled,
+    double? clipWeight,
+    bool clearClipWeight = false,
+    LoraPending? pending,
+  }) => ActiveLora(
     name: name,
     displayName: displayName,
     weight: weight ?? this.weight,
     enabled: enabled ?? this.enabled,
+    clipWeight: clearClipWeight ? null : (clipWeight ?? this.clipWeight),
+    hasTe: hasTe,
+    pending: pending ?? this.pending,
     triggerWords: triggerWords,
     previewUrl: previewUrl,
     type: type,
+  );
+}
+
+// ── 重绘放大 hires(anima 专属功能模块) ─────────────────────
+
+/// 「先超分后重绘」用的超分模型。**枚举名即服务端白名单键**
+/// (`anima_provider._ANIMA_HIRES_UPSCALERS`),载荷直接发 [Enum.name],
+/// 不认的键服务端兜底回 animesharp。
+/// 三者的差异说明不在这儿:一律进「超分模型」那条参数说明(Help.hiresModel),
+/// 免得卡片上再挂一行副标题。
+enum HiresUpscaler {
+  animesharp('AnimeSharp'),
+  ultrasharp('UltraSharp'),
+  anime6b('Anime 6B');
+
+  const HiresUpscaler(this.label);
+
+  final String label;
+}
+
+/// 二段步数下限:服务端 `max(4, min(50, steps))`。0 是「跟随主步数」的哨兵,
+/// 不受此限;1~3 会被服务端悄悄抬到 4,故在 app 侧就钳住,免得读数骗人。
+const kHiresStepsMin = 4;
+const kHiresStepsMax = 50;
+
+/// 重绘放大(hires two-pass):一段小图定构图 → 像素放大 → 低 denoise
+/// 二段采样补细节。服务端 `_patch_anima_payload` 据此注入 320+ 节点链。
+/// 各项取值范围与服务端钳制一致(scale 1.1~2.0 / denoise 0.2~0.75)。
+class HiresConfig {
+  const HiresConfig({
+    this.enabled = false,
+    this.scale = 1.5,
+    this.denoise = 0.5,
+    this.steps = 0,
+    this.useModel = true,
+    this.model = HiresUpscaler.animesharp,
+  });
+
+  final bool enabled;
+  final double scale;
+  final double denoise;
+
+  /// 二段步数;0 = 跟随主步数(服务端读一段 KSampler 的 steps)。
+  final int steps;
+
+  /// true = 先超分后重绘(走 [model]);false = 直接重绘(lanczos 插值)。
+  /// 与 [model] 分开存是为了来回切不丢用户选过的超分模型(对齐 web)。
+  final bool useModel;
+  final HiresUpscaler model;
+
+  /// 载荷 `upscaler` 键:直接重绘发 `lanczos`,否则发超分模型键。
+  String get upscalerKey => useModel ? model.name : 'lanczos';
+
+  /// 二段目标尺寸,算法照抄服务端 `max(8, int(base * scale) // 8 * 8)`。
+  (int, int) targetSize(int width, int height) =>
+      (_align8(width * scale), _align8(height * scale));
+
+  static int _align8(double v) {
+    final n = v.toInt() ~/ 8 * 8;
+    return n < 8 ? 8 : n;
+  }
+
+  HiresConfig copyWith({
+    bool? enabled,
+    double? scale,
+    double? denoise,
+    int? steps,
+    bool? useModel,
+    HiresUpscaler? model,
+  }) => HiresConfig(
+    enabled: enabled ?? this.enabled,
+    scale: scale ?? this.scale,
+    denoise: denoise ?? this.denoise,
+    steps: steps ?? this.steps,
+    useModel: useModel ?? this.useModel,
+    model: model ?? this.model,
   );
 }
 
@@ -453,6 +578,7 @@ class GenParams {
     this.animaCfg = 1.0,
     this.animaSampler = 'euler',
     this.animaScheduler = 'simple',
+    this.hires = const HiresConfig(),
   });
 
   final String model;
@@ -476,6 +602,9 @@ class GenParams {
   final String animaSampler;
   final String animaScheduler;
 
+  /// 重绘放大(anima 专属模块;非 anima 或模块隐藏时由剥离层置 enabled=false)。
+  final HiresConfig hires;
+
   /// Opus 免费判定(像素 ≤ 免费阈值 + ≤28 步),按像素而非预设成员,兼容自定义尺寸。
   bool get isFree => steps <= 28 && width * height <= kFreePixelThreshold;
 
@@ -496,6 +625,7 @@ class GenParams {
     double? animaCfg,
     String? animaSampler,
     String? animaScheduler,
+    HiresConfig? hires,
   }) {
     return GenParams(
       model: model ?? this.model,
@@ -514,12 +644,13 @@ class GenParams {
       animaCfg: animaCfg ?? this.animaCfg,
       animaSampler: animaSampler ?? this.animaSampler,
       animaScheduler: animaScheduler ?? this.animaScheduler,
+      hires: hires ?? this.hires,
     );
   }
 }
 
 /// 折叠面板标识
-enum Panel { prompt, characters, vibe, charRef, i2i, lora }
+enum Panel { prompt, characters, vibe, charRef, i2i, lora, hires, animaNl }
 
 class GenerateState {
   const GenerateState({

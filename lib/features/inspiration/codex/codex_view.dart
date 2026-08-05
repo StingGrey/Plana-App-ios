@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/net/remote_image.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../generate/widgets/common.dart' show hintSnack;
 import 'codex_models.dart';
@@ -558,7 +559,7 @@ class _CodexCard extends StatelessWidget {
               aspectRatio: aspect,
               child: url == null
                   ? _placeholder(context)
-                  : Image.network(
+                  : RemoteImage(
                       url,
                       fit: BoxFit.cover,
                       gaplessPlayback: true,
