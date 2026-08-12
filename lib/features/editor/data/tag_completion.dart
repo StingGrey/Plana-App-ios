@@ -195,12 +195,22 @@ class TagCompletion {
     final entityNames = <String>{
       for (final s in [...chars, ...works, ...artists, ...ocs]) norm(s.text),
     };
+    // D 站角色类目的 tag 归角色分组,排在**本地角色库之后**:库条目自带中文名
+    // 与出处,命中就能直接用;D 站那些只有英文名,是补充不是主角。
+    final kept = [
+      for (final t in tags)
+        if (!entityNames.contains(norm(t.text))) t,
+    ];
     return SuggestResult(
       tags: [
-        for (final t in tags)
-          if (!entityNames.contains(norm(t.text))) t,
+        for (final t in kept)
+          if (t.kind != SuggestionKind.character) t,
       ],
-      characters: fill(chars),
+      characters: [
+        ...fill(chars),
+        for (final t in kept)
+          if (t.kind == SuggestionKind.character) t,
+      ],
       works: fill(works),
       artists: fill(artists),
       ocs: ocs,
@@ -339,7 +349,14 @@ class TagCompletion {
       () => _client.post(
         Uri.parse('$baseUrl/api/tags/search'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'query': q, 'limit': 20, 'show_nsfw': true}),
+        // 显式带上类目:服务端默认值 2026-08-12 才从 ['General'] 放开到
+        // ['General','Character'],不写死的话新旧服务端搜出来的东西不一样。
+        body: jsonEncode({
+          'query': q,
+          'limit': 20,
+          'show_nsfw': true,
+          'target_categories': ['General', 'Character'],
+        }),
       ),
     );
     if (resp.statusCode != 200) return const [];
@@ -359,7 +376,11 @@ class TagCompletion {
       out.add(
         Suggestion(
           text: text,
-          kind: SuggestionKind.tag,
+          // 语义搜索这边的 category 是字符串('Character'),与 autocomplete
+          // 的数字 4 是同一件事,两条路都要认。
+          kind: (r['category'] as String?)?.trim().toLowerCase() == 'character'
+              ? SuggestionKind.character
+              : SuggestionKind.tag,
           trans: cn,
           count: count,
         ),
@@ -405,7 +426,17 @@ class TagCompletion {
       if (count != 0 && count < 50) continue; // 冷门标签剔除
       final text = _spaces(value);
       cacheTagMeta(text, count: count);
-      out.add(Suggestion(text: text, kind: SuggestionKind.tag, count: count));
+      out.add(
+        Suggestion(
+          text: text,
+          // Danbooru 的 category 是数字,4 = 角色。归到角色分组去,
+          // 混在几十条普通标签里根本挑不出来(对齐 web isCharacter)。
+          kind: (e['category'] as num?)?.toInt() == 4
+              ? SuggestionKind.character
+              : SuggestionKind.tag,
+          count: count,
+        ),
+      );
     }
     out.sort((a, b) {
       final ap = a.text.toLowerCase().startsWith(ql);

@@ -115,27 +115,37 @@ class ResultChrome extends StatelessWidget {
 }
 
 /// 浮动进度胶囊(浅色)。入场/离场的渐显渐隐由外层 AnimatedSwitcher 负责,这里只画静态样子。
+///
+/// 尾部那颗 × 取消**画布正跟随的这一条**(对齐 web:取消按钮长在状态条上)。
+/// 早先试过把它做成胶片条任务卡右上角的小角标,22px 挤在 62px 高的缩略图上,
+/// 和「点卡切换跟随」这个主手势离得太近 —— 想切图却取消掉一张的代价太大。
 class ProgressPill extends StatelessWidget {
-  const ProgressPill({super.key, required this.status});
+  const ProgressPill({super.key, required this.status, this.onCancel});
 
   final GenStatus status;
+  final VoidCallback? onCancel;
 
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final p = status.progress;
+    // 整条按 44 高走(原先 36):内容一多就显得又扁又长,读数和取消挤在
+    // 一条细缝里。下面这几个数是配套的 —— 高度、圆角、进度条、字号、
+    // 取消钮直径,改一个就得跟着改其余的,别只动其中一个。
+    const h = 44.0;
     return Container(
-      height: 36,
-      padding: const EdgeInsets.symmetric(horizontal: 16),
+      height: h,
+      // 右侧留给 × 的内衬要小一截,否则圆角胶囊右端会空出一块
+      padding: EdgeInsets.only(left: 18, right: onCancel == null ? 18 : 7),
       decoration: BoxDecoration(
         color: scheme.surface.withValues(alpha: .95),
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(h / 2),
         border: Border.all(color: scheme.outlineVariant.withValues(alpha: .7)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: .16),
-            blurRadius: 14,
-            offset: const Offset(0, 5),
+            color: Colors.black.withValues(alpha: .18),
+            blurRadius: 16,
+            offset: const Offset(0, 6),
           ),
         ],
       ),
@@ -143,10 +153,10 @@ class ProgressPill extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           SizedBox(
-            width: 112,
-            height: 6,
+            width: 116,
+            height: 11,
             child: ClipRRect(
-              borderRadius: BorderRadius.circular(3),
+              borderRadius: BorderRadius.circular(5.5),
               child: LinearProgressIndicator(
                 value: p, // null = 准备中,走不确定动画
                 backgroundColor: scheme.surfaceContainerHighest,
@@ -154,13 +164,33 @@ class ProgressPill extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 13),
           Text(
             p != null
                 ? '${status.step}/${status.total}'
                 : (status.note ?? '准备中'),
-            style: mono(context, size: 13, color: scheme.onSurface),
+            style: mono(context, size: 14, color: scheme.onSurface),
           ),
+          if (onCancel != null) ...[
+            const SizedBox(width: 7),
+            SizedBox(
+              width: 34,
+              height: 34,
+              child: Material(
+                color: Colors.transparent,
+                shape: const CircleBorder(),
+                clipBehavior: Clip.antiAlias,
+                child: InkWell(
+                  onTap: onCancel,
+                  child: Icon(
+                    Icons.close_rounded,
+                    size: 19,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -225,10 +255,13 @@ class _ActionRail extends ConsumerWidget {
           ? await ref.read(appStoresProvider).gallery.readInput(result.id)
           : null);
 
-  /// 生成中拦截会与生成管线冲突的操作(重绘提交/重新生成共用一条管线)。
-  bool _blockWhileBusy(BuildContext context, WidgetRef ref) {
-    if (!ref.read(generationProvider).busy) return false;
-    hintSnack(context, '生成中,请稍候', icon: Icons.hourglass_top);
+  /// 重绘一次只能有一条 —— 回贴信息(裁切框/原图)是随会话共享的,两条同时跑会串。
+  ///
+  /// 普通出图**不再拦**:并行之后「重新生成」「1.5× 重绘」只是往池子里再投一条,
+  /// 排不排得下由池子的上限说了算。
+  bool _blockWhileInpainting(BuildContext context, WidgetRef ref) {
+    if (!ref.read(inpaintStatusProvider).busy) return false;
+    hintSnack(context, '重绘进行中,请稍候', icon: Icons.hourglass_top);
     return true;
   }
 
@@ -238,11 +271,16 @@ class _ActionRail extends ConsumerWidget {
   /// 先重新生成一张。这里只开面板、不传参数:参数由面板发车时现读,免得开着
   /// 面板去创作页改完步数切回来,价格和实际发送都还停在旧值。
   Future<void> _inpaint(BuildContext context, WidgetRef ref) async {
-    if (_blockWhileBusy(context, ref)) return;
-    // 模型跟着创作页走,可能正停在 Anima:那边没有 infill,让人涂完再报错太晚。
-    // 面板发车前还有一道同样的拦截(期间可以切去换模型)。
-    if (isAnimaModel(ref.read(generateProvider).params.model)) {
-      hintSnack(context, 'Anima 模型不支持重绘,请先切回 NovelAI 模型', icon: Icons.block);
+    if (_blockWhileInpainting(context, ref)) return;
+    // 模型跟着创作页走,可能正停在 Anima / Krea:那两条 Modal 通道都没有 infill,
+    // 让人涂完再报错太晚。面板发车前还有一道同样的拦截(期间可以切去换模型)。
+    final model = ref.read(generateProvider).params.model;
+    if (isModalModel(model)) {
+      hintSnack(
+        context,
+        '${isKreaModel(model) ? 'Krea 2' : 'Anima'} 模型不支持重绘,请先切回 NovelAI 模型',
+        icon: Icons.block,
+      );
       return;
     }
     final bytes = await _bytesOf(ref);
@@ -412,7 +450,6 @@ class _ActionRail extends ConsumerWidget {
     WidgetRef ref,
     Uint8List bytes,
   ) async {
-    if (_blockWhileBusy(context, ref)) return;
     final input = await _inputOf(ref);
     if (!context.mounted) return;
     if (input == null) {
@@ -507,7 +544,6 @@ class _ActionRail extends ConsumerWidget {
 
   /// 按本图参数、换随机种子出一张新图(不改用户当前编辑器状态)。
   Future<void> _regenerate(BuildContext context, WidgetRef ref) async {
-    if (_blockWhileBusy(context, ref)) return;
     final input = await _inputOf(ref);
     if (!context.mounted) return;
     if (input == null) {

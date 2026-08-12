@@ -10,10 +10,12 @@ import '../../../core/net/remote_image.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../editor/editor_models.dart' show draftOf, outputOf, pickEditorText;
 import '../../generate/generate_state.dart';
+import '../../generate/models.dart' show GenProvider, providerOfModel;
 import '../../generate/widgets/common.dart' show hintSnack;
 import '../../shell/shell_state.dart';
 import '../tag_models.dart'
     show TagCategory, TagEntry, appendTagPositivesFolded;
+import 'codex_char_split.dart';
 import 'codex_models.dart';
 import 'codex_providers.dart';
 import '../../../core/util/haptics.dart';
@@ -28,24 +30,46 @@ Future<T?> _sheet<T>(BuildContext context, Widget child) =>
       builder: (_) => child,
     );
 
-/// 把一条法典词条作为一个命名折叠组追加进主提示词(复用灵感页同一条链路:
-/// 草稿带回既有禁用/折叠,定稿由 outputOf 导出,两者同写)。
-void codexAddToPrompt(WidgetRef ref, CodexEntry e) {
+/// 把一条法典词条追加进创作页,返回角色卡的落地情况(供调用方措辞)。
+///
+/// 公共部分照旧作为一个**命名折叠组**进主提示词(复用灵感页同一条链路:草稿带回
+/// 既有禁用/折叠,定稿由 outputOf 导出,两者同写)。
+///
+/// 词条带 `charN：` / `[charN±]` 标记时(见 [splitCodexCharacters])**且当前是
+/// NAI**:标记之后的部分拆成角色卡,不再留在主提示词里。Anima / Krea 没有角色
+/// 分离这回事,整段照旧折叠进主提示词 —— 给它们拆出角色卡,卡也会被模块剥离层
+/// 当场收走,白忙一场还让人以为丢了东西。
+({int added, int dropped}) codexAddToPrompt(WidgetRef ref, CodexEntry e) {
   final gen = ref.read(generateProvider);
-  final entry = TagEntry(
-    id: 'codex_${e.id}',
-    category: TagCategory.other,
-    name: e.title,
-    positive: e.tags,
-  );
-  final draft = appendTagPositivesFolded(
-    pickEditorText(gen.promptRaw, gen.prompt),
-    [entry],
-  );
-  final positive = outputOf(draft);
-  ref
-      .read(generateProvider.notifier)
-      .setPrompts(positive: positive, positiveRaw: draftOf(draft, positive));
+  final isNai = providerOfModel(gen.params.model) == GenProvider.nai;
+  final split = isNai ? splitCodexCharacters(e.tags) : null;
+  final hasChars = split != null && split.hasCharacters;
+  final base = hasChars ? split.base : e.tags;
+
+  // 公共部分为空(词条上来就是 char1:)时不折叠 —— 否则会插进去一个空组。
+  if (base.trim().isNotEmpty) {
+    final entry = TagEntry(
+      id: 'codex_${e.id}',
+      category: TagCategory.other,
+      name: e.title,
+      positive: base,
+    );
+    final draft = appendTagPositivesFolded(
+      pickEditorText(gen.promptRaw, gen.prompt),
+      [entry],
+    );
+    final positive = outputOf(draft);
+    ref
+        .read(generateProvider.notifier)
+        .setPrompts(positive: positive, positiveRaw: draftOf(draft, positive));
+  }
+
+  if (!hasChars) return (added: 0, dropped: 0);
+  final added = ref.read(generateProvider.notifier).addCharactersFilled([
+    for (final c in split.characters)
+      (name: '角色 ${c.index}', positive: c.positive, negative: c.negative),
+  ]);
+  return (added: added, dropped: split.characters.length - added);
 }
 
 /// 网络图渐显:与灵感页画师/角色卡同款——帧到达前透明,到达后淡入。
@@ -559,11 +583,17 @@ class _DetailSheetState extends ConsumerState<_DetailSheet>
               Expanded(
                 child: FilledButton.icon(
                   onPressed: () {
-                    codexAddToPrompt(ref, e);
+                    final r = codexAddToPrompt(ref, e);
                     Navigator.pop(context);
                     hintSnack(
                       context,
-                      '已加入提示词',
+                      // 拆出了角色就说清楚 —— 不然用户只看到主提示词短了一截,
+                      // 不知道内容跑去了角色卡里
+                      r.dropped > 0
+                          ? '已加入提示词 · ${r.added} 个角色(另 ${r.dropped} 个超出上限)'
+                          : (r.added > 0
+                                ? '已加入提示词 · ${r.added} 个角色'
+                                : '已加入提示词'),
                       icon: Icons.check_circle_outline,
                       actionLabel: '去创作',
                       onAction: () => ref

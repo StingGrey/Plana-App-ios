@@ -2,31 +2,32 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
-import '../anima_nl.dart';
 import '../generate_state.dart';
+import '../krea_prompt.dart';
 import '../models.dart';
 import 'common.dart';
 import 'section_card.dart';
 
-/// 自然语言卡(anima 专属模块,对齐 web AnimaNlModule):
-/// 两个预设一键让 AI 按当前正向词写英文句子,一次结果就是一整段,
-/// 点一下整段写进正向词(再点一下整段移出)——一个插入点。
+/// 自然语言卡(krea 专属模块,对齐 web KreaPromptModule):
+/// 两个预设一键让 AI 把当前正向词整条改写成一段 k2 提示词。
 ///
-/// ⚠ krea 有一张同名卡([KreaPromptCard]),行为相反:那边产的是整条新的正向词、
-/// 动作是替换/还原。同名是用户定的(对用户而言就是同一件事:让 AI 写自然语言),
-/// 改代码时按 provider 认卡,别按名字。
-class AnimaNlCard extends ConsumerStatefulWidget {
-  const AnimaNlCard({super.key, this.reorderIndex});
+/// ⚠ anima 有一张**同名**卡([AnimaNlCard]),长得像但行为相反,改代码时别串
+/// (同名是用户定的:对用户而言就是同一件事,让 AI 写自然语言):
+///   anima  产的是补充段落 → 整段写进/移出正向词末尾(一个插入点,天然可逆)
+///   krea   产的是整条新正向词 → **替换**原文,原文存一份供还原
+/// 所以这里的结果块是只读预览,动作是底下那颗「替换 / 还原」按钮。
+class KreaPromptCard extends ConsumerStatefulWidget {
+  const KreaPromptCard({super.key, this.reorderIndex});
 
   final int? reorderIndex;
 
   @override
-  ConsumerState<AnimaNlCard> createState() => _AnimaNlCardState();
+  ConsumerState<KreaPromptCard> createState() => _KreaPromptCardState();
 }
 
-class _AnimaNlCardState extends ConsumerState<AnimaNlCard> {
+class _KreaPromptCardState extends ConsumerState<KreaPromptCard> {
   late final TextEditingController _extra = TextEditingController(
-    text: ref.read(animaNlProvider).value?.extra ?? '',
+    text: ref.read(kreaPromptProvider).value?.extra ?? '',
   );
 
   @override
@@ -35,26 +36,14 @@ class _AnimaNlCardState extends ConsumerState<AnimaNlCard> {
     super.dispose();
   }
 
-  /// 整段 ↔ 正向词(唯一插入点)。写入方只动定稿(同 LoRA 触发词/画师串),
-  /// 编辑器草稿作废。
-  void _toggle(String text) {
-    final notifier = ref.read(generateProvider.notifier);
-    final cur = ref.read(generateProvider).prompt;
-    notifier.setPrompts(
-      positive: promptHasNl(cur, text)
-          ? removeNlFromPrompt(cur, text)
-          : appendNlToPrompt(cur, text),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    final st = ref.watch(animaNlProvider).value ?? const AnimaNlState();
-    final notifier = ref.read(animaNlProvider.notifier);
+    final st = ref.watch(kreaPromptProvider).value ?? const KreaPromptState();
+    final notifier = ref.read(kreaPromptProvider.notifier);
     // 存档是异步水合的:建控件时可能还没读到,回来了要补进输入框
     // (不然框里空着、发请求却带着上次存的补充要求)。用户打字时两边恒等,不会打架。
-    ref.listen(animaNlProvider, (_, next) {
+    ref.listen(kreaPromptProvider, (_, next) {
       final extra = next.value?.extra ?? '';
       if (_extra.text == extra) return;
       _extra.value = TextEditingValue(
@@ -64,45 +53,46 @@ class _AnimaNlCardState extends ConsumerState<AnimaNlCard> {
     });
     final prompt = ref.watch(generateProvider.select((s) => s.prompt));
     final expanded = ref.watch(
-      generateProvider.select((s) => s.openPanels.contains(Panel.animaNl)),
+      generateProvider.select((s) => s.openPanels.contains(Panel.kreaPrompt)),
     );
 
     final full = st.fullText;
-    final applied = full.isNotEmpty && promptHasNl(prompt, full);
+    // 替换后又编辑过就不再给还原:那时候还原等于把用户的修改毁掉
+    final replaced = st.replacedIn(prompt);
     final busy = st.running != null;
 
     return SectionCard(
       icon: Icons.format_align_left,
       title: '自然语言',
       reorderIndex: widget.reorderIndex,
-      // 收起时也答得上「这次带没带这段」——同重绘放大卡头报目标尺寸
+      // 收起时也答得上「正向词是不是这张卡换过的」
       inline: [
-        if (applied)
+        if (replaced)
           Text(
-            '已写入',
+            '已替换',
             style: context.texts.labelMedium!.copyWith(color: scheme.primary),
           ),
       ],
       expanded: expanded,
       onHeaderTap: () =>
-          ref.read(generateProvider.notifier).togglePanel(Panel.animaNl),
+          ref.read(generateProvider.notifier).togglePanel(Panel.kreaPrompt),
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Row(
             children: [
-              for (final m in AnimaNlMode.values) ...[
+              for (final m in KreaPromptMode.values) ...[
                 Expanded(
                   child: _PresetButton(
-                    icon: m == AnimaNlMode.characters
-                        ? Icons.groups_outlined
+                    icon: m == KreaPromptMode.rewrite
+                        ? Icons.format_align_left
                         : Icons.auto_fix_high_outlined,
                     label: m.label,
                     running: st.running == m,
                     onTap: busy ? null : () => notifier.run(m),
                   ),
                 ),
-                if (m != AnimaNlMode.values.last) const SizedBox(width: 8),
+                if (m != KreaPromptMode.values.last) const SizedBox(width: 8),
               ],
             ],
           ),
@@ -117,7 +107,7 @@ class _AnimaNlCardState extends ConsumerState<AnimaNlCard> {
               isDense: true,
               filled: true,
               fillColor: scheme.surfaceContainerHigh.withValues(alpha: .5),
-              hintText: '补充要求(可选)· 例:强调雨天湿透的质感',
+              hintText: '补充要求(可选)· 例:改成黄昏的暖光',
               hintStyle: context.texts.bodySmall!.copyWith(
                 color: scheme.outline,
               ),
@@ -146,7 +136,7 @@ class _AnimaNlCardState extends ConsumerState<AnimaNlCard> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'AI 正在写句子…',
+                    'AI 正在整理…',
                     style: context.texts.labelMedium!.copyWith(
                       color: scheme.onSurfaceVariant,
                     ),
@@ -166,7 +156,7 @@ class _AnimaNlCardState extends ConsumerState<AnimaNlCard> {
               children: [
                 Expanded(
                   child: Text(
-                    '点击写入/移出正向提示词',
+                    replaced ? '已替换正向提示词' : '整理结果',
                     style: context.texts.labelSmall!.copyWith(
                       color: scheme.outline,
                     ),
@@ -176,7 +166,7 @@ class _AnimaNlCardState extends ConsumerState<AnimaNlCard> {
                   Icons.refresh,
                   size: 30,
                   iconSize: 17,
-                  tooltip: '换个角度重写',
+                  tooltip: '重新整理一次',
                   color: scheme.onSurfaceVariant,
                   onTap: busy || st.mode == null
                       ? null
@@ -187,7 +177,7 @@ class _AnimaNlCardState extends ConsumerState<AnimaNlCard> {
                   Icons.delete_outline,
                   size: 30,
                   iconSize: 17,
-                  tooltip: '清空结果(不动已写进正向词的句子)',
+                  tooltip: '清空结果(不动提示词框里的内容)',
                   color: scheme.onSurfaceVariant,
                   onTap: notifier.clearResult,
                 ),
@@ -198,11 +188,43 @@ class _AnimaNlCardState extends ConsumerState<AnimaNlCard> {
               InfoNote(st.result!.noteZh),
             ],
             const SizedBox(height: 8),
-            _FullTextBlock(
-              text: full,
-              added: applied,
-              onTap: () => _toggle(full),
+            // 只读预览:先看清楚再决定替不替换(anima 那张是点一下就写进去,
+            // 因为它可逆;这张一按就盖掉整条正向词,得先给人看)
+            Container(
+              constraints: const BoxConstraints(maxHeight: 168),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+              decoration: BoxDecoration(
+                color: scheme.surfaceContainerHigh.withValues(alpha: .6),
+                borderRadius: BorderRadius.circular(9),
+              ),
+              child: SingleChildScrollView(
+                child: Text(
+                  full,
+                  style: context.texts.bodySmall!.copyWith(
+                    height: 1.45,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
             ),
+            const SizedBox(height: 10),
+            replaced
+                ? OutlinedButton.icon(
+                    onPressed: notifier.restore,
+                    icon: const Icon(Icons.undo, size: 18),
+                    label: const Text('还原成替换前'),
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size.fromHeight(42),
+                    ),
+                  )
+                : FilledButton.tonalIcon(
+                    onPressed: notifier.applyReplace,
+                    icon: const Icon(Icons.check, size: 18),
+                    label: const Text('替换正向提示词'),
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size.fromHeight(42),
+                    ),
+                  ),
           ],
         ],
       ),
@@ -243,65 +265,6 @@ class _PresetButton extends StatelessWidget {
       style: FilledButton.styleFrom(
         padding: const EdgeInsets.symmetric(horizontal: 8),
         textStyle: context.texts.labelLarge,
-      ),
-    );
-  }
-}
-
-/// 这次结果的一整段,整块可点(已在场则 ✓,再点整段移出)——一次结果一个插入点。
-class _FullTextBlock extends StatelessWidget {
-  const _FullTextBlock({
-    required this.text,
-    required this.added,
-    required this.onTap,
-  });
-
-  final String text;
-  final bool added;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = context.scheme;
-    return Material(
-      color: added
-          ? scheme.primary.withValues(alpha: .13)
-          : scheme.surfaceContainerHigh.withValues(alpha: .6),
-      borderRadius: BorderRadius.circular(9),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(9),
-            border: Border.all(
-              color: added
-                  ? scheme.primary.withValues(alpha: .5)
-                  : Colors.transparent,
-            ),
-          ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(
-                added ? Icons.check : Icons.add,
-                size: 14,
-                color: added ? scheme.primary : scheme.onSurfaceVariant,
-              ),
-              const SizedBox(width: 7),
-              Expanded(
-                child: Text(
-                  text,
-                  style: context.texts.bodySmall!.copyWith(
-                    height: 1.45,
-                    color: added ? scheme.primary : scheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
       ),
     );
   }

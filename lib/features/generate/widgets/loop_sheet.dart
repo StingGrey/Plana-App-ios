@@ -45,7 +45,7 @@ class _Setup extends ConsumerWidget {
     final scheme = context.scheme;
     final s = ref.watch(generateProvider);
     final p = s.params;
-    final gen = ref.watch(generationProvider);
+    final gen = ref.watch(genStatusProvider);
     final isOpus = ref.watch(anlasProvider).asData?.value?.isOpus ?? false;
     // 与吸底栏同口径:按剥离隐藏模块后的实际发送内容估价
     final mods =
@@ -184,7 +184,7 @@ class _Running extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final scheme = context.scheme;
-    final gen = ref.watch(generationProvider);
+    final gen = ref.watch(genStatusProvider);
     final progress = loop.total > 0
         ? (((loop.batch - 1) + (gen.progress ?? 0)) / loop.total).clamp(
             0.0,

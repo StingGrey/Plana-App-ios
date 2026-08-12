@@ -101,38 +101,44 @@ class GenQueueNotifier extends Notifier<GenQueueState> {
     if (state.active) state = state.copyWith(stopping: true);
   }
 
-  /// 空闲且有排队任务时开始消费;生成中/循环中让位,由对方收尾时再拉起。
+  /// 有排队任务时开始消费;循环中让位,由对方收尾时再拉起。
+  /// 手动生成中不再让位:并行之后手动那条只是池子里的一员,不挡队列。
   Future<void> maybeStart() async {
     if (state.active || state.items.isEmpty) return;
-    if (ref.read(generationProvider).busy) return;
     if (ref.read(loopStatusProvider).active) return;
     await _drain();
   }
 
   Future<void> _drain() async {
     state = state.copyWith(active: true, done: 0, stopping: false);
-    while (!state.stopping && state.items.isNotEmpty) {
-      // 消费间隙用户手动点了生成:等它跑完再续
-      if (ref.read(generationProvider).busy) {
-        await Future<void>.delayed(const Duration(milliseconds: 300));
-        continue;
+    final gen = ref.read(generationProvider.notifier);
+    var failed = false;
+
+    // 同循环:一个 worker 一个并发槽。取队首与写回之间没有 await,
+    // 单线程下两个 worker 不会抢到同一条。
+    Future<void> worker() async {
+      while (!state.stopping && !failed && state.items.isNotEmpty) {
+        final task = state.items.first;
+        state = state.copyWith(items: state.items.sublist(1));
+        var outcome = await gen.generate(using: task.snapshot);
+        // **只有「确定未扣点」才重试。** 流中断 / 超时 / 内容审核这类失败,NAI
+        // 可能已经受理并扣了点,盲目重试就是第二次扣费,而且没有任何用户动作。
+        // 用户取消(stopping)同样不重试。见 S1B-01。
+        if (outcome == GenOutcome.notCharged && !state.stopping) {
+          outcome = await gen.generate(using: task.snapshot);
+        }
+        if (outcome != GenOutcome.ok) {
+          failed = true; // 让别的 worker 也收手,剩下的留在队里等用户处置
+          state = state.copyWith(items: [task, ...state.items]); // 放回队首
+          break;
+        }
+        state = state.copyWith(done: state.done + 1);
       }
-      final task = state.items.first;
-      state = state.copyWith(items: state.items.sublist(1));
-      final gen = ref.read(generationProvider.notifier);
-      var outcome = await gen.generate(using: task.snapshot);
-      // **只有「确定未扣点」才重试。** 流中断 / 超时 / 内容审核这类失败,NAI
-      // 可能已经受理并扣了点,盲目重试就是第二次扣费,而且没有任何用户动作。
-      // 用户取消(stopping)同样不重试。见 S1B-01。
-      if (outcome == GenOutcome.notCharged && !state.stopping) {
-        outcome = await gen.generate(using: task.snapshot);
-      }
-      if (outcome != GenOutcome.ok) {
-        state = state.copyWith(items: [task, ...state.items]); // 放回队首
-        break;
-      }
-      state = state.copyWith(done: state.done + 1);
     }
+
+    final workers = await gen.concurrency();
+    await Future.wait([for (var i = 0; i < workers; i++) worker()]);
+
     final done = state.done;
     final left = state.items.length;
     state = GenQueueState(items: state.items);

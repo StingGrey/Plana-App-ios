@@ -20,73 +20,28 @@ class _GenerateTopBarState extends ConsumerState<GenerateTopBar> {
 
   Future<void> _pickModel() async {
     final current = ref.read(generateProvider).params.model;
-    // anima 走服务端 Modal 后端,仅 Bot 授权模式提供(对齐 web isAnimaAvailable)
-    final animaOk = ref.read(authModeProvider).value == AuthMode.bot;
+    // anima / krea 都走服务端 Modal 后端,仅 Bot 授权模式提供
+    // (对齐 web isAnimaAvailable / isKreaAvailable:token 直连模式没有服务端会话)
+    final modalOk = ref.read(authModeProvider).value == AuthMode.bot;
     final picked = await showModalBottomSheet<String>(
       context: context,
-      // 默认弹层 9/16 屏高封顶,矮屏/大字号机型装不下全部选项时会从底部
-      // 静默裁掉(实机反馈:部分机型最后一个模型被挡)。自控高度:
-      // 内部滚动 + 85% 封顶 + 底部安全区,内容再多也不裁,装得下就贴内容高。
+      // 定高七成屏(与高级设置那张 .86 同一路数)。不按内容高:各类条目数不同,
+      // 贴内容会让弹层随分类横滑抽动;而默认的 9/16 封顶在矮屏/大字号机型上
+      // 又会从底部静默裁掉选项(实机反馈:部分机型最后一个模型被挡)。
       isScrollControlled: true,
-      constraints: BoxConstraints(
-        maxHeight: MediaQuery.sizeOf(context).height * .85,
-      ),
-      builder: (context) => SafeArea(
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-                child: Row(
-                  children: [
-                    Text(
-                      '模型',
-                      style: context.texts.titleMedium!.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              _GroupLabel('NAI'),
-              for (final model in m.models) _modelTile(model, current),
-              if (animaOk) ...[
-                const SizedBox(height: 4),
-                _GroupLabel('Anima'),
-                for (final model in m.animaModels) _modelTile(model, current),
-              ],
-              const SizedBox(height: 8),
-            ],
-          ),
+      useSafeArea: true,
+      builder: (context) => FractionallySizedBox(
+        heightFactor: .7,
+        child: _ModelSheet(
+          current: current,
+          groups: [
+            m.GenProvider.nai,
+            if (modalOk) ...[m.GenProvider.anima, m.GenProvider.krea],
+          ],
         ),
       ),
     );
     if (picked != null) ref.read(generateProvider.notifier).setModel(picked);
-  }
-
-  Widget _modelTile(String model, String current) {
-    final desc = m.modelDescriptions[model];
-    return ListTile(
-      onTap: () => Navigator.pop(context, model),
-      title: Text(model, style: context.texts.bodyMedium),
-      // 副标题恒单行:文案本身已按一行裁,但系统字号调大/窄屏仍会折行 ——
-      // 折了这张表就一页两套行高,ellipsis 兜住。
-      subtitle: desc == null
-          ? null
-          : Text(
-              desc,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: context.texts.bodySmall!.copyWith(
-                color: context.scheme.onSurfaceVariant,
-              ),
-            ),
-      trailing: model == current
-          ? Icon(Icons.check, size: 18, color: context.scheme.primary)
-          : null,
-      dense: true,
-    );
   }
 
   @override
@@ -182,27 +137,118 @@ class _GenerateTopBarState extends ConsumerState<GenerateTopBar> {
   }
 }
 
-/// 模型面板的分组小标签(NAI / Anima)。
-class _GroupLabel extends StatelessWidget {
-  const _GroupLabel(this.text);
+/// 模型选择弹层(定高七成屏):下划线 Tab + 可左右滑的分页,每页是该大类的型号列表。
+///
+/// 三类平铺成一张长表要滚两屏,选型时还得先认清自己看的是哪一段;分页之后
+/// 每页只有 2-4 项,一眼到底,还能直接横滑翻类。
+///
+/// 只列**当前可用**的大类:Anima / Krea 走服务端 Modal 后端,token 直连模式
+/// 没有服务端会话,列出来也点不动 —— 摆一排点不动的 tab 比不摆更让人费解。
+/// 于是只剩一类时连 Tab 条一起收走(孤零零一个 tab 是纯噪声)。
+class _ModelSheet extends StatefulWidget {
+  const _ModelSheet({required this.current, required this.groups});
 
-  final String text;
+  final String current;
+  final List<m.GenProvider> groups;
+
+  @override
+  State<_ModelSheet> createState() => _ModelSheetState();
+}
+
+class _ModelSheetState extends State<_ModelSheet>
+    with SingleTickerProviderStateMixin {
+  /// 进来就停在当前型号所属的那一类;那类当前不可用(如停在 Anima 却切回了
+  /// token 模式)就落到第一类 —— 停在一个选不了的分组上没有意义。
+  late final TabController _tab = TabController(
+    length: widget.groups.length,
+    // 进来就停在当前型号所属的那一类;那类当前不可用(如停在 Anima 却切回了
+    // token 模式)就落到第一类 —— 停在一个选不了的分组上没有意义。
+    initialIndex: widget.groups.indexOf(m.providerOfModel(widget.current)).clamp(
+      0,
+      widget.groups.length - 1,
+    ),
+    vsync: this,
+  );
+
+  @override
+  void dispose() {
+    _tab.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 4, 20, 2),
-        child: Text(
-          text,
-          style: context.texts.labelSmall!.copyWith(
-            color: context.scheme.onSurfaceVariant,
-            fontWeight: FontWeight.w700,
-            letterSpacing: 1.1,
+    final scheme = context.scheme;
+    return SafeArea(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 4),
+            child: Row(
+              children: [
+                Text(
+                  '模型',
+                  style: context.texts.titleMedium!.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
           ),
-        ),
+          // 下划线 Tab + 可左右滑的分页:不做成一排按钮,列表本身也跟着滑。
+          if (widget.groups.length > 1)
+            TabBar(
+              controller: _tab,
+              tabs: [
+                for (final g in widget.groups)
+                  Tab(height: 42, text: m.providerLabel(g)),
+              ],
+              labelColor: scheme.primary,
+              unselectedLabelColor: scheme.onSurfaceVariant,
+              indicatorSize: TabBarIndicatorSize.tab,
+              dividerColor: scheme.outlineVariant.withValues(alpha: .5),
+            ),
+          Expanded(
+            child: TabBarView(
+              controller: _tab,
+              children: [
+                for (final g in widget.groups)
+                  ListView(
+                    padding: const EdgeInsets.only(top: 4, bottom: 8),
+                    children: [
+                      for (final model in m.modelsOf(g)) _modelTile(model),
+                    ],
+                  ),
+              ],
+            ),
+          ),
+        ],
       ),
+    );
+  }
+
+  Widget _modelTile(String model) {
+    final desc = m.modelDescriptions[model];
+    return ListTile(
+      onTap: () => Navigator.pop(context, model),
+      title: Text(model, style: context.texts.bodyMedium),
+      // 副标题恒单行:文案本身已按一行裁,但系统字号调大/窄屏仍会折行 ——
+      // 折了这张表就一页两套行高,ellipsis 兜住。
+      subtitle: desc == null
+          ? null
+          : Text(
+              desc,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: context.texts.bodySmall!.copyWith(
+                color: context.scheme.onSurfaceVariant,
+              ),
+            ),
+      trailing: model == widget.current
+          ? Icon(Icons.check, size: 18, color: context.scheme.primary)
+          : null,
+      dense: true,
     );
   }
 }

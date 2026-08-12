@@ -9,6 +9,7 @@ import '../gen_modules.dart';
 import '../generate_state.dart';
 import '../generation_controller.dart';
 import '../loop_controller.dart';
+import '../models.dart' show stepsRangeOf;
 import '../vibe_encoder.dart';
 import '../../import/import_panel.dart';
 import 'advanced_sheet.dart';
@@ -64,7 +65,8 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
     final state = ref.watch(generateProvider);
     final scheme = context.scheme;
     final p = state.params;
-    final gen = ref.watch(generationProvider);
+    final gen = ref.watch(genStatusProvider);
+    final pool = ref.watch(generationProvider);
     final loop = ref.watch(loopStatusProvider);
 
     final isOpus = ref.watch(anlasProvider).asData?.value?.isOpus ?? false;
@@ -179,76 +181,27 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
                   ),
                 ),
                 const SizedBox(width: 9),
-                // 生成主按钮:空闲=单张生成(循环从伴钮面板启动);
-                // 生成中=进度条(重绘 CTA 同款),循环中叠「停止」可点。
+                // 生成主按钮。**并行之后它一直是「生成」**:再点就是再投一条。
+                // 有任务在跑时按钮**内部**右侧长出一段停止区(带进度环)——
+                // 创作页看不见图库的任务卡,没它就整页看不到进度、也没处取消。
                 Expanded(
-                  child: SizedBox(
-                    height: 52,
-                    child: gen.busy
-                        ? _BusyBar(
-                            gen: gen,
-                            loop: loop,
-                            // 循环:第一次点=软停(本张跑完后停),**再点一次=强制
-                            // 取消**。软停后绝不能变成 null —— 那会在当前张卡住时
-                            // (断网最常见)关掉唯一的退路,只能干等超时:token 最长
-                            // 90s、bot 5 分钟。实测反馈。
-                            onStop: loop.active && !loop.stopping
-                                ? () => ref
-                                      .read(loopStatusProvider.notifier)
-                                      .stop()
-                                : () => ref
-                                      .read(generationProvider.notifier)
-                                      .cancel(),
-                          )
-                        : FilledButton(
-                            style: FilledButton.styleFrom(
-                              padding: EdgeInsets.zero,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(26),
-                              ),
-                            ),
-                            onPressed: () {
-                              _hintDisabledVibes(context, ref);
-                              ref.read(generationProvider.notifier).generate();
-                            },
-                            // 费用数字变长(编码费叠加后可到三位数)时这一行会
-                            // 顶破按钮 —— 实测快速改 IE 会看到溢出围栏。两段
-                            // 文本都收进 Flexible + 省略号,宁可挤扁不越界。
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(
-                                  Icons.auto_awesome,
-                                  size: 20,
-                                  color: scheme.onPrimary,
-                                ),
-                                const SizedBox(width: 8),
-                                Flexible(
-                                  child: Text(
-                                    '生成',
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: context.texts.titleMedium!.copyWith(
-                                      fontWeight: FontWeight.w700,
-                                      color: scheme.onPrimary,
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                Flexible(
-                                  child: AnimatedSwitcher(
-                                    duration: Motion.fast,
-                                    child: _PillChip(
-                                      key: ValueKey(totalCost),
-                                      text: totalCost == 0
-                                          ? '免费'
-                                          : '$totalCost Anlas',
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
+                  child: _GenerateButton(
+                    cost: totalCost,
+                    onGenerate: () {
+                      _hintDisabledVibes(context, ref);
+                      ref.read(generationProvider.notifier).generate();
+                    },
+                    progress: pool.busy ? gen.progress : null,
+                    runningCount: pool.busy ? pool.jobs.length : 0,
+                    stopIcon: loop.active && !loop.stopping
+                        ? Icons.stop_rounded
+                        : Icons.close_rounded,
+                    // 循环:第一次点=软停(本张跑完后停),**再点一次=强制取消**。
+                    // 软停后绝不能变成 null —— 那会在当前张卡住时(断网最常见)
+                    // 关掉唯一的退路,只能干等超时。实测反馈。
+                    onStop: loop.active && !loop.stopping
+                        ? () => ref.read(loopStatusProvider.notifier).stop()
+                        : () => ref.read(generationProvider.notifier).cancel(),
                   ),
                 ),
               ],
@@ -273,129 +226,205 @@ void _hintDisabledVibes(BuildContext context, WidgetRef ref) {
   }
 }
 
-/// 生成中的主按钮区:化作进度条(重绘 CTA 同款视觉——浅底 + 半透明
-/// primary 填充 + 居中读数)。循环中居中内容变「停止 · 第 n/N 张」且可点。
-class _BusyBar extends StatelessWidget {
-  const _BusyBar({required this.gen, required this.loop, this.onStop});
+/// 生成主按钮。有任务在跑时**按钮内部**右侧展开一段停止区:
+/// 环 = 画布正跟随那条的进度(与图库画布上的进度胶囊同一条口径,不是全池平均
+/// —— 平均值谁也对不上号),多条在跑时环里标数。
+///
+/// 做成一颗按钮而不是两颗并排:并排那版把主按钮挤窄了一截,而且「生成」和
+/// 「停止」是同一件事的两面,分开两个方块反而要多想一下哪个是哪个。
+class _GenerateButton extends StatelessWidget {
+  const _GenerateButton({
+    required this.cost,
+    required this.onGenerate,
+    required this.progress,
+    required this.runningCount,
+    required this.stopIcon,
+    required this.onStop,
+  });
 
-  final GenStatus gen;
-  final LoopStatus loop;
-  final VoidCallback? onStop;
+  final int cost;
+  final VoidCallback onGenerate;
+
+  /// 跟随那条的进度;null = 还没出图(走不确定动画)。
+  final double? progress;
+
+  /// 在跑的条数;0 = 不显示停止区。
+  final int runningCount;
+  final IconData stopIcon;
+  final VoidCallback onStop;
 
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    final style = TextStyle(
-      fontSize: 13.5,
-      fontWeight: FontWeight.w800,
-      color: scheme.onSurface,
-      fontFeatures: const [FontFeature.tabularFigures()],
-    );
-
-    final Widget center;
-    if (loop.active) {
-      final batch =
-          '第 ${loop.batch}${loop.total > 0 ? '/${loop.total}' : ''} 张';
-      // 软停后不是死路:整条仍可点,升级为强制取消(中断当前请求)
-      final subStyle = TextStyle(
-        fontSize: 12.5,
-        fontWeight: FontWeight.w700,
-        color: scheme.onSurfaceVariant,
-        fontFeatures: const [FontFeature.tabularFigures()],
-      );
-      center = Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            loop.stopping ? Icons.close_rounded : Icons.stop_rounded,
-            size: loop.stopping ? 19 : 20,
-            color: scheme.onSurface,
-          ),
-          const SizedBox(width: 5),
-          Text(loop.stopping ? '强制取消' : '停止', style: style),
-          const SizedBox(width: 8),
-          Text(loop.stopping ? '$batch · 本张后停止…' : batch, style: subStyle),
-        ],
-      );
-    } else {
-      final readout = gen.progress != null
-          ? '${gen.step} / ${gen.total}'
-          : (gen.note ?? '生成中…');
-      // 单张/队列生成中:整条可点取消(与循环「停止」同款视觉)。
-      center = onStop == null
-          ? Text(readout, style: style)
-          : Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.close_rounded, size: 19, color: scheme.onSurface),
-                const SizedBox(width: 5),
-                Text('取消', style: style),
-                const SizedBox(width: 8),
-                Text(
-                  readout,
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w700,
-                    color: scheme.onSurfaceVariant,
-                    fontFeatures: const [FontFeature.tabularFigures()],
+    final busy = runningCount > 0;
+    return SizedBox(
+      height: 52,
+      child: Material(
+        color: scheme.primary,
+        borderRadius: BorderRadius.circular(26),
+        clipBehavior: Clip.antiAlias,
+        // stretch:两段都要撑满 52 的高度。默认的 center 会让 InkWell 只拿到
+        // 内容那点自然高度(≈28),按钮看着一大颗、实际只有中间一条窄带能点 ——
+        // 表现就是「只有文字上点得动」。实测反馈。
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(
+              child: InkWell(
+                onTap: onGenerate,
+                // 费用数字变长(编码费叠加后可到三位数)时这一行会顶破按钮 ——
+                // 实测快速改 IE 会看到溢出围栏。两段文本都收进 Flexible +
+                // 省略号,宁可挤扁不越界。
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    // 池子里已经有任务 → 换成加号:这一下是「再加一条」,
+                    // 不是「开始生成」,图标得说清楚。
+                    Icon(
+                      busy ? Icons.add_rounded : Icons.auto_awesome,
+                      size: busy ? 22 : 20,
+                      color: scheme.onPrimary,
+                    ),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        '生成',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: context.texts.titleMedium!.copyWith(
+                          fontWeight: FontWeight.w700,
+                          color: scheme.onPrimary,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: AnimatedSwitcher(
+                        duration: Motion.fast,
+                        child: _PillChip(key: ValueKey(cost), cost: cost),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (busy) ...[
+              // 竖细线:两段是两个可点区域,没有分界的话点哪儿全靠猜。
+              // 包一层 Center —— 外层是 stretch,不包的话这道线会被撑到通高。
+              Center(
+                child: Container(
+                  width: 1,
+                  height: 30,
+                  color: scheme.onPrimary.withValues(alpha: .28),
+                ),
+              ),
+              Tooltip(
+                message: runningCount > 1
+                    ? '取消当前跟随的这条($runningCount 条在跑)'
+                    : '取消生成',
+                child: InkWell(
+                  onTap: onStop,
+                  child: SizedBox(
+                    width: 58,
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        SizedBox(
+                          width: 34,
+                          height: 34,
+                          child: CircularProgressIndicator(
+                            value: progress,
+                            strokeWidth: 2.5,
+                            backgroundColor: scheme.onPrimary.withValues(
+                              alpha: .28,
+                            ),
+                            valueColor: AlwaysStoppedAnimation(
+                              scheme.onPrimary,
+                            ),
+                          ),
+                        ),
+                        Icon(stopIcon, size: 18, color: scheme.onPrimary),
+                        if (runningCount > 1)
+                          Positioned(
+                            right: 6,
+                            top: 8,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 4,
+                                vertical: 1,
+                              ),
+                              decoration: BoxDecoration(
+                                color: scheme.onPrimary,
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Text(
+                                '$runningCount',
+                                style: TextStyle(
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.w800,
+                                  color: scheme.primary,
+                                  fontFeatures: const [
+                                    FontFeature.tabularFigures(),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
                 ),
-              ],
-            );
-    }
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(26),
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          LinearProgressIndicator(
-            value: gen.progress,
-            backgroundColor: scheme.surfaceContainerHighest,
-            color: scheme.primary.withValues(alpha: .38),
-          ),
-          if (onStop != null)
-            Material(
-              color: Colors.transparent,
-              child: InkWell(
-                onTap: onStop,
-                child: Center(child: center),
               ),
-            )
-          else
-            Center(child: center),
-        ],
+            ],
+          ],
+        ),
       ),
     );
   }
 }
 
-/// 主按钮内的信息胶囊(成本预估 / 循环第 n/N 张)。
+/// 主按钮内的成本胶囊。
+///
+/// 「Anlas」这个词砍掉换成顶栏同款点数图标(重绘 CTA 早就这么做了,见
+/// inpaint_overlay):按钮内部现在还要分一段给停止区,最长的那个词首先该让位,
+/// 四位数也不必再靠省略号救。免费档保留中文 —— 一个图标表达不了「不要钱」。
 class _PillChip extends StatelessWidget {
-  const _PillChip({super.key, required this.text});
+  const _PillChip({super.key, required this.cost});
 
-  final String text;
+  final int cost;
 
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
+    final style = TextStyle(
+      fontSize: 11,
+      fontWeight: FontWeight.w700,
+      color: scheme.onPrimary,
+    );
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
       decoration: BoxDecoration(
         color: scheme.onPrimary.withValues(alpha: .16),
         borderRadius: BorderRadius.circular(9),
       ),
-      child: Text(
-        text,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        softWrap: false,
-        style: TextStyle(
-          fontSize: 11,
-          fontWeight: FontWeight.w700,
-          color: scheme.onPrimary,
-        ),
-      ),
+      child: cost == 0
+          ? Text('免费', maxLines: 1, softWrap: false, style: style)
+          : Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.toll, size: 12, color: scheme.onPrimary),
+                const SizedBox(width: 3),
+                Flexible(
+                  child: Text(
+                    '$cost',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    softWrap: false,
+                    style: style,
+                  ),
+                ),
+              ],
+            ),
     );
   }
 }
@@ -409,10 +438,7 @@ class _StepsChip extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     // 只订阅这一个数:拖动时不牵动整条栏重算成本
     final committed = ref.watch(
-      generateProvider.select(
-        (s) =>
-            isAnimaModel(s.params.model) ? s.params.animaSteps : s.params.steps,
-      ),
+      generateProvider.select((s) => s.params.activeSteps),
     );
     final slider = ref.watch(stepsSliderProvider);
     return _ReadoutChip(
@@ -459,19 +485,18 @@ class _StepsSliderPill extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final scheme = context.scheme;
-    // Anima 与 NAI 各有一套独立步数,范围也不同(与高级面板同源)
-    final isAnima = ref.watch(
-      generateProvider.select((s) => isAnimaModel(s.params.model)),
+    // NAI / Anima / Krea 各有一套独立步数,范围也不同(与高级面板同源)
+    final range = ref.watch(
+      generateProvider.select((s) => stepsRangeOf(s.params.model)),
     );
     final committed = ref.watch(
-      generateProvider.select(
-        (s) => isAnima ? s.params.animaSteps : s.params.steps,
-      ),
+      generateProvider.select((s) => s.params.activeSteps),
     );
-    final min = isAnima ? 6 : 1;
+    final min = range.min;
+    final max = range.max;
     final steps =
         (ref.watch(stepsSliderProvider.select((s) => s.draft)) ?? committed)
-            .clamp(min, 50);
+            .clamp(min, max);
     return GestureDetector(
       // 不透明:否则药丸空白处的拖动会穿过去滚动底下的列表
       behavior: HitTestBehavior.opaque,
@@ -506,7 +531,7 @@ class _StepsSliderPill extends ConsumerWidget {
                   child: Slider(
                     value: steps.toDouble(),
                     min: min.toDouble(),
-                    max: 50,
+                    max: max.toDouble(),
                     // 不传 divisions:离散 Slider 会用 75ms 曲线把滑块吸到刻度,
                     // 拖起来黏手。步长(整数)就地取整。
                     onChanged: (v) =>
@@ -514,14 +539,9 @@ class _StepsSliderPill extends ConsumerWidget {
                     // 松手才写回全局:先提交再清草稿,同一帧生效,不会闪回旧值
                     onChangeEnd: (v) {
                       final p = ref.read(generateProvider).params;
-                      final n = v.round();
                       ref
                           .read(generateProvider.notifier)
-                          .applyParams(
-                            isAnima
-                                ? p.copyWith(animaSteps: n)
-                                : p.copyWith(steps: n),
-                          );
+                          .applyParams(p.withActiveSteps(v.round()));
                       ref.read(stepsSliderProvider.notifier).endDrag();
                     },
                   ),
@@ -542,14 +562,11 @@ class _StepsSliderPill extends ConsumerWidget {
                   title: '步数 Steps',
                   value: steps.toDouble(),
                   min: min.toDouble(),
-                  max: 50,
-                  divisions: 50 - min,
+                  max: max.toDouble(),
+                  divisions: max - min,
                 );
                 if (v == null) return;
-                final n = v.round();
-                notifier.applyParams(
-                  isAnima ? p.copyWith(animaSteps: n) : p.copyWith(steps: n),
-                );
+                notifier.applyParams(p.withActiveSteps(v.round()));
                 slider.endDrag();
               },
             ),

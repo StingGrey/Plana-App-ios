@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../core/theme/app_theme.dart';
-import '../../generate/generation_controller.dart' show GenStatus;
+import '../../generate/gen_jobs.dart' show GenJob;
 import '../../generate/widgets/common.dart' show StripeThumb;
 import '../models.dart';
 import 'gallery_grid_sheet.dart';
@@ -32,8 +32,10 @@ double _thumbSlotW(double aspect) =>
     _thumbImgW(aspect) + (_thumbPad + _thumbBorder) * 2;
 
 /// 底部历史胶片条:横向缩略图(选中环 + 角标)+ 尾部「›」展开全部网格。
-/// 生成中头部插一张占位卡(逐帧预览 + 进度条),点它回到生成视角,
-/// 点历史缩略图切走看历史 —— 对齐 web 桌面端的占位卡交互。
+/// 头部插着**在跑的任务**,一条一张占位卡(逐帧预览 + 进度条),点卡片让画布
+/// 跟随它,点历史缩略图切走看历史 —— 对齐 web 桌面端的占位卡交互。
+/// 取消不在卡上:卡这么小,取消挨着「切换跟随」这个主手势太容易点错,
+/// 它长在画布那条进度胶囊上(见 ProgressPill,web 也是放在状态条上)。
 /// 选中项变化(含画布横滑切图、从展开页跳选)时自动滚动,把选中项摆到视野中央。
 class FilmStrip extends StatefulWidget {
   const FilmStrip({
@@ -41,21 +43,21 @@ class FilmStrip extends StatefulWidget {
     required this.results,
     required this.selectedId,
     required this.onSelect,
-    this.gen,
-    this.genActive = false,
-    this.onTapGen,
+    this.jobs = const [],
+    this.selectedJobId,
+    this.onSelectJob,
   });
 
   final List<ResultImage> results;
   final String? selectedId;
   final ValueChanged<String> onSelect;
 
-  /// 非空 = 生成中,头部显示占位卡。
-  final GenStatus? gen;
+  /// 在跑的任务,**已按新→旧排好**(调用方给 `GenPool.newestFirst`)。
+  final List<GenJob> jobs;
 
-  /// 占位卡是否为当前画布视角(选中环)。
-  final bool genActive;
-  final VoidCallback? onTapGen;
+  /// 画布正在跟随的任务;非空时历史图那边不显示选中环。
+  final String? selectedJobId;
+  final ValueChanged<String>? onSelectJob;
 
   @override
   State<FilmStrip> createState() => _FilmStripState();
@@ -76,7 +78,7 @@ class _FilmStripState extends State<FilmStrip> {
     super.didUpdateWidget(old);
     if (old.selectedId != widget.selectedId ||
         old.results.length != widget.results.length ||
-        (old.gen != null) != (widget.gen != null)) {
+        old.jobs.length != widget.jobs.length) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _reveal());
     }
   }
@@ -101,9 +103,9 @@ class _FilmStripState extends State<FilmStrip> {
     final i = widget.results.indexWhere((r) => r.id == id);
     if (i < 0) return;
     var x = _stripPadH;
-    if (widget.gen case final g?) {
-      final aspect = (g.width > 0 && g.height > 0) ? g.width / g.height : 1.0;
-      x += _thumbSlotW(aspect) + _thumbGap; // 生成中占位卡排在头部
+    for (final j in widget.jobs) {
+      // 在跑的任务卡都排在头部,历史图的位置要把它们让出来
+      x += _thumbSlotW(_aspectOf(j.width, j.height)) + _thumbGap;
     }
     for (var k = 0; k < i; k++) {
       x += _thumbSlotW(widget.results[k].aspect) + _thumbGap;
@@ -118,8 +120,8 @@ class _FilmStripState extends State<FilmStrip> {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    final gen = widget.gen;
-    final extra = gen != null ? 1 : 0;
+    final jobs = widget.jobs;
+    final extra = jobs.length;
     return Material(
       color: scheme.surface,
       child: Padding(
@@ -136,11 +138,12 @@ class _FilmStripState extends State<FilmStrip> {
                   itemCount: widget.results.length + extra,
                   separatorBuilder: (_, _) => const SizedBox(width: _thumbGap),
                   itemBuilder: (context, i) {
-                    if (gen != null && i == 0) {
+                    if (i < extra) {
+                      final j = jobs[i];
                       return _GenThumb(
-                        gen: gen,
-                        active: widget.genActive,
-                        onTap: widget.onTapGen,
+                        job: j,
+                        active: j.id == widget.selectedJobId,
+                        onTap: () => widget.onSelectJob?.call(j.id),
                       );
                     }
                     final r = widget.results[i - extra];
@@ -148,7 +151,7 @@ class _FilmStripState extends State<FilmStrip> {
                       result: r,
                       selected:
                           r.id == widget.selectedId &&
-                          !(gen != null && widget.genActive),
+                          widget.selectedJobId == null,
                       onTap: () => widget.onSelect(r.id),
                       // 长按:直达网格多选并预选此张(快速删除/批量保存入口)
                       onLongPress: () {
@@ -194,12 +197,14 @@ class _FilmStripState extends State<FilmStrip> {
   }
 }
 
-/// 生成中占位卡:逐帧预览(未到帧显斜纹)+ 底部细进度条。
-/// 点击回到生成视角;active 时亮选中环。
-class _GenThumb extends StatelessWidget {
-  const _GenThumb({required this.gen, required this.active, this.onTap});
+double _aspectOf(int w, int h) => (w > 0 && h > 0) ? w / h : 1.0;
 
-  final GenStatus gen;
+/// 在跑的任务卡:逐帧预览(未到帧显斜纹)+ 底部细进度条。
+/// 点卡片让画布跟随这条;active 时亮选中环。取消在画布的进度胶囊上,不在这儿。
+class _GenThumb extends StatelessWidget {
+  const _GenThumb({required this.job, required this.active, this.onTap});
+
+  final GenJob job;
   final bool active;
   final VoidCallback? onTap;
 
@@ -207,11 +212,9 @@ class _GenThumb extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     const h = _thumbH;
-    final aspect = (gen.width > 0 && gen.height > 0)
-        ? gen.width / gen.height
-        : 1.0;
+    final aspect = _aspectOf(job.width, job.height);
     final w = _thumbImgW(aspect);
-    final preview = gen.preview;
+    final preview = job.preview;
     return GestureDetector(
       onTap: onTap,
       child: AnimatedContainer(
@@ -248,7 +251,7 @@ class _GenThumb extends StatelessWidget {
                   child: SizedBox(
                     height: 3,
                     child: LinearProgressIndicator(
-                      value: gen.progress, // null = 准备中,不确定动画
+                      value: job.progress, // null = 准备中,不确定动画
                       backgroundColor: Colors.black.withValues(alpha: .25),
                       valueColor: AlwaysStoppedAnimation(scheme.primary),
                     ),

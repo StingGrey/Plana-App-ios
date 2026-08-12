@@ -13,9 +13,12 @@ import '../models.dart';
 import 'common.dart';
 import 'section_card.dart';
 
-/// LoRA 卡(anima 专属模块,样式对齐 web 桌面端 lora 模块):
+/// LoRA 卡(anima / krea 共用同一块 UI,样式对齐 web 桌面端 lora 模块):
 /// 已挂列表(启用开关 · 缩略图 · 名称/类型徽标/触发词计数 · 权重),
 /// 选中项展开权重滑杆与触发词行 —— 点触发词直接写进/移出正向提示词。
+///
+/// 两边挂载语义完全一致,差别只在库(见 `loraBaseProvider`)和发出去时进
+/// `anima_extra` 还是 `krea_extra` —— 所以卡片本身不用分两份。
 class LoraCard extends ConsumerStatefulWidget {
   const LoraCard({super.key, this.reorderIndex});
 
@@ -61,7 +64,11 @@ class _LoraCardState extends ConsumerState<LoraCard> {
     try {
       final sid = (await ref.read(botSessionProvider.future))?.sessionId;
       if (sid == null || sid.isEmpty) return;
-      final lib = await ref.read(backendClientProvider).listLoras(sid);
+      // 按任务自己的底模去查:队列跨页面存活,装好时用户可能已经切走模型,
+      // 拿当前底模查会查不到这条(它落在另一个库里)。
+      final lib = await ref
+          .read(backendClientProvider)
+          .listLoras(sid, base: job.base);
       final item = lib.where((l) => l.name == job.lrId).firstOrNull;
       if (item != null && mounted) {
         final promoted = notifier.promotePendingLora(

@@ -81,6 +81,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final isAnima = isAnimaModel(draft.model);
+    final isKrea = isKreaModel(draft.model);
     return Column(
       children: [
         Padding(
@@ -130,6 +131,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                 // Anima:与 NAI 两套独立采样参数,范围对齐 web animaOptions
                 ParamSlider(
                   label: '步数 Steps',
+                  help: Help.animaSteps,
                   value: draft.animaSteps.toDouble(),
                   min: animaStepsRange.min.toDouble(),
                   max: animaStepsRange.max.toDouble(),
@@ -140,6 +142,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                 const SizedBox(height: 8),
                 ParamSlider(
                   label: '提示词引导 CFG',
+                  help: Help.animaCfg,
                   value: draft.animaCfg,
                   min: animaCfgRange.min,
                   max: animaCfgRange.max,
@@ -149,8 +152,9 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                   onChanged: (v) => _set(draft.copyWith(animaCfg: v)),
                 ),
                 const SizedBox(height: 12),
-                Text(
-                  '采样器 Sampler',
+                HelpLabel(
+                  text: '采样器 Sampler',
+                  help: Help.animaSampler,
                   style: context.texts.bodySmall!.copyWith(
                     color: scheme.onSurfaceVariant,
                   ),
@@ -173,8 +177,9 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                   ],
                 ),
                 const SizedBox(height: 14),
-                Text(
-                  '调度器 Scheduler',
+                HelpLabel(
+                  text: '调度器 Scheduler',
+                  help: Help.animaScheduler,
                   style: context.texts.bodySmall!.copyWith(
                     color: scheme.onSurfaceVariant,
                   ),
@@ -196,6 +201,101 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                       ),
                   ],
                 ),
+              ] else if (isKrea) ...[
+                // Krea:**刻意只有这两项**。服务端 _patch_krea_payload 只认
+                // steps/cfg/batch/loras,采样器固定 er_sde + simple —— 放出
+                // 采样器/调度器选择框等于骗用户,所以连字段都不存。
+                ParamSlider(
+                  label: '步数 Steps',
+                  help: Help.kreaSteps,
+                  value: draft.kreaSteps.toDouble(),
+                  min: kreaStepsRange.min.toDouble(),
+                  max: kreaStepsRange.max.toDouble(),
+                  divisions: kreaStepsRange.max - kreaStepsRange.min,
+                  valueText: '${draft.kreaSteps}',
+                  onChanged: (v) => _set(draft.copyWith(kreaSteps: v.round())),
+                ),
+                const SizedBox(height: 8),
+                ParamSlider(
+                  label: '提示词引导 CFG',
+                  help: Help.kreaCfg,
+                  value: draft.kreaCfg,
+                  min: kreaCfgRange.min,
+                  max: kreaCfgRange.max,
+                  divisions: ((kreaCfgRange.max - kreaCfgRange.min) * 2)
+                      .round(), // step 0.5(对齐 web)
+                  valueText: draft.kreaCfg.toStringAsFixed(1),
+                  onChanged: (v) => _set(draft.copyWith(kreaCfg: v)),
+                ),
+                // 只看 CFG 不看档位:web 那条额外判了 `!kreaNegativeWorks(tier)`,
+                // 于是在 Raw 档手动把 CFG 拖到 1 时不提示 —— 可负向词照样是死的。
+                // 这里按实际取值判,Turbo 默认档和手动拖到 1 的 Raw 都会提示。
+                if (draft.kreaCfg <= 1.0) ...[
+                  const SizedBox(height: 8),
+                  const InfoNote(
+                    'CFG=1,负面提示词不参与引导(没有无条件分支可对比)。'
+                    '想让它生效,把 CFG 调过 1。',
+                    icon: Icons.warning_amber_rounded,
+                  ),
+                ],
+                const SizedBox(height: 12),
+                HelpLabel(
+                  text: '采样器 Sampler',
+                  help: Help.kreaSampler,
+                  style: context.texts.bodySmall!.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                GridView.count(
+                  crossAxisCount: 2,
+                  mainAxisSpacing: 7,
+                  crossAxisSpacing: 7,
+                  childAspectRatio: 4.4,
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  children: [
+                    for (final s in kreaSamplers)
+                      _SelectTile(
+                        label: s.label,
+                        selected: draft.kreaSampler == s.id,
+                        onTap: () => _set(draft.copyWith(kreaSampler: s.id)),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                HelpLabel(
+                  text: '调度器 Scheduler',
+                  help: Help.kreaScheduler,
+                  style: context.texts.bodySmall!.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                GridView.count(
+                  crossAxisCount: 3,
+                  mainAxisSpacing: 7,
+                  crossAxisSpacing: 7,
+                  childAspectRatio: 3.0,
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  children: [
+                    for (final n in kreaSchedulers)
+                      _SelectTile(
+                        label: n.label,
+                        selected: draft.kreaScheduler == n.id,
+                        onTap: () => _set(draft.copyWith(kreaScheduler: n.id)),
+                      ),
+                  ],
+                ),
+                // 选中了才提示:它是唯一实测会坏事的一项,不选就不用占版面。
+                if (kreaSchedulerRisky(draft.kreaScheduler)) ...[
+                  const SizedBox(height: 10),
+                  const InfoNote(
+                    'Karras 在 Krea 2 上实测效果不好,建议换回 Simple。',
+                    icon: Icons.warning_amber_rounded,
+                  ),
+                ],
               ] else ...[
                 ParamSlider(
                   label: '步数 Steps',
@@ -373,7 +473,8 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                   const HelpDot(Help.seed),
                 ],
               ),
-              if (!isAnima) ...[
+              // CFG Rescale 是 NAI 独有的;两个 Modal 渠道都没有这个参数
+              if (!isAnima && !isKrea) ...[
                 const SizedBox(height: 14),
                 ParamSlider(
                   label: 'CFG Rescale',
@@ -415,6 +516,15 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                         animaCfg: d.cfg,
                         animaSampler: d.sampler,
                         animaScheduler: d.scheduler,
+                      );
+                    } else if (isKrea) {
+                      // krea 同理:回到当前档位的官方配方(不切档)
+                      final d = kreaTierDefaults(kreaTierOf(draft.model));
+                      next = next.copyWith(
+                        kreaSteps: d.steps,
+                        kreaCfg: d.cfg,
+                        kreaSampler: d.sampler,
+                        kreaScheduler: d.scheduler,
                       );
                     }
                     _set(next);

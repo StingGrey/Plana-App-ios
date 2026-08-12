@@ -25,7 +25,11 @@ Future<Uint8List> streamBotTask({
   void Function(String note)? onStage,
   void Function(String msg)? onWarning,
   GenAbort? abort,
-  Duration timeout = const Duration(minutes: 5),
+  // 必须**大于**服务端的 MODAL_ANIMA_GEN_TIMEOUT(现 720s),否则这边先喊超时、
+  // 服务端却还在跑并占着并发槽,用户看到的是一条比真实情况更早也更没用的错误。
+  // 13 分钟留了 60s 余量吸收轮询间隔与网络往返(与 web botService 同值)。
+  // 此前是 5 分钟,与当时的服务端总预算 300s 撞在一起,k2 raw 高步数把两边都顶穿了。
+  Duration timeout = const Duration(minutes: 13),
 }) async {
   final completer = Completer<Uint8List>();
   var lastStep = -1;
@@ -49,7 +53,8 @@ Future<Uint8List> streamBotTask({
   }
 
   // 取消:停止等待(WS/轮询在 finally 里一并收);后端任务由控制器据 aborted
-  // 判定为取消,不入库。服务端没有取消接口,只能客户端收手。
+  // 判定为取消,不入库。服务端那条任务由控制器 cancel() 调
+  // `DELETE /api/task/{id}` 撤(只对排队中的有效),这里只管收手不等。
   abort?.whenAbort(() {
     logi('[bot] $taskId abort hook fired');
     fail(BackendException('已取消生成'));

@@ -39,9 +39,18 @@ class TagTranslationService extends ChangeNotifier {
   bool _busy = false;
   DateTime? _llmCooldownUntil; // LLM 失败/限流后的冷却窗口
 
+  /// 单个名字的长度上限。
+  ///
+  /// 原来是 60 —— 那是按 Danbooru tag 的尺度定的,而 Krea 2 的提示词**整条都是
+  /// 自然语言句子**,一句轻松过百,于是整条都不翻译,恰恰是最需要翻译的那种。
+  /// 200 够装一个长句;再长多半是整段粘进来的,翻出来也只是一行省略号
+  /// (注音层单行绘制,见 annotated_field 的 _FuriganaPainter)。
+  /// 服务端 en2zh 的体积上限是整批 32000 字符,20×200 远在其下。
+  static const _nameMax = 200;
+
   /// 值得问后端的名字:含英文字母(纯中文/数字/符号跳过)、非画师前缀、长度合理。
   static bool _worthAsking(String name) {
-    if (name.isEmpty || name.length > 60) return false;
+    if (name.isEmpty || name.length > _nameMax) return false;
     if (name.contains('artist:')) return false;
     return name.codeUnits.any(
       (c) => (c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A),

@@ -265,6 +265,9 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
         .enqueue(
           versionId: vid,
           name: label,
+          // 跟着当前模型的底模走:k2 的 LoRA 装进 anima 库等于白装
+          // (krea 侧的列表里根本看不到它)
+          base: _loraBase,
           weight: h.weight,
           clipWeight: h.clipWeight,
         );
@@ -285,21 +288,39 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   ModelCategory get _targetCategory =>
       _target ?? categoryOfModel(ref.read(generateProvider).params.model);
 
+  /// 这张图最匹配哪个类别(用于「切换到 xx 模型」);认不出的 ComfyUI 图为 null。
   ModelCategory? get _imageCategory => categoryOfImage(_meta);
 
-  /// 跨类别(含「图没有对应的本机模型」,如 SD/A1111):只放行提示词。
+  /// 图用的是我们支持的哪个 ComfyUI 模型;认不出 = null(不影响参数导入)。
+  ModelCategory? get _imageModel => comfyModelOfImage(_meta);
+
+  /// 跨**家族**(NAI ↔ ComfyUI,含「图两套都不沾」如 SD/A1111):只放行提示词。
+  /// 同家族内模型对不上不算跨类别 —— 那种情况逐项判断,见 [_settingItems]。
   bool get _crossCategory => isCrossCategory(_meta, _targetCategory);
 
-  bool get _inNai => !_crossCategory && _imageCategory == ModelCategory.nai;
-  bool get _inComfy => !_crossCategory && _imageCategory == ModelCategory.comfy;
+  bool get _inNai => !_crossCategory && _targetCategory == ModelCategory.nai;
+
+  /// 落在两条 Modal 渠道(anima / krea)之一 —— 参数按**当前模型**那套落地。
+  bool get _inModal => !_crossCategory && !_inNai;
+
+  /// LoRA 库跟当前模型走(两边编号互不通用)。
+  String get _loraBase =>
+      _targetCategory == ModelCategory.krea ? 'krea' : 'anima';
+
+  /// LoRA 区是否放行。**底模对不上时整块不出现** —— 这是「不支持就屏蔽」里最实的
+  /// 一条:k2 的 LoRA 挂到 anima 上 ComfyUI 不报错、只是静默无效,导进来纯属误导。
+  /// 认不出模型的第三方 ComfyUI 图放行:那多半是 Civitai 上的 LoRA,装进当前库能用。
+  bool get _inLora =>
+      _inModal && (_imageModel == null || _imageModel == _targetCategory);
 
   /// 只在「源是 a1111 语法、目标是 NovelAI」时给转换开关,别的情况转了也白转。
   bool get _showConvert => needsPromptConversion(_meta, _targetCategory);
 
-  /// Anima 走服务端 Modal 后端,只有 Bot 授权登录能用;切不过去就别给按钮。
+  /// Anima / Krea 都走服务端 Modal 后端,只有 Bot 授权登录能用;
+  /// 切不过去就别给按钮。
   bool get _canSwitchCategory =>
       _imageCategory == ModelCategory.nai ||
-      (_imageCategory == ModelCategory.comfy &&
+      (_imageCategory != null &&
           ref.read(authModeProvider).value == AuthMode.bot);
 
   void _initSelections(ImageMetadata m) {
@@ -334,9 +355,11 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     if (target == null || m == null || !_canSwitchCategory) return;
     // 先把模型切过去:setModel 会套用该档推荐采样参数,必须发生在
     // _initSelections 之前,否则导入的具体数值会被档位默认值盖掉。
-    final model = target == ModelCategory.comfy
-        ? (animaModelFromSource(m.source) ?? animaModels.first)
-        : (_modelFromSource(m.source) ?? models.first);
+    final model = switch (target) {
+      ModelCategory.comfy => animaModelFromSource(m.source) ?? animaModels.first,
+      ModelCategory.krea => kreaModelFromSource(m.source) ?? kreaModels.first,
+      ModelCategory.nai => _modelFromSource(m.source) ?? models.first,
+    };
     ref.read(generateProvider.notifier).setModel(model);
     setState(() {
       _target = target;
@@ -385,10 +408,20 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   // ---- 生成设置清单(按类别分叉) ----
 
   /// 当前类别下可导入的生成设置字段。跨类别时为空 —— 那种情况只放行提示词。
+  /// 这张图能导入哪些生成设置字段。
+  ///
+  /// 清单按**当前模型**的能力面生成,不是按图的模型 —— ComfyUI 是通用执行器,
+  /// 一张第三方模型的图照样解析得出尺寸/步数/CFG,没道理因为「模型不认识」就把
+  /// 这些一起封掉。对不上的项各自带 unsupportedReason 单项禁用。
+  /// 只有**跨家族**才整块返回空,那是参数体系真的对不上。
   List<_SettingSpec> get _settingItems {
     final m = _meta;
     if (m == null || _crossCategory) return const [];
-    return _inComfy ? _animaSettingItems(m) : _naiSettingItems(m);
+    return switch (_targetCategory) {
+      ModelCategory.nai => _naiSettingItems(m),
+      ModelCategory.comfy => _animaSettingItems(m),
+      ModelCategory.krea => _kreaSettingItems(m),
+    };
   }
 
   List<_SettingSpec> _naiSettingItems(ImageMetadata m) => [
@@ -451,7 +484,9 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
           tier ?? m.source,
           _useModel,
           (v) => _useModel = v,
-          unsupportedReason: tier == null ? '不是 Anima 的模型' : null,
+          unsupportedReason: tier == null
+              ? foreignModelReason(m, ModelCategory.comfy)
+              : null,
         ),
       if (_hasRes)
         _SettingSpec(
@@ -497,6 +532,76 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
           _useScheduler,
           (v) => _useScheduler = v,
           unsupportedReason: animaSchedulerLabel(m.noiseSchedule) == null
+              ? '不支持的调度器'
+              : null,
+        ),
+      if (_hasSeed) _SettingSpec('Seed', m.seed, _useSeed, (v) => _useSeed = v),
+    ];
+  }
+
+  /// Krea 2 类别的字段。字段集与 anima 一致(2026-08-10 起 sampler / scheduler
+  /// 也可导入,此前服务端不读这两项、列出来等于骗用户)。范围/白名单取 krea 自己
+  /// 那套而不是 anima 的:两张表眼下内容相同,但它们是各自模型的约定。
+  /// 超范围或不在白名单的单项禁用并写明原因,不静默钳。
+  List<_SettingSpec> _kreaSettingItems(ImageMetadata m) {
+    final tier = kreaModelFromSource(m.source);
+    final steps = int.tryParse(m.steps ?? '');
+    final cfg = double.tryParse(m.scale ?? '');
+    return [
+      if (m.source.isNotEmpty)
+        _SettingSpec(
+          '模型',
+          tier ?? m.source,
+          _useModel,
+          (v) => _useModel = v,
+          unsupportedReason: tier == null
+              ? foreignModelReason(m, ModelCategory.krea)
+              : null,
+        ),
+      if (_hasRes)
+        _SettingSpec(
+          '分辨率',
+          '${m.width}×${m.height}',
+          _useRes,
+          (v) => _useRes = v,
+        ),
+      if (steps != null)
+        _SettingSpec(
+          'Steps',
+          m.steps!,
+          _useSteps,
+          (v) => _useSteps = v,
+          unsupportedReason: kreaStepsSupported(steps)
+              ? null
+              : '支持 ${kreaStepsRange.min}–${kreaStepsRange.max}',
+        ),
+      if (cfg != null)
+        _SettingSpec(
+          'CFG',
+          m.scale!,
+          _useCfg,
+          (v) => _useCfg = v,
+          unsupportedReason: kreaCfgSupported(cfg)
+              ? null
+              : '支持 ${kreaCfgRange.min}–${kreaCfgRange.max}',
+        ),
+      if (m.sampler != null)
+        _SettingSpec(
+          'Sampler',
+          kreaSamplerLabel(m.sampler) ?? m.sampler!,
+          _useSampler,
+          (v) => _useSampler = v,
+          unsupportedReason: kreaSamplerLabel(m.sampler) == null
+              ? '不支持的采样器'
+              : null,
+        ),
+      if (m.noiseSchedule != null)
+        _SettingSpec(
+          'Scheduler',
+          kreaSchedulerLabel(m.noiseSchedule) ?? m.noiseSchedule!,
+          _useScheduler,
+          (v) => _useScheduler = v,
+          unsupportedReason: kreaSchedulerLabel(m.noiseSchedule) == null
               ? '不支持的调度器'
               : null,
         ),
@@ -590,22 +695,38 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
       );
     }
 
-    // 生成设置(Anima 类别)。白名单/范围校验在字段清单里做过(超出的项压根勾不上),
-    // 这里只做落地。模型档位走 applyImportedSettings 而不是 setModel ——
-    // 后者会连带套用该档的推荐采样参数,把用户**没勾**的 Steps/CFG 一起改掉。
-    if (_inComfy) {
+    // 生成设置(两条 Modal 渠道)。白名单/范围校验在字段清单里做过(超出的项
+    // 压根勾不上),这里只做落地。**按当前模型那套字段落**,不是按图的模型 ——
+    // 清单本来就是按当前模型的能力面算的,落地必须用同一个基准,否则会出现
+    // 「面板按 Anima 的范围放行、却写进了 krea 的 state」这种错位。
+    // 模型档位走 applyImportedSettings 而不是 setModel —— 后者会连带套用该档的
+    // 推荐采样参数,把用户**没勾**的 Steps/CFG 一起改掉。
+    if (_inModal) {
       final applyRes = _useRes && _hasRes;
+      final isKrea = _targetCategory == ModelCategory.krea;
+      final steps = int.tryParse(m.steps ?? '');
+      final cfg = double.tryParse(m.scale ?? '');
       notifier.applyImportedSettings(
-        model: _useModel ? animaModelFromSource(m.source) : null,
+        model: !_useModel
+            ? null
+            : (isKrea
+                  ? kreaModelFromSource(m.source)
+                  : animaModelFromSource(m.source)),
         width: applyRes ? m.width : null,
         height: applyRes ? m.height : null,
-        animaSteps: _useSteps ? int.tryParse(m.steps ?? '') : null,
-        animaCfg: _useCfg ? double.tryParse(m.scale ?? '') : null,
-        animaSampler: _useSampler ? m.sampler : null,
-        animaScheduler: _useScheduler ? m.noiseSchedule : null,
+        animaSteps: !isKrea && _useSteps ? steps : null,
+        animaCfg: !isKrea && _useCfg ? cfg : null,
+        animaSampler: !isKrea && _useSampler ? m.sampler : null,
+        animaScheduler: !isKrea && _useScheduler ? m.noiseSchedule : null,
+        kreaSteps: isKrea && _useSteps ? steps : null,
+        kreaCfg: isKrea && _useCfg ? cfg : null,
+        kreaSampler: isKrea && _useSampler ? m.sampler : null,
+        kreaScheduler: isKrea && _useScheduler ? m.noiseSchedule : null,
         seed: _useSeed && m.seed.isNotEmpty ? m.seed : null,
       );
+    }
 
+    if (_inLora) {
       // LoRA:勾中的都挂上(权重/CLIP 权重按元数据带回)。库里没有的走占位 +
       // 后台下载,装好就地转正。触发词已经在导入的提示词里了,不再重复拼。
       final picked = <ActiveLora>[];
@@ -863,9 +984,16 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
       children: [
         _infoCard(scheme),
         const SizedBox(height: 16),
-        // 跨类别:说清这是哪个模型的图,给一键切过去;不切就只导提示词
+        // 跨家族:说清这是哪个模型的图,给一键切过去;不切就只导提示词
         if (_crossCategory) ...[
           _crossCategoryBanner(scheme, m),
+          const SizedBox(height: 14),
+        ]
+        // 同家族但模型不同(k2 图 → Anima、或第三方 ComfyUI 图):参数照导,
+        // 只是「模型」那一项导不了(LoRA 区也会因底模不通用而收走)。
+        // 与上面那条跨家族的封锁不是一回事,别混为一谈。
+        else if (_inModal && _imageModel != _targetCategory) ...[
+          _foreignModelBanner(scheme),
           const SizedBox(height: 14),
         ],
         Text(
@@ -915,7 +1043,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
         // LoRA:哈希→名称→Civitai 三级认领,库里没有的随导入后台下载。
         // 排在生成设置之前 —— 缺 LoRA 往往要先下载(有等待),让人先看见先动手。
         // 仅 anima → anima 出现:NAI 出图链路没有 LoraLoader,摆出来点了也不会生效。
-        if (_inComfy && m.loras.isNotEmpty) ...[
+        if (_inLora && m.loras.isNotEmpty) ...[
           _loraSection(scheme, m),
           const SizedBox(height: 9),
         ],
@@ -966,12 +1094,62 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
                     )
                   else
                     Text(
-                      'Anima 需要 Bot 授权登录后可用,无法切换',
+                      '${categoryLabel(imageCat)} 需要 Bot 授权登录后可用,无法切换',
                       style: context.texts.bodySmall!.copyWith(
                         fontSize: 11,
                         color: scheme.onSurfaceVariant,
                       ),
                     ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 同家族异模型横幅:参数体系对得上(都是 ComfyUI 那套),只是模型不是这一个。
+  /// 语气比跨家族那条轻 —— 那条是「只能导提示词」,这条是「大部分照导」。
+  Widget _foreignModelBanner(ColorScheme scheme) {
+    final other = _imageModel;
+    final imageCat = _imageCategory;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(13, 11, 13, 11),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            Icons.warning_amber_rounded,
+            size: 18,
+            color: scheme.onSurfaceVariant,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  other != null
+                      ? '这张图用的是 ${categoryLabel(other)} 的模型,'
+                            '当前为 ${categoryLabel(_targetCategory)},仅能导入部分参数'
+                      : '这张图用的模型本机没有,仅能导入部分参数',
+                  style: context.texts.bodySmall!.copyWith(height: 1.5),
+                ),
+                if (imageCat != null && _canSwitchCategory) ...[
+                  const SizedBox(height: 9),
+                  FilledButton.tonalIcon(
+                    onPressed: _switchCategory,
+                    icon: const Icon(Icons.swap_horiz, size: 17),
+                    label: Text('切换到 ${categoryLabel(imageCat)} 模型'),
+                    style: FilledButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ),
                 ],
               ],
             ),
@@ -1102,12 +1280,13 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   ) {
     final selectable = hit?.isLocal == true || hit?.isCivitai == true;
     final picked = selectable && _loraChecked.contains(index);
-    // 非 Anima 底模装了也用不上(不生效或画崩),必须显眼
+    // 底模对不上的装了也用不上(不生效或画崩),必须显眼。
+    // Civitai 上 anima 的 baseModel 字符串是「Anima」、k2 的是「Krea 2」。
     final wrongBase =
         hit != null &&
         hit.isCivitai &&
         hit.civitaiBaseModel.isNotEmpty &&
-        !hit.civitaiBaseModel.toLowerCase().contains('anima');
+        !hit.civitaiBaseModel.toLowerCase().contains(_loraBase);
 
     // 副行:状态 + 权重,和 Vibe 行的参数副行同一套排版
     final weightText = lora.clipWeight == null

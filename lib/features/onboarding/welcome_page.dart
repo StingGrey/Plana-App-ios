@@ -826,7 +826,7 @@ class _BotStep extends ConsumerWidget {
   /// 授权后解锁的东西。只列「没会话就真的用不了」的:
   /// 翻译、统计这类离线本来就有,不算解锁项。
   static const _perks = <(IconData, String)>[
-    (Icons.model_training, '额外模型:Anima'),
+    (Icons.model_training, '额外模型:Anima · Krea 2'),
     (Icons.auto_awesome, '增强标签补全'),
     (Icons.travel_explore, '公共库:Vibe · 画师串 · 角色 OC'),
     (Icons.cloud_upload_outlined, '云备份:Vibe 库与标签库跨设备同步'),

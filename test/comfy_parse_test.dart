@@ -195,14 +195,32 @@ void main() {
 
   test('LoraLoader 链按加载顺序收集,滤掉强度 0', () async {
     final g = animaGraph();
+    // 100 是模板内置的 anima-turbo-lora,恒被当基础设施剔掉(见下一条),
+    // 这里换成一条用户 LoRA 才测得出「按加载顺序」
+    (g['100'] as Map)['inputs']['lora_name'] = 'LR7.safetensors';
     (g['100'] as Map)['inputs']['strength_model'] = 0.8;
     (g['101'] as Map)['inputs']['strength_model'] = 0.35;
     final m = await parseGraph(g);
     expect(m!.loras.map((l) => l.name).toList(), [
-      'anima-turbo-lora-v0.2',
+      'LR7',
       'anima-highres-aesthetic-boost',
     ]);
     expect(m.loras.map((l) => l.weight).toList(), [0.8, 0.35]);
+  });
+
+  // 出图管线自己挂的权重不是用户选的:混进导入清单会显示一条他没挂过、
+  // 库里也查不到的 LoRA。强度非 0 也照剔。
+  test('基础设施 LoRA 一律不进导入清单,子目录名取 basename', () async {
+    final g = animaGraph();
+    (g['100'] as Map)['inputs']['lora_name'] =
+        'krea/krea2_style_reference.safetensors';
+    (g['100'] as Map)['inputs']['strength_model'] = 1.0;
+    (g['101'] as Map)['inputs']['lora_name'] = 'krea/LR120.safetensors';
+    (g['101'] as Map)['inputs']['strength_model'] = 0.7;
+    final m = await parseGraph(g);
+    // 只剩用户那条,且名字剥掉了 krea/ 前缀(LR 编号才是库里的键)
+    expect(m!.loras.map((l) => l.name).toList(), ['LR120']);
+    expect(m.loras.single.weight, 0.7);
   });
 
   test('数值来自 primitive 节点引用时也能解出', () async {

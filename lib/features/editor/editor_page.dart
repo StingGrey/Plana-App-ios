@@ -136,7 +136,24 @@ class _EditorPageState extends ConsumerState<EditorPage>
         startPositive: widget.positive,
         charId: id,
       );
-      _focus.requestFocus();
+      // **不抢焦点**:进页面就弹输入法,半屏被键盘吃掉,而多数人进来第一件事
+      // 是看词条、点标签、调权重,不是打字。想输入点一下正文即可(TextField
+      // 自己会拿焦点)。
+    });
+  }
+
+  /// 离开编辑器时把输入法按下去。
+  ///
+  /// 只 unfocus 自己不够:出栈时 Navigator 会把焦点还给上一条路由的
+  /// FocusScope,那边可能还记着某个输入框(LoRA 搜索、自然语言补充说明…),
+  /// 于是刚离开编辑器键盘又弹一次。所以当帧压一次、下一帧再压一次 ——
+  /// 后者盖住「焦点还原发生在本帧之后」的情况。
+  /// 下一帧那次只碰 FocusManager:本页可能已经 dispose,再动 _focus 会抛。
+  void _dismissKeyboard() {
+    if (_focus.hasFocus) _focus.unfocus();
+    FocusManager.instance.primaryFocus?.unfocus();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      FocusManager.instance.primaryFocus?.unfocus();
     });
   }
 
@@ -147,6 +164,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _transSvc.removeListener(_refreshAnnotations);
     _tabAnim.dispose();
     _controller.dispose();
+    if (_focus.hasFocus) _focus.unfocus(); // 带着焦点被销毁,键盘会赖着不走
     _focus.dispose();
     _scroll.dispose();
     super.dispose();
@@ -758,8 +776,8 @@ class _EditorPageState extends ConsumerState<EditorPage>
   void _copyUnits(Set<int> sel) {
     final text = _controller.text;
     final units = topLevelUnits(text, _foldBodies);
-    final ordered =
-        sel.where((i) => i >= 0 && i < units.length).toList()..sort();
+    final ordered = sel.where((i) => i >= 0 && i < units.length).toList()
+      ..sort();
     final parts = [
       for (final i in ordered)
         if (units[i].isFold)
@@ -817,7 +835,9 @@ class _EditorPageState extends ConsumerState<EditorPage>
     final next =
         ((_sortMult + (up ? step : -step)) * 100).roundToDouble() / 100;
     _sortMult = next;
-    _applySort(batchSetMultUnits(_controller.text, _foldBodies, _sortSel, next));
+    _applySort(
+      batchSetMultUnits(_controller.text, _foldBodies, _sortSel, next),
+    );
   }
 
   void _sortClearWeight() {
@@ -1085,6 +1105,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
           onPopInvokedWithResult: (didPop, _) {
             if (didPop) {
               _save();
+              _dismissKeyboard(); // 系统返回手势也走这里,不能只挂在返回按钮上
             } else if (_sortMode) {
               _toggleSort();
             }
@@ -1095,7 +1116,12 @@ class _EditorPageState extends ConsumerState<EditorPage>
                 children: [
                   EditorTopBar(
                     charName: _charName,
-                    onBack: () => Navigator.of(context).maybePop(),
+                    onBack: () {
+                      // 先收键盘再出栈:让退场动画一开始就是完整半屏,
+                      // 不是「键盘收一半、页面滑一半」两段各走各的
+                      _dismissKeyboard();
+                      Navigator.of(context).maybePop();
+                    },
                     onSettings: _openSettings,
                   ),
                   Expanded(

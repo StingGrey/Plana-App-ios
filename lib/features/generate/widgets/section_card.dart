@@ -54,7 +54,7 @@ class SectionCard extends StatelessWidget {
         child: Row(
           children: [
             // 卡头高度下限 = 动作按钮的高度(RoundIconBtn 36 / RefEnableToggle 38)。
-            // 各卡的动作按钮数量不一,没有按钮的卡(如自然语言描述)收起来会明显
+            // 各卡的动作按钮数量不一,没有按钮的卡(如自然语言)收起来会明显
             // 比 LoRA / 重绘放大矮一截 —— 撑一格,所有卡收起时一样高。
             const SizedBox(height: 38),
             Icon(icon, size: 20, color: scheme.onSurfaceVariant),

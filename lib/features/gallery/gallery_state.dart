@@ -32,20 +32,9 @@ final galleryZoomedProvider = NotifierProvider<GalleryZoomedNotifier, bool>(
   GalleryZoomedNotifier.new,
 );
 
-/// 生成中画布视角:true=看生成预览(默认),false=生成中切看历史图。
-/// 每次生成发起时复位为 true(对齐 web viewingHistory 语义,取反)。
-final galleryViewGenProvider = NotifierProvider<GalleryViewGenNotifier, bool>(
-  GalleryViewGenNotifier.new,
-);
-
-class GalleryViewGenNotifier extends Notifier<bool> {
-  @override
-  bool build() => true;
-
-  void set(bool v) {
-    if (state != v) state = v;
-  }
-}
+// 「生成中画布视角」那个开关(galleryViewGenProvider)在并行化时删了:
+// 画布跟随哪条任务已经由 GenPool.selectedId 说了算,一个布尔值表达不了
+// 「跟着第几条」,两份状态并存只会打架。
 
 class GalleryZoomedNotifier extends Notifier<bool> {
   @override
@@ -143,6 +132,10 @@ class GalleryNotifier extends Notifier<GalleryState> {
     required int seed,
     ResultBadge badge = ResultBadge.none,
     GenerateState? input,
+
+    /// 是否顺带选中新图。并行出图时只有「画布正跟着的那条」才该抢选中 ——
+    /// 后台某一条出完就把用户正看的图换掉,是并行最容易踩的坑。
+    bool select = true,
   }) {
     final r = ResultImage(
       id: 'gen${_seq++}',
@@ -165,7 +158,10 @@ class GalleryNotifier extends Notifier<GalleryState> {
           i < _keepBytesFor ? list[i] : list[i].stripped(),
       ];
     }
-    state = state.copyWith(results: list, selectedId: r.id);
+    state = state.copyWith(
+      results: list,
+      selectedId: select ? r.id : state.selectedId,
+    );
     final store = ref.read(appStoresProvider).gallery;
     store.persistResult(r);
     // 重绘产物继承源图蒙版:消费一次即清空,之后两张各自独立编辑保存。

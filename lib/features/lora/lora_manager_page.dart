@@ -9,16 +9,20 @@ import '../../core/net/backend_client.dart';
 import '../../core/theme/app_theme.dart';
 import '../generate/generate_state.dart';
 import '../generate/models.dart';
-import '../generate/widgets/common.dart' show hintSnack;
+import '../generate/widgets/common.dart' show InfoNote, hintSnack;
 import '../generate/widgets/lora_card.dart' show LoraThumb, LoraTypeBadge;
 import 'lora_providers.dart';
 import 'lora_upload_sheet.dart';
 
-/// LoRA 管理器(anima 出图渠道专用,结构对齐 web LoraManagerModal):
+/// LoRA 管理器(anima / krea 出图渠道,结构对齐 web LoraManagerModal):
 /// 我的(我下载过的 + 我上传的,🗑=移出;无人拥有的 web 条目由后端回收)
 /// 公共库(机房里的公开条目,⭐=加入/移出我的库,按人气排序)
 /// 在线搜索(Civitai 代理,ℹ=详情 ⬇=机房直拉下载,滚到底自动翻页)
 /// 整卡点选 → 底栏「确认挂载」写回创作页(上限 [kMaxActiveLoras] 个)。
+///
+/// 全程只看**一个**底模([_base],进页时从当前模型定死):Anima 与 Krea2 的
+/// 权重互不通用,列表、在线搜索、下载、上传都带着它 —— 混着列只会让人挂上
+/// 一个静默无效的 LoRA。
 class LoraManagerPage extends ConsumerStatefulWidget {
   const LoraManagerPage({super.key});
 
@@ -42,6 +46,10 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
     with SingleTickerProviderStateMixin {
   late final TabController _tab = TabController(length: 3, vsync: this);
   int _lastTabIndex = 0;
+
+  /// 本页认哪个底模的库。进页时定死:模型只能在创作页换,本页开着时不会变,
+  /// 而中途改基准会让已选中的条目跨库串到确认挂载里去。
+  late final String _base = ref.read(loraBaseProvider);
 
   String _search = '';
   final _searchCtl = TextEditingController();
@@ -68,6 +76,11 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
   bool _loadingOnline = false;
   bool _onlineLoadedOnce = false;
   String _onlineCat = 'all';
+
+  /// 「二次元」开关,与左边的分类**可叠加**:分类是本地按推断出的 type 筛,
+  /// 这个是服务端去 Civitai 侧按 tag=anime 筛,两者作用在不同环节。
+  /// 对 krea 尤其必要 —— k2 是写实向底模,不筛的话默认列表里几乎翻不到二次元的。
+  bool _onlineAnimeOnly = false;
 
   /// 当前这批在线结果对应的关键词(可能落后于输入框:切走时改过词)。
   String _onlineQuery = '';
@@ -111,7 +124,7 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
     // 但常驻也意味着重开时不会再触发 ref.listen —— 手上这份已有的值要自己看一眼
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      _resumeWatch(ref.read(installedLorasProvider).value ?? const []);
+      _resumeWatch(ref.read(installedLorasProvider(_base)).value ?? const []);
     });
   }
 
@@ -131,7 +144,7 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
       (await ref.read(botSessionProvider.future))?.sessionId;
 
   Future<void> _loadInstalled() =>
-      ref.read(installedLorasProvider.notifier).reload();
+      ref.read(installedLorasProvider(_base).notifier).reload();
 
   /// 在线搜索。[reset] = 换词/换分类的新搜索(丢弃在途请求),否则是续下一页。
   ///
@@ -144,6 +157,8 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
     // 游标属于产出它的那次搜索:续页仍用当批的词,不跟着输入框半路改口
     final query = reset ? _search.trim() : _onlineQuery;
     final cat = _onlineCat;
+    // 与 cat 同样先取快照:这趟要 await 好几秒,期间用户完全可能再点开关
+    final animeOnly = _onlineAnimeOnly;
     final cursor = reset ? null : _onlineCursor;
     if (reset) _autoPages = 0;
     setState(() {
@@ -158,6 +173,8 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
             cursor: cursor,
             // 具体分类是客户端过滤,用大页一次出一整批;「全部」小页更快(对齐 web)
             limit: cat == 'all' ? 24 : 60,
+            base: _base, // Civitai 那边按 baseModel=Anima / Krea 2 过滤
+            tag: animeOnly ? 'anime' : '',
           );
       if (!mounted || seq != _searchSeq) return; // 已被更新的搜索取代
       final next = r.nextCursor;
@@ -261,7 +278,7 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
         final vid = _vidByLrId.remove(item.name);
         if (vid != null) _downloadedVids.remove(vid);
       });
-      final loras = ref.read(installedLorasProvider.notifier);
+      final loras = ref.read(installedLorasProvider(_base).notifier);
       if (r.deleted) {
         loras.dropByName(item.name);
       } else {
@@ -293,7 +310,7 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
         return;
       }
       ref
-          .read(installedLorasProvider.notifier)
+          .read(installedLorasProvider(_base).notifier)
           .patch(item.name, favorited: true, favoriteCount: r.favoriteCount);
       hintSnack(context, '已加入我的库', icon: Icons.check);
     } catch (e) {
@@ -329,6 +346,7 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
             triggerGroups: draft.triggerGroups,
             type: draft.type,
             public: draft.public,
+            base: _base, // 决定文件落 Volume 的哪个子目录 → 之后能被哪个渠道挂载
             onProgress: (p) {
               // 每块都回调(几百兆能有几千次),整数百分比不变就不重建
               final v = (p * 100).clamp(0, 100).round();
@@ -374,7 +392,9 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
       } catch (_) {
         return; // 网络抖一下不算数,下一轮再问
       }
-      if (!mounted || st.status == 'uploading' || st.status == 'pending') return;
+      if (!mounted || st.status == 'uploading' || st.status == 'pending') {
+        return;
+      }
       t.cancel();
       _pushTimers.remove(lrId);
       await _loadInstalled();
@@ -441,7 +461,7 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
       }
       final r = await ref
           .read(backendClientProvider)
-          .installLora(sessionId: sid, versionId: item.versionId);
+          .installLora(sessionId: sid, versionId: item.versionId, base: _base);
       if (!mounted) return;
       if (!r.ok && r.lrId == null) {
         hintSnack(context, r.message.isEmpty ? '下载失败' : r.message);
@@ -467,7 +487,7 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
 
   void _confirm() {
     final all =
-        ref.read(installedLorasProvider).value ?? const <LoraCardInfo>[];
+        ref.read(installedLorasProvider(_base)).value ?? const <LoraCardInfo>[];
     final picked = [
       for (final c in all)
         if (_selected.contains(c.name))
@@ -504,11 +524,11 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     // 刷新后可能多出「还在推送」的自家条目(比如另一端传的),接着盯
-    ref.listen(installedLorasProvider, (_, next) {
+    ref.listen(installedLorasProvider(_base), (_, next) {
       final items = next.value;
       if (items != null) _resumeWatch(items);
     });
-    final async = ref.watch(installedLorasProvider);
+    final async = ref.watch(installedLorasProvider(_base));
     final all = async.value ?? const <LoraCardInfo>[];
     final mine = [
       for (final x in all)
@@ -561,7 +581,7 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
               decoration: InputDecoration(
                 isDense: true,
                 hintText: _tab.index == 2
-                    ? '搜索 Civitai 上的 Anima LoRA…'
+                    ? '搜索 Civitai 上的 ${_base == 'krea' ? 'Krea 2' : 'Anima'} LoRA…'
                     : '搜索名称或触发词…',
                 prefixIcon: const Icon(Icons.search, size: 20),
                 suffixIcon: _search.isEmpty
@@ -773,7 +793,9 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
         label: const Text('上传我的 LoRA(.safetensors)'),
         style: OutlinedButton.styleFrom(
           minimumSize: const Size.fromHeight(_kUploadBarHeight),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
         ),
       );
     }
@@ -868,10 +890,24 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
                       selected: _selected.contains(x.name),
                       showOfficial: true,
                       onTap: () => _toggleSelect(x),
-                      action: _busyName == x.name
-                          ? const _BusyIcon()
-                          : IconButton(
+                      action: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // 与在线页同位的 ℹ:那边看 Civitai 的卡片,这边看机房里
+                          // 这一份(编号 / 谁传的 / 推送状态 / CLIP 能不能调)
+                          IconButton(
+                            tooltip: '详情',
+                            visualDensity: VisualDensity.compact,
+                            icon: const Icon(Icons.info_outline),
+                            color: context.scheme.onSurfaceVariant,
+                            onPressed: () => _showLibraryDetail(x),
+                          ),
+                          if (_busyName == x.name)
+                            const _BusyIcon()
+                          else
+                            IconButton(
                               tooltip: x.favorited ? '移出我的库' : '加入我的库',
+                              visualDensity: VisualDensity.compact,
                               icon: Icon(
                                 x.favorited ? Icons.star : Icons.star_border,
                                 color: x.favorited
@@ -881,6 +917,8 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
                               onPressed: () =>
                                   x.favorited ? _unfavorite(x) : _favorite(x),
                             ),
+                        ],
+                      ),
                     );
                   },
                 ),
@@ -897,15 +935,36 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
     ];
     return Column(
       children: [
-        _catChips(_onlineCat, (k) {
-          if (k == _onlineCat) return;
-          setState(() {
-            _onlineCat = k;
-            _onlineItems = [];
-            _onlineCursor = null;
-          });
-          _startSearch();
-        }),
+        // 「二次元」排在分类前面:它是服务端按 tag 筛(决定拉回什么),分类是本地
+        // 按 type 筛(在拉回的结果里挑),两者可叠加。用带勾的 FilterChip 而不是
+        // 第五个分类 chip —— 后者会被读成「和角色/画风四选一」。
+        _catChips(
+          _onlineCat,
+          (k) {
+            if (k == _onlineCat) return;
+            setState(() {
+              _onlineCat = k;
+              _onlineItems = [];
+              _onlineCursor = null;
+            });
+            _startSearch();
+          },
+          leading: FilterChip(
+            label: const Text('二次元'),
+            selected: _onlineAnimeOnly,
+            visualDensity: VisualDensity.compact,
+            tooltip: _onlineAnimeOnly ? '点击取消,显示全部内容' : '只看二次元',
+            // 服务端过滤,不像分类那样能在已有结果里筛 —— 必须重发请求
+            onSelected: (v) {
+              setState(() {
+                _onlineAnimeOnly = v;
+                _onlineItems = [];
+                _onlineCursor = null;
+              });
+              _startSearch();
+            },
+          ),
+        ),
         Expanded(
           child: !_onlineLoadedOnce && _onlineError == null
               ? const Center(child: CircularProgressIndicator())
@@ -1015,17 +1074,28 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
               ],
             ),
           ),
+          // 与公共库同位的 ℹ。整卡点开也是详情,但那不显眼 —— 公共库那边有按钮、
+          // 这边只能靠猜,同一页两套规矩。
+          IconButton(
+            tooltip: '详情',
+            visualDensity: VisualDensity.compact,
+            icon: const Icon(Icons.info_outline),
+            color: scheme.onSurfaceVariant,
+            onPressed: () => _showDetail(x),
+          ),
           if (busy)
             const _BusyIcon()
           else if (done)
             IconButton(
               tooltip: '已在我的库',
+              visualDensity: VisualDensity.compact,
               icon: Icon(Icons.check, color: scheme.primary),
               onPressed: null,
             )
           else
             IconButton(
               tooltip: x.installed ? '加入我的库(库内已有,不重复下载)' : '下载到我的库(机房直拉)',
+              visualDensity: VisualDensity.compact,
               icon: Icon(Icons.download_outlined, color: scheme.primary),
               onPressed: () => _download(x),
             ),
@@ -1210,11 +1280,18 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
                         ),
                         const Spacer(),
                         FilledButton.icon(
+                          // 先发车、立刻重建,再等结果:_download 的头两行是同步的
+                          // (置 _downloadingVid),所以这时 setSheet 就能把按钮切成
+                          // 「下载中…」。只在 await 之后刷新的话,整个下载期间弹层
+                          // 纹丝不动 —— 用户看到的就是「点了没反应」,退出去才发现
+                          // 列表那行在转圈。
                           onPressed: done || busy
                               ? null
                               : () async {
-                                  await _download(x);
+                                  final task = _download(x);
                                   setSheet(() {});
+                                  await task;
+                                  if (sheetCtx.mounted) setSheet(() {});
                                 },
                           icon: Icon(
                             done ? Icons.check : Icons.download_outlined,
@@ -1240,9 +1317,10 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
     );
   }
 
-  Widget _metaGrid(CivitaiLoraInfo x) {
+  /// 详情页的一格「标签 + 值」。在线卡与库内卡两张详情共用同一套版式。
+  Widget _metaCell(String label, String value) {
     final scheme = context.scheme;
-    Widget cell(String label, String value) => Container(
+    return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
       decoration: BoxDecoration(
         color: scheme.surfaceContainerHigh,
@@ -1265,33 +1343,304 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
         ],
       ),
     );
-    final cells = <Widget>[
-      cell('作者', x.creator.isEmpty ? '—' : x.creator),
-      cell('推荐权重', '${x.recommendedWeight}'),
-      cell('下载数', '${x.downloadCount}'),
-      cell('大小', x.sizeMb != null ? '${x.sizeMb} MB' : '—'),
-      cell('基础模型', x.baseModel.isEmpty ? '—' : x.baseModel),
-      cell('文件', x.fileName.isEmpty ? '—' : x.fileName),
-    ];
-    return GridView.count(
-      crossAxisCount: 2,
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      childAspectRatio: 3.4,
-      mainAxisSpacing: 6,
-      crossAxisSpacing: 6,
-      children: cells,
+  }
+
+  Widget _metaGridOf(List<Widget> cells) => GridView.count(
+    crossAxisCount: 2,
+    shrinkWrap: true,
+    physics: const NeverScrollableScrollPhysics(),
+    childAspectRatio: 3.4,
+    mainAxisSpacing: 6,
+    crossAxisSpacing: 6,
+    children: cells,
+  );
+
+  Widget _metaGrid(CivitaiLoraInfo x) {
+    return _metaGridOf([
+      _metaCell('作者', x.creator.isEmpty ? '—' : x.creator),
+      _metaCell('推荐权重', '${x.recommendedWeight}'),
+      _metaCell('下载数', '${x.downloadCount}'),
+      _metaCell('大小', x.sizeMb != null ? '${x.sizeMb} MB' : '—'),
+      _metaCell('基础模型', x.baseModel.isEmpty ? '—' : x.baseModel),
+      _metaCell('文件', x.fileName.isEmpty ? '—' : x.fileName),
+    ]);
+  }
+
+  /// 库内条目详情(公共库的 ℹ)。在线那张详情看的是 Civitai 的卡片,这张看的是
+  /// **机房里这一份**:LR 编号、谁传的、推送状态、CLIP 能不能调 —— 都是卡片行上
+  /// 放不下、但决定「挂上去会怎样」的信息。
+  void _showLibraryDetail(LoraCardInfo opened) {
+    final scheme = context.scheme;
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (sheetCtx) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: .62,
+        maxChildSize: .92,
+        // StatefulBuilder 在外、Consumer 在内:收藏结果靠 provider 通知(Consumer),
+        // 但「正在请求」是本页的 _busyName、provider 不会动 —— 那段得靠 setSheet
+        // 自己重建,否则整个请求期间弹层纹丝不动。
+        builder: (_, scroll) => StatefulBuilder(
+          builder: (_, setSheet) => Consumer(
+            builder: (_, ref2, _) {
+              // 收藏关系会被弹层自己底下那颗按钮改掉,所以每次都从库里取最新那条;
+              // 条目被回收(最后一个收藏者移出)后回落到打开时的快照,按钮那边会收场。
+              final all =
+                  ref2.watch(installedLorasProvider(_base)).value ??
+                  const <LoraCardInfo>[];
+              final x =
+                  all.where((e) => e.name == opened.name).firstOrNull ?? opened;
+              final busy = _busyName == x.name;
+              return Column(
+                children: [
+                  Expanded(
+                    child: ListView(
+                      controller: scroll,
+                      padding: const EdgeInsets.fromLTRB(18, 8, 18, 12),
+                      children: [
+                        Row(
+                          children: [
+                            LoraThumb(x.previewUrl, size: 52),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    x.displayName,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: context.texts.titleSmall!.copyWith(
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Wrap(
+                                    spacing: 6,
+                                    runSpacing: 4,
+                                    crossAxisAlignment:
+                                        WrapCrossAlignment.center,
+                                    children: [
+                                      LoraTypeBadge(x.type),
+                                      if (x.isPrivate)
+                                        Text(
+                                          '私有',
+                                          style: context.texts.labelSmall!
+                                              .copyWith(
+                                                color: scheme.onSurfaceVariant,
+                                              ),
+                                        ),
+                                      if (!x.ready)
+                                        Text(
+                                          switch (x.syncStatus) {
+                                            'uploading' => '推送中',
+                                            'failed' => '推送失败',
+                                            _ => '未就绪',
+                                          },
+                                          style: context.texts.labelSmall!
+                                              .copyWith(
+                                                color: x.syncStatus == 'failed'
+                                                    ? scheme.error
+                                                    : scheme.tertiary,
+                                              ),
+                                        ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 14),
+                        _metaGridOf([
+                          // 编号就是进生成载荷的那个键,排第一
+                          _metaCell('编号', x.name),
+                          _metaCell('推荐权重', '${x.recommendedWeight}'),
+                          _metaCell('收藏人数', '${x.favoriteCount}'),
+                          _metaCell('使用次数', '${x.usageCount}'),
+                          _metaCell(
+                            '大小',
+                            x.sizeMb != null ? '${x.sizeMb} MB' : '—',
+                          ),
+                          _metaCell(
+                            '来源',
+                            x.addedBy == 'bot'
+                                ? '官方'
+                                : (x.isOwner ? '我上传的' : '用户上传'),
+                          ),
+                          // 没训文本编码器的,CLIP 强度调了不会有任何变化 ——
+                          // 挂之前就该知道,不然会对着没反应的滑杆调半天
+                          _metaCell('CLIP 强度', switch (x.hasTe) {
+                            false => '不可调(无 TE)',
+                            true => '可调',
+                            _ => '未探测',
+                          }),
+                        ]),
+                        if (x.syncError != null) ...[
+                          const SizedBox(height: 12),
+                          InfoNote(
+                            '推送失败:${x.syncError}',
+                            icon: Icons.cloud_off,
+                            color: scheme.error,
+                          ),
+                        ],
+                        const SizedBox(height: 14),
+                        Text(
+                          '触发词',
+                          style: context.texts.labelMedium!.copyWith(
+                            color: scheme.onSurfaceVariant,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        if (x.triggerWords.isEmpty)
+                          Text(
+                            '无',
+                            style: context.texts.bodySmall!.copyWith(
+                              color: scheme.outline,
+                            ),
+                          )
+                        else
+                          for (final t in x.triggerWords)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 5),
+                              child: Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 7,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: scheme.surfaceContainerHigh,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Icon(
+                                      Icons.key,
+                                      size: 12,
+                                      color: scheme.onSurfaceVariant,
+                                    ),
+                                    const SizedBox(width: 7),
+                                    Expanded(
+                                      child: Text(
+                                        t,
+                                        style: context.texts.bodySmall,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                      ],
+                    ),
+                  ),
+                  SafeArea(
+                    top: false,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(18, 6, 18, 10),
+                      child: Row(
+                        children: [
+                          if (x.sourceUrl.isNotEmpty)
+                            TextButton.icon(
+                              onPressed: () => launchUrl(
+                                Uri.parse(x.sourceUrl),
+                                mode: LaunchMode.externalApplication,
+                              ),
+                              icon: const Icon(Icons.open_in_new, size: 16),
+                              label: const Text('查看来源'),
+                            ),
+                          const Spacer(),
+                          FilledButton.icon(
+                            // 同在线详情那颗:先发车再重建(_favorite / _unfavorite
+                            // 的头一行同步置 _busyName),否则请求期间按钮毫无反应
+                            onPressed: busy
+                                ? null
+                                : () async {
+                                    final task = x.favorited
+                                        ? _unfavorite(x)
+                                        : _favorite(x);
+                                    setSheet(() {});
+                                    await task;
+                                    if (!sheetCtx.mounted) return;
+                                    setSheet(() {});
+                                    // 移出后这条被机房回收了(最后一个拥有者),
+                                    // 详情已经没有对应实体,别留在原地
+                                    final gone =
+                                        !(ref2
+                                                    .read(
+                                                      installedLorasProvider(
+                                                        _base,
+                                                      ),
+                                                    )
+                                                    .value ??
+                                                const <LoraCardInfo>[])
+                                            .any((e) => e.name == x.name);
+                                    if (gone) Navigator.pop(sheetCtx);
+                                  },
+                            icon: busy
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : Icon(
+                                    x.favorited
+                                        ? Icons.star
+                                        : Icons.star_border,
+                                    size: 18,
+                                  ),
+                            label: Text(x.favorited ? '移出我的库' : '加入我的库'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+      ),
     );
   }
 
   // ---- 公共小件 ----
-  Widget _catChips(String current, ValueChanged<String> onPick) {
+  /// 分类筛选行。[leading] 是排在分类前面的额外筛选件(在线页的「二次元」),
+  /// 跟着一起横向滚 —— 钉在右端的话窄屏上会把分类挤没。
+  Widget _catChips(
+    String current,
+    ValueChanged<String> onPick, {
+    Widget? leading,
+  }) {
     return SizedBox(
       height: 40,
       child: ListView(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: _kEdge),
         children: [
+          if (leading != null) ...[
+            Center(child: leading),
+            // 竖线分组:左边这个是服务端筛(决定拉回什么),右边是本地筛(在拉回的
+            // 结果里挑)。不隔开会被读成同一组五选一。
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Center(
+                child: SizedBox(
+                  height: 18,
+                  child: VerticalDivider(
+                    width: 1,
+                    thickness: 1,
+                    color: context.scheme.outlineVariant,
+                  ),
+                ),
+              ),
+            ),
+          ],
           for (final (key, label) in _cats)
             Padding(
               padding: const EdgeInsets.only(right: 8),

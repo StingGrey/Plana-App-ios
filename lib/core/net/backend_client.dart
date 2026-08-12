@@ -686,9 +686,10 @@ class LoraResolveResult {
       civitaiBaseModel: c['base_model']?.toString() ?? '',
       civitaiPreviewUrl: c['preview_url']?.toString() ?? '',
       civitaiTriggerWords: [
-        for (final t in c['trigger_words'] is List
-            ? c['trigger_words'] as List
-            : const [])
+        for (final t
+            in c['trigger_words'] is List
+                ? c['trigger_words'] as List
+                : const [])
           if (t is String && t.isNotEmpty) t,
       ],
       civitaiType: c['type']?.toString() ?? 'concept',
@@ -778,6 +779,27 @@ class AnimaNlResult {
   Map<String, dynamic> toJson() => {'text': text, 'note_zh': noteZh};
 
   factory AnimaNlResult.fromJson(Map<String, dynamic> j) => AnimaNlResult(
+    text: j['text']?.toString().trim() ?? '',
+    noteZh: j['note_zh']?.toString().trim() ?? '',
+  );
+}
+
+/// 一次提示词整理的产出(`POST /api/agent/web/krea-prompt`)。
+///
+/// ⚠ 与 [AnimaNlResult] 形状相同、语义相反,别混用:
+///   anima  tag 是骨架、句子是补充 → [AnimaNlResult.text] **追加**到正向词末尾
+///   krea   整条 prompt 就是一段自然语言 → 这里的 [text] 是**整条新的正向词**,
+///          整段替换原文(追加只会得到两段互相打架的描述)
+/// [noteZh] 只给用户看,不进提示词。
+class KreaPromptResult {
+  const KreaPromptResult({this.text = '', this.noteZh = ''});
+
+  final String text;
+  final String noteZh;
+
+  Map<String, dynamic> toJson() => {'text': text, 'note_zh': noteZh};
+
+  factory KreaPromptResult.fromJson(Map<String, dynamic> j) => KreaPromptResult(
     text: j['text']?.toString().trim() ?? '',
     noteZh: j['note_zh']?.toString().trim() ?? '',
   );
@@ -931,6 +953,26 @@ class BackendClient {
   }) async {
     final j = await _getJson('/bot/task/$taskId', sessionId);
     return BotTask.fromJson(j);
+  }
+
+  /// 取消**排队中**的任务(`DELETE /api/task/{id}`,与 web 同一个端点)。
+  ///
+  /// 服务端只受理 `queued`:已经在跑的返 400、任务不存在返 404 —— 两种都当
+  /// 「没取消成」返 false 而不抛出。取消是尽力而为的补救,失败无非是照常出图,
+  /// 不该再朝用户弹一个错误。
+  ///
+  /// 值得调的理由:它不只是打个 cancelled 标记 —— NAI 侧会把任务踢出队列
+  /// (省下这次的 Anlas),anima/krea 侧还会显式踢出 provider 的本地 FIFO 并
+  /// 唤醒其协程,否则那条协程照样排队→出图→烧机时。
+  Future<bool> cancelTask(String taskId) async {
+    try {
+      final j = await _handle(
+        () => http.delete(_u('/task/$taskId'), headers: _headers()),
+      );
+      return j['success'] == true;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// 后端编码 Vibe 参考(bot 模式;⚠️ 扣 2 Anlas,务必缓存)。
@@ -1669,12 +1711,22 @@ class BackendClient {
     );
   }
 
-  // ── LoRA 管理(anima 出图渠道专用,契约对齐 web loraService.ts) ──
+  // ── LoRA 管理(anima / krea 出图渠道,契约对齐 web loraService.ts) ──
+  //
+  // 全线带 [base]:anima(2B 自研 DiT)与 krea2(12B DiT)的权重互不通用,
+  // 挂错了 ComfyUI 不报错、只是静默无效 —— 所以隔离做在库层,列表默认就按底模
+  // 裁好,不给前端「选错」的机会。base 也决定文件落 Volume 的哪个子目录。
 
   /// 机房已装 LoRA 全集(登录:Bearer 头 → 每张卡带 favorited)。
   /// 「我的库」= 其中 favorited 的;「公共库」= 全集。
-  Future<List<LoraCardInfo>> listLoras(String sessionId) async {
-    final j = await _getJson('/lora/list', sessionId);
+  Future<List<LoraCardInfo>> listLoras(
+    String sessionId, {
+    String base = 'anima',
+  }) async {
+    final j = await _getJson(
+      '/lora/list?base=${Uri.encodeComponent(base)}',
+      sessionId,
+    );
     if (j['ok'] == false) {
       throw BackendException(j['message']?.toString() ?? 'LoRA 列表加载失败');
     }
@@ -1717,11 +1769,16 @@ class BackendClient {
     );
   }
 
-  /// Civitai 在线搜索(服务端代理,公开端点)。[cursor] 翻页游标。
+  /// Civitai 在线搜索(服务端代理,公开端点)。[cursor] 翻页游标;
+  /// [base] 决定 Civitai 那边按 baseModel=Anima 还是 Krea 2 过滤;
+  /// [tag] 是 Civitai 标签过滤(如 `anime`),**服务端去 Civitai 侧筛**、
+  /// 不是页内过滤,所以改了它必须重发请求。空 = 不筛。
   Future<({List<CivitaiLoraInfo> items, String? nextCursor})> searchLoras({
     String query = '',
     String? cursor,
     int limit = 24,
+    String base = 'anima',
+    String tag = '',
   }) async {
     final q = <String>[
       if (query.isNotEmpty) 'query=${Uri.encodeComponent(query)}',
@@ -1729,6 +1786,8 @@ class BackendClient {
         'cursor=${Uri.encodeComponent(cursor)}',
       'nsfw=true', // 对齐 web:不做 R18 过滤开关
       'limit=$limit',
+      'base=${Uri.encodeComponent(base)}',
+      if (tag.isNotEmpty) 'tag=${Uri.encodeComponent(tag)}',
     ].join('&');
     final j = await _getJson('/lora/search?$q', null, _timeout * 2);
     if (j['ok'] == false) {
@@ -1803,10 +1862,11 @@ class BackendClient {
   Future<({bool ok, String? lrId, String message})> installLora({
     required String sessionId,
     required int versionId,
+    String base = 'anima',
   }) async {
     final j = await _postJson(
       '/lora/install',
-      {'version_id': versionId},
+      {'version_id': versionId, 'base': base},
       sessionId,
       const Duration(minutes: 3),
     );
@@ -1837,6 +1897,7 @@ class BackendClient {
     required List<String> triggerGroups,
     required String type,
     required bool public,
+    String base = 'anima',
     void Function(double progress)? onProgress,
   }) async {
     if (baseUrl.isEmpty) throw BackendException('未配置后端地址');
@@ -1852,6 +1913,7 @@ class BackendClient {
       ..fields['trigger_words'] = jsonEncode(triggerGroups)
       ..fields['lora_type'] = type
       ..fields['visibility'] = public ? 'public' : 'private'
+      ..fields['base'] = base
       ..files.add(
         http.MultipartFile('file', body, fileSize, filename: fileName),
       );
@@ -1929,6 +1991,31 @@ class BackendClient {
       const Duration(seconds: 60),
     );
     return AnimaNlResult.fromJson(j);
+  }
+
+  /// 提示词整理(krea 专属;登录:Bearer 头)。读当前正向词,产出**整条新的**
+  /// 正向词 —— k2 用 Qwen3-VL 做文本编码器,吃的是连贯自然语言,不吃 tag 串。
+  ///
+  /// [mode] 只接受 `rewrite`(tag 串 → 完整语句)/ `enrich`(不改主体,补光线、
+  /// 材质、镜头与氛围);[positive] 须是剥净仅编辑期语法的定稿,空则服务端 400。
+  /// [loras] 形如 `[{name, trigger_words}]` —— 触发短语是权重开关,服务端会
+  /// 要求原样保留进结果。**只管正向**,排除内容不在本模块职责内(故无该字段)。
+  ///
+  /// 超时同 [animaNl] 给 60s:服务端自己 45s 掐(504 带人话 detail)。
+  Future<KreaPromptResult> kreaPrompt({
+    required String sessionId,
+    required String mode,
+    required String positive,
+    String extra = '',
+    List<Map<String, dynamic>> loras = const [],
+  }) async {
+    final j = await _postJson(
+      '/agent/web/krea-prompt',
+      {'mode': mode, 'positive': positive, 'extra': extra, 'loras': loras},
+      sessionId,
+      const Duration(seconds: 60),
+    );
+    return KreaPromptResult.fromJson(j);
   }
 }
 

@@ -1,0 +1,146 @@
+/// 生成任务池的数据模型 —— 「一次一张」放开成「同时 N 条」之后,原先那份全局
+/// `GenStatus` 就不够用了:进度、预览、排队位次都得一任务一份,否则后提交的会
+/// 把前一条的进度整个盖掉(web 侧 2026-08-12 踩的正是这个坑)。
+///
+/// 画布跟随哪条由 [GenPool.selectedId] 决定;它为 null 表示画布看的是成图/历史图。
+library;
+
+import 'dart:typed_data';
+
+/// 任务类型。重绘与普通出图并行不冲突,但**重绘之间仍是一次一条** ——
+/// 回贴信息(裁切框/原图)是随会话共享的,两条同时跑会串。
+enum GenJobKind { normal, inpaint }
+
+/// 任务所处阶段。分这么细是因为每一档对用户的含义都不同:
+/// 「池满等位」和「服务端排着」都显示成排队会让人以为是同一件事,
+/// 前者取消不掉后端(压根还没提交)、后者可以。
+enum GenJobStage {
+  /// 本地等位:池子满了,还没轮到它提交。
+  waiting,
+
+  /// 拼载荷中(vibe 编码、参考图缩放),纯本地耗时。
+  preparing,
+
+  /// 已提交,在服务端队列里排着(仅 bot 模式)。
+  queued,
+
+  /// Modal 容器冷启动中(anima / krea)。
+  starting,
+
+  /// 正在出图,[GenJob.step] / [GenJob.total] 此时才有意义。
+  running,
+}
+
+/// 一条在跑(或等着跑)的生成任务。
+class GenJob {
+  const GenJob({
+    required this.id,
+    required this.kind,
+    required this.stage,
+    required this.width,
+    required this.height,
+    required this.seq,
+    this.step = 0,
+    this.total = 0,
+    this.preview,
+    this.note,
+    this.taskId,
+  });
+
+  final String id;
+  final GenJobKind kind;
+  final GenJobStage stage;
+
+  /// 目标尺寸。占位卡按它摆比例,免得出图前后跳一下。
+  final int width;
+  final int height;
+
+  /// 提交序号,越大越新。列表按它倒序展示(新的在最前,与图库一致)。
+  final int seq;
+
+  final int step;
+  final int total;
+
+  /// 最新一帧逐步预览。
+  final Uint8List? preview;
+
+  /// 非进度类状态文案(排队位次、冷启动、限流重试倒计时)。
+  final String? note;
+
+  /// 服务端任务 id(仅 bot 模式,提交成功后才有)。取消排队要用。
+  final String? taskId;
+
+  /// 0..1;还没出图时为 null → 走不确定进度。
+  double? get progress =>
+      total > 0 && step > 0 ? (step / total).clamp(0.0, 1.0) : null;
+
+  bool get isRunning => stage == GenJobStage.running;
+
+  GenJob copyWith({
+    GenJobStage? stage,
+    int? step,
+    int? total,
+    Uint8List? preview,
+    String? note,
+    bool clearNote = false,
+    String? taskId,
+  }) => GenJob(
+    id: id,
+    kind: kind,
+    stage: stage ?? this.stage,
+    width: width,
+    height: height,
+    seq: seq,
+    step: step ?? this.step,
+    total: total ?? this.total,
+    preview: preview ?? this.preview,
+    note: clearNote ? null : (note ?? this.note),
+    taskId: taskId ?? this.taskId,
+  );
+}
+
+/// 任务池。
+///
+/// [error] 是池级而非任务级的:任务一失败就从 [jobs] 里摘掉,错误交给创作页那条
+/// 统一的错误提示显示(与并行前的行为一致,只是"最近一次失败"可能来自任何一条)。
+/// 哨兵 `no-token` 仍表示未设置令牌,引导去「我的」页。
+class GenPool {
+  const GenPool({this.jobs = const [], this.selectedId, this.error});
+
+  final List<GenJob> jobs;
+
+  /// 画布正在跟随的任务;null = 看成图/历史图。
+  final String? selectedId;
+
+  final String? error;
+
+  bool get noToken => error == 'no-token';
+
+  /// 有任务在池子里(等位的也算 —— 用户点了按钮就该看见东西在转)。
+  bool get busy => jobs.isNotEmpty;
+
+  /// 画布跟随的那条;选中项已经跑完(或压根没选)时为 null。
+  GenJob? get selected {
+    if (selectedId == null) return null;
+    for (final j in jobs) {
+      if (j.id == selectedId) return j;
+    }
+    return null;
+  }
+
+  /// 展示顺序:新提交的在最前,与图库缩略图一致。
+  List<GenJob> get newestFirst =>
+      [...jobs]..sort((a, b) => b.seq.compareTo(a.seq));
+
+  GenPool copyWith({
+    List<GenJob>? jobs,
+    String? selectedId,
+    bool clearSelected = false,
+    String? error,
+    bool clearError = false,
+  }) => GenPool(
+    jobs: jobs ?? this.jobs,
+    selectedId: clearSelected ? null : (selectedId ?? this.selectedId),
+    error: clearError ? null : (error ?? this.error),
+  );
+}

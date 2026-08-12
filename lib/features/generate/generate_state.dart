@@ -48,13 +48,38 @@ class GenerateNotifier extends Notifier<GenerateState> {
 
   // ---- 角色 ----
   void addCharacter() {
-    if (state.characters.length >= 6) return;
+    if (state.characters.length >= kMaxCharacters) return;
     final c = CharacterPrompt(
       id: _newId(),
       name: '角色 ${state.characters.length + 1}',
     );
     state = state.copyWith(characters: [...state.characters, c]);
     openPanel(Panel.characters);
+  }
+
+  /// 追加若干张**已填好内容**的角色卡(法典多角色词条导入)。
+  ///
+  /// 超出上限的直接丢弃并返回**实际加进去的条数** —— 调用方据此告诉用户丢了
+  /// 几个。静默截断是不行的:词条里明明有 4 个角色,进来只剩 2 个而不吭声,
+  /// 用户只会以为是解析出了错。
+  int addCharactersFilled(
+    List<({String name, String positive, String negative})> items,
+  ) {
+    if (items.isEmpty) return 0;
+    final room = kMaxCharacters - state.characters.length;
+    if (room <= 0) return 0;
+    final add = [
+      for (final it in items.take(room))
+        CharacterPrompt(
+          id: _newId(),
+          name: it.name,
+          positive: it.positive,
+          negative: it.negative,
+        ),
+    ];
+    state = state.copyWith(characters: [...state.characters, ...add]);
+    openPanel(Panel.characters);
+    return add.length;
   }
 
   void updateCharacter(
@@ -330,7 +355,53 @@ class GenerateNotifier extends Notifier<GenerateState> {
   void restoreCharRefs(List<CharRefItem> refs) =>
       state = state.copyWith(charRefs: refs);
 
-  // ---- LoRA(anima 专属) ----
+  // ---- 风格参考(krea 专属) ----
+
+  /// 加一张参考图。**满了就丢弃**(而不是顶掉已有的):用户一次选多张时,
+  /// 先来的那几张才是他先挑中的。返回新条目 id;满员时返回空串。
+  String addKreaStyleRef({
+    required Uint8List image,
+    required String name,
+    String? imageHash,
+  }) {
+    if (state.kreaStyleRefs.length >= kMaxKreaStyleRefs) return '';
+    final id = _newId();
+    state = state.copyWith(
+      kreaStyleRefs: [
+        ...state.kreaStyleRefs,
+        KreaStyleRefItem(
+          id: id,
+          name: name,
+          image: image,
+          imageHash: imageHash,
+        ),
+      ],
+    );
+    openPanel(Panel.kreaStyleRef);
+    return id;
+  }
+
+  void setKreaStyleRefEnabled(String id, bool enabled) {
+    state = state.copyWith(
+      kreaStyleRefs: [
+        for (final r in state.kreaStyleRefs)
+          if (r.id == id) r.copyWith(enabled: enabled) else r,
+      ],
+    );
+  }
+
+  void removeKreaStyleRef(String id) {
+    state = state.copyWith(
+      kreaStyleRefs: state.kreaStyleRefs.where((r) => r.id != id).toList(),
+    );
+  }
+
+  /// 参考强度(全局一份,所有参考图共用)。
+  void setKreaStyleRefWeight(double v) => state = state.copyWith(
+    kreaStyleRefWeight: v.clamp(0.0, kKreaStyleRefWeightMax),
+  );
+
+  // ---- LoRA(anima / krea 共用) ----
   /// LoRA 管理器「确认挂载」:按选中卡整体替换挂载列表。
   /// 已挂条目保留用户调过的 weight/enabled(注册表字段刷新),新条目用推荐值;
   /// 超出上限截断,返回实际挂载数供调用方提示。
@@ -547,8 +618,9 @@ class GenerateNotifier extends Notifier<GenerateState> {
   /// 参数导入:按元数据回填生成参数(仅传入非空字段生效,copyWith 忽略 null)。
   /// 元数据导入落地。只传要改的字段,null = 保持不动。
   ///
-  /// NAI 与 Anima 是两套独立的采样参数(前者 steps/cfg/sampler/noiseSchedule,
-  /// 后者 anima*),width/height/seed 则两边共用 —— 调用方按图的模型类别决定传哪组。
+  /// NAI / Anima / Krea 是三套独立的采样参数(分别是 steps·cfg·sampler·
+  /// noiseSchedule / anima* / krea*),width/height/seed 三边共用 ——
+  /// 调用方按**当前模型**的类别决定传哪组。
   void applyImportedSettings({
     String? model,
     int? width,
@@ -564,6 +636,10 @@ class GenerateNotifier extends Notifier<GenerateState> {
     double? animaCfg,
     String? animaSampler,
     String? animaScheduler,
+    int? kreaSteps,
+    double? kreaCfg,
+    String? kreaSampler,
+    String? kreaScheduler,
   }) {
     state = state.copyWith(
       params: state.params.copyWith(
@@ -581,6 +657,10 @@ class GenerateNotifier extends Notifier<GenerateState> {
         animaCfg: animaCfg,
         animaSampler: animaSampler,
         animaScheduler: animaScheduler,
+        kreaSteps: kreaSteps,
+        kreaCfg: kreaCfg,
+        kreaSampler: kreaSampler,
+        kreaScheduler: kreaScheduler,
       ),
     );
   }
@@ -589,7 +669,13 @@ class GenerateNotifier extends Notifier<GenerateState> {
     params: state.params.copyWith(width: width, height: height),
   );
 
-  /// 切模型;切到 Anima 档位时套用该档推荐采样参数(对齐 web applyAnimaTier)。
+  /// 切模型;切到 Anima / Krea 档位时套用该档推荐采样参数
+  /// (对齐 web applyAnimaTier / applyKreaTier —— 两档之间步数与 CFG 差得很远,
+  /// 不联动的话切过去还挂着上一档的配方,出图直接不对)。
+  ///
+  /// 换 LoRA 底模时连带清空已挂的:上一个库的 LR 编号在新库里查无此条,
+  /// 留着发出去服务端会静默丢弃,等于白跑一次生成(对齐 web prevLoraBaseRef)。
+  /// NAI 归在 anima 那一侧,所以 NAI↔Anima 来回切不动列表,只有进出 Krea 才清。
   void setModel(String model) {
     var p = state.params.copyWith(model: model);
     if (isAnimaModel(model)) {
@@ -600,8 +686,19 @@ class GenerateNotifier extends Notifier<GenerateState> {
         animaSampler: d.sampler,
         animaScheduler: d.scheduler,
       );
+    } else if (isKreaModel(model)) {
+      final d = kreaTierDefaults(kreaTierOf(model));
+      p = p.copyWith(
+        kreaSteps: d.steps,
+        kreaCfg: d.cfg,
+        kreaSampler: d.sampler,
+        kreaScheduler: d.scheduler,
+      );
     }
-    state = state.copyWith(params: p);
+    final baseChanged =
+        loraBaseOf(model) != loraBaseOf(state.params.model) &&
+        state.loras.isNotEmpty;
+    state = state.copyWith(params: p, loras: baseChanged ? const [] : null);
   }
 
   void setLoop(LoopCount l) =>
@@ -626,6 +723,11 @@ class GenerateNotifier extends Notifier<GenerateState> {
   void reorderCharRefs(int oldIndex, int newIndex) => state = state.copyWith(
     charRefs: _reordered(state.charRefs, oldIndex, newIndex),
   );
+
+  void reorderKreaStyleRefs(int oldIndex, int newIndex) =>
+      state = state.copyWith(
+        kreaStyleRefs: _reordered(state.kreaStyleRefs, oldIndex, newIndex),
+      );
 
   void refreshAnlas() {
     // 占位:正式版调 NAI /user/subscription

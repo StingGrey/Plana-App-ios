@@ -892,16 +892,22 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     final img = _img;
     final grid = _grid;
     if (img == null || grid == null || _firing) return;
-    if (ref.read(generationProvider).busy) {
-      hintSnack(context, '生成进行中,请稍后再试', icon: Icons.hourglass_top);
+    // 只拦另一条重绘(回贴信息共享,两条同时跑会串);普通出图并行不冲突。
+    if (ref.read(inpaintStatusProvider).busy) {
+      hintSnack(context, '重绘进行中,请稍后再试', icon: Icons.hourglass_top);
       return;
     }
     // 参数现读创作页,模型自然也跟着走:面板开着的时候完全可以切去换成
-    // Anima(那边没有 infill)。进面板时 result_canvas 已拦过一道,这里补
-    // 发车前的第二道 —— 否则会一路走到生成器里报「Anima 不支持重绘」。
+    // Anima / Krea(那两条通道都没有 infill)。进面板时 result_canvas 已拦过
+    // 一道,这里补发车前的第二道 —— 否则会一路走到生成器里才报不支持。
     final input = _liveInput;
-    if (isAnimaModel(input.params.model)) {
-      hintSnack(context, 'Anima 模型不支持重绘,请先切回 NovelAI 模型', icon: Icons.block);
+    if (isModalModel(input.params.model)) {
+      hintSnack(
+        context,
+        '${isKreaModel(input.params.model) ? 'Krea 2' : 'Anima'} '
+        '模型不支持重绘,请先切回 NovelAI 模型',
+        icon: Icons.block,
+      );
       return;
     }
     if (_expandMode) {
@@ -1009,11 +1015,11 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final img = _img;
-    final gen = ref.watch(generationProvider);
+    final gen = ref.watch(inpaintStatusProvider);
 
     // 会话内生成跟踪(_previewDst 非空 = 本编辑器发起):
     // 预览帧解码 → 画布混合;完成 → 换底图保留遮罩;失败 → 清预览。
-    ref.listen<GenStatus>(generationProvider, (prev, next) {
+    ref.listen<GenStatus>(inpaintStatusProvider, (prev, next) {
       if (_previewDst == null) return;
       final preview = next.preview;
       if (next.busy &&

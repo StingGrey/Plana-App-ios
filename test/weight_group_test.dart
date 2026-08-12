@@ -73,4 +73,37 @@ void main() {
     const t = '-2::a, b::, c';
     expect(_toks(t), [('a', -2.0), ('b', -2.0), ('c', 1.0)]);
   });
+
+  // `::` 在 NAI 里本身就是分隔符,不少人拿它当逗号使:写完一个词直接跟下一段
+  // 的权重,中间不打逗号。老实现开组时把 a 一跳跳到组内容处,开记号前面那截
+  // **整段丢了** —— 不成词条(没注音、没翻译、词条栏点不着),屏幕上是一截灰字。
+  test('开记号前面的内容不能丢:`a::1.5::b` 里的 a 照样成词条', () {
+    const t =
+        'print,constellation print in grey pantyhose::1.5::gothic lolita,'
+        'black lolita';
+    expect(_toks(t), [
+      ('print', 1.0),
+      ('constellation print in grey pantyhose', 1.0), // 曾经整个消失
+      ('gothic lolita', 1.5),
+      ('black lolita', 1.5), // 未闭合的组延伸到文末
+    ]);
+    // 权重区间只圈组本身,前面那截不该被染色
+    expect(_spans(t), [('1.5::gothic lolita,black lolita', 1.5)]);
+  });
+
+  test('开记号紧跟逗号时不误伤(本来就没有头部)', () {
+    const t = 'a,1.5::b';
+    expect(_toks(t), [('a', 1.0), ('b', 1.5)]);
+  });
+
+  // 未闭合的组右界是「下一个前缀 / 文末」截出来的,不是闭记号 —— 剥记号那步
+  // 却照着 end-2 削两个字符,削掉的是用户的正文。
+  test('未闭合的组不能把末尾两个字符当闭记号削掉', () {
+    const t = '1.2::a, black lolita';
+    expect(_toks(t), [('a', 1.2), ('black lolita', 1.2)]); // 曾经变成 black loli
+  });
+
+  // 已知未覆盖:闭记号落在段**中间**(`1.2::a, b::1.5::c` 里的 `b::`),
+  // 现在整段会当成一枚名叫 `b::1.5::c` 的词条。段首/段尾收口都认,唯独段中
+  // 不认 —— 真遇到再说,现网数据里没见过这种写法。
 }

@@ -78,6 +78,9 @@ class GenSettingsPage extends ConsumerWidget {
           const SettingsLabel('Anima 模块'),
           const _ModulesCard(GenProvider.anima),
           const SizedBox(height: 16),
+          const SettingsLabel('Krea 2 模块'),
+          const _ModulesCard(GenProvider.krea),
+          const SizedBox(height: 16),
           const SettingsLabel('图库默认保存'),
           const _SaveDefaultsCard(),
         ],
@@ -87,7 +90,7 @@ class GenSettingsPage extends ConsumerWidget {
 }
 
 /// 创作页功能模块:开关控制显隐,长按拖动调顺序(与主页卡片即时同步)。
-/// 按模型父类分组各渲染一张卡(nai 四件套 / anima 的 LoRA)。
+/// 按模型父类分组各渲染一张卡(nai 四件套 / anima 三件 / krea 两件)。
 class _ModulesCard extends ConsumerWidget {
   const _ModulesCard(this.provider);
 

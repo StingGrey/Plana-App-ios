@@ -119,7 +119,7 @@ class _AppShellState extends ConsumerState<AppShell> {
     });
 
     // 生成错误全局提示(常驻:切 tab 也不漏)
-    ref.listen<GenStatus>(generationProvider, (prev, next) {
+    ref.listen<GenStatus>(genStatusProvider, (prev, next) {
       final err = next.error;
       if (err == null) return;
       if (next.noToken) {

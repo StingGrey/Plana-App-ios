@@ -11,6 +11,17 @@ final tokenProvider = AsyncNotifierProvider<TokenNotifier, String?>(
   TokenNotifier.new,
 );
 
+/// 已保存的 NAI Key 全集 —— **今天只存一把**,所以长度只会是 0 或 1。
+///
+/// 单独开这个出处是给直连模式的并行用的:并发上限就是它的长度,「每条任务
+/// 独占一把 Key」也按它分配。NAI 是**按账号限流**的,同一把 Key 并发只会
+/// 自己打自己(429),所以上限不能拍脑袋给个常数。
+/// 将来支持存多把时只改这里,并发闸门与分配逻辑一行都不用动。
+final naiKeysProvider = FutureProvider<List<String>>((ref) async {
+  final t = await ref.watch(tokenProvider.future);
+  return (t == null || t.isEmpty) ? const <String>[] : <String>[t];
+});
+
 class TokenNotifier extends AsyncNotifier<String?> {
   // 必须用共享的 secureStorageProvider,不能自建一个:两者当前配置相同,
   // 但一旦给共享那个加上 AndroidOptions(resetOnError 等),自建的这份会是

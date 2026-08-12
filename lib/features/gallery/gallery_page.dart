@@ -132,7 +132,7 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
   Widget build(BuildContext context) {
     super.build(context);
     final state = ref.watch(galleryProvider);
-    final gen = ref.watch(generationProvider);
+    final gen = ref.watch(genStatusProvider);
     final inpaint = ref.watch(inpaintSessionProvider);
     final selected = state.selected;
 
@@ -149,11 +149,11 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
       return const _EmptyGallery();
     }
 
-    // 生成中视角可切换(对齐 web viewingHistory):默认看生成预览,
-    // 点历史缩略图切走(生成继续后台跑,进度在胶片条占位卡上),
-    // 点占位卡切回。空库时没得切,强制看生成。
-    final viewingGen = ref.watch(galleryViewGenProvider);
-    final showGen = gen.busy && (viewingGen || selected == null);
+    // 画布跟随哪条任务由任务池说了算(GenPool.selectedId):
+    // 点历史缩略图 = 解除跟随(任务继续后台跑,进度在胶片条的卡上),
+    // 点任务卡 = 跟随那一条。gen 就是被跟随那条的扁平视图,没跟随时它 idle。
+    final pool = ref.watch(generationProvider);
+    final showGen = gen.busy;
 
     // 选中图字节不在内存(重启水合/RAM 减负)时按需从盘读。
     var selBytes = selected?.bytes;
@@ -281,6 +281,17 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
                             ? ProgressPill(
                                 key: const ValueKey('pill'),
                                 status: gen,
+                                // 取消**跟随的这一条**,不动循环/队列 ——
+                                // 那是「停这一条」,不是「别再续了」(后者在
+                                // 创作页那颗生成按钮内部的停止区)。
+                                onCancel: () {
+                                  final id = pool.selectedId;
+                                  if (id != null) {
+                                    ref
+                                        .read(generationProvider.notifier)
+                                        .cancelJob(id);
+                                  }
+                                },
                               )
                             : const SizedBox.shrink(key: ValueKey('nopill')),
                       ),
@@ -293,14 +304,14 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
               results: state.results,
               selectedId: state.selectedId,
               onSelect: (id) {
-                // 生成中点历史图 = 切走看历史(生成继续);平时就是普通选图
-                ref.read(galleryViewGenProvider.notifier).set(false);
+                // 生成中点历史图 = 解除跟随(任务继续);平时就是普通选图
+                ref.read(generationProvider.notifier).select(null);
                 ref.read(galleryProvider.notifier).select(id);
               },
-              gen: gen.busy ? gen : null,
-              genActive: showGen,
-              onTapGen: () =>
-                  ref.read(galleryViewGenProvider.notifier).set(true),
+              jobs: pool.newestFirst,
+              selectedJobId: pool.selectedId,
+              onSelectJob: (id) =>
+                  ref.read(generationProvider.notifier).select(id),
             ),
           ],
         ),

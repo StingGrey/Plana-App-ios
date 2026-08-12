@@ -2,6 +2,9 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart' show compute;
+import 'package:image/image.dart' as img;
+
 /// 解码图片像素尺寸 (宽, 高)。
 Future<(int, int)> decodeImageSize(Uint8List bytes) async {
   final codec = await ui.instantiateImageCodec(bytes);
@@ -67,6 +70,44 @@ Future<Uint8List> coverResizePng(
   out.dispose();
   picture.dispose();
   return data!.buffer.asUint8List();
+}
+
+/// Krea 风格参考预处理,复刻 web `applyKreaStyleRefFile`:长边缩到
+/// [maxDim] 以内(不放大、不裁切、不加黑边)→ 合白底 → JPEG。
+///
+/// 与角色参考(CR)那套刻意不同:服务端的 FluxKontextImageScale 会自己把参考图
+/// 缩到 ~1024² 的像素预算,填黑边只会让黑色也进参考;JPEG 而不是 PNG 是因为
+/// 最多三张一起进请求体,PNG 能把一次生成的载荷撑到十几 MB。
+///
+/// 跑在后台 isolate(解码 + 重采样 + 编码对主线程来说太重,会掉帧)。
+Future<Uint8List> styleRefResizeJpg(
+  Uint8List src, {
+  int maxDim = 1024,
+  int quality = 92,
+}) => compute(_styleRefResizeJpg, (src, maxDim, quality));
+
+Uint8List _styleRefResizeJpg((Uint8List, int, int) arg) {
+  final (src, maxDim, quality) = arg;
+  final decoded = img.decodeImage(src);
+  if (decoded == null) throw StateError('图片解码失败');
+  final longest = math.max(decoded.width, decoded.height);
+  final scaled = longest > maxDim
+      ? img.copyResize(
+          decoded,
+          width: longest == decoded.width ? maxDim : null,
+          height: longest == decoded.height ? maxDim : null,
+          interpolation: img.Interpolation.average,
+        )
+      : decoded;
+  // 白底而不是黑底:透明像素在 JPEG 里会变成纯黑,一块黑斑照样会被当画风搬走。
+  final canvas = img.Image(
+    width: scaled.width,
+    height: scaled.height,
+    numChannels: 3,
+  );
+  img.fill(canvas, color: img.ColorRgb8(255, 255, 255));
+  img.compositeImage(canvas, scaled);
+  return Uint8List.fromList(img.encodeJpg(canvas, quality: quality));
 }
 
 /// 角色参考(CR)预处理,复刻 web `processCRImage`:按宽高比选目标画布,

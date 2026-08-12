@@ -724,6 +724,16 @@ String? _resolveConditioningText(Map graph, Object? ref, [int depth = 0]) {
   return null;
 }
 
+/// 出图管线自己挂的基础设施 LoRA —— 不是用户选的,导入时必须剔掉。
+/// 混进去的话用户会看到一条自己没挂过、库里也查不到的 LoRA。
+///   krea2_style_reference   风格参考模块内部挂的官方权重(服务端节点 501)
+///   krea2_turbo_lora        「把 raw 拉近 turbo」的官方补丁权重
+///   anima-turbo-lora        anima 模板里的内置项(模板里强度已是 0,这里再兜一道)
+final _infraLoraRe = RegExp(
+  r'^(krea2_style_reference|krea2_turbo_lora|anima-turbo-lora)',
+  caseSensitive: false,
+);
+
 /// 沿 model 链收集 LoraLoader。
 List<LoraInfo> _collectComfyLoras(Map graph, Object? modelRef) {
   final loras = <LoraInfo>[];
@@ -747,9 +757,11 @@ List<LoraInfo> _collectComfyLoras(Map graph, Object? modelRef) {
             ),
           ) ??
           1.0;
+      // lora_name 可能带子目录(krea/LR120.safetensors),取 basename 再判
+      final bare = _stripModelExt(name).split(RegExp(r'[\\/]')).last;
       // 强度 0 = 挂着但没启用(Anima 模板里两个内置 LoRA 默认就是 0),不算数
-      if (weight != 0) {
-        loras.add(LoraInfo(name: _stripModelExt(name), weight: weight));
+      if (weight != 0 && !_infraLoraRe.hasMatch(bare)) {
+        loras.add(LoraInfo(name: bare, weight: weight));
       }
     }
     ref = inputs['model'] ?? inputs['MODEL'];

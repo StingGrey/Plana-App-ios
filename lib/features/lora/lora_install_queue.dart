@@ -16,6 +16,7 @@ class LoraInstallJob {
   const LoraInstallJob({
     required this.versionId,
     required this.name,
+    this.base = 'anima',
     this.status = LoraInstallStatus.queued,
     this.lrId,
     this.message,
@@ -26,6 +27,10 @@ class LoraInstallJob {
   });
 
   final int versionId;
+
+  /// 装进哪个底模的库(`anima` / `krea`)。**入队时定死**:队列跨页面存活,
+  /// 跑起来之后用户可能已经切走模型,现读会把文件装进错的目录。
+  final String base;
 
   /// 展示名(Civitai 上的模型名),进度上给人看的。
   final String name;
@@ -66,6 +71,7 @@ class LoraInstallJob {
   }) => LoraInstallJob(
     versionId: versionId,
     name: name,
+    base: base,
     status: status ?? this.status,
     lrId: lrId ?? this.lrId,
     message: message ?? this.message,
@@ -108,6 +114,7 @@ class LoraInstallQueue extends Notifier<List<LoraInstallJob>> {
   bool enqueue({
     required int versionId,
     required String name,
+    String base = 'anima',
     double? weight,
     double? clipWeight,
   }) {
@@ -122,6 +129,7 @@ class LoraInstallQueue extends Notifier<List<LoraInstallJob>> {
       LoraInstallJob(
         versionId: versionId,
         name: name,
+        base: base,
         weight: weight,
         clipWeight: clipWeight,
       ),
@@ -174,7 +182,7 @@ class LoraInstallQueue extends Notifier<List<LoraInstallJob>> {
           try {
             final res = await ref
                 .read(backendClientProvider)
-                .installLora(sessionId: sid, versionId: vid);
+                .installLora(sessionId: sid, versionId: vid, base: job.base);
             if (res.ok || res.lrId != null) {
               _patch(vid, status: LoraInstallStatus.done, lrId: res.lrId);
             } else {

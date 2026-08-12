@@ -61,6 +61,18 @@ Future<EncodedState> encodeGenerateState(
     });
   }
 
+  final kreaStyleRefs = <Map<String, dynamic>>[];
+  for (final r in s.kreaStyleRefs) {
+    final hash = await putImg(r.image, known: r.imageHash);
+    if (hash == null) continue; // 无图的条目无法参与生成
+    kreaStyleRefs.add({
+      'id': r.id,
+      'name': r.name,
+      'enabled': r.enabled,
+      'image': hash,
+    });
+  }
+
   final i2i = s.img2img;
   final inpaint = s.inpaint;
   final paste = inpaint?.paste;
@@ -96,18 +108,22 @@ Future<EncodedState> encodeGenerateState(
       'loras': [
         for (final l in s.loras)
           if (l.pending == null)
-          {
-            'name': l.name,
-            'displayName': l.displayName,
-            'weight': l.weight,
-            'enabled': l.enabled,
-            if (l.clipWeight != null) 'clipWeight': l.clipWeight,
-            if (l.hasTe != null) 'hasTe': l.hasTe,
-            'triggerWords': l.triggerWords,
-            if (l.previewUrl.isNotEmpty) 'previewUrl': l.previewUrl,
-            'type': l.type,
-          },
+            {
+              'name': l.name,
+              'displayName': l.displayName,
+              'weight': l.weight,
+              'enabled': l.enabled,
+              if (l.clipWeight != null) 'clipWeight': l.clipWeight,
+              if (l.hasTe != null) 'hasTe': l.hasTe,
+              'triggerWords': l.triggerWords,
+              if (l.previewUrl.isNotEmpty) 'previewUrl': l.previewUrl,
+              'type': l.type,
+            },
       ],
+    if (kreaStyleRefs.isNotEmpty) 'kreaStyleRefs': kreaStyleRefs,
+    // 强度无条件写(不跟着图走):同一份 codec 也在存创作页工作区,只在有图时
+    // 存的话,把参考图清空再重启,调好的强度就没了。
+    'kreaStyleRefWeight': s.kreaStyleRefWeight,
     if (i2i != null)
       'img2img': {
         'strength': i2i.strength,
@@ -131,6 +147,10 @@ Future<EncodedState> encodeGenerateState(
       'animaCfg': p.animaCfg,
       'animaSampler': p.animaSampler,
       'animaScheduler': p.animaScheduler,
+      'kreaSteps': p.kreaSteps,
+      'kreaCfg': p.kreaCfg,
+      'kreaSampler': p.kreaSampler,
+      'kreaScheduler': p.kreaScheduler,
       // 整块常驻(不只在 enabled 时写):同一份 codec 也在存创作页工作区,
       // 只存开着的那份,用户关掉开关重启后调好的倍率/强度就没了。
       'hires': {
@@ -256,6 +276,27 @@ Future<GenerateState> decodeGenerateState(
     }
   }
 
+  final kreaStyleRefs = <KreaStyleRefItem>[];
+  if (j['kreaStyleRefs'] is List) {
+    for (final e in j['kreaStyleRefs'] as List) {
+      if (e is! Map) continue;
+      final id = e['id'];
+      if (id is! String) continue;
+      final hash = e['image'] as String?;
+      final bytes = await img(hash);
+      if (bytes == null) continue; // 无图的风格参考无法参与生成
+      kreaStyleRefs.add(
+        KreaStyleRefItem(
+          id: id,
+          name: e['name'] is String ? e['name'] as String : '',
+          enabled: e['enabled'] != false,
+          image: bytes,
+          imageHash: hash,
+        ),
+      );
+    }
+  }
+
   final loras = <ActiveLora>[];
   if (j['loras'] is List) {
     for (final e in j['loras'] as List) {
@@ -270,7 +311,8 @@ Future<GenerateState> decodeGenerateState(
               : name,
           weight: (e['weight'] as num?)?.toDouble() ?? 0.8,
           enabled: e['enabled'] != false,
-          clipWeight: (e['clipWeight'] as num?)?.toDouble(), // 缺省 null=跟随 weight
+          clipWeight: (e['clipWeight'] as num?)
+              ?.toDouble(), // 缺省 null=跟随 weight
           hasTe: e['hasTe'] is bool ? e['hasTe'] as bool : null,
           triggerWords: e['triggerWords'] is List
               ? [
@@ -313,8 +355,7 @@ Future<GenerateState> decodeGenerateState(
         steps: (he['steps'] as num?)?.toInt() ?? hires.steps,
         // 老存档没这键 → 默认「先超分后重绘」(与新建时一致)
         useModel: he['useModel'] != false,
-        model:
-            _enumByName(HiresUpscaler.values, he['model']) ?? hires.model,
+        model: _enumByName(HiresUpscaler.values, he['model']) ?? hires.model,
       );
     }
     params = GenParams(
@@ -341,6 +382,15 @@ Future<GenerateState> decodeGenerateState(
       animaScheduler: e['animaScheduler'] is String
           ? e['animaScheduler'] as String
           : params.animaScheduler,
+      kreaSteps: (e['kreaSteps'] as num?)?.toInt() ?? params.kreaSteps,
+      kreaCfg: (e['kreaCfg'] as num?)?.toDouble() ?? params.kreaCfg,
+      // 2026-08-10 开放采样器之前存下的记录没有这两键,回落到默认的官方配方
+      kreaSampler: e['kreaSampler'] is String
+          ? e['kreaSampler'] as String
+          : params.kreaSampler,
+      kreaScheduler: e['kreaScheduler'] is String
+          ? e['kreaScheduler'] as String
+          : params.kreaScheduler,
       hires: hires,
     );
   }
@@ -403,6 +453,8 @@ Future<GenerateState> decodeGenerateState(
     anlas: (j['anlas'] as num?)?.toInt() ?? 0,
     openPanels: openPanels,
     loras: loras,
+    kreaStyleRefs: kreaStyleRefs,
+    kreaStyleRefWeight: (j['kreaStyleRefWeight'] as num?)?.toDouble() ?? 1.0,
     inpaint: inpaint,
   );
 }

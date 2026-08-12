@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../gen_queue.dart';
-import '../generation_controller.dart';
 
 void showQueueSheet(BuildContext context) {
   showModalBottomSheet<void>(
@@ -19,8 +18,9 @@ class _QueueSheet extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final scheme = context.scheme;
     final q = ref.watch(genQueueProvider);
-    final busy = ref.watch(generationProvider).busy;
-    final paused = q.items.isNotEmpty && !q.active && !busy;
+    // 并行之后「有任务在跑」不再等于「队列被挡住」:排着的项随时可以续,
+    // 只看队列自己是不是在消费。
+    final paused = q.items.isNotEmpty && !q.active;
 
     return SafeArea(
       child: Padding(

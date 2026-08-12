@@ -26,6 +26,7 @@ import '../inpaint/inpaint_ops.dart';
 import '../shell/shell_state.dart';
 import 'bot_request.dart';
 import 'cost.dart';
+import 'gen_jobs.dart';
 import 'gen_modules.dart';
 import 'gen_queue.dart';
 import 'generate_state.dart';
@@ -100,9 +101,51 @@ bool _rejectedOutright(int? status) =>
     status == 405 ||
     status == 429;
 
-final generationProvider = NotifierProvider<GenerationNotifier, GenStatus>(
+/// 生成任务池。**这是唯一的写入方**:任务的增删、进度、选中全在这里。
+final generationProvider = NotifierProvider<GenerationNotifier, GenPool>(
   GenerationNotifier.new,
 );
+
+/// 兼容视图:把「画布正在跟随的那条任务」摊平成并行之前那份 [GenStatus]。
+///
+/// 画布、进度胶囊、底部栏本来就只关心「我正看着的那张跑到哪了」,并行之后这个
+/// 问题的答案就是选中的那条 —— 让它们继续读一份扁平状态,比在每个 widget 里
+/// 各自从池子里捞一遍要稳。**想知道「有没有任务在跑」请读 [generationProvider]
+/// 的 `jobs`**,别拿这里的 `busy`:它只代表被跟随的那条。
+final genStatusProvider = Provider<GenStatus>((ref) {
+  final pool = ref.watch(generationProvider);
+  final j = pool.selected;
+  return j == null ? GenStatus(error: pool.error) : _statusOf(j);
+});
+
+/// 重绘任务的扁平视图 —— 全池最多一条(见 [GenJobKind.inpaint])。
+/// 重绘面板只跟自己这条:后台的普通出图不该把面板的进度和收尾带跑。
+final inpaintStatusProvider = Provider<GenStatus>((ref) {
+  for (final j in ref.watch(generationProvider).jobs) {
+    if (j.kind == GenJobKind.inpaint) return _statusOf(j);
+  }
+  return const GenStatus();
+});
+
+GenStatus _statusOf(GenJob j) => GenStatus(
+  busy: true,
+  total: j.total,
+  width: j.width,
+  height: j.height,
+  step: j.step,
+  preview: j.preview,
+  note: j.note,
+);
+
+/// 同时**在跑**的任务数上限。
+///
+/// bot 模式固定 5:服务端 anima/krea 的本地并发准入也是 5(两边各一份队列),
+/// 再多只是把任务堆在服务端队列里,自己这头还白占内存。
+const kMaxRunningBot = 5;
+
+/// 池子总量上限(在跑 + 等位)。沿用并入前那条队列的 cap:超出就拒收,
+/// 免得手滑连点砸出一串图。
+const kMaxPoolJobs = 20;
 
 /// 生成过程中的一次性非致命提醒(目前只有 LoRA 超上限被丢弃)。
 /// 单独开一个 provider 而不是塞进 [GenStatus]:警告在出图途中到达,而 GenStatus
@@ -119,32 +162,164 @@ class GenNoticeNotifier extends Notifier<String?> {
   void clear() => state = null;
 }
 
-class GenerationNotifier extends Notifier<GenStatus> {
+/// 一条任务的运行时句柄(不进 UI 状态:中止令牌和 Key 槽位对渲染没意义)。
+class _JobRun {
+  _JobRun(this.abort);
+
+  final GenAbort abort;
+
+  /// 服务端任务 id(bot 模式提交成功后才有),取消排队要用。
+  String? taskId;
+
+  /// 占用的并发槽位;直连模式下它同时是「用第几把 Key」。-1 = 还没拿到。
+  int slot = -1;
+}
+
+class GenerationNotifier extends Notifier<GenPool> {
   @override
-  GenStatus build() => const GenStatus();
+  GenPool build() => const GenPool();
 
   DateTime? _lastPush; // 通知节流游标
-  GenAbort? _abort; // 当前生成的中止令牌(仅生成中有效)
+  final _runs = <String, _JobRun>{}; // 每条任务的运行时,键同 GenJob.id
+  var _seq = 0; // 提交序号,只增
+
+  // ---- 并发闸门 ----
+  // 槽位用**下标**而不是计数:直连模式下「第 i 个槽」就是「第 i 把 Key」,
+  // 一把 Key 同时只跑一条 —— NAI 按账号限流,同 Key 并发只会自己打自己。
+  final _busySlots = <int>{};
+  final _waiters = <Completer<void>>[];
 
   bool get _appForeground =>
       WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
 
-  /// 取消进行中的生成:中止当前请求(直连关连接 / bot 停等待),并请求所在批量
-  /// 流程停止,避免中止当前张后循环/队列又续下一张(或重试)。
-  void cancel() {
-    logi('[gen] cancel tapped: busy=${state.busy} abort=${_abort != null}');
-    if (!state.busy) return;
-    ref.read(loopStatusProvider.notifier).stop();
-    ref.read(genQueueProvider.notifier).stopAfterCurrent();
-    _abort?.abort();
+  // ---- 池的读写(只有这几个方法碰 state.jobs)----
+
+  GenJob? _job(String id) {
+    for (final j in state.jobs) {
+      if (j.id == id) return j;
+    }
+    return null;
   }
 
-  /// 用户取消当前张:回到空闲态(不弹错误),静默撤通知;批量流程的收尾归其
-  /// 控制器统一处理。
-  GenOutcome _cancelled() {
-    logi('[gen] cancelled → idle (inFlow=$_inFlow)');
-    state = const GenStatus();
-    if (!_inFlow) LiveProgress.instance.stop();
+  /// 就地改一条任务;任务已经收尾(被移除)时静默丢弃 —— 迟到的进度帧很正常
+  /// (WS 与轮询交错、取消后还在路上的那一帧),不该让它把任务复活。
+  void _patch(String id, GenJob Function(GenJob) f) {
+    final i = state.jobs.indexWhere((j) => j.id == id);
+    if (i < 0) return;
+    final next = [...state.jobs];
+    next[i] = f(next[i]);
+    state = state.copyWith(jobs: next);
+  }
+
+  /// 摘掉一条任务。它正被画布跟随时把跟随一并解除 —— 由调用方决定接下来
+  /// 画布看什么(成功→看成图,失败/取消→回历史图)。
+  void _remove(String id) {
+    final next = [...state.jobs]..removeWhere((j) => j.id == id);
+    final wasSelected = state.selectedId == id;
+    state = state.copyWith(
+      jobs: next,
+      clearSelected: wasSelected,
+      selectedId: wasSelected ? null : state.selectedId,
+    );
+    _runs.remove(id);
+  }
+
+  /// 画布跟随哪条(null = 看成图/历史图)。
+  void select(String? jobId) => state = jobId == null
+      ? state.copyWith(clearSelected: true)
+      : state.copyWith(selectedId: jobId);
+
+  // ---- 并发闸门 ----
+
+  /// 同时在跑的上限。bot 固定 [kMaxRunningBot];直连 = 已存 Key 数
+  /// (见 [naiKeysProvider]:今天只有一把,于是直连仍是一次一张,行为与并行前
+  /// 完全一致;多 Key 落地后这里自动放大)。一把都没存时给 1,让它照常跑到
+  /// 「没有令牌」那个错误上,而不是卡在等位里没有下文。
+  /// [isBot] 由调用方传而不是在这里现读:`generate()` 已经判过一次接入方式,
+  /// 两处各读各的会在冷启动那一小段(authMode 还是 loading)得出不同答案 ——
+  /// 最坏是「按直连提交、按 bot 放行 5 条并发」,正好是不该松的那个方向。
+  Future<int> _runLimit(bool isBot) async {
+    if (isBot) return kMaxRunningBot;
+    try {
+      final keys = await ref.read(naiKeysProvider.future);
+      return keys.isEmpty ? 1 : keys.length;
+    } catch (_) {
+      return 1;
+    }
+  }
+
+  /// 同时能跑几条 —— 循环/队列据此决定**同时投几条**。
+  /// 投多了也不会失控(闸门会拦),但投的数量正好等于并发数时,派发者不用自己
+  /// 维护「等谁跑完再补一条」的逻辑:每个 worker 天然就是一个槽位。
+  Future<int> concurrency() async {
+    final mode = await ref.read(authModeProvider.future);
+    return _runLimit(mode == AuthMode.bot);
+  }
+
+  /// 取一个空槽;满了就排队等别人释放。返回槽位下标,等位期间被取消返回 -1。
+  Future<int> _acquireSlot(int limit, GenAbort abort) async {
+    while (!abort.aborted) {
+      for (var i = 0; i < limit; i++) {
+        if (_busySlots.add(i)) return i;
+      }
+      final w = Completer<void>();
+      _waiters.add(w);
+      // 等位期间被取消也要醒过来,否则这条任务会一直挂着占着池子的名额
+      abort.whenAbort(() {
+        if (!w.isCompleted) w.complete();
+      });
+      await w.future;
+    }
+    return -1;
+  }
+
+  void _releaseSlot(int slot) {
+    if (slot < 0) return;
+    _busySlots.remove(slot);
+    // 唤醒下一个等位的。跳过已完成的:那是等位期间被取消的任务留下的空壳。
+    while (_waiters.isNotEmpty) {
+      final w = _waiters.removeAt(0);
+      if (!w.isCompleted) {
+        w.complete();
+        return;
+      }
+    }
+  }
+
+  // ---- 取消 ----
+
+  /// 取消画布正在跟随的那条(底部栏那颗按钮的语义);没跟随任何一条时取消最新的。
+  /// 同时请求所在批量流程停止,避免中止当前张后循环/队列又续下一张。
+  void cancel() {
+    final id = state.selectedId ?? state.newestFirst.firstOrNull?.id;
+    if (id == null) return;
+    ref.read(loopStatusProvider.notifier).stop();
+    ref.read(genQueueProvider.notifier).stopAfterCurrent();
+    cancelJob(id);
+  }
+
+  /// 取消指定任务(任务卡上的取消入口)。不动循环/队列 —— 那是「停这一条」,
+  /// 不是「别再续了」。
+  void cancelJob(String id) {
+    final run = _runs[id];
+    logi('[gen] cancel job=$id run=${run != null}');
+    if (run == null) return;
+    // 顺手撤掉服务端那条任务。不判「现在是不是在排队」:本地这个判断可能是旧的
+    // (轮询/WS 都有延迟),而服务端对已开跑的任务本来就回 400、我们照单收下。
+    // 不撤的话点了取消也只是本地不等了,NAI 那边照扣点、Modal 那边照占容器。
+    final taskId = run.taskId;
+    if (taskId != null) {
+      unawaited(ref.read(backendClientProvider).cancelTask(taskId));
+    }
+    run.abort.abort();
+  }
+
+  /// 用户取消一条:摘掉它(不弹错误)。池子空了才撤通知 —— 还有别的在跑时
+  /// 通知得留着,批量流程的收尾仍归其控制器。
+  GenOutcome _cancelled(String jobId) {
+    logi('[gen] cancelled job=$jobId → 剩 ${state.jobs.length - 1} 条');
+    _remove(jobId);
+    if (state.jobs.isEmpty && !_inFlow) LiveProgress.instance.stop();
     return GenOutcome.cancelled;
   }
 
@@ -168,10 +343,18 @@ class GenerationNotifier extends Notifier<GenStatus> {
   /// [using] 非空时用该快照跑(图库「重新生成」按本图参数复现),不动用户当前编辑器状态。
   /// 返回本张的结局:循环据此决定续跑/中止,队列据此决定能不能安全重试。
   Future<GenOutcome> generate({GenerateState? using}) async {
-    if (state.busy) return GenOutcome.notCharged;
+    // 池满拒收。守卫与建卡之间**不能有 await**:按钮不再禁用,连点两下会各自
+    // 走一遍这里,中间插一个 await 就等于没守。
+    if (state.jobs.length >= kMaxPoolJobs) {
+      ref
+          .read(genNoticeProvider.notifier)
+          .show('同时最多 $kMaxPoolJobs 条任务,等前面的出完再提交');
+      return GenOutcome.notCharged;
+    }
 
     // 面板发起(using == null)按模块配置剥离隐藏模块的数据;
     // 快照复跑(图库重新生成等)忠实执行,不受当前模块配置影响。
+    // 快照在这一刻定死:之后随便改编辑器都不影响已提交的这条。
     final GenerateState s =
         using ??
         stripHiddenModules(
@@ -179,71 +362,128 @@ class GenerationNotifier extends Notifier<GenStatus> {
           ref.read(genModulesProvider).value ?? const GenModuleSettings(),
         );
 
-    // 守卫与置位之间不能有 await:生成按钮的禁用只看 state.busy,而冷启动读
-    // secure storage 要几十毫秒,那段时间按钮仍是可点的 —— 双击会让两张一起
-    // 跑、扣两次点。这里同步置位;各失败路径写 error 态时 busy 随之清掉。
-    state = GenStatus(
-      busy: true,
-      total: s.params.steps,
+    final isBot = ref.read(authModeProvider).value == AuthMode.bot;
+
+    // 前置拒收:压根不该受理的,不挂占位卡 —— 挂一张再立刻撤掉只会闪一下。
+    if (isModalModel(s.params.model)) {
+      final modalName = isKreaModel(s.params.model) ? 'Krea 2' : 'Anima';
+      // 服务端只认文生图,重绘/图生图快照(图库重绘、1.5× 放大)直接拦。
+      if (s.inpaint != null || s.img2img?.image != null) {
+        return _reject('$modalName 不支持重绘/图生图');
+      }
+      // Anima / Krea 走服务端 Modal 后端,直连 token 模式没有服务器会话,无从代理。
+      if (!isBot) {
+        return _reject('$modalName 仅 Bot 授权模式可用,请在「我的」页切换接入方式');
+      }
+    }
+
+    // 池子空着时这条才是「这一批的头一条」—— 只有它会把页面拽去图库,见下方。
+    final firstOfBatch = state.jobs.isEmpty;
+
+    // 挂占位卡:等位/拼载荷都可能要几秒,这段时间也得让用户看见任务已受理。
+    final job = GenJob(
+      id: 'job${_seq++}',
+      kind: s.inpaint != null ? GenJobKind.inpaint : GenJobKind.normal,
+      stage: GenJobStage.waiting,
       width: s.params.width,
       height: s.params.height,
+      seq: _seq,
+      total: s.params.activeSteps,
+      // 已经有别的在跑 → 这条多半要等位,先说清楚是在等而不是在准备
+      note: state.jobs.isEmpty ? null : '等待中',
+    );
+    final run = _JobRun(GenAbort());
+    _runs[job.id] = run;
+    state = state.copyWith(
+      jobs: [...state.jobs, job],
+      selectedId: job.id, // 新提交的这条接管画布(与并行前「点了就看着它」一致)
+      clearError: true,
     );
 
-    // Anima:服务端只认文生图,重绘/图生图快照(图库重绘、1.5× 放大)直接拦。
-    if (isAnimaModel(s.params.model) &&
-        (s.inpaint != null || s.img2img?.image != null)) {
-      state = const GenStatus(error: 'Anima 不支持重绘/图生图');
-      return GenOutcome.notCharged;
+    // 只有「这一批的头一条」才把页面拽去图库看预览。并行之后连点是常态,
+    // 每点一次都强拉一次等于把人按在图库页上 —— 想连投几条再回创作页改参数
+    // 都做不到。池子空了之后的下一条重新算作头一条,又会切一次。
+    // 循环/队列续张同样不强拉(循环开始时已切过一次,期间允许自由切页,真机反馈)。
+    if (firstOfBatch && !_inFlow) {
+      ref.read(shellIndexProvider.notifier).select(kTabGallery);
     }
 
-    // bot 模式:走后端代理生成(提交任务 → 轮询 → base64 入库)
-    if (ref.read(authModeProvider).value == AuthMode.bot) {
-      return _generateViaBot(s);
+    try {
+      // 等位:bot 5 条 / 直连按 Key 数(见 _runLimit)
+      run.slot = await _acquireSlot(await _runLimit(isBot), run.abort);
+      if (run.slot < 0) return _cancelled(job.id);
+      _patch(
+        job.id,
+        (j) => j.copyWith(stage: GenJobStage.preparing, clearNote: true),
+      );
+      return isBot
+          ? await _generateViaBot(s, job.id, run)
+          : await _generateDirect(s, job.id, run);
+    } finally {
+      _releaseSlot(run.slot);
+      _remove(job.id); // 各分支正常都已摘掉,这里兜住异常路径不留幽灵卡
     }
+  }
 
-    // Anima 走服务端 Modal 后端,直连 token 模式没有服务器会话,无从代理。
-    if (isAnimaModel(s.params.model)) {
-      state = const GenStatus(error: 'Anima 仅 Bot 授权模式可用,请在「我的」页切换接入方式');
-      return GenOutcome.notCharged;
+  /// 还没受理就退回:写池级错误(创作页那条统一提示),不挂卡。
+  GenOutcome _reject(String msg) {
+    state = state.copyWith(error: msg);
+    return GenOutcome.notCharged;
+  }
+
+  /// 一条任务失败:摘掉它并把错误交出去。
+  ///
+  /// 全停了才写池级错误(创作页那条常驻提示);还有别的在跑时只弹一条 snack ——
+  /// 后台某一条失败不该把正在看的那条的画面换成错误页。
+  GenOutcome _fail(String jobId, String msg, GenOutcome outcome) {
+    _remove(jobId);
+    if (state.jobs.isEmpty) {
+      state = state.copyWith(error: msg);
+    } else {
+      ref
+          .read(genNoticeProvider.notifier)
+          .show(msg == 'no-token' ? '未设置 NovelAI 令牌' : msg);
     }
+    if (!_inFlow) _endIsland(success: false);
+    return outcome;
+  }
 
+  /// 直连(token 模式)生成。[run] 的槽位下标同时是「用第几把 Key」。
+  Future<GenOutcome> _generateDirect(
+    GenerateState s,
+    String jobId,
+    _JobRun run,
+  ) async {
     // 等 storage 读完再判(懒加载 AsyncNotifier 冷启动首读是 loading,
     // 直接取 .value 会把「还没读出来」误判成「没配置」)。
     // 这段在主 try 之外:读失败(Keystore 异常等)若不接住会成为未捕获的 async
     // 异常 —— 发起生成的调用点都不 await,用户只会看到「点了没反应」。
-    final String? token;
+    final List<String> keys;
     try {
-      token = await ref.read(tokenProvider.future);
+      keys = await ref.read(naiKeysProvider.future);
     } catch (e) {
-      state = GenStatus(error: '读取令牌失败:$e');
-      return GenOutcome.notCharged;
+      return _fail(jobId, '读取令牌失败:$e', GenOutcome.notCharged);
     }
-    if (token == null || token.isEmpty) {
-      state = const GenStatus(error: 'no-token'); // 停在创作页,弹「去设置」
-      return GenOutcome.notCharged;
+    if (keys.isEmpty) {
+      return _fail(jobId, 'no-token', GenOutcome.notCharged); // 弹「去设置」
     }
+    // 槽位下标即 Key 下标:一把 Key 同时只跑一条(NAI 按账号限流)。
+    // Key 数在等位之后变少(用户中途删了一把)时兜到最后一把,不越界。
+    final token = keys[run.slot.clamp(0, keys.length - 1)];
 
     final total = s.params.steps;
 
-    // 点生成即切图库,边生成边看逐步预览;循环续张不再强拉
-    // (循环开始时已切过一次,期间允许用户自由切页,真机反馈)
-    if (!_inFlow) ref.read(shellIndexProvider.notifier).select(kTabGallery);
-    // 画布视角回到生成预览(对齐 web:generate 起点 viewingHistory=false)
-    ref.read(galleryViewGenProvider.notifier).set(true);
+    final abort = run.abort;
 
-    final abort = GenAbort();
-    _abort = abort;
-
-    // 后台进度:首张开前台服务;循环/队列续张就地刷新(不重拉服务,避免岛一张一闪)。
+    // 后台进度:首张开前台服务;续张就地刷新(不重拉服务,避免岛一张一闪)。
     // 传 total(采样步数):从「准备」起就是确定态进度条,立即上岛,不必等步数。
     await _beginIsland(total);
 
     ({Map<String, dynamic> body, int seed})? built;
 
     Future<void> finish(Uint8List bytes, int seed) async {
-      await _storeResult(s, bytes, seed);
+      await _storeResult(s, bytes, seed, jobId: jobId);
       _recordKeyGen(s); // 直连不经过后端,统计在本机落账(bot 由服务端记)
-      state = const GenStatus();
       unawaited(ref.read(anlasProvider.notifier).refresh()); // 点数已扣
       // 循环期间通知由循环控制器统一收尾(保持挂机进度连续、只弹一条汇总)
       if (!_inFlow) {
@@ -273,7 +513,7 @@ class GenerationNotifier extends Notifier<GenStatus> {
           img2img: img2img,
           charRefs: charRefs,
         );
-        if (abort.aborted) return _cancelled();
+        if (abort.aborted) return _cancelled(jobId);
         Uint8List? last;
         await for (final f
             in ref
@@ -285,22 +525,24 @@ class GenerationNotifier extends Notifier<GenStatus> {
                 )) {
           last = f.bytes;
           final step = f.isFinal ? total : (f.step ?? 0);
-          state = GenStatus(
-            busy: true,
-            total: total,
-            width: s.params.width,
-            height: s.params.height,
-            step: step,
-            preview: f.bytes,
+          _patch(
+            jobId,
+            (j) => j.copyWith(
+              stage: GenJobStage.running,
+              step: step,
+              total: total,
+              preview: f.bytes,
+              clearNote: true,
+            ),
           );
-          _pushProgress(step, total);
+          _pushProgress();
           if (f.isFinal) break;
         }
         if (last == null) throw NaiException('未收到图片数据');
         await finish(last, built.seed);
         return GenOutcome.ok;
       } on NaiException catch (e) {
-        if (abort.aborted) return _cancelled();
+        if (abort.aborted) return _cancelled(jobId);
         logd('[gen] NaiException status=${e.status} ${e.message}');
         // 流式端点不可用(404/405 = 请求没被受理,未扣点)→ 非流式回退
         if ((e.status == 404 || e.status == 405) && built != null) {
@@ -312,36 +554,38 @@ class GenerationNotifier extends Notifier<GenStatus> {
             return GenOutcome.ok;
           } on NaiException catch (e2) {
             logd('[gen] fallback failed status=${e2.status} ${e2.message}');
-            state = GenStatus(error: e2.message);
-            if (!_inFlow) _endIsland(success: false);
             // 非流式回退已把请求发出去了,失败原因未知 → 按最坏情况算
-            return GenOutcome.maybeCharged;
+            return _fail(jobId, e2.message, GenOutcome.maybeCharged);
           }
         }
-        if (await _wait429(e.status, attempt429)) {
+        if (await _wait429(jobId, e.status, attempt429)) {
           attempt429++;
           continue;
         }
-        state = GenStatus(error: e.message);
-        if (!_inFlow) _endIsland(success: false);
         // built == null 说明载荷还没拼出来(vibe 编码/图片预处理阶段就挂了),
         // 生成请求根本没发出;否则只认服务端明确拒收的状态码。
-        return built == null || _rejectedOutright(e.status)
-            ? GenOutcome.notCharged
-            : GenOutcome.maybeCharged;
+        return _fail(
+          jobId,
+          e.message,
+          built == null || _rejectedOutright(e.status)
+              ? GenOutcome.notCharged
+              : GenOutcome.maybeCharged,
+        );
       } catch (e) {
-        if (abort.aborted) return _cancelled();
+        if (abort.aborted) return _cancelled(jobId);
         logd('[gen] $e');
-        state = GenStatus(error: '生成失败:$e');
-        if (!_inFlow) _endIsland(success: false);
-        return built == null ? GenOutcome.notCharged : GenOutcome.maybeCharged;
+        return _fail(
+          jobId,
+          '生成失败:$e',
+          built == null ? GenOutcome.notCharged : GenOutcome.maybeCharged,
+        );
       }
     }
   }
 
   /// 限流(429)且开着自动重试且还有机会:提示 + 按设置的固定间隔等待,
   /// 返回 true 让调用方重跑。429 = 请求被拒,未扣点,重试不花钱。
-  Future<bool> _wait429(int? status, int attempt) async {
+  Future<bool> _wait429(String jobId, int? status, int attempt) async {
     if (status != 429) return false;
     final gs = ref.read(genSettingsProvider).value ?? const GenSettings();
     if (!gs.retryOn429 || attempt >= gs.retryCount) return false;
@@ -349,12 +593,9 @@ class GenerationNotifier extends Notifier<GenStatus> {
     final label = secs > 0
         ? '限流 · ${secs}s 后重试(${attempt + 1}/${gs.retryCount})'
         : '限流 · 立即重试(${attempt + 1}/${gs.retryCount})';
-    state = GenStatus(
-      busy: true,
-      total: state.total,
-      width: state.width,
-      height: state.height,
-      note: label,
+    _patch(
+      jobId,
+      (j) => j.copyWith(stage: GenJobStage.preparing, step: 0, note: label),
     );
     _lastPush = null; // 绕过通知节流,提示立即可见
     _pushIndeterminate(label, '限流');
@@ -400,9 +641,25 @@ class GenerationNotifier extends Notifier<GenStatus> {
     return '';
   }
 
+  /// 通知里的汇总口径。
+  ///
+  /// Android 前台服务只该有**一条**通知,所以多条在跑时把步数各自求和合成一条
+  /// 进度条(3 张 28 步就是 0/84);只有一条时它就是那条自己的进度。
+  ({int step, int total, int count}) get _agg {
+    var step = 0, total = 0;
+    for (final j in state.jobs) {
+      step += j.step;
+      total += j.total;
+    }
+    return (step: step, total: total, count: state.jobs.length);
+  }
+
   /// 进度推到通知,≤~1/s 节流(系统对通知更新有限流,终帧必推)。
-  void _pushProgress(int step, int total) {
+  void _pushProgress() {
     if (!_notify) return;
+    final a = _agg;
+    final step = a.step;
+    final total = a.total;
     final finalish = total > 0 && step >= total;
     final now = DateTime.now();
     if (!finalish &&
@@ -412,23 +669,27 @@ class GenerationNotifier extends Notifier<GenStatus> {
     }
     _lastPush = now;
     final ls = _flowShort;
+    // 多条在跑时标题给张数(挂机时「3 张在跑」比「37/84」有用得多),
+    // 状态栏胶囊同理;批量流程里仍优先显示流程自己的「第几/共几」。
+    final many = a.count > 1;
+    final short = ls.isNotEmpty ? ls : (many ? '${a.count} 张' : '$step/$total');
     if (step <= 0) {
       // 还没步数也走确定态 0/total:保持同一条可上岛的进度条,不在准备/首帧
       // 之间闪成转圈再变回来。
       LiveProgress.instance.update(
         step: 0,
         total: total,
-        title: '生成中…',
+        title: many ? '生成中 · ${a.count} 张' : '生成中…',
         text: _flowNote,
-        short: ls.isEmpty ? '0/$total' : ls,
+        short: short,
       );
     } else {
       LiveProgress.instance.update(
         step: step,
         total: total,
-        title: '生成中 $step/$total',
+        title: many ? '生成中 · ${a.count} 张 ($step/$total)' : '生成中 $step/$total',
         text: _flowNote,
-        short: ls.isEmpty ? '$step/$total' : ls,
+        short: short,
       );
     }
   }
@@ -438,6 +699,12 @@ class GenerationNotifier extends Notifier<GenStatus> {
   /// 一张一闪;就地 update 才是连续的一条。[total]<=0 走不确定态(bot 无步数)。
   Future<void> _beginIsland(int total) async {
     if (!_notify) return;
+    // 已经有别的任务在跑:通知归汇总管,别把它打回「准备生成…」。
+    if (state.jobs.length > 1) {
+      _lastPush = null;
+      _pushProgress();
+      return;
+    }
     _lastPush = null;
     // 通知/前台服务是旁路能力,平台通道抛异常绝不能连累生成本身 ——
     // 这里在主 try 之外调用,不接住就会变成未捕获的 async 异常。
@@ -472,6 +739,12 @@ class GenerationNotifier extends Notifier<GenStatus> {
   /// 后台留一条可点按回应用的。
   void _endIsland({required bool success}) {
     if (!_notify) return;
+    // 还有别的在跑:这条只是先出来的一张,通知得留给剩下的那些。
+    if (state.jobs.isNotEmpty) {
+      _lastPush = null;
+      _pushProgress();
+      return;
+    }
     LiveProgress.instance.finish(
       title: success ? '生成完成' : '生成失败',
       text: _appForeground ? '' : (success ? '点按查看' : '点按回到应用'),
@@ -482,7 +755,11 @@ class GenerationNotifier extends Notifier<GenStatus> {
 
   /// bot 模式:后端代理生成。编码 vibe(缓存)→ 提交任务 → WS 流式(逐步预览)
   /// + 轮询兜底 → base64 入库 → 刷新点数。CR / 图生图与直连同一套离线处理。
-  Future<GenOutcome> _generateViaBot(GenerateState s) async {
+  Future<GenOutcome> _generateViaBot(
+    GenerateState s,
+    String jobId,
+    _JobRun run,
+  ) async {
     // 同 generate():await future,避免冷启动 loading 态误报未授权/未配置。
     // 同样在主 try 之外,读失败要就地转成错误态,不能让异常逃出去。
     final BotSession? session;
@@ -491,31 +768,17 @@ class GenerationNotifier extends Notifier<GenStatus> {
       session = await ref.read(botSessionProvider.future);
       base = await ref.read(backendBaseProvider.future);
     } catch (e) {
-      state = GenStatus(error: '读取授权信息失败:$e');
-      return GenOutcome.notCharged;
+      return _fail(jobId, '读取授权信息失败:$e', GenOutcome.notCharged);
     }
     if (session == null) {
-      state = const GenStatus(error: '尚未 Bot 授权,请在「我的」页完成授权');
-      return GenOutcome.notCharged;
+      return _fail(jobId, '尚未 Bot 授权,请在「我的」页完成授权', GenOutcome.notCharged);
     }
     if (base.isEmpty) {
-      state = const GenStatus(error: '未配置后端地址,请在「我的」页或授权页填写');
-      return GenOutcome.notCharged;
+      return _fail(jobId, '未配置后端地址,请在「我的」页或授权页填写', GenOutcome.notCharged);
     }
 
-    final total = s.params.steps;
-    // 同 generate():循环续张不强拉图库
-    if (!_inFlow) ref.read(shellIndexProvider.notifier).select(kTabGallery);
-    ref.read(galleryViewGenProvider.notifier).set(true);
-    state = GenStatus(
-      busy: true,
-      total: total,
-      width: s.params.width,
-      height: s.params.height,
-    );
-
-    final abort = GenAbort();
-    _abort = abort;
+    final total = s.params.activeSteps;
+    final abort = run.abort;
 
     // bot 无逐步步数,走不确定态;续张同样就地刷新不重拉服务。
     await _beginIsland(0);
@@ -534,6 +797,7 @@ class GenerationNotifier extends Notifier<GenStatus> {
         final img2img = await _processImg2Img(s);
         final charRefs = await _processCharRefs(s);
         final prepared = await _prepareVibes(s);
+        final styleRefs = await _processKreaStyleRefs(s);
         final (sp, presetId) = await _applyPreset(s);
         final params = buildBotParams(
           sp,
@@ -549,19 +813,35 @@ class GenerationNotifier extends Notifier<GenStatus> {
                 infoExtracted: v.infoExtracted,
               ),
           ],
+          kreaStyleRefs: styleRefs,
         );
 
-        if (abort.aborted) return _cancelled();
+        if (abort.aborted) return _cancelled(jobId);
         final sub = await client.botGenerate(
           sessionId: session.sessionId,
           params: params,
-          // anima → 服务端 Modal ComfyUI 后端;任务表/WS 通道与 NAI 共用
-          imageBackend: isAnimaModel(s.params.model) ? 'anima' : 'novelai',
+          // anima / krea → 服务端 Modal ComfyUI 后端(共用同一条队列与 WS 通道,
+          // 任务表也与 NAI 共用);两者的参数各进自己的 *_extra。
+          imageBackend: switch (providerOfModel(s.params.model)) {
+            GenProvider.anima => 'anima',
+            GenProvider.krea => 'krea',
+            GenProvider.nai => 'novelai',
+          },
         );
         if (!sub.success || sub.taskId == null || sub.taskId!.isEmpty) {
           throw BackendException(sub.message.isEmpty ? '任务提交失败' : sub.message);
         }
         submitted = true;
+        run.taskId = sub.taskId; // 供 cancelJob() 撤单
+        _patch(jobId, (j) => j.copyWith(taskId: sub.taskId));
+
+        // 提交在路上时点的取消:那会儿 taskId 还是 null,cancelJob 没东西可撤,
+        // 而任务其实已经在服务端建好了 —— 不在这补一刀,它会照常排队、照常出图、
+        // 照常收钱,而 app 这边显示的是「已取消」。
+        if (abort.aborted) {
+          unawaited(client.cancelTask(sub.taskId!));
+          return _cancelled(jobId);
+        }
 
         // 流式:WS 逐步预览 + 轮询兜底
         final bytes = await streamBotTask(
@@ -571,48 +851,45 @@ class GenerationNotifier extends Notifier<GenStatus> {
           client: client,
           onProgress: (step, tot, preview) {
             final t = tot > 0 ? tot : total;
-            state = GenStatus(
-              busy: true,
-              total: t,
-              width: s.params.width,
-              height: s.params.height,
-              step: step,
-              preview: preview ?? state.preview,
+            _patch(
+              jobId,
+              (j) => j.copyWith(
+                stage: GenJobStage.running,
+                step: step,
+                total: t,
+                preview: preview,
+                clearNote: true,
+              ),
             );
-            _pushProgress(step, t);
+            _pushProgress();
           },
           onQueue: (pos) {
             // 轮询兜底可能晚于 WS 进度到达:已在出图就忽略迟到的排队消息
-            if (state.step > 0) return;
-            // 文案压到最短:这串要塞进重绘面板那条窄 CTA(实测会顶出界)
-            final text = pos > 0 ? '排队 · 第 $pos' : '排队中';
-            state = GenStatus(
-              busy: true,
-              total: total,
-              width: s.params.width,
-              height: s.params.height,
-              note: text,
+            if ((_job(jobId)?.step ?? 0) > 0) return;
+            // 位次用 `#N` 而不是「第 N」:与 web 的状态条同一种写法,也短 ——
+            // 这串要塞进重绘面板那条窄 CTA(实测「排队 · 第 12」会顶出界),
+            // 状态栏胶囊那格更只装得下两三个字符。
+            final text = pos > 0 ? '排队 #$pos' : '排队中';
+            _patch(
+              jobId,
+              (j) => j.copyWith(stage: GenJobStage.queued, note: text),
             );
-            _pushIndeterminate(text, pos > 0 ? '排队$pos' : '排队');
+            _pushIndeterminate(text, pos > 0 ? '#$pos' : '排队');
           },
           onWarning: (msg) => ref.read(genNoticeProvider.notifier).show(msg),
           onStage: (note) {
             // anima Modal 冷启动等特殊阶段:出图前以文案示意
-            if (state.step > 0) return;
-            state = GenStatus(
-              busy: true,
-              total: total,
-              width: s.params.width,
-              height: s.params.height,
-              note: note,
+            if ((_job(jobId)?.step ?? 0) > 0) return;
+            _patch(
+              jobId,
+              (j) => j.copyWith(stage: GenJobStage.starting, note: note),
             );
             _pushIndeterminate(note, '生成中');
           },
           abort: abort,
         );
 
-        await _storeResult(s, bytes, seed);
-        state = const GenStatus();
+        await _storeResult(s, bytes, seed, jobId: jobId);
         unawaited(
           ref.read(anlasProvider.notifier).refresh(),
         ); // 生成后刷新点数(对齐 web)
@@ -622,24 +899,28 @@ class GenerationNotifier extends Notifier<GenStatus> {
         }
         return GenOutcome.ok;
       } on BackendException catch (e) {
-        if (abort.aborted) return _cancelled();
-        if (await _wait429(e.status, attempt429)) {
+        if (abort.aborted) return _cancelled(jobId);
+        if (await _wait429(jobId, e.status, attempt429)) {
           attempt429++;
           continue;
         }
         logi('[gen/bot] 失败: ${e.message} (submitted=$submitted)');
-        state = GenStatus(error: e.message);
-        if (!_inFlow) _endIsland(success: false);
         // 任务已提交成功(拿到 taskId)之后再失败,服务端很可能已经开跑并计费
-        return !submitted || _rejectedOutright(e.status)
-            ? GenOutcome.notCharged
-            : GenOutcome.maybeCharged;
+        return _fail(
+          jobId,
+          e.message,
+          !submitted || _rejectedOutright(e.status)
+              ? GenOutcome.notCharged
+              : GenOutcome.maybeCharged,
+        );
       } catch (e) {
-        if (abort.aborted) return _cancelled();
+        if (abort.aborted) return _cancelled(jobId);
         logi('[gen/bot] 失败: $e (submitted=$submitted)');
-        state = GenStatus(error: '生成失败:$e');
-        if (!_inFlow) _endIsland(success: false);
-        return submitted ? GenOutcome.maybeCharged : GenOutcome.notCharged;
+        return _fail(
+          jobId,
+          '生成失败:$e',
+          submitted ? GenOutcome.maybeCharged : GenOutcome.notCharged,
+        );
       }
     }
   }
@@ -720,7 +1001,12 @@ class GenerationNotifier extends Notifier<GenStatus> {
 
   /// 结果入库(直连/bot 共用):局部重绘先把结果贴回原图,
   /// 重绘任务统一打「重绘」角标;快照原样入库供「重新生成」复现。
-  Future<void> _storeResult(GenerateState s, Uint8List bytes, int seed) async {
+  Future<void> _storeResult(
+    GenerateState s,
+    Uint8List bytes,
+    int seed, {
+    required String jobId,
+  }) async {
     final job = s.inpaint;
     var out = bytes;
     var w = s.params.width;
@@ -745,6 +1031,11 @@ class GenerationNotifier extends Notifier<GenStatus> {
         logd('[gen] pasteBack failed: $e'); // 贴回失败退化为子图入库
       }
     }
+    // 画布正跟着这条 → 出图后把画布交给成图;跟着别的(或在看历史)→ 只前插、
+    // **不夺焦点**。并行之后这条最要紧:后台某一张出完就把你正看着的画面换掉,
+    // 比不显示还糟。
+    final followed = state.selectedId == jobId;
+    _remove(jobId);
     ref
         .read(galleryProvider.notifier)
         .addResult(
@@ -754,6 +1045,7 @@ class GenerationNotifier extends Notifier<GenStatus> {
           seed: seed,
           badge: job != null ? ResultBadge.inpaint : ResultBadge.none,
           input: s, // 参数快照,供图库「重新生成」按本图参数复现
+          select: followed,
         );
     // 库来源的 vibe 回写「最近使用」(fire-and-forget,失败无害)
     final usedVibeIds = {
@@ -773,6 +1065,23 @@ class GenerationNotifier extends Notifier<GenStatus> {
         ref.read(charLibraryProvider.notifier).markUsed(usedCharRefIds),
       );
     }
+  }
+
+  /// Krea 风格参考:每张启用的下采样成 JPEG base64。非 krea 模型返回空
+  /// (数据本身留在工作区,切回来还在;剥离层也会先把不可见模块的清掉)。
+  Future<List<String>> _processKreaStyleRefs(GenerateState s) async {
+    if (!isKreaModel(s.params.model)) return const [];
+    final refs = s.activeKreaStyleRefs;
+    if (refs.isEmpty) return const [];
+    final out = <String>[];
+    for (final r in refs) {
+      final jpg = await styleRefResizeJpg(
+        r.image!,
+        maxDim: kKreaStyleRefMaxDim,
+      );
+      out.add(base64Encode(jpg));
+    }
+    return out;
   }
 
   /// 角色参考:每张启用且有图的 contain 处理成 PNG base64(无编码调用、免 Anlas)。
@@ -826,6 +1135,6 @@ class GenerationNotifier extends Notifier<GenStatus> {
   }
 
   void clearError() {
-    if (state.error != null) state = const GenStatus();
+    if (state.error != null) state = state.copyWith(clearError: true);
   }
 }

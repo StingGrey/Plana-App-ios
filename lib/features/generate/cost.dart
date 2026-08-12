@@ -8,7 +8,7 @@ import 'models.dart';
 /// 每张 +5(两者免费档也照收;CR 仅 4.5 模型实际下发,故按模型计费)。
 int estimateCost(GenerateState s, {required bool isOpus}) {
   final p = s.params;
-  if (isAnimaModel(p.model)) return 0; // Anima 走 Modal 后端,不扣 Anlas
+  if (isModalModel(p.model)) return 0; // Anima / Krea 走 Modal 后端,不扣 Anlas
   final pixels = p.width * p.height;
   final free = isOpus && p.steps <= 28 && pixels <= 1048576;
   var baseCost = max(2, (5.773e-7 * pixels * (p.steps + 5)).ceil());
@@ -30,7 +30,7 @@ int estimateInpaintCost(
   required double strength,
 }) {
   final p = s.params;
-  if (isAnimaModel(p.model)) return 0; // Anima 走 Modal 后端,不扣 Anlas
+  if (isModalModel(p.model)) return 0; // Anima / Krea 走 Modal 后端,不扣 Anlas
   final pixels = sendW * sendH;
   final free = isOpus && p.steps <= 28 && pixels <= 1048576;
   var baseCost = max(2, (5.773e-7 * pixels * (p.steps + 5)).ceil());

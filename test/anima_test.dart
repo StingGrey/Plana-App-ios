@@ -28,18 +28,51 @@ void main() {
     expect(animaTierOf('Anima Base'), 'base');
   });
 
+  // 非蒸馏两档 2026-08-09 随 web 由 28 提到 36(官方模型卡 30-50 步)。
   test('档位默认值对齐 web ANIMA_TIER_DEFAULTS', () {
     final t = animaTierDefaults('turbo');
     expect(
       (t.steps, t.cfg, t.sampler, t.scheduler),
       (12, 1.0, 'euler', 'simple'),
     );
-    final a = animaTierDefaults('aesthetic');
+    for (final tier in ['aesthetic', 'base']) {
+      final d = animaTierDefaults(tier);
+      expect(
+        (d.steps, d.cfg, d.sampler, d.scheduler),
+        (36, 4.5, 'er_sde', 'simple'),
+        reason: tier,
+      );
+    }
+    // 2.9B 社区层扩展版:这组是模型作者给的配方,**不是**照抄上面两档 ——
+    // simple 不在他给的调度器列表里,所以这档单独配
+    final b = animaTierDefaults('beta');
     expect(
-      (a.steps, a.cfg, a.sampler, a.scheduler),
-      (28, 4.5, 'er_sde', 'simple'),
+      (b.steps, b.cfg, b.sampler, b.scheduler),
+      (32, 4.0, 'euler', 'sgm_uniform'),
     );
-    expect(animaTierDefaults('base').steps, 28);
+  });
+
+  test('四档模型:展示名 ↔ 档位串', () {
+    expect(animaModels, hasLength(4));
+    expect(animaTierOf('Anima Turbo'), 'turbo');
+    expect(animaTierOf('Anima Aesthetic'), 'aesthetic');
+    expect(animaTierOf('Anima Base'), 'base');
+    expect(animaTierOf('Anima 2.9B Beta'), 'beta');
+    // 认不出的一律回落 turbo(与服务端 _ANIMA_TIER_UNETS 的兜底同向)
+    expect(animaTierOf('Anima 什么档'), 'turbo');
+    // 名字带数字也得照样归到 anima 父类
+    expect(providerOfModel('Anima 2.9B Beta'), GenProvider.anima);
+    // 每一档都要有副标题:弹层缺一行会显得那档没配好
+    for (final m in animaModels) {
+      expect(modelDescriptions[m], isNotNull, reason: m);
+    }
+  });
+
+  test('采样器/调度器随 2.9B 补的两项在表内', () {
+    expect(animaSamplers.map((o) => o.id), contains('res_multistep'));
+    expect(animaSchedulers.map((o) => o.id), contains('linear_quadratic'));
+    // 表是全档共用的(服务端白名单也是一份),官方三档也会看到这两项
+    expect(animaSamplers.map((o) => o.id), contains('er_sde'));
   });
 
   test('anima 下 NAI 模块全部不可见,数据整组剥离', () {

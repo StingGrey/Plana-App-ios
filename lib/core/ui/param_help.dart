@@ -109,7 +109,100 @@ abstract final class Help {
         '💡 实际效果可能因图而异，建议多尝试',
   );
 
-  // ---- LoRA(anima) ----
+  // ---- 采样(anima)----
+  // 与 NAI 那套(steps / cfg / sampler / noiseSchedule)是两份独立文案:
+  // 取值区间、默认值、各选项的性格全都不同,共用一份只会两头都不准。
+
+  static const animaSteps = ParamHelp(
+    '采样步数 (Steps)',
+    '推荐区间随模型档切换:\n'
+        '· Turbo 档: 8-12,默认 12。这一档往上加不会更好看\n'
+        '· Aesthetic / Base 档: 30-50,默认 36。想要更精细可以往上调\n'
+        '💡 切换模型档位会自动套用该档的推荐参数',
+  );
+
+  static const animaCfg = ParamHelp(
+    '提示词引导强度 (CFG)',
+    '控制画面对提示词的贴合程度:\n'
+        '· Turbo 档: 固定 1.0,调高会崩。这一档「排除内容」不生效\n'
+        '· Base 档: 4-5,默认 4.5\n'
+        '· Aesthetic 档: 也吃 4-5,调到 3 左右往往更好看\n'
+        '💡 调高更听话但容易生硬,调低更自由但可能跑题',
+  );
+
+  static const animaSampler = ParamHelp(
+    '采样算法 (Sampler)',
+    '官方点名的四个，各有性格:\n'
+        '· ER SDE — 中性、平涂、线条锐利(非 Turbo 档默认)\n'
+        '· Euler Ancestral — 更柔、线条更细，CFG 推高也不易糊\n'
+        '· DPM++ 2M SDE — 接近 ER SDE，但变化更多\n'
+        '· Euler — 基础款，比 ER SDE 稍有发挥(Turbo 档默认)\n'
+        '· UniPC / UniPC BH2 — 主打少步数，还没试过，效果自己看\n'
+        '💡 Turbo 档 Euler + Simple 最稳',
+  );
+
+  static const animaScheduler = ParamHelp(
+    '噪声调度 (Scheduler)',
+    '决定每步的噪声衰减节奏。\n'
+        '· simple — Turbo 默认搭档\n'
+        '· karras — 细节强化,配 DPM++ 系\n'
+        '· normal / sgm_uniform / beta — 各有质感\n'
+        '💡 改了 Sampler 后再相应调 Scheduler',
+  );
+
+  // ---- 采样(krea)----
+
+  static const kreaSteps = ParamHelp(
+    '采样步数 (Steps)',
+    '推荐区间随模型档切换:\n'
+        '· Turbo 档: 8 步,往上加不会更好看\n'
+        '· Raw 档: 默认 36,最高可到 52(更精细,也更慢)\n'
+        '💡 切换模型档位会自动套用该档的推荐参数\n'
+        '💡 Raw 档比 Turbo 慢很多,步数越高越明显——'
+        '建议先用 Turbo 试构图,满意了再换 Raw 出定稿',
+  );
+
+  static const kreaCfg = ParamHelp(
+    '提示词引导强度 (CFG)',
+    '控制画面对提示词的贴合程度:\n'
+        '· Turbo 档: 固定 1.0,调高会崩。这一档「排除内容」不生效\n'
+        '· Raw 档: 默认 3.5,可在 3-5 之间微调\n'
+        '💡 调高更听话但容易生硬,调低更自由但可能跑题',
+  );
+
+  static const kreaSampler = ParamHelp(
+    '采样算法 (Sampler)',
+    '官方 Krea 2 配方是 ER SDE，默认也是它。\n'
+        '前六个都实测过，都能出正常图，区别在质感不在成败，可以放心试:\n'
+        '· Euler — 基础款\n'
+        '· Euler Ancestral — 更柔、随机性更高\n'
+        '· DPM++ 系 — 变化更多\n'
+        '· UniPC / UniPC BH2 — 主打少步数，但这两个还没试过，效果自己看\n'
+        '💡 真正要小心的是 Scheduler，别选 Karras',
+  );
+
+  static const kreaScheduler = ParamHelp(
+    '噪声调度 (Scheduler)',
+    '决定每步的噪声衰减节奏。\n'
+        '· Simple — 官方配方搭档，默认\n'
+        '· Normal / SGM Uniform / Beta — 都正常，质感略有不同\n'
+        '· Karras — ⚠ 实测效果不好，两档都是，不建议用',
+  );
+
+  // ---- 风格参考(krea) ----
+
+  static const kreaStyleRefStrength = ParamHelp(
+    '参考强度 (Strength)',
+    '参考图画风对结果的影响力,所有参考图共用此值。\n'
+        '· 1.0 为官方默认，画风迁移最准确\n'
+        '· 值越低 → 参考图仅作弱引导，更多听从提示词\n'
+        '· 值越高 → 参考图的构图与物件也可能被一并带入\n'
+        '💡 提示词中再描述画风会与参考图冲突，通常留空更准\n'
+        '⚠ 只在 Turbo 档正常:官方这个参考 LoRA 是在 Turbo 上训的,'
+        'Raw 是后训练之前的基础检查点,权重分布对不上',
+  );
+
+  // ---- LoRA(anima / krea) ----
 
   static const loraWeight = ParamHelp(
     'LoRA 权重 (Weight)',
@@ -231,7 +324,7 @@ abstract final class Help {
         '适合微调时锁定构图。\n'
         '留空 → 每次随机生成不同结果\n'
         '💡 sampler 本身有微小随机性，相同种子也可能存在细微差别\n'
-        '💡 NAI 的 seed 与外部 Stable Diffusion 不通用',
+        '💡 NAI / Anima / Krea 三者的 seed 互不通用，与外部 Stable Diffusion 也不通用',
   );
 
   static const cfgRescale = ParamHelp(

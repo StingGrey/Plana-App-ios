@@ -47,27 +47,36 @@ class LoopNotifier extends Notifier<LoopStatus> {
       WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
 
   Future<void> start() async {
-    if (state.active ||
-        ref.read(generationProvider).busy ||
-        ref.read(genQueueProvider).active) {
-      return;
-    }
+    // 手动生成中不再让位:并行之后手动那条只是池子里的一员,循环照常投。
+    if (state.active || ref.read(genQueueProvider).active) return;
     final total = ref.read(generateProvider).params.loop.count; // 开跑时锁档位
     state = LoopStatus(active: true, total: total);
     // 只在开跑时切一次图库;之后每张不再强拉(generate 里按 _inLoop 跳过)
     ref.read(shellIndexProvider.notifier).select(kTabGallery);
 
+    final gen = ref.read(generationProvider.notifier);
+    var dispatched = 0; // 已投出的张数(含在跑的)
     var done = 0; // 成功张数
     var ok = true;
-    while (!state.stopping && (total == 0 || done < total)) {
-      state = state.copyWith(batch: done + 1);
-      // 非 ok 一律停(含用户取消):挂机连续失败无意义,也不该替用户决定重试
-      ok =
-          await ref.read(generationProvider.notifier).generate() ==
-          GenOutcome.ok;
-      if (!ok) break;
-      done++;
+
+    // 一个 worker 就是一个并发槽:同时最多投这么多条,每条跑完立刻补下一条。
+    // 不是「一次性把 N 张全塞进池子」—— 那样「失败即停」就没意义了(全投出去
+    // 才发现第一张就挂了),而且会把 20 条的池子上限一次撑满。
+    Future<void> worker() async {
+      while (ok && !state.stopping && (total == 0 || dispatched < total)) {
+        dispatched++;
+        // 非 ok 一律停(含用户取消):挂机连续失败无意义,也不该替用户决定重试
+        if (await gen.generate() != GenOutcome.ok) {
+          ok = false;
+          break;
+        }
+        done++;
+        state = state.copyWith(batch: done + 1);
+      }
     }
+
+    final workers = await gen.concurrency();
+    await Future.wait([for (var i = 0; i < workers; i++) worker()]);
     state = const LoopStatus();
 
     // 循环期间单张不撤/不留通知(见 generation_controller._inLoop),

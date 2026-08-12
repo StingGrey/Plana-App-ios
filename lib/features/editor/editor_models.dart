@@ -123,11 +123,20 @@ class FoldSpan {
 /// 跨词条权重组栈条目:brace=`{`/`[`,否则数值组。openPos=开记号原文下标,
 /// closeEnd=数值组的收口位置(由 [_numGroupsOf] 预扫定死;括号组为 -1)。
 class _Group {
-  const _Group(this.brace, this.mult, this.openPos, [this.closeEnd = -1]);
+  const _Group(
+    this.brace,
+    this.mult,
+    this.openPos, [
+    this.closeEnd = -1,
+    this.closed = false,
+  ]);
   final bool brace;
   final double mult;
   final int openPos;
   final int closeEnd;
+
+  /// closeEnd 处是不是真的闭记号(见 [_NumGroup.closed])。
+  final bool closed;
 }
 
 /// 数值权重组的全文边界 —— **照抄桌面端** `PromptEditor.tsx` 的权重装饰
@@ -143,13 +152,25 @@ class _Group {
 final _numGroupRe = RegExp(r'-?\d+(?:\.\d+)?::');
 
 class _NumGroup {
-  const _NumGroup(this.start, this.contentStart, this.end, this.mult);
+  const _NumGroup(
+    this.start,
+    this.contentStart,
+    this.end,
+    this.mult,
+    this.closed,
+  );
 
   /// 开记号 `N::` 的起点 / 内容起点(前缀之后)/ 组的右界(含闭记号)。
   final int start;
   final int contentStart;
   final int end;
   final double mult;
+
+  /// [end] 处**真有**一对闭合 `::` 吗。false = 组没写收口,右界是被下一个前缀
+  /// 或文末截出来的。区分这两者是必须的:剥记号的地方会按 `end - 2` 削掉两个
+  /// 字符,右界不是记号时削掉的就是用户的正文(实测 `1.2::a, black lolita`
+  /// 末尾会变成 `black loli`)。
+  final bool closed;
 }
 
 List<_NumGroup> _numGroupsOf(String text) {
@@ -161,12 +182,14 @@ List<_NumGroup> _numGroupsOf(String text) {
     if (mult == null) continue;
     final nextStart = i + 1 < ms.length ? ms[i + 1].start : text.length;
     final closeIdx = text.indexOf('::', m.end);
+    final closed = closeIdx >= 0 && closeIdx + 2 <= nextStart;
     out.add(
       _NumGroup(
         m.start,
         m.end,
-        closeIdx >= 0 && closeIdx + 2 <= nextStart ? closeIdx + 2 : nextStart,
+        closed ? closeIdx + 2 : nextStart,
         mult,
+        closed,
       ),
     );
   }
@@ -261,6 +284,16 @@ List<Tok> parseToks(
         nameS = trimL(ia + di + 2, ib);
         nameE = trimR(nameS, ia + dj);
       }
+    } else if (di > 0 && dj == di) {
+      // 只有开记号没收口(`1.5::b`)。跨段的那种在上面已经进了组栈,能走到这里
+      // 的是「组从这里开到文末、且整段就它一条」—— 老实现认不出,于是整枚词条
+      // 的名字就是 `1.5::b` 这一串:注音查不着、词条栏读数也不对。
+      final num = double.tryParse(inner.substring(0, di));
+      if (num != null) {
+        numMult = num;
+        nameS = trimL(ia + di + 2, ib);
+        nameE = ib;
+      }
     }
 
     res.add(
@@ -352,10 +385,12 @@ List<Tok> parseToks(
 
     // ① 段首收口(`…,::b` 形态):闭记号落在本段内容**之前**,故本段内容
     //    不算在组里 —— 立即出栈,并把 `::` 剥掉别落进标签名。
-    while (groups.isNotEmpty && !groups.last.brace && groups.last.closeEnd >= 0) {
+    while (groups.isNotEmpty &&
+        !groups.last.brace &&
+        groups.last.closeEnd >= 0) {
       final g = groups.last;
       if (g.closeEnd > b) break;
-      if (g.closeEnd - 2 == a) {
+      if (g.closed && g.closeEnd - 2 == a) {
         a = trimL(g.closeEnd, b);
       } else if (g.closeEnd > a) {
         break; // 闭记号在段尾/段中 → 本段内容仍属于该组,留到 seg 之后收
@@ -370,7 +405,20 @@ List<Tok> parseToks(
       final g = numGroups[ngi];
       ngi++;
       if (g.start < a || g.end <= b) continue;
-      groups.add(_Group(false, g.mult, g.start, g.end));
+      // 开记号**前面还有内容**(`a::1.5::b` 这种写法):`::` 在 NAI 里本身就是
+      // 分隔符,不少人拿它当逗号使,写完一个词直接跟下一段的权重。老实现在这里
+      // 把 a 一跳跳到组内容处,这截头部就**整段丢了** —— 既不成词条(没有注音、
+      // 没有翻译、词条栏点不着),也没人给它上色,屏幕上就是一截灰字。
+      // 先把它当独立词条收掉再开组;结尾那对 `::` 是分隔符,不留进标签名。
+      if (g.start > a) {
+        var headEnd = trimR(a, g.start);
+        if (headEnd - 2 >= a && text.substring(headEnd - 2, headEnd) == '::') {
+          headEnd = trimR(a, headEnd - 2);
+        }
+        // 此刻还没压入新组,seg 读到的 groupMult 正是这截头部真正所属的层级
+        if (headEnd > a) seg(a, headEnd);
+      }
+      groups.add(_Group(false, g.mult, g.start, g.end, g.closed));
       a = trimL(g.contentStart, b);
     }
 
@@ -380,7 +428,8 @@ List<Tok> parseToks(
     for (var i = groups.length - 1; i >= 0; i--) {
       final g = groups[i];
       if (g.brace || g.closeEnd < 0 || g.closeEnd > b) break;
-      if (g.closeEnd == b) b = trimR(a, b - 2);
+      // 只有真闭记号才削那两个字符;右界是截出来的就原样留着(否则削的是正文)
+      if (g.closed && g.closeEnd == b) b = trimR(a, b - 2);
       tailClose++;
     }
 
@@ -1022,7 +1071,10 @@ String moveUnits(
 ) {
   final units = topLevelUnits(text, bodies);
   final n = units.length;
-  final sel = {for (final i in from) if (i >= 0 && i < n) i}.toList()..sort();
+  final sel = {
+    for (final i in from)
+      if (i >= 0 && i < n) i,
+  }.toList()..sort();
   if (sel.isEmpty || sel.length == n) return text;
   final segs = [for (final u in units) text.substring(u.start, u.end)];
   final picked = [for (final i in sel) segs[i]];
@@ -1051,11 +1103,10 @@ String moveUnits(
 /// [setUnitsDisabled] 的顾虑)。段里还有别的词条时括号落在**组**上,占位符
 /// 自身区间不变,折叠安然无恙。
 List<(int, int)> weightRuns(List<TopUnit> units, Iterable<int> idx) {
-  final sel =
-      {
-        for (final i in idx)
-          if (i >= 0 && i < units.length) i,
-      }.toList()..sort();
+  final sel = {
+    for (final i in idx)
+      if (i >= 0 && i < units.length) i,
+  }.toList()..sort();
   final runs = <(int, int)>[];
   var k = 0;
   while (k < sel.length) {
