@@ -77,6 +77,20 @@ android {
         }
     }
 
+    // 出包文件名带上版本号与 ABI,沿用 1.0.0 起就在用的那套写法
+    // (Plana-1.0.2-arm64-v8a.apk)—— 默认的 app-release.apk 发几版下来
+    // 下载目录里全是同名文件,只能靠日期猜哪个是哪个。
+    //
+    // ⚠ 这只改 Gradle 的产物名(build/app/outputs/apk/release/)。Flutter 之后
+    //   还会把它复制一份成 build/app/outputs/flutter-apk/app-release.apk,
+    //   那个名字是 flutter_tools 写死的,改不了 —— **对外分发拿 apk/release/ 那个**。
+    applicationVariants.all {
+        outputs.all {
+            (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl)
+                .outputFileName = "Plana-$versionName-arm64-v8a.apk"
+        }
+    }
+
     packaging {
         jniLibs {
             // defaultConfig.abiFilters 管不到插件 AAR 里预编译的 .so:
