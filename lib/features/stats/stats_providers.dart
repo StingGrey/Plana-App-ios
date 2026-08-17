@@ -113,6 +113,12 @@ final billingSettlementProvider = FutureProvider.autoDispose<BillingReport?>(
   (ref) => _withSession(ref, (c, sid) => c.billingSettlement(sid)),
 );
 
+/// 算力账单(租卡 + 视频)。与 NAI 那本**不是一本账**:那本是按月阶梯分摊的
+/// 订阅费,这本是按次实付,两个数不能相加。
+final gpuBillsProvider = FutureProvider.autoDispose<GpuBills?>(
+  (ref) => _withSession(ref, (c, sid) => c.rentalBills(sid)),
+);
+
 /// 千分位(App 无 intl 依赖,手搓)。
 String fmtInt(num v) {
   final s = v.round().abs().toString();

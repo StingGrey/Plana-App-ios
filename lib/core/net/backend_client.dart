@@ -503,6 +503,156 @@ class UsageDetails {
   final int points;
 }
 
+/// 一条算力消费。**出图租卡和生成视频合在一条时间线上** —— 它们是同一类账目
+/// (按次实付、直计不分摊);生图那笔是订阅制月盘子按用量分摊,性质不同,
+/// 在 NAI 账单那一页。
+class GpuBillItem {
+  const GpuBillItem({
+    required this.kind,
+    required this.time,
+    required this.cost,
+    required this.seconds,
+    this.minutes = 0,
+    this.jobsDone = 0,
+    this.jobsFailed = 0,
+    this.reason = '',
+    this.preset = '',
+    this.mode = '',
+  });
+
+  /// `rental` 出图租卡 / `video` 生成视频。
+  final String kind;
+
+  /// ISO 时间串,服务端原样给的。
+  final String time;
+
+  /// 元。
+  final double cost;
+
+  /// rental = 租用秒数;video = 成片时长。
+  final int seconds;
+
+  // —— kind == 'rental' ——
+  final double minutes;
+  final int jobsDone;
+  final int jobsFailed;
+
+  /// 关机原因(用户主动 / 空闲超时 / 超过硬上限 / 失联)。
+  final String reason;
+
+  // —— kind == 'video' ——
+  final String preset;
+  final String mode;
+
+  bool get isRental => kind == 'rental';
+
+  factory GpuBillItem.fromJson(Map<String, dynamic> j) => GpuBillItem(
+    kind: j['kind']?.toString() ?? '',
+    time: j['time']?.toString() ?? '',
+    cost: (j['cost'] as num?)?.toDouble() ?? 0,
+    seconds: (j['seconds'] as num?)?.toInt() ?? 0,
+    minutes: (j['minutes'] as num?)?.toDouble() ?? 0,
+    jobsDone: (j['jobs_done'] as num?)?.toInt() ?? 0,
+    jobsFailed: (j['jobs_failed'] as num?)?.toInt() ?? 0,
+    reason: j['reason']?.toString() ?? '',
+    preset: j['preset']?.toString() ?? '',
+    mode: j['mode']?.toString() ?? '',
+  );
+}
+
+/// 还在跑、**还没结算**的那一台。合计里已经算进去了(用户看的是「到现在为止
+/// 花了多少」,不是「已结算多少」),所以界面上要把它单独标出来 —— 它的数还在涨。
+class GpuBillRunning {
+  const GpuBillRunning({
+    this.seconds = 0,
+    this.jobsDone = 0,
+    this.cost = 0,
+  });
+
+  final int seconds;
+  final int jobsDone;
+  final double cost;
+
+  factory GpuBillRunning.fromJson(Map<String, dynamic> j) => GpuBillRunning(
+    seconds: (j['seconds'] as num?)?.toInt() ?? 0,
+    jobsDone: (j['jobs_done'] as num?)?.toInt() ?? 0,
+    cost: (j['cost'] as num?)?.toDouble() ?? 0,
+  );
+}
+
+/// 算力账单(`GET /api/rental/bills`)。
+///
+/// ⚠ 服务端**只下发售价**,机时成本/毛利根本不在返回里 —— 别去别处拼一个出来。
+class GpuBills {
+  const GpuBills({
+    this.ok = false,
+    this.items = const [],
+    this.running,
+    this.totalCost = 0,
+    this.rentalCost = 0,
+    this.rentalHours = 0,
+    this.rentalJobs = 0,
+    this.rentalCount = 0,
+    this.videoCost = 0,
+    this.videoSeconds = 0,
+    this.videoCount = 0,
+    this.ratePerHour = 0,
+    this.message = '',
+  });
+
+  final bool ok;
+
+  /// 逐笔,新→旧。两张表各取最近 N 条后按时间归并再砍回 N。
+  final List<GpuBillItem> items;
+  final GpuBillRunning? running;
+
+  /// 租卡 + 视频之和。
+  final double totalCost;
+
+  final double rentalCost;
+  final double rentalHours;
+  final int rentalJobs;
+  final int rentalCount;
+
+  final double videoCost;
+  final int videoSeconds;
+  final int videoCount;
+
+  final double ratePerHour;
+  final String message;
+
+  /// 一分钱都还没花过。
+  bool get isEmpty => items.isEmpty && running == null;
+
+  factory GpuBills.fromJson(Map<String, dynamic> j) {
+    Map<String, dynamic> sub(String k) =>
+        (j[k] as Map?)?.cast<String, dynamic>() ?? const {};
+    final r = sub('rental');
+    final v = sub('video');
+    final run = j['running'];
+    return GpuBills(
+      ok: j['ok'] == true,
+      items: [
+        for (final e in (j['items'] as List?) ?? const [])
+          if (e is Map) GpuBillItem.fromJson(e.cast<String, dynamic>()),
+      ],
+      running: run is Map
+          ? GpuBillRunning.fromJson(run.cast<String, dynamic>())
+          : null,
+      totalCost: (j['total_cost'] as num?)?.toDouble() ?? 0,
+      rentalCost: (r['cost'] as num?)?.toDouble() ?? 0,
+      rentalHours: (r['hours'] as num?)?.toDouble() ?? 0,
+      rentalJobs: (r['jobs'] as num?)?.toInt() ?? 0,
+      rentalCount: (r['count'] as num?)?.toInt() ?? 0,
+      videoCost: (v['cost'] as num?)?.toDouble() ?? 0,
+      videoSeconds: (v['seconds'] as num?)?.toInt() ?? 0,
+      videoCount: (v['count'] as num?)?.toInt() ?? 0,
+      ratePerHour: (j['rate_per_hour'] as num?)?.toDouble() ?? 0,
+      message: j['message']?.toString() ?? '',
+    );
+  }
+}
+
 /// 机房已装 LoRA 卡片(`GET /api/lora/list`;anima 出图渠道专用)。
 /// [favorited] 需带会话查询才有意义(是否在「我的库」);[addedBy] == 'bot'
 /// 的官方条目豁免无人收藏时的回收。
@@ -1052,6 +1202,10 @@ class BackendClient {
     String sessionId,
     int idleTimeout,
   ) => _postJson('/rental/idle', {'idle_timeout': idleTimeout}, sessionId);
+
+  /// 算力账单(`GET /api/rental/bills`)。租卡 + 视频合成一条时间线。
+  Future<GpuBills> rentalBills(String sessionId, {int limit = 50}) async =>
+      GpuBills.fromJson(await _getJson('/rental/bills?limit=$limit', sessionId));
 
   // ── 公共 Vibe 库 ──────────────────────────────────────────────
 

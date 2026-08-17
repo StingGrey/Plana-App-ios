@@ -6,8 +6,10 @@ import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
 import '../../core/store/app_stores.dart';
 import '../../core/theme/app_theme.dart';
+import '../generate/gpu_rental.dart' show fmtYuan;
 import '../generate/widgets/common.dart' show sharedAxisRoute;
 import 'day_detail_page.dart';
+import 'gpu_bills_page.dart';
 import 'key_ledger.dart';
 import 'ledger_page.dart';
 import 'platform_page.dart';
@@ -89,6 +91,8 @@ class _StatsPageState extends ConsumerState<StatsPage> {
             if (session != null) {
               children.add(const SizedBox(height: 12));
               children.add(_billingEntry(context));
+              children.add(const SizedBox(height: 10));
+              children.add(_gpuBillsEntry(context));
             }
             children.add(const SizedBox(height: 10));
             children.add(_platformEntry(context));
@@ -101,6 +105,7 @@ class _StatsPageState extends ConsumerState<StatsPage> {
               ref.invalidate(userDailyProvider);
               ref.invalidate(billingEstimateProvider);
               ref.invalidate(billingSettlementProvider);
+              ref.invalidate(gpuBillsProvider);
               ref.invalidate(platformHourlyProvider);
             },
             child: ListView(
@@ -514,6 +519,8 @@ class _StatsPageState extends ConsumerState<StatsPage> {
     ];
   }
 
+  /// NAI 账单入口。Key 模式下它就是本机账本,标题不带「NAI」——
+  /// 那边压根没有服务端计费,更没有算力账单可对照。
   Widget _billingEntry(BuildContext context) {
     final scheme = context.scheme;
     final String sub;
@@ -524,7 +531,7 @@ class _StatsPageState extends ConsumerState<StatsPage> {
       final settle = ref.watch(billingSettlementProvider).value;
       loading = estAsync.isLoading;
       sub = est?.me == null
-          ? '账单与每日流水'
+          ? '按月阶梯分摊 · 每日流水'
           : '本期预估 ¥${fmtInt(est!.me!.totalFee)} · 27 日结算'
                 '${settle?.paymentStatus == 'unpaid' ? ' · 上期待支付' : ''}';
     } else {
@@ -535,7 +542,7 @@ class _StatsPageState extends ConsumerState<StatsPage> {
     }
     return _EntryCard(
       icon: Icons.receipt_long_outlined,
-      title: '账单',
+      title: _bot ? 'NAI 账单' : '账单',
       subWidget: loading
           ? SkeletonText(
               sample: '本期预估 ¥000 · 27 日结算',
@@ -549,6 +556,44 @@ class _StatsPageState extends ConsumerState<StatsPage> {
               ),
             ),
       onTap: () => _push(LedgerPage(bot: _bot, range: _range)),
+    );
+  }
+
+  /// 算力账单入口(租卡 + 视频)。
+  ///
+  /// **和 NAI 那本分开列,不并成一页求和**:那本是订阅制月盘子按用量分摊
+  /// (阶梯、月结、有支付状态),这本是按次实付、直计不分摊。两个数加起来
+  /// 没有任何含义,摆在一张卡里只会让人以为能相加。
+  Widget _gpuBillsEntry(BuildContext context) {
+    final scheme = context.scheme;
+    final async = ref.watch(gpuBillsProvider);
+    final b = async.value;
+    final String sub;
+    if (b == null || !b.ok) {
+      sub = '独享实例与视频 · 按次实付';
+    } else if (b.isEmpty) {
+      sub = '暂无消费 · 免费共享出图不计费';
+    } else {
+      sub =
+          '累计 ${fmtYuan(b.totalCost)} · 租卡 ${b.rentalHours} 小时'
+          '${b.running != null ? ' · 计费中' : ''}';
+    }
+    return _EntryCard(
+      icon: Icons.memory_outlined,
+      title: '算力账单',
+      subWidget: async.isLoading && b == null
+          ? SkeletonText(
+              sample: '累计 ¥00.00 · 租卡 0.0 小时',
+              style: context.texts.labelSmall!,
+              width: 150,
+            )
+          : Text(
+              sub,
+              style: context.texts.labelSmall!.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+      onTap: () => _push(const GpuBillsPage()),
     );
   }
 
