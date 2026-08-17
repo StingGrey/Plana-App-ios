@@ -5,7 +5,9 @@ import '../../../core/auth/auth_mode.dart';
 import '../../../core/net/anlas_provider.dart';
 import '../../../core/theme/app_theme.dart';
 import '../generate_state.dart';
+import '../gpu_rental.dart';
 import '../models.dart' as m;
+import 'rental_panel.dart';
 
 /// 顶栏:模型选择胶囊(左)+ Anlas 余额胶囊(右)
 class GenerateTopBar extends ConsumerStatefulWidget {
@@ -48,6 +50,7 @@ class _GenerateTopBarState extends ConsumerState<GenerateTopBar> {
   Widget build(BuildContext context) {
     final state = ref.watch(generateProvider);
     final anlasValue = ref.watch(anlasProvider).asData?.value?.anlas;
+    final rentalActive = ref.watch(gpuRentalProvider).active;
     final scheme = context.scheme;
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
@@ -87,50 +90,61 @@ class _GenerateTopBarState extends ConsumerState<GenerateTopBar> {
             ),
           ),
           const Spacer(),
-          // Anlas 余额
-          Material(
-            color: scheme.surfaceContainerHigh,
-            borderRadius: BorderRadius.circular(19),
-            clipBehavior: Clip.antiAlias,
-            child: InkWell(
-              onTap: () {
-                setState(() => _refreshTurns += 1);
-                ref.read(anlasProvider.notifier).refresh();
-              },
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 14),
-                child: SizedBox(
-                  height: 42,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.toll, size: 17, color: scheme.primary),
-                      const SizedBox(width: 6),
-                      Text(
-                        anlasValue != null ? _formatAnlas(anlasValue) : '—',
-                        style: mono(
-                          context,
-                          size: 14,
-                          weight: FontWeight.w700,
-                        ).copyWith(color: scheme.primary),
-                      ),
-                      const SizedBox(width: 6),
-                      AnimatedRotation(
-                        turns: _refreshTurns,
-                        duration: Motion.slow,
-                        curve: Motion.standard,
-                        child: Icon(
-                          Icons.refresh,
-                          size: 16,
-                          color: scheme.outline,
+          // 右侧那个位置给谁,看当前模型花的是哪种钱:
+          //  - Anima / Krea 不扣 Anlas,余额摆在那儿是个永远不动的死数 ——
+          //    换成算力来源(免费共享 / 独享实例,运行中直接报计时与费用);
+          //  - NAI 但实例还活着:那台在烧 ¥4/时,比余额紧急,也让位;
+          //  - 其余照旧显示余额。
+          // 单独取出来再判:写成 `isModal || rental.active` 会因为短路
+          // 让 NAI 之外的路径**不订阅** gpuRentalProvider —— 那样冷启动时
+          // 没人把它建起来,也就不会去问「我上次那台还在不在跑」。
+          if (m.isModalModel(state.params.model) || rentalActive)
+            const RentalSourceChip(height: 42)
+          else
+            // Anlas 余额
+            Material(
+              color: scheme.surfaceContainerHigh,
+              borderRadius: BorderRadius.circular(19),
+              clipBehavior: Clip.antiAlias,
+              child: InkWell(
+                onTap: () {
+                  setState(() => _refreshTurns += 1);
+                  ref.read(anlasProvider.notifier).refresh();
+                },
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                  child: SizedBox(
+                    height: 42,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.toll, size: 17, color: scheme.primary),
+                        const SizedBox(width: 6),
+                        Text(
+                          anlasValue != null ? _formatAnlas(anlasValue) : '—',
+                          style: mono(
+                            context,
+                            size: 14,
+                            weight: FontWeight.w700,
+                          ).copyWith(color: scheme.primary),
                         ),
-                      ),
-                    ],
+                        const SizedBox(width: 6),
+                        AnimatedRotation(
+                          turns: _refreshTurns,
+                          duration: Motion.slow,
+                          curve: Motion.standard,
+                          child: Icon(
+                            Icons.refresh,
+                            size: 16,
+                            color: scheme.outline,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
         ],
       ),
     );
@@ -163,10 +177,9 @@ class _ModelSheetState extends State<_ModelSheet>
     length: widget.groups.length,
     // 进来就停在当前型号所属的那一类;那类当前不可用(如停在 Anima 却切回了
     // token 模式)就落到第一类 —— 停在一个选不了的分组上没有意义。
-    initialIndex: widget.groups.indexOf(m.providerOfModel(widget.current)).clamp(
-      0,
-      widget.groups.length - 1,
-    ),
+    initialIndex: widget.groups
+        .indexOf(m.providerOfModel(widget.current))
+        .clamp(0, widget.groups.length - 1),
     vsync: this,
   );
 
@@ -184,16 +197,39 @@ class _ModelSheetState extends State<_ModelSheet>
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(20, 0, 20, 4),
-            child: Row(
-              children: [
-                Text(
-                  '模型',
-                  style: context.texts.titleMedium!.copyWith(
-                    fontWeight: FontWeight.w700,
+            padding: const EdgeInsets.fromLTRB(20, 0, 12, 4),
+            child: SizedBox(
+              // 定高:胶囊随分页进出,行高不能跟着变,否则切 tab 整个列表上下抽
+              height: 34,
+              child: Row(
+                children: [
+                  Text(
+                    '模型',
+                    style: context.texts.titleMedium!.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
-                ),
-              ],
+                  const Spacer(),
+                  // 算力来源只归 Anima / Krea:滑到 NAI 页就淡出。
+                  // 跟着 tab 动画走,横滑到一半时它也在半路上,不是「啪」地切换。
+                  AnimatedBuilder(
+                    animation: _tab.animation!,
+                    builder: (context, child) {
+                      final i = _tab.animation!.value.round().clamp(
+                        0,
+                        widget.groups.length - 1,
+                      );
+                      final show = widget.groups[i] != m.GenProvider.nai;
+                      return AnimatedOpacity(
+                        opacity: show ? 1 : 0,
+                        duration: Motion.fast,
+                        child: IgnorePointer(ignoring: !show, child: child),
+                      );
+                    },
+                    child: const RentalSourceChip(),
+                  ),
+                ],
+              ),
             ),
           ),
           // 下划线 Tab + 可左右滑的分页:不做成一排按钮,列表本身也跟着滑。
@@ -212,21 +248,18 @@ class _ModelSheetState extends State<_ModelSheet>
           Expanded(
             child: TabBarView(
               controller: _tab,
-              children: [
-                for (final g in widget.groups)
-                  ListView(
-                    padding: const EdgeInsets.only(top: 4, bottom: 8),
-                    children: [
-                      for (final model in m.modelsOf(g)) _modelTile(model),
-                    ],
-                  ),
-              ],
+              children: [for (final g in widget.groups) _modelList(g)],
             ),
           ),
         ],
       ),
     );
   }
+
+  Widget _modelList(m.GenProvider g) => ListView(
+    padding: const EdgeInsets.only(top: 4, bottom: 8),
+    children: [for (final model in m.modelsOf(g)) _modelTile(model)],
+  );
 
   Widget _modelTile(String model) {
     final desc = m.modelDescriptions[model];
