@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
+import '../util/log.dart';
 import 'backend_config.dart';
 
 /// 后端请求失败(网络/非 2xx/格式)。`message` 为可直接展示的人类可读文案。
@@ -818,6 +819,23 @@ class BackendClient {
 
   static const _timeout = Duration(seconds: 15);
 
+  /// 带 body 的请求超时:**显式值与体积折算值取大者**。
+  ///
+  /// [_timeout] 那 15 秒是给几 KB 的小 body 定的,而重绘(整图 PNG + mask 的
+  /// base64)、角色参考、vibe 上传这些能到几 MB —— 同一个 15 秒里要跑完 TLS
+  /// 握手 + 把全部字节推上去 + 等服务端应答,手机上行慢一点就是稳定误杀:
+  /// 报「连接后端超时」,可任务其实已经在服务端建好了(还照常扣点出图)。
+  /// 按最差 100KB/s 上行兜底折算(3MB≈45s、10MB≈2 分钟),封顶 5 分钟。
+  ///
+  /// 取大者而不是让显式值覆盖:显式值说的是「服务端要慢慢干活」(/rental/start
+  /// 6 分钟),体积算的是「字节要花多久推上去」—— 两件事该叠加。否则
+  /// `/vibes/upload` 那种「几 MB body + 显式 30 秒」照样死在原地。
+  static Duration _sendTimeout(int bytes, Duration? explicit) {
+    final s = bytes <= 64 * 1024 ? 15 : 15 + bytes ~/ (100 * 1024);
+    final byBody = Duration(seconds: s > 300 ? 300 : s);
+    return explicit != null && explicit > byBody ? explicit : byBody;
+  }
+
   Uri _u(String path) => Uri.parse('$baseUrl/api$path');
 
   Map<String, String> _headers([String? bearer]) => {
@@ -865,14 +883,17 @@ class BackendClient {
     Map<String, dynamic>? body,
     String? bearer,
     Duration? timeout,
-  ]) => _handle(
-    () => http.post(
-      _u(path),
-      headers: _headers(bearer),
-      body: jsonEncode(body ?? const <String, dynamic>{}),
-    ),
-    timeout: timeout,
-  );
+  ]) {
+    // 先编码再发:拿到实际体积才能挑超时,也省掉 http 内部再编一遍。
+    final payload = jsonEncode(body ?? const <String, dynamic>{});
+    if (payload.length > 512 * 1024) {
+      logi('[net] POST $path body=${payload.length >> 10}KB');
+    }
+    return _handle(
+      () => http.post(_u(path), headers: _headers(bearer), body: payload),
+      timeout: _sendTimeout(payload.length, timeout),
+    );
+  }
 
   Future<Map<String, dynamic>> _getJson(
     String path, [
@@ -888,14 +909,13 @@ class BackendClient {
     Map<String, dynamic>? body,
     String? bearer,
     Duration? timeout,
-  ]) => _handle(
-    () => http.put(
-      _u(path),
-      headers: _headers(bearer),
-      body: jsonEncode(body ?? const <String, dynamic>{}),
-    ),
-    timeout: timeout,
-  );
+  ]) {
+    final payload = jsonEncode(body ?? const <String, dynamic>{});
+    return _handle(
+      () => http.put(_u(path), headers: _headers(bearer), body: payload),
+      timeout: _sendTimeout(payload.length, timeout),
+    );
+  }
 
   /// 发起授权码(标记来源 app,授权成功时 Bot 提示会显示「NovelAI App」)。
   /// → (6 位大写 hex code, 有效期秒数)
@@ -929,6 +949,7 @@ class BackendClient {
 
   /// 提交 bot 模式生成任务(登录:Bearer 头 + body 里 session_id)。
   /// → (是否受理, task_id?, 文案)。⚠️ 入队失败也返 200 success:false。
+  /// 重绘/参考图会往 params 里塞几 MB base64,超时交 [_sendTimeout] 按体积放宽。
   Future<({bool success, String? taskId, String message})> botGenerate({
     required String sessionId,
     required Map<String, dynamic> params,
@@ -998,6 +1019,39 @@ class BackendClient {
     final j = await _getJson('/anlas');
     return (j['anlas'] as num?)?.toInt() ?? 0;
   }
+
+  // ── 出图租卡(anima / krea2 付费档)──────────────────────────────
+  // 服务端 `agent_router/img_rental.py`。四个端点都要 Bot 会话。
+  // 免费档仍走 Modal 共享通道,这几个只管租来的那台机器。
+
+  /// 当前用户的租用状态。没在跑时返回 `active=false` + 各项可选值
+  /// (`idle_choices` / `idle_default` / `max_uptime_s` / `boot_hint_s` /
+  /// `rate_per_hour`)—— 这些**以服务端为准**,app 侧只留一份兜底默认。
+  Future<Map<String, dynamic>> rentalStatus(String sessionId) =>
+      _getJson('/rental/status', sessionId);
+
+  /// 开一台。**这个调用会一直阻塞到服务就绪**(服务端实测约 85s,上限 300s),
+  /// 所以超时必须放到 5 分钟以上,不能用默认那 15 秒。
+  /// 已有在跑的会直接返回那一台(一人一实例,重复点不会开出第二台)。
+  Future<Map<String, dynamic>> rentalStart(
+    String sessionId, {
+    int? idleTimeout,
+  }) => _postJson(
+    '/rental/start',
+    {'idle_timeout': ?idleTimeout},
+    sessionId,
+    const Duration(minutes: 6),
+  );
+
+  /// 停机结账(先 purge 实例上的内容再销毁)。返回 seconds / minutes / price。
+  Future<Map<String, dynamic>> rentalStop(String sessionId) =>
+      _postJson('/rental/stop', const {}, sessionId, const Duration(minutes: 2));
+
+  /// 改空闲自动关机时长(秒,0 = 不自动关)。运行中即时生效。
+  Future<Map<String, dynamic>> rentalSetIdle(
+    String sessionId,
+    int idleTimeout,
+  ) => _postJson('/rental/idle', {'idle_timeout': idleTimeout}, sessionId);
 
   // ── 公共 Vibe 库 ──────────────────────────────────────────────
 
@@ -1187,21 +1241,14 @@ class BackendClient {
     String? previewBase64,
     String? createdBy,
   }) async {
-    await _handle(
-      () => http.put(
-        _u('/oc/${Uri.encodeComponent(enName)}'),
-        headers: _headers(sessionId),
-        body: jsonEncode({
-          'zh_name': ?zhName,
-          'zh_aliases': ?aliases,
-          'tag_group': ?tagGroup,
-          'negative_prompt': ?negativePrompt,
-          'preview_base64': ?previewBase64,
-          'created_by': ?createdBy,
-        }),
-      ),
-      timeout: const Duration(seconds: 30),
-    );
+    await _putJson('/oc/${Uri.encodeComponent(enName)}', {
+      'zh_name': ?zhName,
+      'zh_aliases': ?aliases,
+      'tag_group': ?tagGroup,
+      'negative_prompt': ?negativePrompt,
+      'preview_base64': ?previewBase64,
+      'created_by': ?createdBy,
+    }, sessionId, const Duration(seconds: 30));
   }
 
   Future<void> deletePublicOc(String sessionId, String enName) async {
@@ -1254,19 +1301,12 @@ class BackendClient {
     String? previewBase64,
     String? addedBy,
   }) async {
-    await _handle(
-      () => http.put(
-        _u('/artists/${Uri.encodeComponent(id)}'),
-        headers: _headers(sessionId),
-        body: jsonEncode({
-          'artist_string': ?artistString,
-          'negative': ?negative,
-          'preview_base64': ?previewBase64,
-          'added_by': ?addedBy,
-        }),
-      ),
-      timeout: const Duration(seconds: 30),
-    );
+    await _putJson('/artists/${Uri.encodeComponent(id)}', {
+      'artist_string': ?artistString,
+      'negative': ?negative,
+      'preview_base64': ?previewBase64,
+      'added_by': ?addedBy,
+    }, sessionId, const Duration(seconds: 30));
   }
 
   Future<void> deletePublicArtist(String sessionId, String id) async {
@@ -1802,11 +1842,29 @@ class BackendClient {
     );
   }
 
-  /// 正在直拉的 LoRA 进度(`GET /api/lora/install/progress`)。
-  /// 下载在 Modal 机房进行,容器把已下字节写进共享 Dict,server 转发过来。
-  /// total=0 表示对面没给 content-length,只能显示「已下多少 MB」。
+  /// 安装任务的进度**与结果**(`GET /api/lora/install/progress`)。
+  ///
+  /// `/lora/install` 现在开始下载就返回了(见 [installLora]),所以结论只能从
+  /// 这条读:轮到 [state] 变成 `done` / `failed` 才算有结果。
+  ///  - [phase] `downloading` 从 Civitai 拉 / `uploading` 拉完再传进库 ——
+  ///    走租用实例时这两段各占一半,不区分的话进度条会在 100% 上干等好几分钟;
+  ///  - [total] = 0 表示对面没给 content-length,只能显示「已下多少 MB」;
+  ///  - [stale] = 超过 60s 没动静(服务端判的,别自己缩短:传 R2 那段是 boto3
+  ///    内部一次 upload_file,中间不回调,大文件很容易安静超过半分钟)。
   Future<
-    List<({int versionId, String name, int downloaded, int total, bool stale})>
+    List<
+      ({
+        int versionId,
+        String name,
+        String state,
+        String phase,
+        int downloaded,
+        int total,
+        String lrId,
+        String message,
+        bool stale,
+      })
+    >
   >
   loraInstallProgress() async {
     final j = await _getJson('/lora/install/progress');
@@ -1816,8 +1874,12 @@ class BackendClient {
           (
             versionId: (e['version_id'] as num?)?.toInt() ?? 0,
             name: e['name']?.toString() ?? '',
+            state: e['state']?.toString() ?? 'running',
+            phase: e['phase']?.toString() ?? 'downloading',
             downloaded: (e['downloaded'] as num?)?.toInt() ?? 0,
             total: (e['total'] as num?)?.toInt() ?? 0,
+            lrId: e['lr_id']?.toString() ?? '',
+            message: e['message']?.toString() ?? '',
             stale: e['stale'] == true,
           ),
     ];
@@ -1856,22 +1918,26 @@ class BackendClient {
     ];
   }
 
-  /// 在线「下载到我的库」:库里没有 → 机房直拉 Civitai 入 Volume + 写注册表;
-  /// 已有 → 仅加收藏(服务端按 sha/版本去重,不重复下载)。
-  /// 直拉在服务端同步完成,大文件要等 —— 超时放宽到 3 分钟。
-  Future<({bool ok, String? lrId, String message})> installLora({
+  /// 在线「下载到我的库」。两种结果,**必须分开处理**:
+  ///  - 已在库(sha / 版本撞上)→ `pending=false`,同步完成,只加了收藏;
+  ///  - 要下载 → `pending=true`,**只是开始了** —— 结论去 [loraInstallProgress]
+  ///    轮询到 `done` / `failed` 才算数。
+  ///
+  /// 服务端从前是下完才返回的,现在不是了:走租用实例时一个大 LoRA 前后好几
+  /// 分钟,挂在这个请求上必被超时掐断 —— 用户看到「连接后端超时」,而文件其实
+  /// 下完了也进了库。所以这里不再等下载,超时按普通接口给。
+  Future<({bool ok, bool pending, String? lrId, String message})> installLora({
     required String sessionId,
     required int versionId,
     String base = 'anima',
   }) async {
-    final j = await _postJson(
-      '/lora/install',
-      {'version_id': versionId, 'base': base},
-      sessionId,
-      const Duration(minutes: 3),
-    );
+    final j = await _postJson('/lora/install', {
+      'version_id': versionId,
+      'base': base,
+    }, sessionId);
     return (
       ok: j['ok'] == true,
+      pending: j['pending'] == true,
       lrId: j['lr_id']?.toString(),
       message: j['message']?.toString() ?? '',
     );

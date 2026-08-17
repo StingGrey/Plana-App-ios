@@ -69,6 +69,25 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
   /// 还在推的条目重新接上)。
   final _pushTimers = <String, Timer>{};
 
+  /// 在线安装的进度轮询与最新读数,按 Civitai versionId 一条一个。
+  /// `/lora/install` 现在开始下载就返回,结论只能靠这条轮出来。
+  final _installTimers = <int, Timer>{};
+  final _installProgress =
+      <
+        int,
+        ({
+          int versionId,
+          String name,
+          String state,
+          String phase,
+          int downloaded,
+          int total,
+          String lrId,
+          String message,
+          bool stale,
+        })
+      >{};
+
   // 在线搜索
   final _onlineScroll = ScrollController();
   List<CivitaiLoraInfo> _onlineItems = [];
@@ -131,7 +150,7 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
   @override
   void dispose() {
     _searchDebounce?.cancel();
-    for (final t in _pushTimers.values) {
+    for (final t in [..._pushTimers.values, ..._installTimers.values]) {
       t.cancel();
     }
     _searchCtl.dispose();
@@ -467,11 +486,16 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
         hintSnack(context, r.message.isEmpty ? '下载失败' : r.message);
         return;
       }
-      setState(() {
-        _downloadedVids.add(item.versionId);
-        final id = r.lrId;
-        if (id != null) _vidByLrId[id] = item.versionId;
-      });
+      final id = r.lrId;
+      if (id != null) setState(() => _vidByLrId[id] = item.versionId);
+      // pending = 服务端**只是开始下载了**。这时标成「已加入我的库」是撒谎:
+      // 走租用实例时下载 + 传库前后好几分钟,中途还可能失败。结论去进度接口拿。
+      if (r.pending) {
+        hintSnack(context, '正在下载…', icon: Icons.cloud_download_outlined);
+        _watchInstall(item.versionId);
+        return;
+      }
+      setState(() => _downloadedVids.add(item.versionId));
       hintSnack(
         context,
         r.message.isEmpty ? '已加入我的库' : r.message,
@@ -483,6 +507,68 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
     } finally {
       if (mounted) setState(() => _downloadingVid = null);
     }
+  }
+
+  /// 盯一个安装任务到出结论(1s 一问,对齐 web)。
+  ///
+  /// 连续取不到进度**不判死** —— 跨境抖一下是常态,后台任务照跑;只有服务端
+  /// 自己说 `failed`,或长时间连这条记录都没了(server 重启),才认输。
+  void _watchInstall(int versionId) {
+    if (_installTimers.containsKey(versionId)) return;
+    var misses = 0;
+    _installTimers[versionId] = Timer.periodic(const Duration(seconds: 1), (
+      t,
+    ) async {
+      List<
+        ({
+          int versionId,
+          String name,
+          String state,
+          String phase,
+          int downloaded,
+          int total,
+          String lrId,
+          String message,
+          bool stale,
+        })
+      >
+      items;
+      try {
+        items = await ref.read(backendClientProvider).loraInstallProgress();
+      } catch (_) {
+        return; // 网络抖一下不算数,下一轮再问
+      }
+      if (!mounted) return;
+      final hit = items.where((e) => e.versionId == versionId).firstOrNull;
+      if (hit == null) {
+        // 终态过了 TTL 会被服务端清掉,所以「查不到」也可能是**成功后过了会儿**。
+        // 给一段宽限再去列表里确认,别急着报错。
+        if (++misses < 20) return;
+        t.cancel();
+        _installTimers.remove(versionId);
+        await _loadInstalled();
+        return;
+      }
+      misses = 0;
+      if (hit.state == 'running') {
+        setState(() => _installProgress[versionId] = hit);
+        return;
+      }
+      t.cancel();
+      _installTimers.remove(versionId);
+      setState(() => _installProgress.remove(versionId));
+      if (hit.state == 'done') {
+        setState(() => _downloadedVids.add(versionId));
+        await _loadInstalled();
+        if (mounted) hintSnack(context, '已加入我的库', icon: Icons.check);
+      } else if (mounted) {
+        hintSnack(
+          context,
+          hit.message.isEmpty ? '下载失败' : '下载失败:${hit.message}',
+          icon: Icons.error_outline,
+        );
+      }
+    });
   }
 
   void _confirm() {
@@ -1024,10 +1110,28 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
     );
   }
 
+  /// 安装中那行小字:`下载 42%` / `入库 18MB`。
+  /// **两段要分开报** —— 走租用实例时下完还要传进库,不区分的话进度条会在
+  /// 100% 上干等好几分钟,看着就像卡死了。
+  String? _installLabel(int versionId) {
+    final p = _installProgress[versionId];
+    if (p == null) return null;
+    final seg = p.phase == 'uploading' ? '入库' : '下载';
+    if (p.stale) return '$seg · 无响应';
+    if (p.total > 0) {
+      return '$seg ${(p.downloaded / p.total * 100).clamp(0, 100).round()}%';
+    }
+    return '$seg ${(p.downloaded / 1048576).toStringAsFixed(0)}MB';
+  }
+
   Widget _onlineCardRow(CivitaiLoraInfo x) {
     final scheme = context.scheme;
     final done = _downloadedVids.contains(x.versionId);
-    final busy = _downloadingVid == x.versionId;
+    // 请求返回后 _downloadingVid 就清了,但那时下载才刚开始 —— 轮询里还有
+    // 记录的一律仍算「忙」,否则按钮会在下载途中变回可点的下载图标。
+    final installing = _installTimers.containsKey(x.versionId);
+    final busy = _downloadingVid == x.versionId || installing;
+    final label = _installLabel(x.versionId);
     return _CardShell(
       selected: false,
       onTap: () => _showDetail(x),
@@ -1083,9 +1187,17 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
             color: scheme.onSurfaceVariant,
             onPressed: () => _showDetail(x),
           ),
-          if (busy)
-            const _BusyIcon()
-          else if (done)
+          if (busy) ...[
+            if (label != null)
+              Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: Text(
+                  label,
+                  style: mono(context, size: 11, color: scheme.onSurfaceVariant),
+                ),
+              ),
+            const _BusyIcon(),
+          ] else if (done)
             IconButton(
               tooltip: '已在我的库',
               visualDensity: VisualDensity.compact,
@@ -1117,7 +1229,10 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
         builder: (_, scroll) => StatefulBuilder(
           builder: (_, setSheet) {
             final done = _downloadedVids.contains(x.versionId);
-            final busy = _downloadingVid == x.versionId;
+            // 同卡片行:请求返回 ≠ 下完,轮询里还有记录就仍算忙
+            final busy =
+                _downloadingVid == x.versionId ||
+                _installTimers.containsKey(x.versionId);
             return Column(
               children: [
                 Expanded(
