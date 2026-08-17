@@ -26,30 +26,35 @@ class StoragePage extends ConsumerStatefulWidget {
 }
 
 class _CatSpec {
-  const _CatSpec(this.key, this.icon, this.label, [this.action]);
+  const _CatSpec(this.keys, this.icon, this.label, this.action);
 
-  final String key;
+  /// 一行可以盖住多个扫描分类:占用取和,清理时逐个执行。
+  /// 首个 key 兼作行 id(忙碌态与释放量都按它记)。
+  final List<String> keys;
   final IconData icon;
   final String label;
-  final String? action; // null = 只读展示
+  final String action;
+
+  String get id => keys.first;
 }
 
-const _cleanable = <_CatSpec>[
-  _CatSpec('temp', Icons.folder_delete_outlined, '导入临时文件', '清理'),
-  _CatSpec('imgCache', Icons.image_outlined, '在线图片缓存', '清空'),
-  _CatSpec('codexCache', Icons.menu_book_outlined, '法典数据缓存', '清空'),
-  _CatSpec('gallery', Icons.photo_library_outlined, '图库作品', '清空'),
-  _CatSpec('blobs', Icons.layers_outlined, '参考图快照', '清理'),
-  _CatSpec('vibeEnc', Icons.bolt_outlined, 'Vibe 编码缓存', '清空'),
-  _CatSpec('vibeLib', Icons.palette_outlined, 'Vibe 库', '清空'),
-  _CatSpec('charLib', Icons.person_outline, '角色参考库', '清空'),
-  _CatSpec('tagPrev', Icons.lightbulb_outline, '灵感预览图', '清空'),
-];
+/// 免费重建的那几样:导入临时文件、在线图缓存、法典缓存、孤儿参考图快照。
+/// 合成一行 —— 没人需要知道它们在磁盘上分了四个目录。
+const _kCacheKeys = ['temp', 'imgCache', 'codexCache', 'blobs'];
 
-/// 单独成组,**不能混进「可清理」** —— 那一组里的东西删掉都能免费重建,
-/// 而模型是用户花流量下的,删了要再下 10.9 MB。动作也叫「删除」不叫「清理」。
-const _downloaded = <_CatSpec>[
-  _CatSpec('models', Icons.hd_outlined, '超分模型', '删除'),
+/// 「可清理」只此一组。合并看的是**重建代价**,不是目录结构:
+/// - 头一行全是删了自动重建、不花钱也不花流量的,合成一条即可;
+/// - 往下每一条的代价都不一样(重编码扣 Anlas / 重下 10.9 MB 模型 /
+///   预览要重新做 / 作品和素材库直接不可恢复)。代价不同就得让人分开选,
+///   不能为了少几行把它们捆成一键。
+const _cleanable = <_CatSpec>[
+  _CatSpec(_kCacheKeys, Icons.cached, '缓存文件', '清理'),
+  _CatSpec(['vibeEnc'], Icons.bolt_outlined, 'Vibe 编码缓存', '清空'),
+  _CatSpec(['models'], Icons.hd_outlined, '超分模型', '删除'),
+  _CatSpec(['tagPrev'], Icons.lightbulb_outline, '灵感预览图', '清空'),
+  _CatSpec(['gallery'], Icons.photo_library_outlined, '图库作品', '清空'),
+  _CatSpec(['vibeLib'], Icons.palette_outlined, 'Vibe 库', '清空'),
+  _CatSpec(['charLib'], Icons.person_outline, '角色参考库', '清空'),
 ];
 
 class _StoragePageState extends ConsumerState<StoragePage> {
@@ -73,11 +78,20 @@ class _StoragePageState extends ConsumerState<StoragePage> {
     });
   }
 
+  /// 各分类占用之和(合并行按它取数)。
+  int _bytesOf(StorageReport? rep, List<String> keys) {
+    var sum = 0;
+    for (final k in keys) {
+      sum += rep?[k]?.bytes ?? 0;
+    }
+    return sum;
+  }
+
   /// 清理动作前后各扫一次,提示释放量。
-  Future<void> _run(String key, Future<void> Function() job) async {
+  Future<void> _run(List<String> keys, Future<void> Function() job) async {
     if (_busy != null) return;
-    final before = _report?[key]?.bytes ?? 0;
-    setState(() => _busy = key);
+    final before = _bytesOf(_report, keys);
+    setState(() => _busy = keys.first);
     try {
       await job();
       // 等 store 的串行删除链走完再重扫,数字才准
@@ -85,8 +99,7 @@ class _StoragePageState extends ConsumerState<StoragePage> {
       await Future<void>.delayed(const Duration(milliseconds: 300));
       final rep = await scanStorage();
       if (!mounted) return;
-      final after = rep[key]?.bytes ?? 0;
-      final freed = before - after;
+      final freed = before - _bytesOf(rep, keys);
       setState(() {
         _report = rep;
         _busy = null;
@@ -116,16 +129,29 @@ class _StoragePageState extends ConsumerState<StoragePage> {
     if (mounted) await _refresh();
   }
 
+  /// 孤儿参考图回收:活引用之外的 blob 才删,给个新鲜窗口防并发写。
+  Future<void> _gcBlobs() async {
+    final stores = ref.read(appStoresProvider);
+    stores.flushNow();
+    await stores.gallery.idle;
+    final live = <String>{
+      ...await stores.workspace.liveRefs(),
+      ...await stores.gallery.liveRefs(),
+    };
+    await stores.blobs.gc(live, minAge: const Duration(minutes: 5));
+  }
+
   Future<void> _onAction(String key) async {
     final stores = ref.read(appStoresProvider);
     switch (key) {
+      // 合并行「缓存文件」:四样一起清。全是免费重建的,不必确认。
       case 'temp':
-        await _run(key, () => sweepPickerCache(minAge: Duration.zero));
-      case 'imgCache':
-        // 纯缓存,删了只是下次重下,不必确认
-        await _run(key, RemoteImageStore.clear);
-      case 'codexCache':
-        await _run(key, () => ref.read(codexServiceProvider).clearCache());
+        await _run(_kCacheKeys, () async {
+          await sweepPickerCache(minAge: Duration.zero);
+          await RemoteImageStore.clear();
+          await ref.read(codexServiceProvider).clearCache();
+          await _gcBlobs();
+        });
       case 'tagPrev':
         final n = _report?['tagPrev']?.count;
         final ok = await confirmDialog(
@@ -138,7 +164,7 @@ class _StoragePageState extends ConsumerState<StoragePage> {
         );
         if (!ok) return;
         await _run(
-          key,
+          [key],
           () => ref.read(tagLibraryProvider.notifier).clearLocalPreviews(),
         );
       case 'gallery':
@@ -152,25 +178,11 @@ class _StoragePageState extends ConsumerState<StoragePage> {
           confirmLabel: '清空',
         );
         if (!ok) return;
-        await _run(key, () async {
+        // 快照没了,顺手清孤儿参考图;释放量把这部分也算进去
+        await _run(const ['gallery', 'blobs'], () async {
           ref.read(galleryProvider.notifier).clearAll();
           await stores.gallery.idle;
-          // 快照没了,顺手清孤儿参考图(短新鲜窗口防并发写)
-          final live = <String>{
-            ...await stores.workspace.liveRefs(),
-            ...await stores.gallery.liveRefs(),
-          };
-          await stores.blobs.gc(live, minAge: const Duration(minutes: 5));
-        });
-      case 'blobs':
-        await _run(key, () async {
-          stores.flushNow();
-          await stores.gallery.idle;
-          final live = <String>{
-            ...await stores.workspace.liveRefs(),
-            ...await stores.gallery.liveRefs(),
-          };
-          await stores.blobs.gc(live, minAge: const Duration(minutes: 5));
+          await _gcBlobs();
         });
       case 'vibeEnc':
         final ok = await confirmDialog(
@@ -182,7 +194,7 @@ class _StoragePageState extends ConsumerState<StoragePage> {
           confirmLabel: '清空',
         );
         if (!ok) return;
-        await _run(key, () async {
+        await _run([key], () async {
           final cache = await ref.read(vibeCacheProvider.future);
           await cache.clear();
         });
@@ -198,7 +210,7 @@ class _StoragePageState extends ConsumerState<StoragePage> {
         );
         if (!ok) return;
         await _run(
-          key,
+          [key],
           () => ref.read(vibeLibraryProvider.notifier).clearAll(),
         );
       case 'charLib':
@@ -213,7 +225,7 @@ class _StoragePageState extends ConsumerState<StoragePage> {
         );
         if (!ok) return;
         await _run(
-          key,
+          [key],
           () => ref.read(charLibraryProvider.notifier).clearAll(),
         );
       case 'models':
@@ -226,7 +238,7 @@ class _StoragePageState extends ConsumerState<StoragePage> {
           confirmLabel: '删除',
         );
         if (!ok) return;
-        await _run(key, clearUpscaleModels);
+        await _run([key], clearUpscaleModels);
     }
   }
 
@@ -263,24 +275,10 @@ class _StoragePageState extends ConsumerState<StoragePage> {
                       for (final spec in _cleanable)
                         _CleanRow(
                           spec: spec,
-                          bytes: rep[spec.key]?.bytes ?? 0,
-                          busy: _busy == spec.key,
+                          bytes: _bytesOf(rep, spec.keys),
+                          busy: _busy == spec.id,
                           enabled: _busy == null,
-                          onAction: () => _onAction(spec.key),
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  const SettingsLabel('已下载'),
-                  SettingsCard(
-                    children: [
-                      for (final spec in _downloaded)
-                        _CleanRow(
-                          spec: spec,
-                          bytes: rep[spec.key]?.bytes ?? 0,
-                          busy: _busy == spec.key,
-                          enabled: _busy == null,
-                          onAction: () => _onAction(spec.key),
+                          onAction: () => _onAction(spec.id),
                         ),
                     ],
                   ),
@@ -520,7 +518,7 @@ class _CleanRow extends StatelessWidget {
                       padding: EdgeInsets.zero,
                       visualDensity: VisualDensity.compact,
                     ),
-                    child: Text(spec.action!),
+                    child: Text(spec.action),
                   ),
           ),
         ],
