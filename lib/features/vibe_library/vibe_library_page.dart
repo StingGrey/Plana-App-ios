@@ -67,7 +67,8 @@ class VibeLibraryPage extends ConsumerStatefulWidget {
 
 class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
     with SingleTickerProviderStateMixin {
-  // 本地 | 公共库(对齐 mockup 顺序,默认本地)
+  // 本地 | 公共库(对齐 mockup 顺序,默认本地)。
+  // 只用来判「序号真的换了没」,不参与布局取值 —— 参与了就会跨页抖(见 build)。
   int _lastTabIndex = 0;
   late final TabController _tab = TabController(length: 2, vsync: this)
     ..addListener(() {
@@ -945,15 +946,14 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
               ),
             ),
           ),
-          // 分段 Tab。本地页下面紧跟标签筛选行,间距由它顶出,这里不留底距;
-          // 公共页没有筛选行,补一档底距 —— 与灵感页画风/角色同一条规则。
+          // 分段 Tab。底距**恒为 0**:两页的差别由各自页内出。
+          //
+          // 从前这里写的是 `_lastTabIndex == 0 ? 0 : 8` —— 可这个 Padding 在
+          // TabBarView **外面**,序号一翻,两页一起往下挪 8px;而序号是滑到
+          // 半程才翻的,和横向滑动动画脱钩,看上去就是列表在切换途中平白下沉
+          // 一截(真机反馈)。跨页共享的盒子不能按当前页调尺寸。
           Padding(
-            padding: EdgeInsets.fromLTRB(
-              _kEdge,
-              8,
-              _kEdge,
-              _lastTabIndex == 0 ? 0 : 8,
-            ),
+            padding: const EdgeInsets.fromLTRB(_kEdge, 8, _kEdge, 0),
             child: _segTabs(scheme, all?.length ?? 0),
           ),
           Expanded(
@@ -963,7 +963,12 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
                 all == null
                     ? const Center(child: CircularProgressIndicator())
                     : _localTab(all),
-                _publicTab(),
+                // 公共页没有标签筛选行顶开间距,自己补一档 —— 放在页内、
+                // 滚动区之外:既不影响本地页,滚动时这道缝也留得住。
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: _publicTab(),
+                ),
               ],
             ),
           ),
@@ -1342,8 +1347,8 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
                 )
               : GridView.builder(
                   controller: _publicScroll,
-                  // 顶距 8:另外 8 由分段行的底距出(公共页才加),两段合起来
-                  // 仍是原来的一档间距,只是外面那半留在了滚动区之外。
+                  // 顶距 8:另外 8 由本页外层那圈 Padding 出,两段合起来仍是
+                  // 一档间距,只是外面那半留在了滚动区之外(滚动时不跟着走)。
                   padding: const EdgeInsets.fromLTRB(12, 8, 12, 96),
                   gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                     crossAxisCount: 2,
