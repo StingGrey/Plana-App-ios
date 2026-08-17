@@ -10,12 +10,15 @@ import '../../../core/net/remote_image.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../editor/editor_models.dart' show draftOf, outputOf, pickEditorText;
 import '../../generate/generate_state.dart';
-import '../../generate/models.dart' show GenProvider, providerOfModel;
-import '../../generate/widgets/common.dart' show hintSnack;
+import '../../generate/models.dart'
+    show GenProvider, GenerateState, providerOfModel;
+import '../../generate/widgets/common.dart' show confirmDialog, hintSnack;
 import '../../shell/shell_state.dart';
 import '../tag_models.dart'
     show TagCategory, TagEntry, appendTagPositivesFolded;
+import 'codex_card.dart';
 import 'codex_char_split.dart';
+import 'codex_favorites.dart';
 import 'codex_models.dart';
 import 'codex_providers.dart';
 import '../../../core/util/haptics.dart';
@@ -35,58 +38,79 @@ Future<T?> _sheet<T>(BuildContext context, Widget child) =>
 /// 公共部分照旧作为一个**命名折叠组**进主提示词(复用灵感页同一条链路:草稿带回
 /// 既有禁用/折叠,定稿由 outputOf 导出,两者同写)。
 ///
-/// 词条带 `charN：` / `[charN±]` 标记时(见 [splitCodexCharacters])**且当前是
-/// NAI**:标记之后的部分拆成角色卡,不再留在主提示词里。Anima / Krea 没有角色
-/// 分离这回事,整段照旧折叠进主提示词 —— 给它们拆出角色卡,卡也会被模块剥离层
-/// 当场收走,白忙一场还让人以为丢了东西。
+/// 角色段有**两种**来源,都要认:
+///  ① 数据源的 `characterPrompts` 字段([CodexEntry.characters])—— 这是主流,
+///     全站 8091 条,`tags` 里一个字都不带,早先只读 tags 等于把主体丢了;
+///  ② 极少数把 `charN：` / `[charN±]` 直接写在 tags 里(全站 6 条),
+///     由 [splitCodexCharacters] 拆(见那个模块)。
+///
+/// 拆角色卡**只对 NAI 做**:Anima / Krea 没有角色分离这回事,给它们拆出来的卡
+/// 会被模块剥离层当场收走,白忙一场还让人以为丢了东西 —— 那两家一律整段
+/// (含各角色段)折叠进主提示词。
 ({int added, int dropped}) codexAddToPrompt(WidgetRef ref, CodexEntry e) {
   final gen = ref.read(generateProvider);
   final isNai = providerOfModel(gen.params.model) == GenProvider.nai;
-  final split = isNai ? splitCodexCharacters(e.tags) : null;
-  final hasChars = split != null && split.hasCharacters;
-  final base = hasChars ? split.base : e.tags;
 
-  // 公共部分为空(词条上来就是 char1:)时不折叠 —— 否则会插进去一个空组。
-  if (base.trim().isNotEmpty) {
-    final entry = TagEntry(
-      id: 'codex_${e.id}',
-      category: TagCategory.other,
-      name: e.title,
-      positive: base,
-    );
-    final draft = appendTagPositivesFolded(
-      pickEditorText(gen.promptRaw, gen.prompt),
-      [entry],
-    );
-    final positive = outputOf(draft);
-    ref
-        .read(generateProvider.notifier)
-        .setPrompts(positive: positive, positiveRaw: draftOf(draft, positive));
-  }
+  // 非 NAI:整条(公共 + 角色段)一起进主提示词,一个字不丢
+  if (!isNai) return _codexFoldInto(ref, e, e.fullText, gen);
+
+  // 字段里带角色段 → 直接用;否则退回内联写法的拆分
+  final fromField = [
+    for (final c in e.characters)
+      for (final slot in c.slots.isEmpty ? const [0] : c.slots)
+        (index: slot, positive: c.prompt.trim(), negative: ''),
+  ];
+  final split = fromField.isEmpty ? splitCodexCharacters(e.tags) : null;
+  final chars = fromField.isNotEmpty
+      ? fromField
+      : [
+          for (final c in split!.characters)
+            (index: c.index, positive: c.positive, negative: c.negative),
+        ];
+  final hasChars = chars.isNotEmpty;
+  final base = fromField.isNotEmpty
+      ? e.tags
+      : (hasChars ? split!.base : e.tags);
+
+  // 公共部分为空(全站 401 条 tags 就是空的)时不折叠 —— 否则插进去一个空组。
+  _codexFoldInto(ref, e, base, gen);
 
   if (!hasChars) return (added: 0, dropped: 0);
   final added = ref.read(generateProvider.notifier).addCharactersFilled([
-    for (final c in split.characters)
-      (name: '角色 ${c.index}', positive: c.positive, negative: c.negative),
+    for (final c in chars)
+      (
+        name: c.index > 0 ? '角色 ${c.index}' : '角色',
+        positive: c.positive,
+        negative: c.negative,
+      ),
   ]);
-  return (added: added, dropped: split.characters.length - added);
+  return (added: added, dropped: chars.length - added);
 }
 
-/// 网络图渐显:与灵感页画师/角色卡同款——帧到达前透明,到达后淡入。
-/// (codex_view 也 import 本文件,网格卡与弹层大图共用这一套。)
-Widget codexFadeIn(
-  BuildContext context,
-  Widget child,
-  int? frame,
-  bool wasSync,
+/// 把一段内容作为**命名折叠组**追加进主提示词(复用灵感页同一条链路:草稿带回
+/// 既有禁用/折叠,定稿由 outputOf 导出,两者同写)。空段直接跳过。
+({int added, int dropped}) _codexFoldInto(
+  WidgetRef ref,
+  CodexEntry e,
+  String content,
+  GenerateState gen,
 ) {
-  if (wasSync) return child;
-  return AnimatedOpacity(
-    opacity: frame == null ? 0 : 1,
-    duration: Motion.medium,
-    curve: Curves.easeOut,
-    child: child,
+  if (content.trim().isEmpty) return (added: 0, dropped: 0);
+  final entry = TagEntry(
+    id: 'codex_${e.id}',
+    category: TagCategory.other,
+    name: e.title,
+    positive: content,
   );
+  final draft = appendTagPositivesFolded(
+    pickEditorText(gen.promptRaw, gen.prompt),
+    [entry],
+  );
+  final positive = outputOf(draft);
+  ref
+      .read(generateProvider.notifier)
+      .setPrompts(positive: positive, positiveRaw: draftOf(draft, positive));
+  return (added: 0, dropped: 0);
 }
 
 // ---- 词条详情 ----
@@ -513,7 +537,7 @@ class _DetailSheetState extends ConsumerState<_DetailSheet>
                               borderRadius: BorderRadius.circular(12),
                             ),
                             child: SelectableText(
-                              e.tags,
+                              e.fullText,
                               style: mono(context, size: 12),
                             ),
                           ),
@@ -560,10 +584,12 @@ class _DetailSheetState extends ConsumerState<_DetailSheet>
           ],
           Row(
             children: [
+              _favButton(scheme, e),
+              const SizedBox(width: 10),
               Expanded(
                 child: OutlinedButton.icon(
                   onPressed: () async {
-                    await Clipboard.setData(ClipboardData(text: e.tags));
+                    await Clipboard.setData(ClipboardData(text: e.fullText));
                     if (mounted) {
                       Navigator.pop(context);
                       hintSnack(context, '已复制提示词', icon: Icons.copy);
@@ -615,6 +641,48 @@ class _DetailSheetState extends ConsumerState<_DetailSheet>
           ),
         ],
       ),
+    );
+  }
+
+  /// 收藏开关。**图标自己就是反馈**,不弹 snack —— 翻词条时会连点很多下,
+  /// 每下都弹一条反而糊住正在看的图。只有加不进去(满了)才出声。
+  Widget _favButton(ColorScheme scheme, CodexEntry e) {
+    final on = ref
+        .watch(codexFavKeysProvider)
+        .contains(codexFavKey(widget.codex.id, e.id));
+    return OutlinedButton(
+      onPressed: () => _toggleFav(e),
+      style: OutlinedButton.styleFrom(
+        fixedSize: const Size(54, 46),
+        padding: EdgeInsets.zero,
+        shape: const StadiumBorder(),
+        foregroundColor: on ? scheme.primary : scheme.onSurfaceVariant,
+        side: BorderSide(
+          color: on ? scheme.primary : scheme.outlineVariant,
+        ),
+      ),
+      child: Icon(
+        on ? Icons.star_rounded : Icons.star_outline_rounded,
+        size: 22,
+      ),
+    );
+  }
+
+  Future<void> _toggleFav(CodexEntry e) async {
+    final n = ref.read(codexFavoritesProvider.notifier);
+    if (n.isFull && !n.contains(widget.codex.id, e.id)) {
+      hintSnack(
+        context,
+        '收藏已满(${CodexFavoritesNotifier.kMax} 条),先去收藏夹清一些',
+        icon: Icons.info_outline,
+      );
+      return;
+    }
+    Haptics.selection();
+    await n.toggle(
+      widget.codex.id,
+      e,
+      now: DateTime.now().millisecondsSinceEpoch,
     );
   }
 
@@ -709,7 +777,9 @@ class _CodexHeroImagesState extends ConsumerState<_CodexHeroImages>
     super.dispose();
   }
 
-  String get _prompt => widget.entry.tags.trim();
+  // 背面展示的是**整条**内容:tags 只是公共部分,多角色词条的主体在
+  // characterPrompts 里(全站 8091 条带它,其中 401 条 tags 是空的)。
+  String get _prompt => widget.entry.fullText;
 
   int get _imgCount => widget.entry.images.isNotEmpty
       ? widget.entry.images.length
@@ -1291,6 +1361,197 @@ class _PickerSheet extends ConsumerWidget {
 
 /// 打开分类树。[current] 为当前选中路径(空=全部),返回新选中路径
 /// (空列表=全部);未选(直接关掉)返回 null,调用方不动。
+// ---- 收藏夹 ----
+
+/// 收藏夹。跨法典,不受当前法典/筛选影响 —— 收藏是「我要留着的那几条」,
+/// 不是当前视图的子集。
+Future<void> showCodexFavoritesSheet(BuildContext context) =>
+    _sheet(context, const _FavoritesSheet());
+
+class _FavoritesSheet extends ConsumerWidget {
+  const _FavoritesSheet();
+
+  /// 收藏里存的是词条快照,图 URL 还得靠 meta(assetBaseUrl / 路径模式)。
+  /// 索引里找不到(法典下架 / 换了 id)时给个占位 meta:图可能加载不出,
+  /// 但至少不会让那几条收藏凭空从列表里消失。
+  CodexMeta _metaOf(List<CodexMeta> index, String id) {
+    for (final m in index) {
+      if (m.id == id) return m;
+    }
+    return CodexMeta(id: id, type: CodexType.unknown, title: id);
+  }
+
+  Future<void> _clear(BuildContext context, WidgetRef ref, int n) async {
+    final ok = await confirmDialog(
+      context,
+      title: '清空收藏',
+      message: '将移除全部 $n 条收藏,不可恢复。法典词条本身不受影响。',
+      confirmLabel: '清空',
+    );
+    if (!ok) return;
+    await ref.read(codexFavoritesProvider.notifier).clearAll();
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final scheme = context.scheme;
+    final favs = ref.watch(codexFavoritesProvider).value ?? const [];
+    final index = ref.watch(codexIndexProvider).value ?? const <CodexMeta>[];
+    final media = ref.watch(codexMediaProvider).value ?? CodexMedia.fallback;
+    return SafeArea(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * 0.85,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 4, 8, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '收藏',
+                      style: context.texts.titleMedium!.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  Text(
+                    '${favs.length} / ${CodexFavoritesNotifier.kMax}',
+                    style: mono(
+                      context,
+                      size: 12,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                  if (favs.isNotEmpty)
+                    TextButton(
+                      onPressed: () => _clear(context, ref, favs.length),
+                      child: const Text('清空'),
+                    )
+                  else
+                    const SizedBox(width: 12),
+                ],
+              ),
+            ),
+            Flexible(
+              child: favs.isEmpty
+                  ? _empty(context)
+                  : GridView.builder(
+                      padding: const EdgeInsets.fromLTRB(14, 2, 14, 18),
+                      gridDelegate:
+                          const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 2,
+                            mainAxisSpacing: 10,
+                            crossAxisSpacing: 10,
+                            // 收藏夹走等比网格,不做瀑布流:这里是「翻自己存的
+                            // 那几条」,整齐比错落好扫
+                            childAspectRatio: 0.78,
+                          ),
+                      itemCount: favs.length,
+                      itemBuilder: (context, i) {
+                        final f = favs[i];
+                        final meta = _metaOf(index, f.codexId);
+                        return Stack(
+                          children: [
+                            Positioned.fill(
+                              child: CodexCard(
+                                codex: meta,
+                                entry: f.entry,
+                                media: media,
+                                fixedAspect: 0.78,
+                                // 收藏跨法典,左右翻页会拿 A 的 meta 去解 B 的
+                                // 图 —— 这里只开单条,不组批
+                                onTap: () => showCodexDetailSheet(
+                                  context,
+                                  meta,
+                                  media,
+                                  entries: [f.entry],
+                                  index: 0,
+                                ),
+                              ),
+                            ),
+                            Positioned(
+                              right: 4,
+                              top: 4,
+                              child: _UnfavDot(
+                                onTap: () => ref
+                                    .read(codexFavoritesProvider.notifier)
+                                    .remove(f.key),
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _empty(BuildContext context) {
+    final scheme = context.scheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 30, 24, 44),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.star_outline_rounded,
+            size: 44,
+            color: scheme.outlineVariant,
+          ),
+          const SizedBox(height: 10),
+          Text(
+            '还没有收藏',
+            style: context.texts.bodyMedium!.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '点开任意词条,左下角那颗星即可收藏',
+            textAlign: TextAlign.center,
+            style: context.texts.labelSmall!.copyWith(color: scheme.outline),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 卡角上的取消收藏:实心星 + 暗底,压在例图上也看得清。
+class _UnfavDot extends StatelessWidget {
+  const _UnfavDot({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.black.withValues(alpha: .42),
+      shape: const CircleBorder(),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () {
+          Haptics.selection();
+          onTap();
+        },
+        child: const SizedBox(
+          width: 30,
+          height: 30,
+          child: Icon(Icons.star_rounded, size: 18, color: Colors.white),
+        ),
+      ),
+    );
+  }
+}
+
 Future<List<String>?> showCodexCategorySheet(
   BuildContext context,
   List<CodexNode> tree,

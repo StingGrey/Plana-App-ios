@@ -208,6 +208,37 @@ class CodexImage {
   final String? original;
 }
 
+/// 词条自带的一个角色段(数据源里的 `characterPrompts[]`)。
+///
+/// [label] 是原样的人读标签:`char1` / `char2` …,另有极少数 `char`(不带号)
+/// 与 `char2-4`(一段管好几个角色)。全站计数:char1 8102、char2 4311、char3 653、
+/// char4 103、char5 17、char6 4、char 2、char2-4 1 —— 所以按 1..6 处理够用,
+/// 但解析必须容得下另两种,不能因为一个认不出的 label 就把这段丢了。
+class CodexCharacter {
+  const CodexCharacter(this.label, this.prompt);
+
+  final String label;
+  final String prompt;
+
+  /// 展示名:`char1` → 角色 1;`char2-4` → 角色 2-4;`char` → 角色。
+  String get display {
+    final m = RegExp(r'^char\s*(\d+(?:\s*-\s*\d+)?)$', caseSensitive: false)
+        .firstMatch(label.trim());
+    return m == null ? label : '角色 ${m.group(1)!.replaceAll(' ', '')}';
+  }
+
+  /// 这段管哪几个角色位(1 起)。`char2-4` → [2,3,4];`char` → [1];认不出 → 空。
+  List<int> get slots {
+    final m = RegExp(r'^char\s*(\d+)?(?:\s*-\s*(\d+))?$', caseSensitive: false)
+        .firstMatch(label.trim());
+    if (m == null) return const [];
+    final a = int.tryParse(m.group(1) ?? '') ?? 1; // `char` 不带号 = 第一个
+    final b = int.tryParse(m.group(2) ?? '') ?? a;
+    if (b < a || b - a > 8) return [a]; // 区间反了或离谱:只认起点
+    return [for (var i = a; i <= b; i++) i];
+  }
+}
+
 /// 法典词条:标题 + 成品提示词(NovelAI 权重语法)+ 例图 + 分类路径。
 class CodexEntry {
   const CodexEntry({
@@ -223,6 +254,7 @@ class CodexEntry {
     this.assetCodexId,
     this.isNew = false,
     this.images = const [],
+    this.characters = const [],
   });
 
   final String id;
@@ -246,6 +278,19 @@ class CodexEntry {
   final String? assetCodexId;
   final bool isNew;
   final List<CodexImage> images;
+
+  /// 词条自带的角色段。**数据源里这是与 [tags] 平级的独立字段**,不在 tags 里 ——
+  /// 全站 8091 条带它,其中 401 条 tags 本身是空的(内容全在这儿)。
+  /// 早先只读 tags,那些词条翻开就是一句话甚至一片空白。
+  final List<CodexCharacter> characters;
+
+  /// 给人看的完整内容:公共部分 + 各角色段,缺哪段就不占行。
+  /// 展示与复制都走它 —— 只给 tags 会漏掉大半条目的主体。
+  String get fullText => [
+    if (tags.trim().isNotEmpty) tags.trim(),
+    for (final c in characters)
+      if (c.prompt.trim().isNotEmpty) '${c.display}\n${c.prompt.trim()}',
+  ].join('\n\n');
 
   bool get hasImage =>
       images.isNotEmpty || (image != null && image!.isNotEmpty);
@@ -291,8 +336,45 @@ class CodexEntry {
           : null,
       isNew: j['isNew'] == true,
       images: images,
+      characters: [
+        if (j['characterPrompts'] is List)
+          for (final c in j['characterPrompts'] as List)
+            if (c is Map &&
+                c['prompt'] is String &&
+                (c['prompt'] as String).trim().isNotEmpty)
+              CodexCharacter(
+                c['label'] is String ? c['label'] as String : '',
+                c['prompt'] as String,
+              ),
+      ],
     );
   }
+
+  /// 回写(收藏夹存词条快照用)。只落非空字段:收藏文件里几百条,
+  /// 每条多带一串 null 白占体积。
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'title': title,
+    'tags': tags,
+    if (path.isNotEmpty) 'path': path,
+    if (image != null) 'image': image,
+    if (original != null) 'original': original,
+    if (imageWidth != null) 'imageWidth': imageWidth,
+    if (imageHeight != null) 'imageHeight': imageHeight,
+    if (assetRev != null) 'assetRev': assetRev,
+    if (assetCodexId != null) 'assetCodexId': assetCodexId,
+    if (isNew) 'isNew': true,
+    if (images.isNotEmpty)
+      'images': [
+        for (final im in images)
+          {'path': im.path, if (im.original != null) 'original': im.original},
+      ],
+    // 收藏夹存的是快照:漏了这个,收藏过的多角色词条打开会缺主体
+    if (characters.isNotEmpty)
+      'characterPrompts': [
+        for (final c in characters) {'label': c.label, 'prompt': c.prompt},
+      ],
+  };
 }
 
 /// 整部法典(元信息 + 词条 + 分类树)。

@@ -3,9 +3,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../core/net/remote_image.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../generate/widgets/common.dart' show hintSnack;
+import 'codex_card.dart';
+import 'codex_favorites.dart';
 import 'codex_models.dart';
 import 'codex_providers.dart';
 import 'codex_sheets.dart';
@@ -186,9 +187,9 @@ class _CodexViewState extends ConsumerState<CodexView> {
     );
   }
 
-  /// 筛选行:分类树入口(全部分类栏)+ 右侧随机按钮。上下外边距相等。
-  /// 分类按钮用 Expanded 占左、随机按钮自然宽靠右——单个 Expanded 吸掉所有
-  /// 余量,随机才会真正贴右(Flexible + Spacer 双 flex 会把余量甩到行尾)。
+  /// 筛选行:分类树入口(全部分类栏)+ 右侧收藏 / 随机。上下外边距相等。
+  /// 分类按钮用 Expanded 占左、右侧两枚自然宽靠右——单个 Expanded 吸掉所有
+  /// 余量,右侧才会真正贴右(Flexible + Spacer 双 flex 会把余量甩到行尾)。
   Widget _filterBar(
     CodexData d,
     CodexMeta meta,
@@ -205,8 +206,53 @@ class _CodexViewState extends ConsumerState<CodexView> {
                 ? Align(alignment: Alignment.centerLeft, child: _catButton(d))
                 : const SizedBox.shrink(),
           ),
+          _favButton(),
+          const SizedBox(width: 8),
           _randomButton(meta, media, entries),
         ],
+      ),
+    );
+  }
+
+  /// 收藏入口:进去是收藏夹(跨法典,不受当前筛选影响)。带条数,
+  /// 一眼知道里面有没有东西 —— 空收藏夹点进去再看到空页是白跑一趟。
+  Widget _favButton() {
+    final scheme = context.scheme;
+    final n = ref.watch(codexFavKeysProvider).length;
+    return Material(
+      color: scheme.surfaceContainerHigh,
+      borderRadius: BorderRadius.circular(20),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => showCodexFavoritesSheet(context),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                n > 0 ? Icons.star_rounded : Icons.star_outline_rounded,
+                size: 16,
+                color: n > 0 ? scheme.primary : scheme.onSurfaceVariant,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                '收藏',
+                style: context.texts.labelMedium!.copyWith(
+                  fontWeight: FontWeight.w600,
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+              if (n > 0) ...[
+                const SizedBox(width: 5),
+                Text(
+                  '$n',
+                  style: mono(context, size: 11, color: scheme.primary),
+                ),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -365,7 +411,7 @@ class _CodexViewState extends ConsumerState<CodexView> {
         itemCount: items.length,
         itemBuilder: (_, i) => Padding(
           padding: const EdgeInsets.only(bottom: _gap),
-          child: _CodexCard(
+          child: CodexCard(
             codex: meta,
             entry: items[i],
             media: media,
@@ -521,127 +567,6 @@ class CodexPickerButton extends ConsumerWidget {
                 color: scheme.onSurfaceVariant,
               ),
             ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// 瀑布流卡:例图(cover)+ 底部渐变标题;无图退成配色块 + 居中标题。
-class _CodexCard extends StatelessWidget {
-  const _CodexCard({
-    required this.codex,
-    required this.entry,
-    required this.media,
-    required this.onTap,
-  });
-
-  final CodexMeta codex;
-  final CodexEntry entry;
-  final CodexMedia media;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = context.scheme;
-    final url = codexImageUrl(codex, entry, media);
-    final aspect = entry.aspect <= 0 ? 0.75 : entry.aspect;
-    return Material(
-      color: scheme.surfaceContainer,
-      clipBehavior: Clip.antiAlias,
-      borderRadius: BorderRadius.circular(14),
-      child: InkWell(
-        onTap: onTap,
-        child: Stack(
-          children: [
-            AspectRatio(
-              aspectRatio: aspect,
-              child: url == null
-                  ? _placeholder(context)
-                  : RemoteImage(
-                      url,
-                      fit: BoxFit.cover,
-                      gaplessPlayback: true,
-                      frameBuilder: codexFadeIn,
-                      errorBuilder: (_, _, _) => _placeholder(context),
-                    ),
-            ),
-            if (url != null)
-              Positioned(
-                left: 0,
-                right: 0,
-                bottom: 0,
-                child: Container(
-                  padding: const EdgeInsets.fromLTRB(10, 16, 10, 8),
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        Colors.transparent,
-                        Colors.black.withValues(alpha: .66),
-                      ],
-                    ),
-                  ),
-                  child: Text(
-                    entry.title,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 12.5,
-                      height: 1.25,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.white,
-                    ),
-                  ),
-                ),
-              ),
-            if (entry.isNew)
-              Positioned(
-                left: 7,
-                top: 7,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 6,
-                    vertical: 1.5,
-                  ),
-                  decoration: BoxDecoration(
-                    color: scheme.tertiary,
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    'NEW',
-                    style: context.texts.labelSmall!.copyWith(
-                      color: scheme.onTertiary,
-                      fontWeight: FontWeight.w800,
-                      fontSize: 9,
-                    ),
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _placeholder(BuildContext context) {
-    final scheme = context.scheme;
-    return ColoredBox(
-      color: scheme.secondaryContainer,
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Center(
-          child: Text(
-            entry.title,
-            maxLines: 4,
-            overflow: TextOverflow.ellipsis,
-            textAlign: TextAlign.center,
-            style: context.texts.bodySmall!.copyWith(
-              color: scheme.onSecondaryContainer,
-              fontWeight: FontWeight.w700,
-            ),
           ),
         ),
       ),
