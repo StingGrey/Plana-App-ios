@@ -42,6 +42,7 @@ class GenJob {
     required this.seq,
     this.step = 0,
     this.total = 0,
+    this.prepPct = -1,
     this.preview,
     this.note,
     this.taskId,
@@ -61,6 +62,10 @@ class GenJob {
   final int step;
   final int total;
 
+  /// 采样**开始之前**那段(拉 LoRA / 加载模型)的百分比 0..100;
+  /// -1 = 这段没有可量化进度。现在只有「拉 LoRA」给得出来。
+  final int prepPct;
+
   /// 最新一帧逐步预览。
   final Uint8List? preview;
 
@@ -70,9 +75,17 @@ class GenJob {
   /// 服务端任务 id(仅 bot 模式,提交成功后才有)。取消排队要用。
   final String? taskId;
 
-  /// 0..1;还没出图时为 null → 走不确定进度。
-  double? get progress =>
-      total > 0 && step > 0 ? (step / total).clamp(0.0, 1.0) : null;
+  /// 真的在逐步出图。读数只有这时候才有意义 —— 准备阶段和收尾阶段都不是。
+  bool get sampling => total > 0 && step > 0;
+
+  /// 0..1;null → 走不确定进度。
+  ///
+  /// **一根条按阶段各走各的**(与 web 同一套):采样开始前借「拉 LoRA」的百分比,
+  /// 拉完归零,采样再从头走一遍 —— 当前在哪一段由旁边的文案说明。跨境拉一个
+  /// 448MB 的 LoRA 可能要好几分钟,一根空条比有百分比更让人以为卡了。
+  double? get progress => sampling
+      ? (step / total).clamp(0.0, 1.0)
+      : (prepPct >= 0 ? (prepPct / 100).clamp(0.0, 1.0) : null);
 
   bool get isRunning => stage == GenJobStage.running;
 
@@ -80,6 +93,7 @@ class GenJob {
     GenJobStage? stage,
     int? step,
     int? total,
+    int? prepPct,
     Uint8List? preview,
     String? note,
     bool clearNote = false,
@@ -93,6 +107,7 @@ class GenJob {
     seq: seq,
     step: step ?? this.step,
     total: total ?? this.total,
+    prepPct: prepPct ?? this.prepPct,
     preview: preview ?? this.preview,
     note: clearNote ? null : (note ?? this.note),
     taskId: taskId ?? this.taskId,

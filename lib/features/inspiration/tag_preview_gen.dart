@@ -123,7 +123,7 @@ Future<Uint8List> generateTagPreview(
       sessionId: session.sessionId,
       taskId: sub.taskId!,
       client: client,
-      onProgress: (step, total, _) => onStep?.call(step, total),
+      onProgress: (step, total, _, _) => onStep?.call(step, total),
     );
   }
 

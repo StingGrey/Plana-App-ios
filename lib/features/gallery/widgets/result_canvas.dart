@@ -125,21 +125,43 @@ class ProgressPill extends StatelessWidget {
   final GenStatus status;
   final VoidCallback? onCancel;
 
+  /// 胶囊上那行字:正在逐步出图 → `step/total`;其余(准备阶段、跑满之后的
+  /// 收尾)→ 阶段文案,没有文案才退回「准备中」/「收尾中」。
+  ///
+  /// ⚠ 判据是 [GenStatus.sampling] 而不是「进度条有没有值」:准备阶段现在也
+  /// 能借「拉 LoRA」的百分比画出条来,按有没有值判会在那几分钟里显示「0/0」。
+  static String _label(GenStatus status) {
+    if (status.sampling && status.step < status.total) {
+      return '${status.step}/${status.total}';
+    }
+    return status.note ?? (status.sampling ? '收尾中' : '准备中');
+  }
+
+  /// 胶囊那一套配套的数。**别单独动其中一个** —— 它们互相定死了:
+  ///
+  /// - [_h] 定圆角(`h/2`)和取消钮直径([_btn],上下各留 4)。
+  /// - 右内衬要按 **× 的字形**算光学间距,不是按圆钮的外框:那 [_btn] 是点击
+  ///   热区,静止时看不见,照它对齐的话右边会比左边紧 `(_btn-_icon)/2`。
+  ///   [_padR] 就是把这段差补回去,让左右看起来一样宽。
+  static const double _h = 38;
+  static const double _pad = 16;
+  static const double _btn = _h - 8;
+  static const double _icon = 18;
+  static const double _padR = _pad - (_btn - _icon) / 2;
+
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final p = status.progress;
-    // 整条按 44 高走(原先 36):内容一多就显得又扁又长,读数和取消挤在
-    // 一条细缝里。下面这几个数是配套的 —— 高度、圆角、进度条、字号、
-    // 取消钮直径,改一个就得跟着改其余的,别只动其中一个。
-    const h = 44.0;
     return Container(
-      height: h,
-      // 右侧留给 × 的内衬要小一截,否则圆角胶囊右端会空出一块
-      padding: EdgeInsets.only(left: 18, right: onCancel == null ? 18 : 7),
+      height: _h,
+      padding: EdgeInsets.only(
+        left: _pad,
+        right: onCancel == null ? _pad : _padR,
+      ),
       decoration: BoxDecoration(
         color: scheme.surface.withValues(alpha: .95),
-        borderRadius: BorderRadius.circular(h / 2),
+        borderRadius: BorderRadius.circular(_h / 2),
         border: Border.all(color: scheme.outlineVariant.withValues(alpha: .7)),
         boxShadow: [
           BoxShadow(
@@ -152,11 +174,13 @@ class ProgressPill extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          // 条细一点(原先 11 粗、116 长):粗的条压过了旁边的读数,看着像个
+          // 进度块而不是一条进度。长度跟着胶囊一起收一点,免得细了之后显得太长。
           SizedBox(
-            width: 116,
-            height: 11,
+            width: 104,
+            height: 6,
             child: ClipRRect(
-              borderRadius: BorderRadius.circular(5.5),
+              borderRadius: BorderRadius.circular(3),
               child: LinearProgressIndicator(
                 value: p, // null = 准备中,走不确定动画
                 backgroundColor: scheme.surfaceContainerHighest,
@@ -164,18 +188,19 @@ class ProgressPill extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(width: 13),
+          const SizedBox(width: 10),
           Text(
-            p != null
-                ? '${status.step}/${status.total}'
-                : (status.note ?? '准备中'),
-            style: mono(context, size: 14, color: scheme.onSurface),
+            // 采样**跑满之后**还有一段(VAE 解码 / 存盘 / 跨境取图),那时
+            // `36/36` 已经没有信息量了 —— 有阶段文案就换成文案,否则用户
+            // 盯着一条满进度条不知道还在等什么。
+            _label(status),
+            style: mono(context, size: 13, color: scheme.onSurface),
           ),
           if (onCancel != null) ...[
-            const SizedBox(width: 7),
+            const SizedBox(width: 6),
             SizedBox(
-              width: 34,
-              height: 34,
+              width: _btn,
+              height: _btn,
               child: Material(
                 color: Colors.transparent,
                 shape: const CircleBorder(),
@@ -184,7 +209,7 @@ class ProgressPill extends StatelessWidget {
                   onTap: onCancel,
                   child: Icon(
                     Icons.close_rounded,
-                    size: 19,
+                    size: _icon,
                     color: scheme.onSurfaceVariant,
                   ),
                 ),

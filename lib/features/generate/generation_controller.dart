@@ -47,6 +47,7 @@ class GenStatus {
     this.error,
     this.step = 0,
     this.total = 0,
+    this.prepPct = -1,
     this.width = 0,
     this.height = 0,
     this.preview,
@@ -57,6 +58,10 @@ class GenStatus {
   final String? error;
   final int step;
   final int total;
+
+  /// 采样开始之前那段(拉 LoRA / 加载模型)的百分比 0..100;-1 = 没有可量化进度。
+  final int prepPct;
+
   final int width;
   final int height;
   final Uint8List? preview;
@@ -67,9 +72,13 @@ class GenStatus {
 
   bool get noToken => error == 'no-token';
 
-  /// 0..1;未知(未开始出图)时为 null → 走不确定进度。
-  double? get progress =>
-      total > 0 && step > 0 ? (step / total).clamp(0.0, 1.0) : null;
+  /// 真的在逐步出图。读数只有这时候才有意义 —— 准备阶段和收尾阶段都不是。
+  bool get sampling => total > 0 && step > 0;
+
+  /// 0..1;null → 走不确定进度。采样开始前借「拉 LoRA」的百分比,见 [GenJob.progress]。
+  double? get progress => sampling
+      ? (step / total).clamp(0.0, 1.0)
+      : (prepPct >= 0 ? (prepPct / 100).clamp(0.0, 1.0) : null);
 }
 
 /// 单张生成的结局 —— 关键是**能不能安全重试**。
@@ -133,6 +142,7 @@ GenStatus _statusOf(GenJob j) => GenStatus(
   width: j.width,
   height: j.height,
   step: j.step,
+  prepPct: j.prepPct,
   preview: j.preview,
   note: j.note,
 );
@@ -849,7 +859,9 @@ class GenerationNotifier extends Notifier<GenPool> {
           sessionId: session.sessionId,
           taskId: sub.taskId!,
           client: client,
-          onProgress: (step, tot, preview) {
+          onProgress: (step, tot, preview, text) {
+            // 采样前那段服务端报 total=0,照抄的话会把建任务时按档位算好的
+            // 总步数抹成 0,进度条分母就没了
             final t = tot > 0 ? tot : total;
             _patch(
               jobId,
@@ -857,8 +869,14 @@ class GenerationNotifier extends Notifier<GenPool> {
                 stage: GenJobStage.running,
                 step: step,
                 total: t,
+                // 服务端在同一条消息里既给读数也给阶段文案(「生成中 3/36」、
+                // 采样跑满之后的「取图中」)。一律清掉的话那句「取图中」会被
+                // 这条消息自己抹掉 —— 而那正是用户盯着满进度条等图的几秒。
+                // 没带文案才清(免费档、以及残留的排队位次)。
+                note: text.isEmpty ? null : text,
+                clearNote: text.isEmpty,
+                prepPct: -1, // 有读数了,准备阶段那根条的百分比作废
                 preview: preview,
-                clearNote: true,
               ),
             );
             _pushProgress();
@@ -877,13 +895,16 @@ class GenerationNotifier extends Notifier<GenPool> {
             _pushIndeterminate(text, pos > 0 ? '#$pos' : '排队');
           },
           onWarning: (msg) => ref.read(genNoticeProvider.notifier).show(msg),
-          onStage: (note) {
-            // anima Modal 冷启动等特殊阶段:出图前以文案示意
-            if ((_job(jobId)?.step ?? 0) > 0) return;
-            _patch(
-              jobId,
-              (j) => j.copyWith(stage: GenJobStage.starting, note: note),
-            );
+          onStage: (note, pct) {
+            // **没有步数**那几段的文案:anima Modal 冷启动,以及付费档实例在
+            // 采样开始前下发的 stage_text(准备 LoRA / 加载模型)。
+            //
+            // 采样跑满之后的「取图中」不走这里 —— 它带着满读数,由 onProgress
+            // 连文案一起收下。之前那次是分两条回调发的,后到的读数把文案抹了。
+            //
+            // pct 每次都要重写(-1 也写):换阶段服务端就不再下发这个字段,
+            // 沿用上一条的话「加载模型」会顶着「拉 LoRA」留下的 100% 不动。
+            _patch(jobId, (j) => j.copyWith(note: note, prepPct: pct));
             _pushIndeterminate(note, '生成中');
           },
           abort: abort,

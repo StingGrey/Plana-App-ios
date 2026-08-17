@@ -1485,7 +1485,9 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   }) {
     final scheme = context.scheme;
     if (gen.busy) {
-      final readout = gen.progress != null
+      // 判据是 sampling 而不是「进度条有没有值」:准备阶段(拉 LoRA)现在也
+      // 能画出条来,按有没有值判会在那几分钟里显示「0 / 0」。
+      final readout = gen.sampling
           ? '${gen.step} / ${gen.total}'
           : (gen.note ?? '生成中…');
       final style = TextStyle(
