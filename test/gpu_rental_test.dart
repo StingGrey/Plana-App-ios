@@ -152,7 +152,9 @@ void main() {
       // 两段等待分开报:合成一个数会让文案骗人(服务端注释里记着这个教训)
       expect(kBootHintFallback, 40);
       expect(kFirstImageHintFallback, 25);
-      expect(kRateFallback, 3.0);
+      // 2026-08-17 服务端 IMG_PRICE_PER_HOUR 由 3.0 下调到 2.7,这份跟着对齐 ——
+      // 对不上的话首帧(status 还没回来)会闪一个错的单价
+      expect(kRateFallback, 2.7);
     });
   });
 

@@ -194,7 +194,18 @@ class ProgressPill extends StatelessWidget {
             // `36/36` 已经没有信息量了 —— 有阶段文案就换成文案,否则用户
             // 盯着一条满进度条不知道还在等什么。
             _label(status),
-            style: mono(context, size: 13, color: scheme.onSurface),
+            // ⚠ 这行**会出现中文**(「加载模型」「取图中」「准备 LoRA」),
+            // 所以不能走 mono():等宽字体里没有中文字,中文会掉到系统的 CJK
+            // 回退上,和同一行里的等宽拉丁字母长得不像一家。
+            // 最初这里只有纯数字,等宽没问题;接了阶段文案之后就不行了。
+            // tabularFigures 留着 —— 数字仍然等宽,`9/36 → 10/36` 不会左右挤。
+            // (web 同款教训,MainContent 那行注释里点名了这条。)
+            style: context.texts.bodyMedium!.copyWith(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: scheme.onSurface,
+              fontFeatures: const [FontFeature.tabularFigures()],
+            ),
           ),
           if (onCancel != null) ...[
             const SizedBox(width: 6),

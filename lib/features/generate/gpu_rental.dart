@@ -88,7 +88,10 @@ class RentalSpec {
 const kIdleChoicesFallback = <int>[180, 600, 1800, 0];
 const kIdleDefaultFallback = 600;
 const kMaxUptimeFallback = 4 * 3600;
-const kRateFallback = 3.0;
+// 只在首帧(status 还没回来)用得上。真实售价一律以服务端
+// config.IMG_PRICE_PER_HOUR 为准,改价改那边,这里跟着对齐就行 —— 对不上时
+// 那零点几秒里会闪一个错的单价出来。(2026-08-17 服务端 3.0 → 2.7)
+const kRateFallback = 2.7;
 
 /// 两段等待,**必须分开说**。它们发生在不同时刻,加起来写成一个数就会骗人
 /// (服务端注释里专门记了这个教训:曾经合成 85,前端照着写「开机约一分半」)。
