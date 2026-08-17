@@ -2,28 +2,33 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
-import '../editor_models.dart';
 import '../editor_state.dart';
 
-/// 编辑器底栏:正/负 tab(左)+ 多选 + 撤销(右)。
+/// 底栏控件的统一高度:左侧正/负滑块与右侧两颗药丸共用一个数。
+///
+/// 从前一边写死 36、一边靠 9px 上下内边距把文字行高(bodyMedium 14×1.43≈20)
+/// 撑成 38 —— 差这 2px 就已经看得出左右不齐;更麻烦的是系统字号一放大,只有
+/// 药丸会跟着长,滑块纹丝不动,差距越拉越大。两边都钉死才不会各长各的。
+const double _kBarH = 38;
+
+/// 编辑器底栏:正/负 tab(左)+ 显示形态切换 + 撤销(右)。
 /// 从顶栏下放到拇指易达的底部,吸在补全栏 / 键盘之上。
 class EditorBottomBar extends ConsumerWidget {
   const EditorBottomBar({
     super.key,
-    required this.onSort,
-    required this.sortActive,
+    required this.onToggleMode,
+    required this.chipMode,
   });
 
-  /// 多选模式开关;词条 <2 且未在模式中时禁用。
-  final VoidCallback onSort;
-  final bool sortActive;
+  /// 正文形态切换:注音富文本 ⇄ 芯片流。选择记在编辑器设置里。
+  final VoidCallback onToggleMode;
+  final bool chipMode;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final scheme = context.scheme;
     final st = ref.watch(editorProvider);
     final notifier = ref.read(editorProvider.notifier);
-    final sortable = sortActive || parseToks(st.activeText).length >= 2;
 
     return Material(
       color: scheme.surface,
@@ -36,12 +41,13 @@ class EditorBottomBar extends ConsumerWidget {
               onChanged: notifier.setActivePositive,
             ),
             const Spacer(),
+            // 文案/图标报的是**切过去**的那一头(和 web 那颗 Grid/AlignLeft
+            // 同款语义),所以不做选中高亮 —— 高亮加文案会互相打架。
             _Pill(
-              icon: Icons.checklist,
-              label: sortActive ? '完成' : '多选',
-              enabled: sortable,
-              selected: sortActive,
-              onTap: onSort,
+              icon: chipMode ? Icons.notes_rounded : Icons.grid_view_rounded,
+              label: chipMode ? '文本' : '芯片',
+              enabled: true,
+              onTap: onToggleMode,
             ),
             const SizedBox(width: 8),
             _Pill(
@@ -57,51 +63,46 @@ class EditorBottomBar extends ConsumerWidget {
   }
 }
 
-/// 操作药丸:图标 + 文案,禁用置灰,选中高亮(撤销/多选共用)。
+/// 操作药丸:图标 + 文案,禁用置灰(形态切换 / 撤销共用)。
 class _Pill extends StatelessWidget {
   const _Pill({
     required this.icon,
     required this.label,
     required this.enabled,
     required this.onTap,
-    this.selected = false,
   });
 
   final IconData icon;
   final String label;
   final bool enabled;
-  final bool selected;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    final fg = !enabled
-        ? scheme.outlineVariant
-        : selected
-        ? scheme.onSecondaryContainer
-        : scheme.onSurface;
+    final fg = enabled ? scheme.onSurface : scheme.outlineVariant;
     return Material(
-      color: selected ? scheme.secondaryContainer : scheme.surfaceContainerHigh,
-      borderRadius: BorderRadius.circular(20),
+      color: scheme.surfaceContainerHigh,
+      borderRadius: BorderRadius.circular(_kBarH / 2),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: enabled ? onTap : null,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 18, color: fg),
-              const SizedBox(width: 6),
-              Text(
-                label,
-                style: context.texts.bodyMedium!.copyWith(
-                  color: fg,
-                  fontWeight: selected ? FontWeight.w700 : null,
+        child: SizedBox(
+          height: _kBarH,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: 18, color: fg),
+                const SizedBox(width: 6),
+                Text(
+                  label,
+                  maxLines: 1,
+                  style: context.texts.bodyMedium!.copyWith(color: fg),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -117,7 +118,7 @@ class _PosNegToggle extends StatelessWidget {
   final ValueChanged<bool> onChanged;
 
   static const double _segW = 60;
-  static const double _h = 36;
+  static const double _h = _kBarH;
 
   @override
   Widget build(BuildContext context) {

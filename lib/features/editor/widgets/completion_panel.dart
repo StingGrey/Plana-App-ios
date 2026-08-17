@@ -6,7 +6,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../generate/widgets/common.dart' show hintSnack;
 import '../data/suggestions.dart';
 import '../data/tag_completion.dart';
-import 'completion_bar.dart' show suggestionGlyph;
+import 'completion_bar.dart' show CompletionGrip, suggestionGlyph;
 
 /// 形态 B · 展开态:分类竖向列表(键盘收起,腾出纵向空间)。
 /// 由形态 A 上滑 / 点抓手进入;顶部抓手或下滑 / 底部提示 → 收起回形态 A。
@@ -144,26 +144,17 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
 
   // ---- 抓手 / 头部 / 底部 ----
 
-  Widget _handle() {
-    final scheme = context.scheme;
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
+  /// 与横向态那枚同款(同一个 [CompletionGrip]):一上一下是同一个交互的两头,
+  /// 一边有底一边裸着会显得是两个东西。
+  Widget _handle() => Center(
+    child: CompletionGrip(
+      icon: Icons.keyboard_arrow_down_rounded,
       onTap: widget.onCollapse,
-      onVerticalDragEnd: (d) {
+      onDragEnd: (d) {
         if ((d.primaryVelocity ?? 0) > 120) widget.onCollapse();
       },
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 2),
-        child: Center(
-          child: Icon(
-            Icons.keyboard_arrow_down_rounded,
-            size: 22,
-            color: scheme.outline,
-          ),
-        ),
-      ),
-    );
-  }
+    ),
+  );
 
   Widget _header() {
     final scheme = context.scheme;

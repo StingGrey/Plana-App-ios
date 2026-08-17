@@ -21,6 +21,52 @@ import '../data/suggestions.dart';
   }
 }
 
+/// 抓手(横向态的上拉、竖向态的下收共用)。
+///
+/// 原来是一枚 `outline` 色的裸箭头,压在 surfaceContainer 上几乎看不出是个能点的
+/// 东西 —— 而横向态那枚是**唯一**的展开入口(另一条路是盲上滑)。加个胶囊底
+/// 把它托起来:形状本身就在说「这儿可以拉」。
+///
+/// 触摸区比胶囊大一圈:胶囊管看得见,外面那圈管按得着。
+class CompletionGrip extends StatelessWidget {
+  const CompletionGrip({
+    super.key,
+    required this.icon,
+    required this.onTap,
+    this.onDragEnd,
+  });
+
+  final IconData icon;
+  final VoidCallback onTap;
+  final void Function(DragEndDetails)? onDragEnd;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onVerticalDragEnd: onDragEnd,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 3),
+          child: Container(
+            width: 64,
+            height: 26,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(13),
+            ),
+            child: Icon(icon, size: 20, color: scheme.onSurfaceVariant),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// 形态 A · 默认横向态:吸在键盘正上方。
 /// 自适应 1+1 —— 标签行常驻,实体行(角色/OC/作品)仅命中时滑入。
 /// 上滑 / 点把手 → 展开为形态 B。
@@ -88,17 +134,9 @@ class CompletionBar extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               // 把手:点一下或往上拉都展开
-              InkWell(
+              CompletionGrip(
+                icon: Icons.keyboard_arrow_up_rounded,
                 onTap: onExpand,
-                borderRadius: BorderRadius.circular(12),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24),
-                  child: Icon(
-                    Icons.keyboard_arrow_up_rounded,
-                    size: 22,
-                    color: scheme.outline,
-                  ),
-                ),
               ),
               AnimatedSize(
                 duration: Motion.medium,

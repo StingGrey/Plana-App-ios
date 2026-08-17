@@ -32,11 +32,16 @@ class TagPanel extends StatefulWidget {
     required this.onDelete,
     required this.onAddRelated,
     required this.onClose,
+    this.onRename,
   });
 
   final Tok tok;
   final int? count;
   final List<String> related;
+
+  /// 行内改名(芯片模式专有:那边没有光标,改字只能从这里进)。
+  /// null = 文本模式,点标题不进编辑态——直接点正文里那个词就行。
+  final void Function(String name)? onRename;
 
   /// 异常权重警示:词中段疑似丢逗号的数字串(如 '10'),null=正常。
   final String? warning;
@@ -75,12 +80,51 @@ class TagPanel extends StatefulWidget {
 
 class _TagPanelState extends State<TagPanel> {
   bool _relatedOpen = false; // 关联标签是否展开
+  bool _renaming = false; // 标题处于行内改名态
+  final TextEditingController _nameCtrl = TextEditingController();
+  final FocusNode _nameFocus = FocusNode();
 
   @override
   void didUpdateWidget(TagPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // 切到另一枚标签时收起关联(同枚改权重则保持)
-    if (oldWidget.tok.name != widget.tok.name) _relatedOpen = false;
+    // 切到另一枚标签时收起关联与改名(同枚改权重则保持)
+    if (oldWidget.tok.name != widget.tok.name) {
+      _relatedOpen = false;
+      _renaming = false;
+    }
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _nameFocus.dispose();
+    super.dispose();
+  }
+
+  void _startRename() {
+    final name = widget.tok.name;
+    _nameCtrl.value = TextEditingValue(
+      text: name,
+      // 全选:改名多半是整枚换掉,不是补字
+      selection: TextSelection(baseOffset: 0, extentOffset: name.length),
+    );
+    setState(() => _renaming = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _nameFocus.requestFocus();
+    });
+  }
+
+  void _commitRename() {
+    final v = _nameCtrl.text.trim();
+    setState(() => _renaming = false);
+    _nameFocus.unfocus();
+    if (v.isEmpty || v == widget.tok.name) return;
+    widget.onRename?.call(v);
+  }
+
+  void _cancelRename() {
+    setState(() => _renaming = false);
+    _nameFocus.unfocus();
   }
 
   @override
@@ -115,6 +159,12 @@ class _TagPanelState extends State<TagPanel> {
               count: widget.count,
               wc: wc,
               onClose: widget.onClose,
+              renaming: _renaming,
+              nameCtrl: _nameCtrl,
+              nameFocus: _nameFocus,
+              onStartRename: widget.onRename == null ? null : _startRename,
+              onCommitRename: _commitRename,
+              onCancelRename: _cancelRename,
             ),
             // 跨词条权重组信息:自身读数之外单独陈述组权重与合计,
             // 「选中整组」一键进批量面板调组权重。
@@ -442,6 +492,12 @@ class _Header extends StatelessWidget {
     required this.count,
     required this.wc,
     required this.onClose,
+    required this.renaming,
+    required this.nameCtrl,
+    required this.nameFocus,
+    required this.onStartRename,
+    required this.onCommitRename,
+    required this.onCancelRename,
   });
 
   final Tok tok;
@@ -449,59 +505,83 @@ class _Header extends StatelessWidget {
   final Color wc;
   final VoidCallback onClose;
 
+  /// 标题处于行内改名态:整行换成输入框 + 确认/取消。
+  final bool renaming;
+  final TextEditingController nameCtrl;
+  final FocusNode nameFocus;
+
+  /// null = 本模式不给改名入口(点标题没反应)。
+  final VoidCallback? onStartRename;
+  final VoidCallback onCommitRename;
+  final VoidCallback onCancelRename;
+
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
+    if (renaming) return _renameRow(context);
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.baseline,
-                textBaseline: TextBaseline.alphabetic,
-                children: [
-                  Flexible(
-                    child: Text(
-                      tok.name.isEmpty ? '标签' : tok.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: context.texts.titleMedium!.copyWith(
-                        color: wc,
-                        fontWeight: FontWeight.w700,
-                        decoration: tok.disabled
-                            ? TextDecoration.lineThrough
-                            : null,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: onStartRename,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.baseline,
+                  textBaseline: TextBaseline.alphabetic,
+                  children: [
+                    Flexible(
+                      child: Text(
+                        tok.name.isEmpty ? '标签' : tok.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: context.texts.titleMedium!.copyWith(
+                          color: wc,
+                          fontWeight: FontWeight.w700,
+                          decoration: tok.disabled
+                              ? TextDecoration.lineThrough
+                              : null,
+                        ),
                       ),
                     ),
-                  ),
-                  if (count != null) ...[
-                    const SizedBox(width: 8),
-                    Text(
-                      _formatCount(count!),
-                      style: mono(
-                        context,
-                        size: 12,
+                    if (count != null) ...[
+                      const SizedBox(width: 8),
+                      Text(
+                        _formatCount(count!),
+                        style: mono(
+                          context,
+                          size: 12,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                    // 可改名时给个笔:不然「标题能点」这件事没人看得出来
+                    if (onStartRename != null) ...[
+                      const SizedBox(width: 6),
+                      Icon(
+                        Icons.edit_outlined,
+                        size: 14,
+                        color: scheme.outline,
+                      ),
+                    ],
+                  ],
+                ),
+                if (tok.trans != null && tok.trans!.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 1),
+                    child: Text(
+                      tok.trans!,
+                      style: context.texts.bodyMedium!.copyWith(
                         color: scheme.onSurfaceVariant,
                       ),
                     ),
-                  ],
-                ],
-              ),
-              if (tok.trans != null && tok.trans!.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(top: 1),
-                  child: Text(
-                    tok.trans!,
-                    style: context.texts.bodyMedium!.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
                   ),
-                ),
-            ],
+              ],
+            ),
           ),
         ),
         if (tok.name.isNotEmpty) ...[
@@ -522,6 +602,46 @@ class _Header extends StatelessWidget {
         ),
         const SizedBox(width: 4),
         _circleIcon(context, icon: Icons.close, onTap: onClose),
+      ],
+    );
+  }
+
+  /// 改名态:标题整行换成输入框。回车 = 确认,Esc/✕ = 放弃。
+  Widget _renameRow(BuildContext context) {
+    final scheme = context.scheme;
+    return Row(
+      children: [
+        Expanded(
+          child: TextField(
+            controller: nameCtrl,
+            focusNode: nameFocus,
+            autocorrect: false,
+            textInputAction: TextInputAction.done,
+            onSubmitted: (_) => onCommitRename(),
+            style: context.texts.titleMedium!.copyWith(
+              color: scheme.onSurface,
+              fontWeight: FontWeight.w700,
+            ),
+            cursorColor: scheme.primary,
+            decoration: InputDecoration(
+              isDense: true,
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 10,
+                vertical: 8,
+              ),
+              filled: true,
+              fillColor: scheme.surfaceContainerHighest,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide.none,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 6),
+        _circleIcon(context, icon: Icons.check, onTap: onCommitRename),
+        const SizedBox(width: 4),
+        _circleIcon(context, icon: Icons.close, onTap: onCancelRename),
       ],
     );
   }
@@ -685,6 +805,8 @@ class BatchPanel extends StatelessWidget {
     required this.anyEnabled,
     this.groupMult,
     this.onSelectGroup,
+    this.onUnfold,
+    this.foldCount = 0,
     required this.onCopy,
     required this.onWrap,
     required this.onStepMult,
@@ -714,6 +836,13 @@ class BatchPanel extends StatelessWidget {
 
   /// 把选中扩到整个权重组(扩了才能调组权重);null=没有更外层的组。
   final VoidCallback? onSelectGroup;
+
+  /// 恰好选中一枚折叠段时的「展开」入口。芯片模式里没有正文可点标题,
+  /// 解散只能从这儿走;null = 选的不是单枚折叠。
+  final VoidCallback? onUnfold;
+
+  /// 该折叠段的成员数(与 [onUnfold] 同进同退):展开会摊出多少枚,先说清楚。
+  final int foldCount;
 
   /// 复制所选(折叠摊平成成员,权重/禁用记号照搬)。
   final VoidCallback onCopy;
@@ -806,6 +935,50 @@ class BatchPanel extends StatelessWidget {
                           ),
                           child: Text(
                             '选中整组',
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w600,
+                              color: scheme.onSecondaryContainer,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            if (onUnfold != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 5),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.unfold_more,
+                      size: 15,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        '折叠段 · $foldCount 个标签',
+                        style: context.texts.labelSmall!.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                    Material(
+                      color: scheme.secondaryContainer,
+                      borderRadius: BorderRadius.circular(9),
+                      clipBehavior: Clip.antiAlias,
+                      child: InkWell(
+                        onTap: onUnfold,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 9,
+                            vertical: 5,
+                          ),
+                          child: Text(
+                            '展开',
                             style: TextStyle(
                               fontSize: 11.5,
                               fontWeight: FontWeight.w600,

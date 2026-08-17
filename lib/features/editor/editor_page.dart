@@ -17,20 +17,26 @@ import 'editor_models.dart';
 import 'editor_settings.dart';
 import 'editor_state.dart';
 import 'widgets/annotated_field.dart';
+import 'widgets/chip_flow_view.dart';
 import 'widgets/completion_bar.dart';
 import 'widgets/completion_panel.dart';
 import 'widgets/editor_bottom_bar.dart';
 import 'widgets/editor_settings_sheet.dart';
 import 'widgets/editor_top_bar.dart';
 import 'widgets/rich_tag_controller.dart';
-import 'widgets/sort_chips_view.dart';
 import 'widgets/tag_panel.dart';
 import '../../core/util/haptics.dart';
 
-/// 提示词编辑器(光标驱动定稿):
-/// 表面是可编辑文本域,权重原样内联+上色,翻译绘制层画在词下。
-/// **底部只一件事**:光标点在词里(含多词名内部空格)→词条栏;
-/// 逗号/词条间空隙/行尾或打字中→补全。
+/// 提示词编辑器。正文有两种形态,底栏一键切,选择记在编辑器设置里:
+///
+/// - **注音富文本**(默认,光标驱动定稿):可编辑文本域,权重原样内联+上色,
+///   翻译绘制层画在词下。底部只一件事——光标点在词里(含多词名内部空格)
+///   →词条栏;逗号/词条间空隙/行尾或打字中→补全。
+/// - **芯片流**(web 移动端同款):一枚标签一颗 chip,点选/多选/⊕ 搬运,
+///   打字走尾部输入框。没有光标,改名从词条栏进,折叠解散从批量面板进。
+///
+/// 两种形态共用同一个 [RichTagController] —— 芯片模式下正文没挂在树上,
+/// 但所有改文本的操作仍旧改它,于是切回来时状态天然一致。
 class EditorPage extends ConsumerStatefulWidget {
   const EditorPage({super.key, required this.positive, this.charId});
 
@@ -48,6 +54,10 @@ class _EditorPageState extends ConsumerState<EditorPage>
   final RichTagController _controller = RichTagController();
   final FocusNode _focus = FocusNode();
   final ScrollController _scroll = ScrollController();
+
+  /// 芯片模式的尾部输入框(唯一打字入口)。控制器提在页面上:补全管线要读它。
+  final TextEditingController _input = TextEditingController();
+  final FocusNode _inputFocus = FocusNode();
 
   /// 正/负切换时编辑区的方向滑入(切负面从右进、切正面从左进)。
   late final AnimationController _tabAnim = AnimationController(
@@ -73,10 +83,13 @@ class _EditorPageState extends ConsumerState<EditorPage>
   List<String> _related = const []; // 当前词的关联标签(异步拉取)
   String? _relatedFor; // _related 归属的词名(防过期回调窜词)
   bool _relatedLoading = false; // 关联标签拉取中(词条栏「关联」显示转圈)
-  bool _sortMode = false; // 多选模式:正文换成 chip 流,点选后批量移动/加权/删除
-  Set<int> _sortSel = {}; // 多选模式已选顶层单元下标
-  double _sortMult = 1.0; // 多选模式批量面板的统一数值权重读数
+  Set<int> _chipSel = {}; // 芯片模式已选顶层单元下标
+  double _chipMult = 1.0; // 芯片模式批量面板的统一数值权重读数
   String? _charName; // 编辑角色时的名字(顶栏标题);主提示词会话为 null
+
+  /// 正文形态。设置即真相 —— 底栏那颗切换直接改设置,不另存一份局部状态,
+  /// 免得「设置里是芯片、页面还停在文本」这种两头对不上的中间态。
+  bool get _chipMode => _settings.chipMode;
 
   EditorNotifier get _notifier => ref.read(editorProvider.notifier);
   late final TagTranslationService _transSvc;
@@ -164,8 +177,11 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _transSvc.removeListener(_refreshAnnotations);
     _tabAnim.dispose();
     _controller.dispose();
+    _input.dispose();
     if (_focus.hasFocus) _focus.unfocus(); // 带着焦点被销毁,键盘会赖着不走
+    if (_inputFocus.hasFocus) _inputFocus.unfocus();
     _focus.dispose();
+    _inputFocus.dispose();
     _scroll.dispose();
     super.dispose();
   }
@@ -184,14 +200,17 @@ class _EditorPageState extends ConsumerState<EditorPage>
   }
 
   /// 翻译数据到货(词库灌注完成/后端回填):重绘注音层与词条栏。
-  /// 走 _muting 防经 _onCtrl 触发 _routeCursor 把正在看的补全清掉;
-  /// 词条栏开着才重算(与补全互斥,安全)。
+  /// 走 _muting 防经 _onCtrl 触发路由把正在看的补全清掉。
+  ///
+  /// 只在词条栏开着**且没在打字**时才重算:文本形态下这两者本就互斥,加这个
+  /// 判断是给芯片形态用的 —— 那边「选中一枚 + 在尾部输入框打字」能同时成立,
+  /// 不挡的话一批译文到货就会把正在看的补全列表抹掉。
   void _refreshAnnotations() {
     if (!mounted) return;
     _muting = true;
     _controller.refresh();
     _muting = false;
-    if (_panelTok != null) _routeCursor();
+    if (_panelTok != null && _query.isEmpty) _reroute();
   }
 
   /// 把注音未命中的词喂给后端翻译通道(增强模式;离线模式 no-op)。
@@ -225,10 +244,14 @@ class _EditorPageState extends ConsumerState<EditorPage>
       _prevText = next.activeText;
       _prevSel = _controller.selection;
       _muting = false;
-      _routeCursor();
+      _reroute();
       _feedTranslation(next.activeText); // 载入/切 tab 的既有文本也问翻译
     }
   }
+
+  /// 文本/光标变动后重算 dock。芯片模式没有光标可依,按「选中的是哪颗 chip」
+  /// 重算 —— 两条路都收敛到 [_panelTok] 与关联标签这同一处状态。
+  void _reroute() => _chipMode ? _syncChipCursor() : _routeCursor();
 
   void _onCtrl() {
     if (_muting) return;
@@ -396,6 +419,42 @@ class _EditorPageState extends ConsumerState<EditorPage>
         }
       }
     }
+    _setPanelTok(tok);
+  }
+
+  /// 芯片模式的「路由」:选中恰好一枚散标签时把光标(不可见,但 _tokAtCursor
+  /// 那一整套操作都读它)挪到该词名上,词条栏随之出这一枚;选中折叠段或多选
+  /// 则不出词条栏,交给批量面板。
+  ///
+  /// 光标同步是这套复用的关键:词条栏的加权/禁用/删除/SD 转换全都从光标反查
+  /// 词条,同步一次就全部原样可用,不必为芯片模式再写一份。
+  void _syncChipCursor() {
+    _clearSuggest();
+    final text = _controller.text;
+    final units = topLevelUnits(text, _foldBodies);
+    // 文本被改短(删除/展开)后旧下标可能越界,先滤掉再谈选中了什么
+    final live = {
+      for (final i in _chipSel)
+        if (i >= 0 && i < units.length) i,
+    };
+    if (live.length != _chipSel.length) setState(() => _chipSel = live);
+    Tok? tok;
+    if (live.length == 1) {
+      final u = units[live.first];
+      final at = u.isFold ? u.start : u.tok!.nameStart;
+      if (_controller.selection.baseOffset != at) {
+        _muting = true;
+        _prevSel = TextSelection.collapsed(offset: at);
+        _controller.selection = _prevSel;
+        _muting = false;
+      }
+      if (!u.isFold && _settings.enableTagPanel) tok = u.tok;
+    }
+    _setPanelTok(tok);
+  }
+
+  /// 词条栏落位 + 关联标签拉取(光标路由与芯片路由共用出口)。
+  void _setPanelTok(Tok? tok) {
     if (tok?.segStart != _panelTok?.segStart ||
         tok?.braceLevel != _panelTok?.braceLevel ||
         tok?.numMult != _panelTok?.numMult ||
@@ -431,7 +490,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
       return;
     }
     _debounce?.cancel();
-    final word = _currentWord();
+    final word = _queryWord();
     final trigger = _hasCjk(word) ? word.isNotEmpty : word.length >= 2;
     if (!trigger) {
       _clearSuggest();
@@ -452,13 +511,16 @@ class _EditorPageState extends ConsumerState<EditorPage>
       // 实体建议关闭:只留标签行(引擎缓存不区分设置,出口过滤)
       if (!_settings.entitySuggest) res = SuggestResult(tags: res.tags);
       // 被后续输入/移光标取代,或光标已移出该词 → 丢弃这次结果
-      if (!mounted || gen != _queryGen || _currentWord() != word) return;
+      if (!mounted || gen != _queryGen || _queryWord() != word) return;
       setState(() {
         _loading = false;
         _result = res;
       });
     });
   }
+
+  /// 补全查询词的来源:芯片模式是尾部输入框的原文,文本模式是光标左侧那截。
+  String _queryWord() => _chipMode ? _input.text.trim() : _currentWord();
 
   /// 补全查询词 = 光标**左侧**的名字部分。在两 tag 间插入时后一个 tag
   /// 会与新输入并成一个 token(`tag1, bl|tag2` → `bltag2`),只取左侧
@@ -491,7 +553,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
   Future<void> _expand() async {
     if (_sheetOpen || _query.isEmpty || _result.isEmpty) return;
     _sheetOpen = true;
-    _focus.unfocus();
+    (_chipMode ? _inputFocus : _focus).unfocus();
     final size = MediaQuery.of(context).size;
     await showModalBottomSheet<void>(
       context: context,
@@ -508,13 +570,18 @@ class _EditorPageState extends ConsumerState<EditorPage>
             Navigator.of(ctx).pop();
             _pick(s);
           },
-          onInsert: _insertAppend,
+          onInsert: _chipMode
+              ? (s) => _appendTag(
+                  _insertTextOf(s, plainSlot: true),
+                  quiet: true,
+                )
+              : _insertAppend,
           onCollapse: () => Navigator.of(ctx).pop(),
         ),
       ),
     );
     _sheetOpen = false;
-    if (mounted) _focus.requestFocus(); // 关闭即回键盘
+    if (mounted) (_chipMode ? _inputFocus : _focus).requestFocus(); // 关闭即回键盘
   }
 
   /// 编辑器设置弹层:开关即时生效(经 build 的 ref.listen 反映到当前会话)。
@@ -530,7 +597,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
       builder: (ctx) =>
           Theme(data: editorTheme(ctx), child: const EditorSettingsSheet()),
     );
-    if (mounted && !_sortMode) _focus.requestFocus();
+    if (mounted && !_chipMode) _focus.requestFocus();
   }
 
   /// 建议的落地文本。画师串 / OC 标签组这类**一次带进来一整组**的建议
@@ -595,7 +662,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
     // 折叠展开尤其明显:折叠体里的词此前只在旁路表里,正文从没见过它们。
     // request() 内部按「已问过/已有译文」去重,重复调很便宜。
     _feedTranslation(text);
-    _routeCursor();
+    _reroute();
   }
 
   // ---- 补全:替换光标所在词的名字(保留其权重语法)----
@@ -618,6 +685,14 @@ class _EditorPageState extends ConsumerState<EditorPage>
   void _pick(Suggestion s) {
     if (s.natural) {
       _pickNatural(s);
+      return;
+    }
+    // 芯片模式没有光标可替换:选中的建议一律落在末尾(它本来就是尾部输入框
+    // 打出来的),输入框清空接着打下一枚。
+    if (_chipMode) {
+      _input.clear();
+      _appendTag(_insertTextOf(s, plainSlot: true));
+      _inputFocus.requestFocus();
       return;
     }
     final text = _controller.text;
@@ -681,6 +756,12 @@ class _EditorPageState extends ConsumerState<EditorPage>
       hintSnack(context, '翻译失败,稍后再试', icon: Icons.error_outline);
       return;
     }
+    if (_chipMode) {
+      _input.clear();
+      _appendTag(ins);
+      _inputFocus.requestFocus();
+      return;
+    }
     if (_controller.text != text) return;
     // 文本没变,快照偏移仍有效;光标挪走也仍替换当初点击的那个词。
     final toks = parseToks(text);
@@ -698,33 +779,108 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _focus.requestFocus();
   }
 
-  /// 多选模式开关:进入=收键盘/清补全与词条栏,正文换成 chip 流;
-  /// 退出=唤回键盘并清空选中。每次操作落一步撤销。
-  void _toggleSort() {
-    if (!_sortMode && parseToks(_controller.text).length < 2) return;
-    final entering = !_sortMode;
-    if (entering) {
+  /// 底栏那颗形态切换。写进设置(下次进来还是这一头),本页的收尾由
+  /// build 里那条设置监听统一做 —— 两个入口不各清各的。
+  void _toggleChipMode() {
+    Haptics.selection();
+    final to = !_chipMode;
+    ref
+        .read(editorSettingsProvider.notifier)
+        .patch((s) => s.copyWith(chipMode: to));
+    // 切到文本形态时把键盘唤回来:那边光标就是入口,不给焦点等于点进来发现
+    // 什么也打不了。切到芯片形态则**不**抢焦点,和进页面时同一套克制。
+    //
+    // 必须等下一帧:此刻 AnnotatedField 还没挂上树,_focus 是个游离节点,
+    // 现在 requestFocus 落不到任何输入框上。
+    if (!to) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _focus.requestFocus();
+      });
+    }
+  }
+
+  /// 形态切换后的收尾:清掉另一头才有意义的状态。设置载回(冷启动时持久化的
+  /// chipMode 到货)也走这里,所以这里只做清理,不碰焦点。
+  void _onModeChanged(bool chip) {
+    _clearSuggest();
+    if (chip) {
       _focus.unfocus();
-      _clearSuggest();
+    } else {
+      _inputFocus.unfocus();
     }
     setState(() {
-      _sortMode = entering;
-      _sortSel = {};
-      _sortMult = 1.0;
-      if (entering) {
-        _panelTok = null;
-        _multiRange = null;
-      }
+      _chipSel = {};
+      _chipMult = 1.0;
+      _panelTok = null;
+      _multiRange = null;
+      _input.clear();
     });
-    if (!entering) _focus.requestFocus();
   }
 
   /// 换一批选中:重算起步读数(批量数值是**统一设定**不是相对加减,留着上
-  /// 一批的读数会指着不相干的词)。
-  void _setSortSel(Set<int> next) => setState(() {
-    _sortSel = next;
-    _sortMult = _sharedMult(parseToks(_controller.text), next);
-  });
+  /// 一批的读数会指着不相干的词),并把光标同步到新的单选目标上。
+  void _setChipSel(Set<int> next) {
+    setState(() {
+      _chipSel = next;
+      _chipMult = _sharedMult(parseToks(_controller.text), next);
+    });
+    _syncChipCursor();
+  }
+
+  // ---- 芯片模式的尾部输入框 ----
+
+  /// 打字:逗号/换行即定稿(web commitInput 同款),其余交给补全。
+  void _onInputChanged(String raw) {
+    final m = RegExp(r'[,，\n]').firstMatch(raw);
+    if (m != null) {
+      final head = raw.substring(0, m.start).trim();
+      final rest = raw.substring(m.end);
+      _input.value = TextEditingValue(
+        text: rest,
+        selection: TextSelection.collapsed(offset: rest.length),
+      );
+      if (head.isNotEmpty) {
+        _appendTag(head);
+        return; // _appendTag 走 _applyText,补全已在那条路上清掉
+      }
+    }
+    _scheduleQuery();
+  }
+
+  /// 回车/「直接添加」:整条落成标签。
+  void _commitInput() {
+    final raw = _input.text.trim();
+    if (raw.isEmpty) {
+      _clearSuggest();
+      return;
+    }
+    _input.clear();
+    _appendTag(raw);
+    _inputFocus.requestFocus();
+  }
+
+  /// 末尾追加一枚标签。[quiet] = 不重算 dock(补全弹层里连续插入时用:
+  /// 列表得冻在原地,不能因为插了一枚就整块塌下去)。
+  void _appendTag(String tag, {bool quiet = false}) {
+    final next = appendUnit(_controller.text, tag);
+    if (next == _controller.text) return;
+    if (quiet) {
+      _muting = true;
+      _controller.value = TextEditingValue(
+        text: next,
+        selection: TextSelection.collapsed(offset: next.length),
+      );
+      _prevText = next;
+      _syncedText = next;
+      _prevSel = _controller.selection;
+      _muting = false;
+      _notifier.editActive(next, structural: true);
+      _feedTranslation(next); // _muting 压掉了 _onCtrl,得自己喂
+      Haptics.selection();
+      return;
+    }
+    _applyText(next, next.length);
+  }
 
   /// 一批词条的起步读数:全员同处一个权重组(如刚点过「选中整组」)时从组
   /// 倍率起步,调整才是在原权重基础上加减;各不相同或本无组 → 从 1 起。
@@ -797,8 +953,8 @@ class _EditorPageState extends ConsumerState<EditorPage>
   /// 多选移动落地:所选顶层单元整批搬到间隙 [to]。折叠占位符作为一整块
   /// 移动;保留分隔/换行排版。搬完清空选中(这一批已经放到位了)。
   void _moveUnits(int to) {
-    final next = moveUnits(_controller.text, _foldBodies, _sortSel, to);
-    _setSortSel({});
+    final next = moveUnits(_controller.text, _foldBodies, _chipSel, to);
+    _setChipSel({});
     _applyText(next, _controller.selection.baseOffset.clamp(0, next.length));
   }
 
@@ -813,52 +969,75 @@ class _EditorPageState extends ConsumerState<EditorPage>
     return null;
   }
 
-  // ---- 多选模式批量操作(chip 点选;选中保留以便接着操作)----
+  // ---- 芯片模式的单元操作(chip 点选;选中保留以便接着操作)----
   // 与划词多选走同一套单元级操作,差别只在选中集可以跳选 —— 权重按连续段
   // 分段落地(batchWrapUnits 等),没选中的词不会被卷进同一层括号。
 
   /// 改完文本刷新面板:chip 流挂着 controller 会自己重画,dock 上的面板读的
   /// 是正文算出来的能力位(可加权/可禁用/有启用项),得跟着重建一次。
-  void _applySort(String next) {
+  void _applyChip(String next) {
     _applyText(next, _controller.selection.baseOffset);
     if (mounted) setState(() {});
   }
 
-  void _sortWrap(bool up) {
-    if (_sortSel.isEmpty) return;
-    _applySort(batchWrapUnits(_controller.text, _foldBodies, _sortSel, up: up));
+  void _chipWrap(bool up) {
+    if (_chipSel.isEmpty) return;
+    _applyChip(batchWrapUnits(_controller.text, _foldBodies, _chipSel, up: up));
   }
 
-  void _sortStepMult(bool up) {
-    if (_sortSel.isEmpty) return;
+  void _chipStepMult(bool up) {
+    if (_chipSel.isEmpty) return;
     final step = _settings.weightStep;
     final next =
-        ((_sortMult + (up ? step : -step)) * 100).roundToDouble() / 100;
-    _sortMult = next;
-    _applySort(
-      batchSetMultUnits(_controller.text, _foldBodies, _sortSel, next),
+        ((_chipMult + (up ? step : -step)) * 100).roundToDouble() / 100;
+    _chipMult = next;
+    _applyChip(
+      batchSetMultUnits(_controller.text, _foldBodies, _chipSel, next),
     );
   }
 
-  void _sortClearWeight() {
-    if (_sortSel.isEmpty) return;
-    _sortMult = 1.0;
-    _applySort(batchClearWeightUnits(_controller.text, _foldBodies, _sortSel));
+  void _chipClearWeight() {
+    if (_chipSel.isEmpty) return;
+    _chipMult = 1.0;
+    _applyChip(batchClearWeightUnits(_controller.text, _foldBodies, _chipSel));
   }
 
-  void _sortToggleDisabled() {
+  void _chipToggleDisabled() {
     final units = topLevelUnits(_controller.text, _foldBodies);
-    final target = _disableTarget(units, _sortSel);
+    final target = _disableTarget(units, _chipSel);
     if (target == null) return; // 全是折叠,没得禁用
-    _applySort(
-      setUnitsDisabled(_controller.text, _foldBodies, _sortSel, target),
+    _applyChip(
+      setUnitsDisabled(_controller.text, _foldBodies, _chipSel, target),
     );
   }
 
-  void _sortDelete() {
-    final (text, cursor) = deleteUnits(_controller.text, _foldBodies, _sortSel);
-    _setSortSel({});
+  void _chipDelete() {
+    final (text, cursor) = deleteUnits(_controller.text, _foldBodies, _chipSel);
+    _setChipSel({});
     _applyText(text, cursor);
+  }
+
+  /// 芯片模式的改名:落在**当前选中**那一枚上(光标已同步过去)。
+  void _chipRename(String name) {
+    final t = _tokAtCursor();
+    if (t == null) return;
+    final next = renameTok(_controller.text, t, name);
+    if (next == _controller.text) return;
+    _applyChip(next);
+  }
+
+  /// 芯片模式的「选中整组」:把组盖住的单元全收进选中(文本模式那版改的是
+  /// 选区,这边没有选区可改)。
+  void _chipSelectGroup(Set<int> covered) => _setChipSel(covered);
+
+  /// 芯片模式解散折叠:选中的那一枚折叠段原地摊成成员。
+  void _chipUnfold() {
+    final units = topLevelUnits(_controller.text, _foldBodies);
+    if (_chipSel.length != 1) return;
+    final i = _chipSel.first;
+    if (i < 0 || i >= units.length || !units[i].isFold) return;
+    _setChipSel({});
+    _unfoldByName(units[i].fold!.name);
   }
 
   // ---- 划词多选批量操作(dock 批量面板;逐词应用,应用后保持选区)----
@@ -1077,7 +1256,9 @@ class _EditorPageState extends ConsumerState<EditorPage>
         final p = prev ?? const EditorSettings();
         if (p == next) return;
         if (p.enableCompletion && !next.enableCompletion) _clearSuggest();
-        if (p.enableTagPanel != next.enableTagPanel) _routeCursor();
+        // 形态切换(底栏那颗,或冷启动时持久化的 chipMode 到货)的统一收尾
+        if (p.chipMode != next.chipMode) _onModeChanged(next.chipMode);
+        if (p.enableTagPanel != next.enableTagPanel) _reroute();
         if (p.showTranslation != next.showTranslation) {
           _controller.showTrans = next.showTranslation;
           _refreshAnnotations();
@@ -1100,14 +1281,15 @@ class _EditorPageState extends ConsumerState<EditorPage>
       data: editorTheme(context),
       child: Builder(
         builder: (context) => PopScope(
-          // 排序模式中返回键先退出模式,再按一次才离开编辑器
-          canPop: !_sortMode,
+          // 芯片模式选中着东西时,返回键先退选(形态本身是常驻偏好,不该被
+          // 返回键改掉),再按一次才离开编辑器
+          canPop: !(settings.chipMode && _chipSel.isNotEmpty),
           onPopInvokedWithResult: (didPop, _) {
             if (didPop) {
               _save();
               _dismissKeyboard(); // 系统返回手势也走这里,不能只挂在返回按钮上
-            } else if (_sortMode) {
-              _toggleSort();
+            } else if (_chipSel.isNotEmpty) {
+              _setChipSel({});
             }
           },
           child: Scaffold(
@@ -1125,16 +1307,23 @@ class _EditorPageState extends ConsumerState<EditorPage>
                     onSettings: _openSettings,
                   ),
                   Expanded(
-                    // 排序模式切换成真 chip 流视图;编辑态是注音富文本。
-                    // 切正/负时编辑区随方向轻滑 + 淡入(单实例,不复制
-                    // TextField——controller/focus 不能同时挂两棵树)
-                    child: _sortMode
-                        ? SortChipsView(
+                    // 两种正文形态。切正/负时编辑区随方向轻滑 + 淡入
+                    // (单实例,不复制 TextField——controller/focus 不能
+                    // 同时挂两棵树)
+                    child: settings.chipMode
+                        ? ChipFlowView(
                             controller: _controller,
                             foldBodies: foldBodies,
-                            selection: _sortSel,
-                            onSelectionChanged: _setSortSel,
+                            selection: _chipSel,
+                            onSelectionChanged: _setChipSel,
                             onMove: _moveUnits,
+                            input: _input,
+                            inputFocus: _inputFocus,
+                            onInputChanged: _onInputChanged,
+                            onInputSubmitted: (_) => _commitInput(),
+                            translating: _transSvc.isPending,
+                            showTrans: settings.showTranslation,
+                            fontSize: settings.fontSize,
                             abnormalThreshold: settings.abnormalThreshold,
                           )
                         : ClipRect(
@@ -1182,7 +1371,10 @@ class _EditorPageState extends ConsumerState<EditorPage>
                     ),
                     child: _dock(),
                   ),
-                  EditorBottomBar(onSort: _toggleSort, sortActive: _sortMode),
+                  EditorBottomBar(
+                    onToggleMode: _toggleChipMode,
+                    chipMode: settings.chipMode,
+                  ),
                 ],
               ),
             ),
@@ -1205,6 +1397,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
     required VoidCallback onToggleDisabled,
     required VoidCallback onDelete,
     required VoidCallback onClose,
+    VoidCallback? onUnfold,
   }) {
     final units = topLevelUnits(_controller.text, _foldBodies);
     final live = {
@@ -1220,6 +1413,10 @@ class _EditorPageState extends ConsumerState<EditorPage>
         if (!t.disabled) anyEnabled = true;
       }
     }
+    // 「展开」只在恰好选中一枚折叠段时给:多选里混着折叠,展开谁都说不清
+    final fold = live.length == 1 && units[live.first].isFold
+        ? units[live.first].fold!
+        : null;
     final group = _groupSelOf(units, live);
     return BatchPanel(
       key: key,
@@ -1232,6 +1429,10 @@ class _EditorPageState extends ConsumerState<EditorPage>
       onSelectGroup: group == null
           ? null
           : () => onSelectGroup(group.$1, group.$2),
+      onUnfold: fold == null ? null : onUnfold,
+      foldCount: fold == null
+          ? 0
+          : parseToks(_foldBodies[fold.name] ?? '').length,
       onCopy: () => _copyUnits(live),
       onWrap: onWrap,
       onStepMult: onStepMult,
@@ -1245,24 +1446,29 @@ class _EditorPageState extends ConsumerState<EditorPage>
   Widget _dock() {
     // key 稳定=同一形态内更新不重播入场动画(如长按连续调权重);切形态才动画
     //
-    // 两处多选共用同一张批量面板:多选模式点 chip 攒集合(可跳选),划词多选
-    // 扫出连续区间 —— 到了面板都只是「选中了哪些顶层单元」。
-    if (_sortMode) {
-      return _batchPanel(
-        const ValueKey('dock-sort'),
-        _sortSel,
-        _sortMult,
-        // 扩到整组:组盖住的单元全部收进选中(读数随之落到组倍率)
-        onSelectGroup: (_, covered) => _setSortSel(covered),
-        onWrap: _sortWrap,
-        onStepMult: _sortStepMult,
-        onClearWeight: _sortClearWeight,
-        onToggleDisabled: _sortToggleDisabled,
-        onDelete: _sortDelete,
-        onClose: () => _setSortSel({}),
-      );
-    }
-    if (_multiRange != null) {
+    // 芯片模式与划词多选共用同一张批量面板:前者点 chip 攒集合(可跳选),
+    // 后者扫出连续区间 —— 到了面板都只是「选中了哪些顶层单元」。
+    if (_chipMode) {
+      // 选中恰好一枚散标签 → 走下面完整的词条栏(光标已同步到那一枚,
+      // 单词条那套操作原样可用);其余情况(多选/折叠)才是批量面板。
+      // 正在打字时补全优先:选中还留着,但手上这一秒的意图是输入。
+      if (_query.isEmpty && _chipSel.isNotEmpty && _panelTok == null) {
+        return _batchPanel(
+          const ValueKey('dock-chip'),
+          _chipSel,
+          _chipMult,
+          // 扩到整组:组盖住的单元全部收进选中(读数随之落到组倍率)
+          onSelectGroup: (_, covered) => _chipSelectGroup(covered),
+          onWrap: _chipWrap,
+          onStepMult: _chipStepMult,
+          onClearWeight: _chipClearWeight,
+          onToggleDisabled: _chipToggleDisabled,
+          onDelete: _chipDelete,
+          onClose: () => _setChipSel({}),
+          onUnfold: _chipUnfold,
+        );
+      }
+    } else if (_multiRange != null) {
       final r = _multiRange!;
       if (r.$1 < parseToks(_controller.text).length) {
         return _batchPanel(
@@ -1287,7 +1493,9 @@ class _EditorPageState extends ConsumerState<EditorPage>
         loading: _loading,
         translating: _translating,
         onPick: _pick,
-        onAddRaw: _clearSuggest,
+        // 一个都没匹配上时的「直接添加」:文本模式里字已经在正文里了,
+        // 收起补全即可;芯片模式还躺在输入框里,得落成一枚 chip。
+        onAddRaw: _chipMode ? _commitInput : _clearSuggest,
         onExpand: _expand,
         onClose: _clearSuggest,
       );
@@ -1310,16 +1518,26 @@ class _EditorPageState extends ConsumerState<EditorPage>
             isSdWeightSeg(_controller.text.substring(tok.segStart, tok.segEnd))
             ? _convertSd
             : null,
-        onSelectGroup: (tok.groupMult - 1).abs() > 0.0001
-            ? () => _selectGroupOf(tok)
-            : null,
+        // 加权/禁用/关联这些都从光标反查词条,芯片模式已把光标同步到选中
+        // 那一枚,原样复用;只有「扩到整组」「删除」「关闭」的落点不同 ——
+        // 那边要动的是选中集,不是选区。
+        onSelectGroup: (tok.groupMult - 1).abs() <= 0.0001
+            ? null
+            : _chipMode
+            ? () {
+                final units = topLevelUnits(_controller.text, _foldBodies);
+                final g = _groupSelOf(units, _chipSel);
+                if (g != null) _chipSelectGroup(g.$2);
+              }
+            : () => _selectGroupOf(tok),
         onWrap: _wrap,
         onSetMult: _setMult,
         onClear: _clearWeight,
         onToggleDisabled: _toggleDisabled,
-        onDelete: _deleteCurrent,
+        onDelete: _chipMode ? _chipDelete : _deleteCurrent,
         onAddRelated: _addRelated,
-        onClose: _closePanel,
+        onRename: _chipMode ? _chipRename : null,
+        onClose: _chipMode ? () => _setChipSel({}) : _closePanel,
       );
     }
     return const SizedBox.shrink(key: ValueKey('dock-empty'));

@@ -17,6 +17,7 @@ class EditorSettings {
     this.weightStep = 0.1,
     this.fontSize = 16,
     this.abnormalThreshold = 10,
+    this.chipMode = false,
   });
 
   /// 正文字号可选档位。
@@ -55,6 +56,10 @@ class EditorSettings {
   /// 异常权重阈值:词条中段 `N::` 的 N ≥ 此值视为疑似丢逗号(标红警示)。
   final double abnormalThreshold;
 
+  /// 正文的显示形态:false=注音富文本(默认),true=芯片流。
+  /// 底栏一键切,记在设置里 —— 这是用惯了哪种的问题,不该每次进页面重选。
+  final bool chipMode;
+
   EditorSettings copyWith({
     bool? showTranslation,
     bool? showWeightWash,
@@ -65,6 +70,7 @@ class EditorSettings {
     double? weightStep,
     double? fontSize,
     double? abnormalThreshold,
+    bool? chipMode,
   }) => EditorSettings(
     showTranslation: showTranslation ?? this.showTranslation,
     showWeightWash: showWeightWash ?? this.showWeightWash,
@@ -75,6 +81,7 @@ class EditorSettings {
     weightStep: weightStep ?? this.weightStep,
     fontSize: fontSize ?? this.fontSize,
     abnormalThreshold: abnormalThreshold ?? this.abnormalThreshold,
+    chipMode: chipMode ?? this.chipMode,
   );
 
   /// 读回的数值不在档位表里(旧版本/脏数据)时回退默认。
@@ -100,6 +107,7 @@ class EditorSettings {
       abnormalThresholds,
       10,
     ),
+    chipMode: j['chipMode'] as bool? ?? false,
   );
 
   Map<String, dynamic> toJson() => {
@@ -112,6 +120,7 @@ class EditorSettings {
     'weightStep': weightStep,
     'fontSize': fontSize,
     'abnormalThreshold': abnormalThreshold,
+    'chipMode': chipMode,
   };
 
   @override
@@ -125,7 +134,8 @@ class EditorSettings {
       other.entitySuggest == entitySuggest &&
       other.weightStep == weightStep &&
       other.fontSize == fontSize &&
-      other.abnormalThreshold == abnormalThreshold;
+      other.abnormalThreshold == abnormalThreshold &&
+      other.chipMode == chipMode;
 
   @override
   int get hashCode => Object.hash(
@@ -138,6 +148,7 @@ class EditorSettings {
     weightStep,
     fontSize,
     abnormalThreshold,
+    chipMode,
   );
 }
 

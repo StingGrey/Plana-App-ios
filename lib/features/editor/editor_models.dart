@@ -543,6 +543,14 @@ String setTokMult(String text, Tok t, double newMult) {
 String clearWeight(String text, Tok t) =>
     text.replaceRange(t.coreStart, t.coreEnd, t.name);
 
+/// 改名:只换名字那一段,权重/禁用记号原样留着(芯片模式没有光标,改字
+/// 只能整名替换)。空名当没改——删词有专门的入口,别从改名这条路掉进去。
+String renameTok(String text, Tok t, String name) {
+  final n = name.trim();
+  if (n.isEmpty) return text;
+  return text.replaceRange(t.nameStart, t.nameEnd, n);
+}
+
 /// 切换禁用:整枚套/剥 `~`
 String toggleTokDisabled(String text, Tok t) => t.disabled
     ? text.replaceRange(
@@ -1041,6 +1049,28 @@ List<TopUnit> topLevelUnits(String text, Map<String, String> bodies) {
     );
   }
   return units;
+}
+
+/// 末尾追加一枚顶层单元(芯片模式尾部输入框的落地口径)。
+/// 正文原本怎么收尾就怎么接:已有逗号只补空格,已有换行直接接在新行上,
+/// 其余补 `, ` —— 用户的排版(换行分段)不因为加了个词就被拍平成一行。
+String appendUnit(String text, String tag) {
+  final add = tag.trim();
+  if (add.isEmpty) return text;
+  // 只吃行内空白,末尾的换行留着 —— 那是用户分的段
+  var end = text.length;
+  while (end > 0 && (text[end - 1] == ' ' || text[end - 1] == '\t')) {
+    end--;
+  }
+  final base = text.substring(0, end);
+  if (base.trim().isEmpty) return add;
+  final last = base[base.length - 1];
+  final sep = last == '\n'
+      ? ''
+      : (last == ',' || last == '，')
+      ? ' '
+      : ', ';
+  return '$base$sep$add';
 }
 
 /// 顶层单元重排:把第 [from] 个单元移到 [to](移除后下标)。槽位法——各单元

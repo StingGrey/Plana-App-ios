@@ -57,6 +57,17 @@ class TagTranslationService extends ChangeNotifier {
     );
   }
 
+  /// 这个名字还在等译文:排队中、正在问,或失败后待重试。
+  /// 芯片流据此画加载态 —— **离线补全模式恒 false**,那边根本没人去问,
+  /// 挂着加载动画等于骗人;`_asked` 里的也算有定论(含 LLM 答不出的),
+  /// 不能一直转下去。
+  bool isPending(String name) {
+    if (!enabled || baseUrl.isEmpty) return false;
+    final k = name.trim().toLowerCase();
+    if (!_worthAsking(k) || _asked.contains(k)) return false;
+    return translationOf(k) == null;
+  }
+
   /// 编辑器解析后把注音未命中的名字塞进来;防抖攒批后查询。
   void request(Iterable<String> names) {
     if (!enabled || baseUrl.isEmpty) return;
@@ -80,6 +91,7 @@ class TagTranslationService extends ChangeNotifier {
     _busy = true;
     final batch = _pending.take(_batchMax).toList();
     _pending.removeAll(batch);
+    final askedBefore = _asked.length;
     try {
       // ① 共享翻译库
       final Map<String, String> found;
@@ -130,7 +142,10 @@ class TagTranslationService extends ChangeNotifier {
         }
       }
 
-      if (gotAny) notifyListeners();
+      // 有定论就通知,**不只看翻出了什么**:一个都没翻出来时 `_asked` 照样
+      // 长了,芯片流的加载态得据此收掉 —— 只在 gotAny 时通知的话,那些
+      // 「问过但没答案」的 chip 会一直转到下一次无关重绘。
+      if (gotAny || _asked.length != askedBefore) notifyListeners();
     } finally {
       _busy = false;
       if (_pending.isNotEmpty && (_timer == null || !_timer!.isActive)) {

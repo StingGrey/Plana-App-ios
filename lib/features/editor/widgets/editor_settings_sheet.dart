@@ -23,127 +23,152 @@ class EditorSettingsSheet extends ConsumerWidget {
         constraints: BoxConstraints(
           maxHeight: MediaQuery.sizeOf(context).height * .85,
         ),
-        child: SingleChildScrollView(
-          padding: EdgeInsets.only(
-            bottom: MediaQuery.viewPaddingOf(context).bottom + 10,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Padding(
-                padding: const EdgeInsets.only(top: 10),
-                child: Center(
-                  child: Container(
-                    width: 36,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: scheme.outline.withValues(alpha: .5),
-                      borderRadius: BorderRadius.circular(2),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // 抓手与标题栏留在滚动区**外面**:整片都塞进 SingleChildScrollView
+            // 的话,下拉手势全被滚动条吃掉,弹层自带的下拉关闭永远轮不到
+            // (真机反馈:拉不动也没地方点关)。右侧再给一个 ✕ 兜底。
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Center(
+                child: Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: scheme.outline.withValues(alpha: .5),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 8, 0),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '编辑器设置',
+                      style: context.texts.titleMedium!.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                   ),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 14, 20, 2),
-                child: Text(
-                  '编辑器设置',
-                  style: context.texts.titleMedium!.copyWith(
-                    fontWeight: FontWeight.w700,
+                  IconButton(
+                    tooltip: '关闭',
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.close, size: 20),
+                    onPressed: () => Navigator.of(context).maybePop(),
                   ),
+                ],
+              ),
+            ),
+            Flexible(
+              child: SingleChildScrollView(
+                padding: EdgeInsets.only(
+                  bottom: MediaQuery.viewPaddingOf(context).bottom + 10,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _sectionLabel(context, '显示'),
+                    _SettingRow(
+                      icon: Icons.translate,
+                      title: '显示注释翻译',
+                      desc: '在词条下方以小字标注中文翻译',
+                      value: s.showTranslation,
+                      onChanged: (v) =>
+                          notifier.patch((c) => c.copyWith(showTranslation: v)),
+                    ),
+                    _SettingRow(
+                      icon: Icons.format_color_fill,
+                      title: '权重高亮',
+                      desc: '加权 / 降权词条按强度显示红 / 蓝色',
+                      value: s.showWeightWash,
+                      onChanged: (v) =>
+                          notifier.patch((c) => c.copyWith(showWeightWash: v)),
+                    ),
+                    _ChoiceRow<double>(
+                      icon: Icons.format_size,
+                      title: '编辑器字号',
+                      desc: '正文字号,注音与排版同步',
+                      options: const [(14.0, '小'), (16.0, '标准'), (18.0, '大')],
+                      value: s.fontSize,
+                      onChanged: (v) =>
+                          notifier.patch((c) => c.copyWith(fontSize: v)),
+                    ),
+                    _ChoiceRow<double>(
+                      icon: Icons.report_gmailerrorred,
+                      title: '异常权重阈值',
+                      desc: '词条中段 ≥ 此值的「N::」标红警示',
+                      options: const [(3.0, '3'), (5.0, '5'), (10.0, '10')],
+                      optWidth: 38,
+                      value: s.abnormalThreshold,
+                      onChanged: (v) => notifier.patch(
+                        (c) => c.copyWith(abnormalThreshold: v),
+                      ),
+                    ),
+                    _sectionLabel(context, '补全'),
+                    _SettingRow(
+                      icon: Icons.manage_search,
+                      title: '启用补全提示',
+                      desc: '输入时在底部给出标签补全建议',
+                      value: s.enableCompletion,
+                      onChanged: (v) => notifier.patch(
+                        (c) => c.copyWith(enableCompletion: v),
+                      ),
+                    ),
+                    _SettingRow(
+                      icon: Icons.category_outlined,
+                      title: '实体建议',
+                      desc: '补全中包含画师 / 角色 / OC / 作品',
+                      value: s.entitySuggest,
+                      enabled: s.enableCompletion,
+                      onChanged: (v) =>
+                          notifier.patch((c) => c.copyWith(entitySuggest: v)),
+                    ),
+                    _SettingRow(
+                      icon: Icons.auto_fix_high,
+                      title: '选词自动补逗号',
+                      desc: '选中补全后自动加「, 」,方便连打下一枚',
+                      value: s.autoComma,
+                      enabled: s.enableCompletion,
+                      onChanged: (v) =>
+                          notifier.patch((c) => c.copyWith(autoComma: v)),
+                    ),
+                    _sectionLabel(context, '词条栏'),
+                    _SettingRow(
+                      icon: Icons.sell_outlined,
+                      title: '启用标签面板',
+                      desc: '光标停在词条上时显示权重与操作栏',
+                      value: s.enableTagPanel,
+                      onChanged: (v) =>
+                          notifier.patch((c) => c.copyWith(enableTagPanel: v)),
+                    ),
+                    _ChoiceRow<double>(
+                      icon: Icons.exposure,
+                      title: '权重步进',
+                      desc: '数值 +/− 每步的调整量',
+                      options: const [
+                        (0.05, '0.05'),
+                        (0.1, '0.1'),
+                        (0.2, '0.2'),
+                        (0.5, '0.5'),
+                      ],
+                      // 4 段:用默认 48 宽会挤到左侧标题,收到 40 刚好容下「0.05」
+                      optWidth: 40,
+                      value: s.weightStep,
+                      enabled: s.enableTagPanel,
+                      onChanged: (v) =>
+                          notifier.patch((c) => c.copyWith(weightStep: v)),
+                    ),
+                  ],
                 ),
               ),
-              _sectionLabel(context, '显示'),
-              _SettingRow(
-                icon: Icons.translate,
-                title: '显示注释翻译',
-                desc: '在词条下方以小字标注中文翻译',
-                value: s.showTranslation,
-                onChanged: (v) =>
-                    notifier.patch((c) => c.copyWith(showTranslation: v)),
-              ),
-              _SettingRow(
-                icon: Icons.format_color_fill,
-                title: '权重高亮',
-                desc: '加权 / 降权词条按强度显示红 / 蓝色',
-                value: s.showWeightWash,
-                onChanged: (v) =>
-                    notifier.patch((c) => c.copyWith(showWeightWash: v)),
-              ),
-              _ChoiceRow<double>(
-                icon: Icons.format_size,
-                title: '编辑器字号',
-                desc: '正文字号,注音与排版同步',
-                options: const [(14.0, '小'), (16.0, '标准'), (18.0, '大')],
-                value: s.fontSize,
-                onChanged: (v) =>
-                    notifier.patch((c) => c.copyWith(fontSize: v)),
-              ),
-              _ChoiceRow<double>(
-                icon: Icons.report_gmailerrorred,
-                title: '异常权重阈值',
-                desc: '词条中段 ≥ 此值的「N::」标红警示',
-                options: const [(3.0, '3'), (5.0, '5'), (10.0, '10')],
-                optWidth: 38,
-                value: s.abnormalThreshold,
-                onChanged: (v) =>
-                    notifier.patch((c) => c.copyWith(abnormalThreshold: v)),
-              ),
-              _sectionLabel(context, '补全'),
-              _SettingRow(
-                icon: Icons.manage_search,
-                title: '启用补全提示',
-                desc: '输入时在底部给出标签补全建议',
-                value: s.enableCompletion,
-                onChanged: (v) =>
-                    notifier.patch((c) => c.copyWith(enableCompletion: v)),
-              ),
-              _SettingRow(
-                icon: Icons.category_outlined,
-                title: '实体建议',
-                desc: '补全中包含画师 / 角色 / OC / 作品',
-                value: s.entitySuggest,
-                enabled: s.enableCompletion,
-                onChanged: (v) =>
-                    notifier.patch((c) => c.copyWith(entitySuggest: v)),
-              ),
-              _SettingRow(
-                icon: Icons.auto_fix_high,
-                title: '选词自动补逗号',
-                desc: '选中补全后自动加「, 」,方便连打下一枚',
-                value: s.autoComma,
-                enabled: s.enableCompletion,
-                onChanged: (v) =>
-                    notifier.patch((c) => c.copyWith(autoComma: v)),
-              ),
-              _sectionLabel(context, '词条栏'),
-              _SettingRow(
-                icon: Icons.sell_outlined,
-                title: '启用标签面板',
-                desc: '光标停在词条上时显示权重与操作栏',
-                value: s.enableTagPanel,
-                onChanged: (v) =>
-                    notifier.patch((c) => c.copyWith(enableTagPanel: v)),
-              ),
-              _ChoiceRow<double>(
-                icon: Icons.exposure,
-                title: '权重步进',
-                desc: '数值 +/− 每步的调整量',
-                options: const [
-                  (0.05, '0.05'),
-                  (0.1, '0.1'),
-                  (0.2, '0.2'),
-                  (0.5, '0.5'),
-                ],
-                // 4 段:用默认 48 宽会挤到左侧标题,收到 40 刚好容下「0.05」
-                optWidth: 40,
-                value: s.weightStep,
-                enabled: s.enableTagPanel,
-                onChanged: (v) =>
-                    notifier.patch((c) => c.copyWith(weightStep: v)),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
