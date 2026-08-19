@@ -1019,7 +1019,7 @@ class _ThumbMenuRoute extends PopupRoute<String> {
   ) => _LiftedThumb(from: from, result: result, anim: anim);
 }
 
-class _LiftedThumb extends StatelessWidget {
+class _LiftedThumb extends ConsumerWidget {
   const _LiftedThumb({
     required this.from,
     required this.result,
@@ -1038,7 +1038,7 @@ class _LiftedThumb extends StatelessWidget {
   static const _menuH = _itemH * 3 + _dividerH + 16;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final media = MediaQuery.of(context);
     final size = media.size;
     final top0 = media.padding.top + _margin;
@@ -1074,6 +1074,13 @@ class _LiftedThumb extends StatelessWidget {
         .toDouble();
     final to = Rect.fromLTWH(left, top, pw, ph);
 
+    // 抬起来本就是为了看清 —— 拿缩略图放大只是把糊的放得更糊,所以读原图。
+    // 解码尺寸按**抬起后的最终宽度**算死:跟着动画的 rect 走会让每一帧都
+    // 重解一张位图,一张 1024 的图能把这段动画卡成幻灯片。
+    final full =
+        result.bytes ?? ref.watch(galleryImageProvider(result.id)).value;
+    final decodeW = (pw * media.devicePixelRatio).round();
+
     return AnimatedBuilder(
       animation: anim,
       builder: (context, _) {
@@ -1085,11 +1092,28 @@ class _LiftedThumb extends StatelessWidget {
           children: [
             Positioned.fromRect(
               rect: rect,
-              child: ResultThumb(
-                result: result,
-                width: rect.width,
-                height: rect.height,
-                radius: 14,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(14),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    // 原图读盘期间先垫着已经在内存里的缩略图 ——
+                    // 长按到抬起之间不该有一格空白
+                    ResultThumb(
+                      result: result,
+                      width: rect.width,
+                      height: rect.height,
+                      radius: 14,
+                    ),
+                    if (full != null)
+                      Image.memory(
+                        full,
+                        fit: BoxFit.cover,
+                        cacheWidth: decodeW,
+                        gaplessPlayback: true,
+                      ),
+                  ],
+                ),
               ),
             ),
             Positioned(
