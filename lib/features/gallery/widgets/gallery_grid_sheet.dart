@@ -8,7 +8,7 @@ import 'package:gal/gal.dart';
 import '../../../core/store/app_stores.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../generate/widgets/common.dart'
-    show ExpandBody, confirmDialog, hintSnack, sharedAxisRoute;
+    show ExpandBody, hintSnack, sharedAxisRoute;
 import '../../import/import_panel.dart';
 import '../gallery_dates.dart';
 import '../gallery_search.dart';
@@ -60,6 +60,11 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
   String _query = '';
   String? _modelFilter; // null=全部;''=未知(无参数快照的老图)
   int _daysFilter = 0; // 0=全部 / 1=今天 / 7=近7天 / 30=近30天
+
+  // ---- 多选操作栏的几何 ----
+  static const _actH = 46.0;
+  static const _actSubH = 38.0;
+  static const _actGap = 10.0;
 
   @override
   void initState() {
@@ -431,7 +436,7 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
       case 'save':
         await _downloadPicked(only: {id});
       case 'delete':
-        await _deleteOne(id);
+        _deleteOne(id);
     }
   }
 
@@ -471,18 +476,10 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
     );
   }
 
-  /// 单张删除(长按菜单里那项)。底部那条批量删除要先进多选,只想扔一张时太绕;
-  /// 但删掉就找不回来,所以照样过一道确认。
-  Future<void> _deleteOne(String id) async {
-    if (!await confirmDialog(
-      context,
-      title: '删除这张作品?',
-      message: '原图、缩略图与参数快照一并删除,不可撤销。',
-      confirmLabel: '删除',
-    )) {
-      return;
-    }
-    if (!mounted) return;
+  /// 单张删除(长按菜单里那项)。**不再二次确认** —— 长按抬起、看清是哪张、
+  /// 再点删除,本身已是三步;弹窗只是给这条路再加一次点击。
+  /// 批量删除那条仍然确认:一次十几张,误触代价不在一个量级。
+  void _deleteOne(String id) {
     ref.read(galleryProvider.notifier).deleteResults([id]);
     if (ref.read(galleryProvider).results.isEmpty) {
       Navigator.of(context).pop(); // 删空了,弹层没得看
@@ -793,54 +790,73 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
                   : SafeArea(
                       top: false,
                       child: Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                        // 上下同距,横竖间隙同取 _actGap —— 原来横 12 竖 8、
+                        // 上 4 下 12,三颗挤在一小块里,不等的间隙一眼看得出别扭
+                        padding: const EdgeInsets.fromLTRB(
+                          16,
+                          _actGap,
+                          16,
+                          _actGap,
+                        ),
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: FilledButton.tonalIcon(
-                                    onPressed: canAct
-                                        ? () => _downloadPicked()
-                                        : null,
-                                    icon: const Icon(Icons.download, size: 19),
-                                    label: Text(
-                                      _saving
-                                          ? '保存中 $_saveDone/$_saveTotal'
-                                          : '保存 (${_picked.length})',
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: FilledButton.icon(
-                                    style: FilledButton.styleFrom(
-                                      backgroundColor: scheme.errorContainer,
-                                      foregroundColor: scheme.onErrorContainer,
-                                    ),
-                                    onPressed: canAct ? _deletePicked : null,
-                                    icon: const Icon(
-                                      Icons.delete_outline,
-                                      size: 19,
-                                    ),
-                                    label: Text('删除 (${_picked.length})'),
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                            // 独占一行:三颗横排在窄屏 + 大字号下会挤成省略号,
-                            // 且这一颗要多一步选相册,与上面两颗的即时性不同级。
+                            // 高度写死在外层:三颗按钮各是 tonal/filled/outlined,
+                            // 各自的默认内边距不一样,不给紧约束就长不齐
                             SizedBox(
-                              width: double.infinity,
-                              child: OutlinedButton.icon(
-                                onPressed: canAct ? _downloadToAlbum : null,
-                                icon: const Icon(
-                                  Icons.photo_album_outlined,
-                                  size: 19,
+                              height: _actH,
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: FilledButton.tonalIcon(
+                                      onPressed: canAct
+                                          ? () => _downloadPicked()
+                                          : null,
+                                      icon: const Icon(
+                                        Icons.download,
+                                        size: 19,
+                                      ),
+                                      label: Text(
+                                        _saving
+                                            ? '保存中 $_saveDone/$_saveTotal'
+                                            : '保存 (${_picked.length})',
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: _actGap),
+                                  Expanded(
+                                    child: FilledButton.icon(
+                                      style: FilledButton.styleFrom(
+                                        backgroundColor: scheme.errorContainer,
+                                        foregroundColor:
+                                            scheme.onErrorContainer,
+                                      ),
+                                      onPressed: canAct ? _deletePicked : null,
+                                      icon: const Icon(
+                                        Icons.delete_outline,
+                                        size: 19,
+                                      ),
+                                      label: Text('删除 (${_picked.length})'),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: _actGap),
+                            // 这颗要多一步选相册,与上面两颗的即时性不同级 ——
+                            // 所以矮一档、只占自身宽度居中放。原来铺满一行,
+                            // 视觉分量反而压过了上面两颗,标签又短,两头空一大片。
+                            Center(
+                              child: SizedBox(
+                                height: _actSubH,
+                                child: OutlinedButton.icon(
+                                  onPressed: canAct ? _downloadToAlbum : null,
+                                  icon: const Icon(
+                                    Icons.photo_album_outlined,
+                                    size: 17,
+                                  ),
+                                  label: const Text('保存到自定义相册'),
                                 ),
-                                label: const Text('保存到自定义相册'),
                               ),
                             ),
                           ],
