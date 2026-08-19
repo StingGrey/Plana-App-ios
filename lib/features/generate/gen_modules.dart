@@ -6,7 +6,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/store/app_stores.dart';
 import 'models.dart';
 
-export 'models.dart' show GenProvider, isAnimaModel, providerOfModel;
+export 'models.dart'
+    show GenProvider, isAnimaModel, providerLabel, providerOfModel;
 
 /// 主页附属功能模块系统(对齐 web moduleConfig):
 /// - 注册表定死可管理的模块,每个模块归属一个模型父类(provider,

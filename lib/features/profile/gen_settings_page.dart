@@ -72,14 +72,7 @@ class GenSettingsPage extends ConsumerWidget {
             ],
           ),
           const SizedBox(height: 16),
-          const SettingsLabel('创作页模块'),
-          const _ModulesCard(GenProvider.nai),
-          const SizedBox(height: 16),
-          const SettingsLabel('Anima 模块'),
-          const _ModulesCard(GenProvider.anima),
-          const SizedBox(height: 16),
-          const SettingsLabel('Krea 2 模块'),
-          const _ModulesCard(GenProvider.krea),
+          const _ModulesSection(),
           const SizedBox(height: 16),
           const SettingsLabel('图库默认保存'),
           const _SaveDefaultsCard(),
@@ -90,7 +83,68 @@ class GenSettingsPage extends ConsumerWidget {
 }
 
 /// 创作页功能模块:开关控制显隐,长按拖动调顺序(与主页卡片即时同步)。
-/// 按模型父类分组各渲染一张卡(nai 四件套 / anima 三件 / krea 两件)。
+///
+/// 三个父类**共用一张卡**,顶上切换 —— 原先三组各一张标签 + 一张卡平铺,
+/// 十行开关加三个标题占掉大半页,而模块本就归属唯一父类:改 Anima 的排布
+/// 时看着 NAI 那四行,除了让页面变长没有任何用。
+///
+/// 开了几个记在标题右侧,不然收起另外两组之后,「我是不是在别处关过什么」
+/// 这件事就没处看了。
+class _ModulesSection extends ConsumerStatefulWidget {
+  const _ModulesSection();
+
+  @override
+  ConsumerState<_ModulesSection> createState() => _ModulesSectionState();
+}
+
+class _ModulesSectionState extends ConsumerState<_ModulesSection> {
+  GenProvider _tab = GenProvider.nai;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = ref.watch(genModulesProvider).value ?? const GenModuleSettings();
+    final order = s.orderOf(_tab);
+    final on = order.where(s.isEnabled).length;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+          child: Row(
+            children: [
+              Text(
+                '创作页模块',
+                style: context.texts.labelMedium!.copyWith(
+                  color: context.scheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                '已开 $on/${order.length}',
+                style: context.texts.labelMedium!.copyWith(
+                  color: context.scheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+        SegmentedButton<GenProvider>(
+          showSelectedIcon: false,
+          segments: [
+            for (final p in GenProvider.values)
+              ButtonSegment(value: p, label: Text(providerLabel(p))),
+          ],
+          selected: {_tab},
+          onSelectionChanged: (v) => setState(() => _tab = v.first),
+        ),
+        const SizedBox(height: 8),
+        _ModulesCard(_tab),
+      ],
+    );
+  }
+}
+
 class _ModulesCard extends ConsumerWidget {
   const _ModulesCard(this.provider);
 
