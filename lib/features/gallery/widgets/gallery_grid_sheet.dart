@@ -6,7 +6,8 @@ import 'package:gal/gal.dart';
 
 import '../../../core/store/app_stores.dart';
 import '../../../core/theme/app_theme.dart';
-import '../../generate/widgets/common.dart' show ExpandBody, hintSnack;
+import '../../generate/widgets/common.dart'
+    show ExpandBody, confirmDialog, hintSnack;
 import '../gallery_dates.dart';
 import '../gallery_search.dart';
 import '../gallery_state.dart';
@@ -267,7 +268,8 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
     final ids = [for (final r in items) r.id];
     final allOn = ids.every(_picked.contains);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 8, 12, 6),
+      // 跟着网格一起往里收 4:段头文字要和其下第一张图的左边缘对齐
+      padding: const EdgeInsets.fromLTRB(16, 8, 8, 6),
       child: Row(
         children: [
           Text(
@@ -404,6 +406,27 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
     );
     if (name == null || !mounted) return;
     await _downloadPicked(album: name);
+  }
+
+  /// 单张删除(缩略图右上角那枚)。底部那条批量删除要先进多选,只想扔一张
+  /// 时太绕;但这枚目标小、又贴着「点一下就回填画布」的热区,误触代价是
+  /// 一张删不回来的图 —— 所以照样过一道确认。
+  Future<void> _deleteOne(String id) async {
+    if (!await confirmDialog(
+      context,
+      title: '删除这张作品?',
+      message: '原图、缩略图与参数快照一并删除,不可撤销。',
+      confirmLabel: '删除',
+    )) {
+      return;
+    }
+    if (!mounted) return;
+    ref.read(galleryProvider.notifier).deleteResults([id]);
+    if (ref.read(galleryProvider).results.isEmpty) {
+      Navigator.of(context).pop(); // 删空了,弹层没得看
+      return;
+    }
+    hintSnack(context, '已删除', icon: Icons.delete_outline);
   }
 
   Future<void> _deletePicked() async {
@@ -649,14 +672,17 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
                         SliverToBoxAdapter(
                           child: _dayHeader(scheme, e.key, e.value, now),
                         ),
+                        // 缩略图本体还各带 5(描边 2.5 + 让位 2.5)的内缩,
+                        // 所以图与图之间实际留白 = 这里的 spacing + 10。
+                        // 收到 6 之后是 16,省下的宽度全给图。
                         SliverPadding(
-                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+                          padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
                           sliver: SliverGrid(
                             gridDelegate:
                                 const SliverGridDelegateWithFixedCrossAxisCount(
                                   crossAxisCount: 3,
-                                  mainAxisSpacing: 10,
-                                  crossAxisSpacing: 10,
+                                  mainAxisSpacing: 6,
+                                  crossAxisSpacing: 6,
                                 ),
                             delegate: SliverChildBuilderDelegate((_, i) {
                               final r = e.value[i];
@@ -682,6 +708,7 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
                                         Haptics.medium();
                                         _enterSelect(r.id);
                                       },
+                                onDelete: () => _deleteOne(r.id),
                               );
                             }, childCount: e.value.length),
                           ),
@@ -769,6 +796,7 @@ class _GridThumb extends StatelessWidget {
     required this.selecting,
     required this.onTap,
     this.onLongPress,
+    this.onDelete,
   });
 
   final ResultImage result;
@@ -781,6 +809,9 @@ class _GridThumb extends StatelessWidget {
   final bool selecting;
   final VoidCallback onTap;
   final VoidCallback? onLongPress;
+
+  /// 右上角单张删除。多选态下不出 —— 那时整块图是勾选热区,底部另有批量删除。
+  final VoidCallback? onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -841,6 +872,29 @@ class _GridThumb extends StatelessWidget {
                     left: 5,
                     top: 5,
                     child: ResultBadgeChip(badge: result.badge),
+                  ),
+                // 右上角单张删除。压在图上,所以给个深底托 —— 白图上的白图标
+                // 等于没有。用垃圾桶而不是 ×:这一下是真删文件,不是从列表移走。
+                if (!selecting && onDelete != null)
+                  Positioned(
+                    right: 5,
+                    top: 5,
+                    child: Material(
+                      color: Colors.black.withValues(alpha: .45),
+                      shape: const CircleBorder(),
+                      clipBehavior: Clip.antiAlias,
+                      child: InkWell(
+                        onTap: onDelete,
+                        child: const Padding(
+                          padding: EdgeInsets.all(5),
+                          child: Icon(
+                            Icons.delete_outline,
+                            size: 16,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
                 // 右下角生成时刻(日期由段头承担,段内标时刻才是增量信息)
                 if (galleryTimeBadge(result.createdAt) case final String t
