@@ -15,17 +15,28 @@ import '../../../core/util/haptics.dart';
 // 未选中时颜色是 transparent,肉眼看不见,但**照样占布局空间**。漏掉它
 // 每张少算 4px,几十张累积上百像素,表现为自动滚动总差一截(实机反馈)。
 
-const _thumbH = 62.0;
+const _thumbH = 72.0;
 const _thumbPad = 2.0; // AnimatedContainer 内衬
 const _thumbBorder = 2.0; // 选中环(透明时也占位)
 const _thumbGap = 8.0; // ListView.separated 分隔
 const _stripPadH = 12.0; // ListView 水平 padding
 
+/// 条目在交叉轴上的完整占位高 —— 和 [_thumbSlotW] 同一套算法。
+///
+/// **别写死。** 原先外层 SizedBox 直接写 68,正好漏掉上面警告的那一圈边框
+/// (实际占位 70),结果 ListView 给的紧约束把每张图压到 60 —— 常数说 62、
+/// 屏幕上是 60,还没人发现。
+const _thumbSlotH = _thumbH + (_thumbPad + _thumbBorder) * 2;
+
 // 「›」是纯悬浮层:滚动区铺满全宽,缩略图从它底下直接穿过去,一寸不让。
 const _moreSize = 44.0; // 圆钮直径
 const _moreRight = 12.0; // 距右边缘
 
-double _thumbImgW(double aspect) => (_thumbH * aspect).clamp(40.0, 116.0);
+/// 极端长宽比的兜底:太窄点不着,太宽一张就把条占满。
+/// 两头都按 [_thumbH] 的倍数写(= 原来 40/116 对 62 的那两个比例)——
+/// 写成绝对像素的话,一改高度这两个数就悄悄变成另一套比例了。
+double _thumbImgW(double aspect) =>
+    (_thumbH * aspect).clamp(_thumbH * .645, _thumbH * 1.871);
 
 /// 条目在滚动轴上的完整占位宽(含内衬与边框)。
 double _thumbSlotW(double aspect) =>
@@ -127,7 +138,7 @@ class _FilmStripState extends State<FilmStrip> {
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 10),
         child: SizedBox(
-          height: 68,
+          height: _thumbSlotH,
           child: Stack(
             children: [
               Positioned.fill(
@@ -221,7 +232,7 @@ class _GenThumb extends StatelessWidget {
         duration: Motion.fast,
         curve: Motion.standard,
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(13),
+          borderRadius: BorderRadius.circular(14),
           border: Border.all(
             color: active ? scheme.primary : Colors.transparent,
             width: _thumbBorder,
@@ -229,7 +240,7 @@ class _GenThumb extends StatelessWidget {
         ),
         padding: const EdgeInsets.all(_thumbPad),
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(9),
+          borderRadius: BorderRadius.circular(10),
           child: SizedBox(
             width: w,
             height: h,
@@ -291,7 +302,7 @@ class _FilmThumb extends StatelessWidget {
         duration: Motion.fast,
         curve: Motion.standard,
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(13),
+          borderRadius: BorderRadius.circular(14),
           border: Border.all(
             color: selected ? scheme.primary : Colors.transparent,
             width: _thumbBorder,
@@ -300,7 +311,7 @@ class _FilmThumb extends StatelessWidget {
         padding: const EdgeInsets.all(_thumbPad),
         child: Stack(
           children: [
-            ResultThumb(result: result, width: w, height: h, radius: 9),
+            ResultThumb(result: result, width: w, height: h, radius: 10),
             if (result.badge != ResultBadge.none)
               Positioned(
                 left: 4,
