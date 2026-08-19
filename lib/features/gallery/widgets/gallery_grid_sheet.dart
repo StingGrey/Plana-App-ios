@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -410,51 +411,19 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
     await _downloadPicked(album: name);
   }
 
-  /// 长按缩略图:就地弹出该张的操作菜单。
+  /// 长按缩略图:压暗背景,把按住的那张从原位放大浮起,菜单紧贴在它下面。
   ///
-  /// 菜单锚在手指按下的位置,不用底部弹层 —— 从底下升起的那种会盖住下半屏,
-  /// 正好挡掉刚长按的那张图,选项落在哪张上就说不清了。
-  ///
-  /// 删除排最后并单独隔一条线:菜单是在手指底下弹出来的,排第一位等于把
-  /// 不可撤销的那项塞到最容易误落的地方。
-  Future<void> _thumbMenu(String id, Offset at) async {
+  /// 之前是 showMenu 锚在手指坐标上 —— 图本身一点变化都没有,菜单跟哪张图
+  /// 有关全靠猜。指向感只能由**图自己动**来给,锚点给不了。
+  Future<void> _thumbMenu(String id, Rect from) async {
+    final r = _resultOf(id);
+    if (r == null) return;
     Haptics.medium();
-    final scheme = context.scheme;
-    final box = Overlay.of(context).context.findRenderObject() as RenderBox;
-    final picked = await showMenu<String>(
-      context: context,
-      position: RelativeRect.fromRect(at & Size.zero, Offset.zero & box.size),
-      items: [
-        const PopupMenuItem(
-          value: 'import',
-          child: ListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.input, size: 20),
-            title: Text('导入'),
-          ),
-        ),
-        const PopupMenuItem(
-          value: 'save',
-          child: ListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.download, size: 20),
-            title: Text('保存'),
-          ),
-        ),
-        const PopupMenuDivider(),
-        PopupMenuItem(
-          value: 'delete',
-          child: ListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.delete_outline, size: 20, color: scheme.error),
-            title: Text('删除', style: TextStyle(color: scheme.error)),
-          ),
-        ),
-      ],
-    );
+    final nav = Navigator.of(context);
+    // 缩略图报的是屏幕坐标,路由画在 overlay 里 —— 有嵌套导航时两者不重合
+    final box = nav.overlay?.context.findRenderObject() as RenderBox?;
+    final at = box == null ? from : box.globalToLocal(from.topLeft) & from.size;
+    final picked = await nav.push(_ThumbMenuRoute(from: at, result: r));
     if (picked == null || !mounted) return;
     switch (picked) {
       case 'import':
@@ -465,6 +434,9 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
         await _deleteOne(id);
     }
   }
+
+  ResultImage? _resultOf(String id) =>
+      ref.read(galleryProvider).results.where((e) => e.id == id).firstOrNull;
 
   /// 导入:这张送进导入面板(解析内嵌元数据 / 用作参考),与画布侧栏同一个面板。
   ///
@@ -802,7 +774,7 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
                                   },
                                   onLongPress: _selecting
                                       ? null
-                                      : (at) => _thumbMenu(r.id, at),
+                                      : (from) => _thumbMenu(r.id, from),
                                 );
                               }, childCount: e.value.length),
                             ),
@@ -903,8 +875,9 @@ class _GridThumb extends StatelessWidget {
   final bool selecting;
   final VoidCallback onTap;
 
-  /// 长按:带上手指的全局坐标,菜单要锚在按下去的地方。
-  final void Function(Offset at)? onLongPress;
+  /// 长按:带上**这张图当前占的屏幕矩形**(不是手指坐标)——
+  /// 抬起动画要从这块地方长出来,菜单才看得出是属于哪一张的。
+  final void Function(Rect from)? onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -912,9 +885,16 @@ class _GridThumb extends StatelessWidget {
     final ring = selecting ? picked : selected;
     return GestureDetector(
       onTap: onTap,
-      onLongPressStart: onLongPress == null
+      onLongPress: onLongPress == null
           ? null
-          : (d) => onLongPress!(d.globalPosition),
+          : () {
+              final box = context.findRenderObject() as RenderBox?;
+              if (box == null || !box.hasSize) return;
+              // 减掉描边 + 让位的那 5,让抬起从图的边缘起算,不是从格子边缘
+              onLongPress!(
+                (box.localToGlobal(Offset.zero) & box.size).deflate(5),
+              );
+            },
       child: AnimatedContainer(
         duration: Motion.fast,
         curve: Motion.standard,
@@ -996,6 +976,202 @@ class _GridThumb extends StatelessWidget {
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---- 长按:按住抬起 + 贴着图的菜单 ----
+
+/// 缩略图长按后的「抬起」层。
+///
+/// 用 PopupRoute 而不是自己搭 Overlay:遮罩、返回键、点空白关闭、进出动画
+/// 全是路由自带的,手搭一遍只会漏掉其中一两样。
+class _ThumbMenuRoute extends PopupRoute<String> {
+  _ThumbMenuRoute({required this.from, required this.result});
+
+  /// 缩略图在 overlay 坐标系里的原始矩形 —— 放大从这里长出来,
+  /// 「浮起的是这一张」全指望它。
+  final Rect from;
+  final ResultImage result;
+
+  @override
+  Color? get barrierColor => Colors.black.withValues(alpha: .55);
+
+  @override
+  bool get barrierDismissible => true;
+
+  @override
+  String? get barrierLabel => '关闭菜单';
+
+  @override
+  Duration get transitionDuration => const Duration(milliseconds: 230);
+
+  @override
+  Duration get reverseTransitionDuration => const Duration(milliseconds: 150);
+
+  @override
+  Widget buildPage(
+    BuildContext context,
+    Animation<double> anim,
+    Animation<double> _,
+  ) => _LiftedThumb(from: from, result: result, anim: anim);
+}
+
+class _LiftedThumb extends StatelessWidget {
+  const _LiftedThumb({
+    required this.from,
+    required this.result,
+    required this.anim,
+  });
+
+  final Rect from;
+  final ResultImage result;
+  final Animation<double> anim;
+
+  static const _margin = 16.0;
+  static const _gap = 12.0;
+  static const _menuW = 200.0;
+  static const _itemH = 46.0;
+  static const _dividerH = 9.0;
+  static const _menuH = _itemH * 3 + _dividerH + 16;
+
+  @override
+  Widget build(BuildContext context) {
+    final media = MediaQuery.of(context);
+    final size = media.size;
+    final top0 = media.padding.top + _margin;
+    final bot0 = size.height - media.padding.bottom - _margin;
+
+    // 抬起后按图的**真实长宽比**摊开 —— 网格里是方裁的,这一下顺带把裁掉的
+    // 部分还回来。宽度只取屏宽六成:铺满就成了看图页,没有「一张卡浮在网格上」
+    // 的意思,而这个「浮在网格上」正是指向感的来源。
+    final maxW = size.width - _margin * 2;
+    final maxH = math.max(80.0, bot0 - top0 - _menuH - _gap);
+    var pw = math.min(maxW, size.width * .62);
+    var ph = pw / result.aspect;
+    if (ph > maxH) {
+      ph = maxH;
+      pw = ph * result.aspect;
+    }
+    if (pw > maxW) {
+      pw = maxW;
+      ph = pw / result.aspect;
+    }
+
+    // 尽量停在原位附近:抬起来的是「刚按的那一张」,不是从屏幕中央蹦出来的
+    // 另一张。装不下(菜单要顶到屏幕外)才整体上移。
+    final groupH = ph + _gap + _menuH;
+    final left = (from.center.dx - pw / 2)
+        .clamp(_margin, math.max(_margin, size.width - pw - _margin))
+        .toDouble();
+    final top = (from.center.dy - ph / 2)
+        .clamp(top0, math.max(top0, bot0 - groupH))
+        .toDouble();
+    final menuLeft = left
+        .clamp(_margin, math.max(_margin, size.width - _menuW - _margin))
+        .toDouble();
+    final to = Rect.fromLTWH(left, top, pw, ph);
+
+    return AnimatedBuilder(
+      animation: anim,
+      builder: (context, _) {
+        final t = Motion.emphasized.transform(
+          anim.value.clamp(0.0, 1.0).toDouble(),
+        );
+        final rect = Rect.lerp(from, to, t)!;
+        return Stack(
+          children: [
+            Positioned.fromRect(
+              rect: rect,
+              child: ResultThumb(
+                result: result,
+                width: rect.width,
+                height: rect.height,
+                radius: 14,
+              ),
+            ),
+            Positioned(
+              left: menuLeft,
+              top: to.bottom + _gap,
+              width: _menuW,
+              // 从图的下沿卷出来,不是凭空淡入 —— 强调它属于上面那张
+              child: Opacity(
+                opacity: t,
+                child: ClipRect(
+                  child: Align(
+                    alignment: Alignment.topCenter,
+                    heightFactor: math.max(t, .01),
+                    child: _menu(context),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _menu(BuildContext context) {
+    final scheme = context.scheme;
+    return Material(
+      color: scheme.surfaceContainerHigh,
+      elevation: 6,
+      borderRadius: BorderRadius.circular(14),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 8),
+          _item(context, Icons.input, '导入', 'import'),
+          _item(context, Icons.download, '保存', 'save'),
+          // 删除排最后并单独隔一条线:菜单就在手指底下,不可撤销的那项
+          // 排第一位等于放到最容易误落的地方
+          Divider(
+            height: _dividerH,
+            thickness: 1,
+            indent: 14,
+            endIndent: 14,
+            color: scheme.outlineVariant,
+          ),
+          _item(context, Icons.delete_outline, '删除', 'delete', danger: true),
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+
+  Widget _item(
+    BuildContext context,
+    IconData icon,
+    String label,
+    String value, {
+    bool danger = false,
+  }) {
+    final scheme = context.scheme;
+    return InkWell(
+      onTap: () => Navigator.of(context).pop(value),
+      child: SizedBox(
+        height: _itemH,
+        child: Row(
+          children: [
+            const SizedBox(width: 14),
+            Icon(
+              icon,
+              size: 20,
+              color: danger ? scheme.error : scheme.onSurfaceVariant,
+            ),
+            const SizedBox(width: 12),
+            Text(
+              label,
+              style: context.texts.bodyLarge!.copyWith(
+                color: danger ? scheme.error : scheme.onSurface,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
         ),
       ),
     );
