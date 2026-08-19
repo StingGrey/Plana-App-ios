@@ -1,12 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/util/haptics.dart';
 import '../generate/generate_state.dart';
 import '../generate/models.dart';
 import '../generate/widgets/common.dart' show InfoNote, hintSnack;
@@ -60,6 +62,10 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
   String? _busyName; // favorite/unfavorite 进行中的条目
 
   String _commCat = 'all';
+
+  /// 库内条目的 Civitai 简介缓存(LR 编号 → 简介;null = 查过、没查着)。
+  /// 挂在页上而不是弹层里:同一条反复开详情不该反复去搜一遍。
+  final Map<String, String?> _descCache = {};
 
   // 上传自己的 LoRA:0~100 = 本机→server 的百分比,null = 没在传。
   // 传输跑在本页而不是上传面板里,面板关掉、切 tab 都不打断。
@@ -693,7 +699,7 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(_kEdge, 8, _kEdge, 8),
-            child: _segTabs(scheme, mine.length, community.length),
+            child: _segTabs(scheme),
           ),
           Expanded(
             child: TabBarView(
@@ -712,7 +718,7 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
   }
 
   // ---- 分段 Tab(视觉对齐 Vibe/画风管理器,3 段) ----
-  Widget _segTabs(ColorScheme scheme, int mineCount, int allCount) {
+  Widget _segTabs(ColorScheme scheme) {
     return SizedBox(
       height: 42,
       child: DecoratedBox(
@@ -751,8 +757,8 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
                     ),
                     Row(
                       children: [
-                        _segLabel(0, Icons.smartphone, '我的 · $mineCount', t),
-                        _segLabel(1, Icons.dns_outlined, '公共库 · $allCount', t),
+                        _segLabel(0, Icons.smartphone, '我的', t),
+                        _segLabel(1, Icons.dns_outlined, '公共库', t),
                         _segLabel(2, Icons.public, '在线搜索', t),
                       ],
                     ),
@@ -838,27 +844,40 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
                       item: x,
                       selected: _selected.contains(x.name),
                       onTap: () => _toggleSelect(x),
-                      action: _busyName == x.name
-                          ? const _BusyIcon()
-                          : Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                if (x.syncStatus == 'failed' && x.isOwner)
-                                  IconButton(
-                                    tooltip: '重试推送到机房',
-                                    icon: const Icon(Icons.refresh),
-                                    onPressed: () => _retryPush(x),
-                                  ),
-                                IconButton(
-                                  tooltip: '删除(移出我的库)',
-                                  icon: Icon(
-                                    Icons.delete_outline,
-                                    color: context.scheme.error,
-                                  ),
-                                  onPressed: () => _unfavorite(x),
-                                ),
-                              ],
+                      // 三个页一套规矩:ℹ 常驻,忙的只是右边那颗。
+                      // 原先整排在收藏请求期间被一个转圈整个换掉,
+                      // 详情跟着一起消失 —— 而看详情和收藏没有半点关系。
+                      action: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (x.syncStatus == 'failed' && x.isOwner)
+                            IconButton(
+                              tooltip: '重试推送到机房',
+                              visualDensity: VisualDensity.compact,
+                              icon: const Icon(Icons.refresh),
+                              onPressed: () => _retryPush(x),
                             ),
+                          IconButton(
+                            tooltip: '详情',
+                            visualDensity: VisualDensity.compact,
+                            icon: const Icon(Icons.info_outline),
+                            color: context.scheme.onSurfaceVariant,
+                            onPressed: () => _showLibraryDetail(x),
+                          ),
+                          if (_busyName == x.name)
+                            const _BusyIcon()
+                          else
+                            IconButton(
+                              tooltip: '删除(移出我的库)',
+                              visualDensity: VisualDensity.compact,
+                              icon: Icon(
+                                Icons.delete_outline,
+                                color: context.scheme.error,
+                              ),
+                              onPressed: () => _unfavorite(x),
+                            ),
+                        ],
+                      ),
                     );
                   },
                 ),
@@ -1362,20 +1381,7 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
                         ),
                       ],
                       const SizedBox(height: 12),
-                      Text(
-                        '简介',
-                        style: context.texts.labelMedium!.copyWith(
-                          color: scheme.onSurfaceVariant,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        x.description.trim().isEmpty
-                            ? '(无简介)'
-                            : x.description.trim(),
-                        style: context.texts.bodySmall!.copyWith(height: 1.5),
-                      ),
+                      _DescSection(text: x.description),
                     ],
                   ),
                 ),
@@ -1645,10 +1651,14 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
                                         style: context.texts.bodySmall,
                                       ),
                                     ),
-                                  ],
+                                    const SizedBox(height: 12),
+                        _LibraryDesc(item: x, base: _base, cache: _descCache),
+                      ],
                                 ),
                               ),
                             ),
+                        const SizedBox(height: 12),
+                        _LibraryDesc(item: x, base: _base, cache: _descCache),
                       ],
                     ),
                   ),
@@ -2012,4 +2022,172 @@ class _BusyIcon extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 详情弹层里的「简介」块(三张详情共用)。
+///
+/// **整块长按复制**:Civitai 的简介常写着触发词怎么配、推荐权重、训练素材来源,
+/// 想抄一段去别处的时候,弹层里选不中的纯文本最烦人 —— 长按一下整段带走。
+class _DescSection extends StatelessWidget {
+  const _DescSection({required this.text, this.loading = false});
+
+  final String text;
+
+  /// 还在去 Civitai 取的路上(库内条目才有这一态)。
+  final bool loading;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    final body = text.trim();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '简介',
+          style: context.texts.labelMedium!.copyWith(
+            color: scheme.onSurfaceVariant,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 6),
+        if (loading)
+          Row(
+            children: [
+              SizedBox(
+                width: 13,
+                height: 13,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: scheme.outline,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '读取中…',
+                style: context.texts.bodySmall!.copyWith(color: scheme.outline),
+              ),
+            ],
+          )
+        else if (body.isEmpty)
+          Text(
+            '(无简介)',
+            style: context.texts.bodySmall!.copyWith(color: scheme.outline),
+          )
+        else
+          // InkWell 而不是裸 GestureDetector:长按得有个水波告诉人「按到了」,
+          // 不然一段纯文本长按下去毫无反应,只有 snack 迟一拍冒出来。
+          InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onLongPress: () {
+              Haptics.selection();
+              Clipboard.setData(ClipboardData(text: body));
+              hintSnack(context, '已复制简介', icon: Icons.copy_all_outlined);
+            },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Text(
+                body,
+                style: context.texts.bodySmall!.copyWith(height: 1.5),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+/// 库内条目(我的 / 公共库)的简介块。
+///
+/// 注册表没存 description —— `/api/lora/list` 那张卡里根本没有这个字段,所以
+/// 只能回头去 Civitai 取:source_url 里带着 `models/<model_id>`,拿显示名去
+/// 现成的 `/api/lora/search`(服务端代理)搜一次,结果里对上同一个 model_id
+/// 就是它的简介。简介是模型级的、与具体版本无关,所以按 model_id 对就够了。
+///
+/// 搜不着就当没有:简介是锦上添花,不值得为它把详情弹层拦住或弹错。
+/// 自己上传的 LoRA(没有 Civitai 来源)直接显示「(无简介)」,不发请求。
+class _LibraryDesc extends ConsumerStatefulWidget {
+  const _LibraryDesc({
+    required this.item,
+    required this.base,
+    required this.cache,
+  });
+
+  final LoraCardInfo item;
+  final String base;
+
+  /// 页面级缓存(LR 编号 → 简介),重开详情不重搜。
+  final Map<String, String?> cache;
+
+  @override
+  ConsumerState<_LibraryDesc> createState() => _LibraryDescState();
+}
+
+class _LibraryDescState extends ConsumerState<_LibraryDesc> {
+  bool _loading = false;
+  String? _desc;
+
+  /// `https://civitai.com/models/1234?modelVersionId=5678` → 1234。
+  static int? _modelIdOf(String sourceUrl) {
+    if (!sourceUrl.contains('civitai.com')) return null;
+    final m = RegExp(r'/models/(\d+)').firstMatch(sourceUrl);
+    return m == null ? null : int.tryParse(m.group(1)!);
+  }
+
+  /// 搜索用的关键词。显示名可能被后端加过工:同名冲突时挂了 ` (LR7)` 后缀,
+  /// 版本名与模型名不同时拼成 `模型 - 版本` —— 两截都会把全文搜索带偏,
+  /// 而我们是按 model_id 对结果的,词越宽越容易命中。
+  static String _queryOf(String displayName) {
+    var q = displayName.replaceFirst(RegExp(r'\s*\(LR\d+\)$'), '').trim();
+    final cut = q.lastIndexOf(' - ');
+    if (cut > 0) q = q.substring(0, cut).trim();
+    return q;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    final cached = widget.cache;
+    if (cached.containsKey(widget.item.name)) {
+      _desc = cached[widget.item.name];
+      return;
+    }
+    _fetch();
+  }
+
+  Future<void> _fetch() async {
+    final x = widget.item;
+    final modelId = _modelIdOf(x.sourceUrl);
+    final query = _queryOf(x.displayName);
+    if (modelId == null || query.isEmpty) {
+      widget.cache[x.name] = null;
+      return;
+    }
+    _loading = true; // 还在 initState 里,直接置位就行(第一帧还没画)
+    String? found;
+    try {
+      final res = await ref
+          .read(backendClientProvider)
+          .searchLoras(query: query, base: widget.base);
+      for (final it in res.items) {
+        if (it.modelId == modelId && it.description.trim().isNotEmpty) {
+          found = it.description.trim();
+          break;
+        }
+      }
+    } catch (_) {
+      // 搜不通就当没简介 —— 这条路本来就是尽力而为
+    }
+    widget.cache[x.name] = found;
+    if (mounted) {
+      setState(() {
+        _loading = false;
+        _desc = found;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      _DescSection(text: _desc ?? '', loading: _loading);
 }
