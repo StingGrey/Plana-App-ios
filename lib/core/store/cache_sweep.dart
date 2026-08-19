@@ -1,6 +1,10 @@
 import '../util/log.dart';
 import 'package:path_provider/path_provider.dart';
 
+/// 分享用的临时图落这里(gallery_grid_sheet)。每次分享前自己会清一次,
+/// 这里再兜一道:分享到一半退出的残留、以及存储管理里手动清理。
+const kShareCacheDir = 'plana_share';
+
 // file_picker 建的 UUID 目录 / image_picker 落的 UUID 文件
 final _uuidLike = RegExp(
   r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(\..*)?$',
@@ -29,7 +33,8 @@ Future<void> sweepPickerCache({
           _uuidLike.hasMatch(name) ||
           name.endsWith('.onnx') ||
           name.startsWith('image_picker') ||
-          name.startsWith('scaled_');
+          name.startsWith('scaled_') ||
+          name == kShareCacheDir;
       if (!junk) {
         kept++;
         continue;

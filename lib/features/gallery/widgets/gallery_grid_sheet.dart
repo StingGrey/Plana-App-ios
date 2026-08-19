@@ -1,11 +1,15 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gal/gal.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../../core/store/app_stores.dart';
+import '../../../core/store/cache_sweep.dart' show kShareCacheDir;
 import '../../../core/theme/app_theme.dart';
 import '../../generate/widgets/common.dart'
     show ExpandBody, hintSnack, sharedAxisRoute;
@@ -47,6 +51,8 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
   bool _selecting = false;
   final Set<String> _picked = {};
   bool _saving = false;
+  bool _sharing = false;
+  // 保存与分享共用这对计数(两件事不会同时跑,canAct 互斥)
   int _saveDone = 0;
   int _saveTotal = 0;
 
@@ -476,6 +482,73 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
     );
   }
 
+  /// 批量分享:按保存设置处理后落进缓存,交给系统分享面板。
+  ///
+  /// 刻意走 processForSave 这条**与保存同一条**的管线 —— 把元数据设成
+  /// 「清除」的人,不会希望分享出去的那份又把提示词带上。
+  ///
+  /// 落在 cache/[kShareCacheDir]/,每次分享前先整个清掉:给出去的是 content
+  /// URI,接收方当场就拷走了,留着只会在缓存里越积越多(sweepPickerCache
+  /// 也认这个目录名,存储管理那边手动清理一并带走)。
+  Future<void> _sharePicked() async {
+    final items = [
+      for (final r in ref.read(galleryProvider).results)
+        if (_picked.contains(r.id)) r,
+    ];
+    if (items.isEmpty) return;
+    final settings = await ref.read(saveSettingsProvider.future);
+    if (!mounted) return;
+    final store = ref.read(appStoresProvider).gallery;
+    setState(() {
+      _sharing = true;
+      _saveDone = 0;
+      _saveTotal = items.length;
+    });
+    final jpg = settings.format == SaveFormat.jpg;
+    final files = <XFile>[];
+    var failed = 0;
+    try {
+      final dir = Directory(
+        '${(await getTemporaryDirectory()).path}/$kShareCacheDir',
+      );
+      if (dir.existsSync()) await dir.delete(recursive: true);
+      await dir.create(recursive: true);
+      for (final r in items) {
+        if (!mounted) return; // 弹层已关:中止剩余
+        try {
+          final bytes = r.bytes ?? await store.readImage(r.id);
+          if (bytes == null) {
+            failed++;
+          } else {
+            final out = await processForSave(bytes, settings);
+            final f = File(
+              '${dir.path}/plana_${r.seed}.${jpg ? 'jpg' : 'png'}',
+            );
+            await f.writeAsBytes(out, flush: true);
+            files.add(
+              XFile(f.path, mimeType: jpg ? 'image/jpeg' : 'image/png'),
+            );
+          }
+        } catch (_) {
+          failed++;
+        }
+        if (mounted) setState(() => _saveDone = files.length + failed);
+      }
+    } catch (_) {
+      failed = items.length - files.length;
+    }
+    if (!mounted) return;
+    setState(() => _sharing = false);
+    if (files.isEmpty) {
+      hintSnack(context, '没有可分享的图片', icon: Icons.error_outline);
+      return;
+    }
+    await SharePlus.instance.share(ShareParams(files: files));
+    if (failed > 0 && mounted) {
+      hintSnack(context, '$failed 张读不出来,已跳过', icon: Icons.error_outline);
+    }
+  }
+
   /// 单张删除(长按菜单里那项)。**不再二次确认** —— 长按抬起、看清是哪张、
   /// 再点删除,本身已是三步;弹窗只是给这条路再加一次点击。
   /// 批量删除那条仍然确认:一次十几张,误触代价不在一个量级。
@@ -552,7 +625,7 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
 
     final scheme = context.scheme;
     final h = MediaQuery.of(context).size.height * 0.82;
-    final canAct = _picked.isNotEmpty && !_saving;
+    final canAct = _picked.isNotEmpty && !_saving && !_sharing;
 
     return PopScope(
       // 多选态下系统返回/侧滑先退多选,不关弹层 —— 勾了十几张再手滑退出,
@@ -843,20 +916,48 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
                               ),
                             ),
                             const SizedBox(height: _actGap),
-                            // 这颗要多一步选相册,与上面两颗的即时性不同级 ——
-                            // 所以矮一档、只占自身宽度居中放。原来铺满一行,
-                            // 视觉分量反而压过了上面两颗,标签又短,两头空一大片。
-                            Center(
-                              child: SizedBox(
-                                height: _actSubH,
-                                child: OutlinedButton.icon(
-                                  onPressed: canAct ? _downloadToAlbum : null,
-                                  icon: const Icon(
-                                    Icons.photo_album_outlined,
-                                    size: 17,
+                            // 次行:两颗都要多一步(选相册 / 挑应用),与上面
+                            // 两颗的即时性不同级,所以矮一档(_actSubH)。
+                            SizedBox(
+                              height: _actSubH,
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: OutlinedButton.icon(
+                                      onPressed: canAct ? _sharePicked : null,
+                                      icon: _sharing
+                                          ? const SizedBox(
+                                              width: 15,
+                                              height: 15,
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                              ),
+                                            )
+                                          : const Icon(
+                                              Icons.ios_share,
+                                              size: 17,
+                                            ),
+                                      label: Text(
+                                        _sharing
+                                            ? '准备 $_saveDone/$_saveTotal'
+                                            : '分享',
+                                      ),
+                                    ),
                                   ),
-                                  label: const Text('保存到自定义相册'),
-                                ),
+                                  const SizedBox(width: _actGap),
+                                  Expanded(
+                                    child: OutlinedButton.icon(
+                                      onPressed: canAct
+                                          ? _downloadToAlbum
+                                          : null,
+                                      icon: const Icon(
+                                        Icons.photo_album_outlined,
+                                        size: 17,
+                                      ),
+                                      label: const Text('自定义相册'),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           ],

@@ -60,6 +60,7 @@ dependencies:
   image: ^4.8.0
   material_color_utilities: ^0.13.0
   unorm_dart: ^0.3.2
+  share_plus: ^12.0.2
 
 dev_dependencies:
   flutter_test:
