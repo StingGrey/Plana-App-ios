@@ -7,7 +7,8 @@ import 'package:gal/gal.dart';
 import '../../../core/store/app_stores.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../generate/widgets/common.dart'
-    show ExpandBody, confirmDialog, hintSnack;
+    show ExpandBody, confirmDialog, hintSnack, sharedAxisRoute;
+import '../../import/import_panel.dart';
 import '../gallery_dates.dart';
 import '../gallery_search.dart';
 import '../gallery_state.dart';
@@ -21,8 +22,9 @@ import '../../../core/util/haptics.dart';
 
 /// 「›」展开:全部作品网格弹层,按天分段显示;可按模型/时间筛选、按提示词
 /// 标签搜索(数据源 gallery_search 检索索引,筛选条件全 AND 组合)。
-/// 点选一张即回填画布并关闭;长按缩略图或点「多选」进入多选,段头可整段
-/// 全选,底部批量保存相册 / 批量删除 —— 批量操作只作用于当前可见集合。
+/// 点选一张即回填画布并关闭;长按弹出该张的导入 / 保存 / 删除菜单。
+/// 多选只从右上角「多选」进,段头可整段全选,底部批量保存相册 / 批量删除
+/// —— 批量操作只作用于当前可见集合。
 /// [selectId] 传入时直接以多选态打开并预选该张(胶片条长按入口)。
 Future<void> showGalleryGrid(BuildContext context, {String? selectId}) =>
     showModalBottomSheet<void>(
@@ -288,15 +290,12 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
           const Spacer(),
           if (_selecting)
             TextButton(
-              style: TextButton.styleFrom(
-                visualDensity: VisualDensity.compact,
-              ),
+              style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
               onPressed: _saving
                   ? null
                   : () => setState(
-                      () => allOn
-                          ? _picked.removeAll(ids)
-                          : _picked.addAll(ids),
+                      () =>
+                          allOn ? _picked.removeAll(ids) : _picked.addAll(ids),
                     ),
               child: Text(allOn ? '取消' : '全选'),
             ),
@@ -338,10 +337,13 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
   /// 批量保存:按默认保存设置逐张处理后存相册;逐张计数,
   /// 中途关闭弹层即中止(已存的保留)。
   /// [album] 非空 = 存进该自定义相册(gal 会按需创建 `Pictures/<album>/`)。
-  Future<void> _downloadPicked({String? album}) async {
+  /// [only] 非空 = 只存这些(长按菜单的单张保存借道同一条管线,
+  /// 权限申请、保存设置、失败计数一条都不用重写)。
+  Future<void> _downloadPicked({String? album, Set<String>? only}) async {
+    final want = only ?? _picked;
     final items = [
       for (final r in ref.read(galleryProvider).results)
-        if (_picked.contains(r.id)) r,
+        if (want.contains(r.id)) r,
     ];
     if (items.isEmpty) return;
     // 写自建相册**以外**的相册要额外权限位,按目标申请
@@ -408,9 +410,97 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
     await _downloadPicked(album: name);
   }
 
-  /// 单张删除(缩略图右上角那枚)。底部那条批量删除要先进多选,只想扔一张
-  /// 时太绕;但这枚目标小、又贴着「点一下就回填画布」的热区,误触代价是
-  /// 一张删不回来的图 —— 所以照样过一道确认。
+  /// 长按缩略图:就地弹出该张的操作菜单。
+  ///
+  /// 菜单锚在手指按下的位置,不用底部弹层 —— 从底下升起的那种会盖住下半屏,
+  /// 正好挡掉刚长按的那张图,选项落在哪张上就说不清了。
+  ///
+  /// 删除排最后并单独隔一条线:菜单是在手指底下弹出来的,排第一位等于把
+  /// 不可撤销的那项塞到最容易误落的地方。
+  Future<void> _thumbMenu(String id, Offset at) async {
+    Haptics.medium();
+    final scheme = context.scheme;
+    final box = Overlay.of(context).context.findRenderObject() as RenderBox;
+    final picked = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(at & Size.zero, Offset.zero & box.size),
+      items: [
+        const PopupMenuItem(
+          value: 'import',
+          child: ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.input, size: 20),
+            title: Text('导入'),
+          ),
+        ),
+        const PopupMenuItem(
+          value: 'save',
+          child: ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.download, size: 20),
+            title: Text('保存'),
+          ),
+        ),
+        const PopupMenuDivider(),
+        PopupMenuItem(
+          value: 'delete',
+          child: ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.delete_outline, size: 20, color: scheme.error),
+            title: Text('删除', style: TextStyle(color: scheme.error)),
+          ),
+        ),
+      ],
+    );
+    if (picked == null || !mounted) return;
+    switch (picked) {
+      case 'import':
+        await _importOne(id);
+      case 'save':
+        await _downloadPicked(only: {id});
+      case 'delete':
+        await _deleteOne(id);
+    }
+  }
+
+  /// 导入:这张送进导入面板(解析内嵌元数据 / 用作参考),与画布侧栏同一个面板。
+  ///
+  /// 先关网格弹层再推面板 —— 面板是整页的,压在弹层上会留一层退不掉的夹心:
+  /// 从面板返回时人会以为回到了画布,实际还在弹层里。
+  Future<void> _importOne(String id) async {
+    final r = ref
+        .read(galleryProvider)
+        .results
+        .where((e) => e.id == id)
+        .firstOrNull;
+    if (r == null) return;
+    final bytes =
+        r.bytes ?? await ref.read(appStoresProvider).gallery.readImage(id);
+    if (!mounted) return;
+    if (bytes == null) {
+      hintSnack(context, '图片尚未就绪', icon: Icons.hourglass_empty);
+      return;
+    }
+    final nav = Navigator.of(context);
+    nav.pop();
+    unawaited(
+      nav.push(
+        sharedAxisRoute(
+          ImportImagePanel(
+            bytes: bytes,
+            fileName: 'plana_${r.seed}.png',
+            displayName: 'plana_${r.seed}',
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 单张删除(长按菜单里那项)。底部那条批量删除要先进多选,只想扔一张时太绕;
+  /// 但删掉就找不回来,所以照样过一道确认。
   Future<void> _deleteOne(String id) async {
     if (!await confirmDialog(
       context,
@@ -495,294 +585,299 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
     final h = MediaQuery.of(context).size.height * 0.82;
     final canAct = _picked.isNotEmpty && !_saving;
 
-    return SizedBox(
-      height: h,
-      child: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 4, 12, 8),
-            child: SizedBox(
-              height: 36,
-              child: _selecting
-                  ? Row(
-                      children: [
-                        Text(
-                          '已选 ${_picked.length} 张',
-                          style: context.texts.titleMedium!.copyWith(
-                            fontWeight: FontWeight.w700,
+    return PopScope(
+      // 多选态下系统返回/侧滑先退多选,不关弹层 —— 勾了十几张再手滑退出,
+      // 重新勾一遍的代价比多按一次返回大得多。非多选态照常放行,
+      // 好让预测式返回该怎么演就怎么演。
+      canPop: !_selecting,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _selecting) _exitSelect();
+      },
+      child: SizedBox(
+        height: h,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 4, 12, 8),
+              child: SizedBox(
+                height: 36,
+                child: _selecting
+                    ? Row(
+                        children: [
+                          Text(
+                            '已选 ${_picked.length} 张',
+                            style: context.texts.titleMedium!.copyWith(
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
-                        ),
-                        const Spacer(),
-                        TextButton(
-                          onPressed: _saving
-                              ? null
-                              : () => _toggleAll(filtered),
-                          child: Text(
-                            _picked.length == filtered.length &&
-                                    filtered.isNotEmpty
-                                ? '全不选'
-                                : '全选',
+                          const Spacer(),
+                          TextButton(
+                            onPressed: _saving
+                                ? null
+                                : () => _toggleAll(filtered),
+                            child: Text(
+                              _picked.length == filtered.length &&
+                                      filtered.isNotEmpty
+                                  ? '全不选'
+                                  : '全选',
+                            ),
                           ),
-                        ),
-                        TextButton(
-                          onPressed: _saving ? null : _exitSelect,
-                          child: const Text('完成'),
-                        ),
-                      ],
-                    )
-                  : Row(
-                      children: [
-                        Text(
-                          '全部作品',
-                          style: context.texts.titleMedium!.copyWith(
-                            fontWeight: FontWeight.w700,
+                          TextButton(
+                            onPressed: _saving ? null : _exitSelect,
+                            child: const Text('完成'),
                           ),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          filtering
-                              ? '${filtered.length}/${results.length} 张'
-                              : '${results.length} 张',
-                          style: context.texts.bodySmall!.copyWith(
-                            color: scheme.onSurfaceVariant,
+                        ],
+                      )
+                    : Row(
+                        children: [
+                          Text(
+                            '全部作品',
+                            style: context.texts.titleMedium!.copyWith(
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
-                        ),
-                        const Spacer(),
-                        IconButton(
-                          onPressed: _toggleSearch,
-                          visualDensity: VisualDensity.compact,
-                          tooltip: '搜索提示词标签',
-                          icon: Icon(
-                            Icons.search,
-                            size: 21,
-                            color: _searchOpen
-                                ? scheme.primary
-                                : scheme.onSurfaceVariant,
+                          const SizedBox(width: 8),
+                          Text(
+                            filtering
+                                ? '${filtered.length}/${results.length} 张'
+                                : '${results.length} 张',
+                            style: context.texts.bodySmall!.copyWith(
+                              color: scheme.onSurfaceVariant,
+                            ),
                           ),
-                        ),
-                        TextButton(
-                          onPressed: () => _enterSelect(),
-                          child: const Text('多选'),
-                        ),
-                      ],
-                    ),
+                          const Spacer(),
+                          IconButton(
+                            onPressed: _toggleSearch,
+                            visualDensity: VisualDensity.compact,
+                            tooltip: '搜索提示词标签',
+                            icon: Icon(
+                              Icons.search,
+                              size: 21,
+                              color: _searchOpen
+                                  ? scheme.primary
+                                  : scheme.onSurfaceVariant,
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: () => _enterSelect(),
+                            child: const Text('多选'),
+                          ),
+                        ],
+                      ),
+              ),
             ),
-          ),
-          // 搜索框(点放大镜展开;关闭即清词)
-          ExpandBody(
-            expanded: _searchOpen,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-              child: TextField(
-                controller: _searchCtrl,
-                focusNode: _searchFocus,
-                onChanged: _onSearchChanged,
-                textInputAction: TextInputAction.search,
-                style: context.texts.bodyMedium,
-                decoration: InputDecoration(
-                  isDense: true,
-                  hintText: '搜索提示词标签…',
-                  prefixIcon: const Icon(Icons.search, size: 19),
-                  suffixIcon: _searchCtrl.text.isEmpty
-                      ? null
-                      : IconButton(
-                          icon: const Icon(Icons.close, size: 17),
-                          onPressed: () {
-                            _searchCtrl.clear();
-                            _onSearchChanged('');
-                          },
-                        ),
-                  filled: true,
-                  fillColor: scheme.surfaceContainerHigh,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
+            // 搜索框(点放大镜展开;关闭即清词)
+            ExpandBody(
+              expanded: _searchOpen,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: TextField(
+                  controller: _searchCtrl,
+                  focusNode: _searchFocus,
+                  onChanged: _onSearchChanged,
+                  textInputAction: TextInputAction.search,
+                  style: context.texts.bodyMedium,
+                  decoration: InputDecoration(
+                    isDense: true,
+                    hintText: '搜索提示词标签…',
+                    prefixIcon: const Icon(Icons.search, size: 19),
+                    suffixIcon: _searchCtrl.text.isEmpty
+                        ? null
+                        : IconButton(
+                            icon: const Icon(Icons.close, size: 17),
+                            onPressed: () {
+                              _searchCtrl.clear();
+                              _onSearchChanged('');
+                            },
+                          ),
+                    filled: true,
+                    fillColor: scheme.surfaceContainerHigh,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide.none,
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
-          // 筛选 chips + 检索索引回填进度
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-            child: Row(
-              children: [
-                _chip(
-                  scheme,
-                  label: _modelFilter == null
-                      ? '模型'
-                      : (_modelFilter!.isEmpty ? '未知' : _modelFilter!),
-                  active: _modelFilter != null,
-                  onTap: () => _pickModelFilter(results, search.byId),
-                ),
-                const SizedBox(width: 8),
-                _chip(
-                  scheme,
-                  label: switch (_daysFilter) {
-                    1 => '今天',
-                    7 => '近 7 天',
-                    30 => '近 30 天',
-                    _ => '时间',
-                  },
-                  active: _daysFilter != 0,
-                  onTap: _pickTimeFilter,
-                ),
-                if (search.building) ...[
-                  const Spacer(),
-                  const SizedBox(
-                    width: 12,
-                    height: 12,
-                    child: CircularProgressIndicator(strokeWidth: 1.8),
+            // 筛选 chips + 检索索引回填进度
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Row(
+                children: [
+                  _chip(
+                    scheme,
+                    label: _modelFilter == null
+                        ? '模型'
+                        : (_modelFilter!.isEmpty ? '未知' : _modelFilter!),
+                    active: _modelFilter != null,
+                    onTap: () => _pickModelFilter(results, search.byId),
                   ),
-                  const SizedBox(width: 6),
-                  Text(
-                    '索引 ${search.done}/${search.total}',
-                    style: context.texts.bodySmall!.copyWith(
-                      color: scheme.outline,
+                  const SizedBox(width: 8),
+                  _chip(
+                    scheme,
+                    label: switch (_daysFilter) {
+                      1 => '今天',
+                      7 => '近 7 天',
+                      30 => '近 30 天',
+                      _ => '时间',
+                    },
+                    active: _daysFilter != 0,
+                    onTap: _pickTimeFilter,
+                  ),
+                  if (search.building) ...[
+                    const Spacer(),
+                    const SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(strokeWidth: 1.8),
                     ),
-                  ),
+                    const SizedBox(width: 6),
+                    Text(
+                      '索引 ${search.done}/${search.total}',
+                      style: context.texts.bodySmall!.copyWith(
+                        color: scheme.outline,
+                      ),
+                    ),
+                  ],
                 ],
-              ],
+              ),
             ),
-          ),
-          Expanded(
-            child: filtered.isEmpty
-                ? Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          filtering ? Icons.search_off : Icons.image_outlined,
-                          size: 40,
-                          color: scheme.outline,
-                        ),
-                        const SizedBox(height: 10),
-                        Text(
-                          filtering ? '没有符合条件的作品' : '图库是空的',
-                          style: context.texts.bodyMedium!.copyWith(
-                            color: scheme.onSurfaceVariant,
-                          ),
-                        ),
-                      ],
-                    ),
-                  )
-                : CustomScrollView(
-                    slivers: [
-                      for (final e in byDay.entries) ...[
-                        SliverToBoxAdapter(
-                          child: _dayHeader(scheme, e.key, e.value, now),
-                        ),
-                        // 缩略图本体还各带 5(描边 2.5 + 让位 2.5)的内缩,
-                        // 所以图与图之间实际留白 = 这里的 spacing + 10。
-                        // 收到 6 之后是 16,省下的宽度全给图。
-                        SliverPadding(
-                          padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
-                          sliver: SliverGrid(
-                            gridDelegate:
-                                const SliverGridDelegateWithFixedCrossAxisCount(
-                                  crossAxisCount: 3,
-                                  mainAxisSpacing: 6,
-                                  crossAxisSpacing: 6,
-                                ),
-                            delegate: SliverChildBuilderDelegate((_, i) {
-                              final r = e.value[i];
-                              return _GridThumb(
-                                result: r,
-                                selected:
-                                    !_selecting && r.id == state.selectedId,
-                                picked: _selecting && _picked.contains(r.id),
-                                selecting: _selecting,
-                                onTap: () {
-                                  if (_selecting) {
-                                    _toggle(r.id);
-                                  } else {
-                                    ref
-                                        .read(galleryProvider.notifier)
-                                        .select(r.id);
-                                    Navigator.of(context).pop();
-                                  }
-                                },
-                                onLongPress: _selecting
-                                    ? null
-                                    : () {
-                                        Haptics.medium();
-                                        _enterSelect(r.id);
-                                      },
-                                onDelete: () => _deleteOne(r.id),
-                              );
-                            }, childCount: e.value.length),
-                          ),
-                        ),
-                      ],
-                      const SliverToBoxAdapter(child: SizedBox(height: 10)),
-                    ],
-                  ),
-          ),
-          // 多选操作栏:进出多选随高度动画滑入滑出
-          AnimatedSize(
-            duration: Motion.medium,
-            curve: Motion.emphasized,
-            child: !_selecting
-                ? const SizedBox(width: double.infinity)
-                : SafeArea(
-                    top: false,
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+            Expanded(
+              child: filtered.isEmpty
+                  ? Center(
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Row(
-                            children: [
-                              Expanded(
-                                child: FilledButton.tonalIcon(
-                                  onPressed: canAct
-                                      ? () => _downloadPicked()
-                                      : null,
-                                  icon: const Icon(Icons.download, size: 19),
-                                  label: Text(
-                                    _saving
-                                        ? '保存中 $_saveDone/$_saveTotal'
-                                        : '保存 (${_picked.length})',
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: FilledButton.icon(
-                                  style: FilledButton.styleFrom(
-                                    backgroundColor: scheme.errorContainer,
-                                    foregroundColor: scheme.onErrorContainer,
-                                  ),
-                                  onPressed: canAct ? _deletePicked : null,
-                                  icon: const Icon(
-                                    Icons.delete_outline,
-                                    size: 19,
-                                  ),
-                                  label: Text('删除 (${_picked.length})'),
-                                ),
-                              ),
-                            ],
+                          Icon(
+                            filtering ? Icons.search_off : Icons.image_outlined,
+                            size: 40,
+                            color: scheme.outline,
                           ),
-                          const SizedBox(height: 8),
-                          // 独占一行:三颗横排在窄屏 + 大字号下会挤成省略号,
-                          // 且这一颗要多一步选相册,与上面两颗的即时性不同级。
-                          SizedBox(
-                            width: double.infinity,
-                            child: OutlinedButton.icon(
-                              onPressed: canAct ? _downloadToAlbum : null,
-                              icon: const Icon(
-                                Icons.photo_album_outlined,
-                                size: 19,
-                              ),
-                              label: const Text('保存到自定义相册'),
+                          const SizedBox(height: 10),
+                          Text(
+                            filtering ? '没有符合条件的作品' : '图库是空的',
+                            style: context.texts.bodyMedium!.copyWith(
+                              color: scheme.onSurfaceVariant,
                             ),
                           ),
                         ],
                       ),
+                    )
+                  : CustomScrollView(
+                      slivers: [
+                        for (final e in byDay.entries) ...[
+                          SliverToBoxAdapter(
+                            child: _dayHeader(scheme, e.key, e.value, now),
+                          ),
+                          // 缩略图本体还各带 5(描边 2.5 + 让位 2.5)的内缩,
+                          // 所以图与图之间实际留白 = 这里的 spacing + 10。
+                          // 收到 6 之后是 16,省下的宽度全给图。
+                          SliverPadding(
+                            padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+                            sliver: SliverGrid(
+                              gridDelegate:
+                                  const SliverGridDelegateWithFixedCrossAxisCount(
+                                    crossAxisCount: 3,
+                                    mainAxisSpacing: 6,
+                                    crossAxisSpacing: 6,
+                                  ),
+                              delegate: SliverChildBuilderDelegate((_, i) {
+                                final r = e.value[i];
+                                return _GridThumb(
+                                  result: r,
+                                  selected:
+                                      !_selecting && r.id == state.selectedId,
+                                  picked: _selecting && _picked.contains(r.id),
+                                  selecting: _selecting,
+                                  onTap: () {
+                                    if (_selecting) {
+                                      _toggle(r.id);
+                                    } else {
+                                      ref
+                                          .read(galleryProvider.notifier)
+                                          .select(r.id);
+                                      Navigator.of(context).pop();
+                                    }
+                                  },
+                                  onLongPress: _selecting
+                                      ? null
+                                      : (at) => _thumbMenu(r.id, at),
+                                );
+                              }, childCount: e.value.length),
+                            ),
+                          ),
+                        ],
+                        const SliverToBoxAdapter(child: SizedBox(height: 10)),
+                      ],
                     ),
-                  ),
-          ),
-        ],
+            ),
+            // 多选操作栏:进出多选随高度动画滑入滑出
+            AnimatedSize(
+              duration: Motion.medium,
+              curve: Motion.emphasized,
+              child: !_selecting
+                  ? const SizedBox(width: double.infinity)
+                  : SafeArea(
+                      top: false,
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: FilledButton.tonalIcon(
+                                    onPressed: canAct
+                                        ? () => _downloadPicked()
+                                        : null,
+                                    icon: const Icon(Icons.download, size: 19),
+                                    label: Text(
+                                      _saving
+                                          ? '保存中 $_saveDone/$_saveTotal'
+                                          : '保存 (${_picked.length})',
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: FilledButton.icon(
+                                    style: FilledButton.styleFrom(
+                                      backgroundColor: scheme.errorContainer,
+                                      foregroundColor: scheme.onErrorContainer,
+                                    ),
+                                    onPressed: canAct ? _deletePicked : null,
+                                    icon: const Icon(
+                                      Icons.delete_outline,
+                                      size: 19,
+                                    ),
+                                    label: Text('删除 (${_picked.length})'),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            // 独占一行:三颗横排在窄屏 + 大字号下会挤成省略号,
+                            // 且这一颗要多一步选相册,与上面两颗的即时性不同级。
+                            SizedBox(
+                              width: double.infinity,
+                              child: OutlinedButton.icon(
+                                onPressed: canAct ? _downloadToAlbum : null,
+                                icon: const Icon(
+                                  Icons.photo_album_outlined,
+                                  size: 19,
+                                ),
+                                label: const Text('保存到自定义相册'),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -796,7 +891,6 @@ class _GridThumb extends StatelessWidget {
     required this.selecting,
     required this.onTap,
     this.onLongPress,
-    this.onDelete,
   });
 
   final ResultImage result;
@@ -808,10 +902,9 @@ class _GridThumb extends StatelessWidget {
   final bool picked;
   final bool selecting;
   final VoidCallback onTap;
-  final VoidCallback? onLongPress;
 
-  /// 右上角单张删除。多选态下不出 —— 那时整块图是勾选热区,底部另有批量删除。
-  final VoidCallback? onDelete;
+  /// 长按:带上手指的全局坐标,菜单要锚在按下去的地方。
+  final void Function(Offset at)? onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -819,7 +912,9 @@ class _GridThumb extends StatelessWidget {
     final ring = selecting ? picked : selected;
     return GestureDetector(
       onTap: onTap,
-      onLongPress: onLongPress,
+      onLongPressStart: onLongPress == null
+          ? null
+          : (d) => onLongPress!(d.globalPosition),
       child: AnimatedContainer(
         duration: Motion.fast,
         curve: Motion.standard,
@@ -872,29 +967,6 @@ class _GridThumb extends StatelessWidget {
                     left: 5,
                     top: 5,
                     child: ResultBadgeChip(badge: result.badge),
-                  ),
-                // 右上角单张删除。压在图上,所以给个深底托 —— 白图上的白图标
-                // 等于没有。用垃圾桶而不是 ×:这一下是真删文件,不是从列表移走。
-                if (!selecting && onDelete != null)
-                  Positioned(
-                    right: 5,
-                    top: 5,
-                    child: Material(
-                      color: Colors.black.withValues(alpha: .45),
-                      shape: const CircleBorder(),
-                      clipBehavior: Clip.antiAlias,
-                      child: InkWell(
-                        onTap: onDelete,
-                        child: const Padding(
-                          padding: EdgeInsets.all(5),
-                          child: Icon(
-                            Icons.delete_outline,
-                            size: 16,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ),
-                    ),
                   ),
                 // 右下角生成时刻(日期由段头承担,段内标时刻才是增量信息)
                 if (galleryTimeBadge(result.createdAt) case final String t
