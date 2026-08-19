@@ -760,57 +760,6 @@ class DashedBorderPainter extends CustomPainter {
   bool shouldRepaint(covariant DashedBorderPainter old) => old.color != color;
 }
 
-/// 左划删除包装:endToStart 方向露出红色删除背景,松手触发删除 + 触感。
-/// 原有的删除按钮保留作为可见替代入口。
-class SwipeToDelete extends StatelessWidget {
-  const SwipeToDelete({
-    super.key,
-    required this.itemKey,
-    required this.onDelete,
-    required this.child,
-    this.borderRadius = 12,
-  });
-
-  final Key itemKey;
-  final VoidCallback onDelete;
-  final Widget child;
-  final double borderRadius;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = context.scheme;
-    return Dismissible(
-      key: itemKey,
-      direction: DismissDirection.endToStart,
-      dismissThresholds: const {DismissDirection.endToStart: .45},
-      onUpdate: (details) {
-        // 越过阈值瞬间给一次轻触感,预告"松手即删"
-        if (details.reached && !details.previousReached) {
-          Haptics.selection();
-        }
-      },
-      onDismissed: (_) {
-        Haptics.medium();
-        onDelete();
-      },
-      background: Container(
-        alignment: Alignment.centerRight,
-        padding: const EdgeInsets.only(right: 20),
-        decoration: BoxDecoration(
-          color: scheme.errorContainer,
-          borderRadius: BorderRadius.circular(borderRadius),
-        ),
-        child: Icon(
-          Icons.delete_outline,
-          size: 22,
-          color: scheme.onErrorContainer,
-        ),
-      ),
-      child: child,
-    );
-  }
-}
-
 /// 通用确认弹窗(破坏性操作用红色确认键)。返回 true = 确认。
 Future<bool> confirmDialog(
   BuildContext context, {

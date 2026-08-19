@@ -55,7 +55,8 @@ class CharacterCard extends ConsumerWidget {
       chevronPlaceholder: chars.isEmpty,
       body: chars.isEmpty
           ? null
-          // 长按卡片拖动排序;横滑删除保留
+          // 长按卡片拖动排序。删除只走行内那枚按钮 —— 横滑抹掉的是整份角色配置
+          // (提示词/站位/开关),而这里没有撤销可给。
           : ReorderableListView(
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
@@ -68,11 +69,7 @@ class CharacterCard extends ConsumerWidget {
                   Padding(
                     key: ValueKey('char${chars[i].id}'),
                     padding: EdgeInsets.only(top: i > 0 ? 9 : 0),
-                    child: SwipeToDelete(
-                      itemKey: ValueKey('dismiss${chars[i].id}'),
-                      onDelete: () => notifier.removeCharacter(chars[i].id),
-                      child: _CharacterTile(char: chars[i]),
-                    ),
+                    child: _CharacterTile(char: chars[i]),
                   ),
               ],
             ),
