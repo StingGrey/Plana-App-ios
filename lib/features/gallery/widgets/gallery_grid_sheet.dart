@@ -29,20 +29,17 @@ import '../../../core/util/haptics.dart';
 /// 「›」展开:全部作品网格弹层,按天分段显示;可按模型/时间筛选、按提示词
 /// 标签搜索(数据源 gallery_search 检索索引,筛选条件全 AND 组合)。
 /// 点选一张即回填画布并关闭;长按弹出该张的导入 / 保存 / 删除菜单。
-/// 多选只从右上角「多选」进,段头可整段全选,底部批量保存相册 / 批量删除
-/// —— 批量操作只作用于当前可见集合。
-/// [selectId] 传入时直接以多选态打开并预选该张(胶片条长按入口)。
-Future<void> showGalleryGrid(BuildContext context, {String? selectId}) =>
+/// 多选只从右上角「多选」进,段头可整段全选,底部批量保存相册 / 分享 /
+/// 批量删除 —— 批量操作只作用于当前可见集合。
+Future<void> showGalleryGrid(BuildContext context) =>
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      builder: (_) => _GalleryGridSheet(initialSelectId: selectId),
+      builder: (_) => const _GalleryGridSheet(),
     );
 
 class _GalleryGridSheet extends ConsumerStatefulWidget {
-  const _GalleryGridSheet({this.initialSelectId});
-
-  final String? initialSelectId;
+  const _GalleryGridSheet();
 
   @override
   ConsumerState<_GalleryGridSheet> createState() => _GalleryGridSheetState();
@@ -72,16 +69,6 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
   static const _actH = 46.0;
   static const _actSubH = 38.0;
   static const _actGap = 10.0;
-
-  @override
-  void initState() {
-    super.initState();
-    final pre = widget.initialSelectId;
-    if (pre != null) {
-      _selecting = true;
-      _picked.add(pre);
-    }
-  }
 
   @override
   void dispose() {

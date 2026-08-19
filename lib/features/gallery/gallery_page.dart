@@ -308,6 +308,8 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
                 ref.read(generationProvider.notifier).select(null);
                 ref.read(galleryProvider.notifier).select(id);
               },
+              onDelete: (id) =>
+                  ref.read(galleryProvider.notifier).deleteResults([id]),
               jobs: pool.newestFirst,
               selectedJobId: pool.selectedId,
               onSelectJob: (id) =>
