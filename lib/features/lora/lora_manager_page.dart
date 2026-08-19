@@ -1,14 +1,12 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
 import '../../core/theme/app_theme.dart';
-import '../../core/util/haptics.dart';
 import '../generate/generate_state.dart';
 import '../generate/models.dart';
 import '../generate/widgets/common.dart' show InfoNote, hintSnack;
@@ -2026,8 +2024,8 @@ class _BusyIcon extends StatelessWidget {
 
 /// 详情弹层里的「简介」块(三张详情共用)。
 ///
-/// **整块长按复制**:Civitai 的简介常写着触发词怎么配、推荐权重、训练素材来源,
-/// 想抄一段去别处的时候,弹层里选不中的纯文本最烦人 —— 长按一下整段带走。
+/// 正文**可划词**:Civitai 的简介常写着触发词怎么配、推荐权重、训练素材来源,
+/// 弹层里选不中的纯文本最烦人 —— 长按起选,想要哪句拖哪句。
 class _DescSection extends StatelessWidget {
   const _DescSection({required this.text, this.loading = false});
 
@@ -2075,22 +2073,12 @@ class _DescSection extends StatelessWidget {
             style: context.texts.bodySmall!.copyWith(color: scheme.outline),
           )
         else
-          // InkWell 而不是裸 GestureDetector:长按得有个水波告诉人「按到了」,
-          // 不然一段纯文本长按下去毫无反应,只有 snack 迟一拍冒出来。
-          InkWell(
-            borderRadius: BorderRadius.circular(8),
-            onLongPress: () {
-              Haptics.selection();
-              Clipboard.setData(ClipboardData(text: body));
-              hintSnack(context, '已复制简介', icon: Icons.copy_all_outlined);
-            },
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 2),
-              child: Text(
-                body,
-                style: context.texts.bodySmall!.copyWith(height: 1.5),
-              ),
-            ),
+          // 划词,不是整段一把抓:简介里真正想拿走的通常只是其中一句
+          // (触发词怎么配、推荐权重多少),整段拍进剪贴板还得再删一遍。
+          // SelectableText 自带长按起选 + 拖拽把手 + 系统那条复制/全选。
+          SelectableText(
+            body,
+            style: context.texts.bodySmall!.copyWith(height: 1.5),
           ),
       ],
     );
