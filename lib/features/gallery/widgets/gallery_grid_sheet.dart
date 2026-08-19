@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -430,11 +431,21 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
     final r = _resultOf(id);
     if (r == null) return;
     Haptics.medium();
+    // 先把原图读出来**并解码**,再开抬起层。只读不解码不够:Image.memory
+    // 拿到字节还要一两帧才落笔,那一两帧照样露出底下垫着的缩略图 ——
+    // 看着就是「先糊一下再变清」。
+    final warm = await _warmFull(r).timeout(
+      const Duration(milliseconds: 300),
+      onTimeout: () => null, // 读得慢就先抬起来,手势不能被读盘卡住
+    );
+    if (!mounted) return;
     final nav = Navigator.of(context);
     // 缩略图报的是屏幕坐标,路由画在 overlay 里 —— 有嵌套导航时两者不重合
     final box = nav.overlay?.context.findRenderObject() as RenderBox?;
     final at = box == null ? from : box.globalToLocal(from.topLeft) & from.size;
-    final picked = await nav.push(_ThumbMenuRoute(from: at, result: r));
+    final picked = await nav.push(
+      _ThumbMenuRoute(from: at, result: r, warm: warm),
+    );
     if (picked == null || !mounted) return;
     switch (picked) {
       case 'import':
@@ -443,6 +454,21 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
         await _downloadPicked(only: {id});
       case 'delete':
         _deleteOne(id);
+    }
+  }
+
+  /// 读原图并预解码。解码结果进 ImageCache,抬起层再画就是同步的。
+  /// 用 MemoryImage(不带 cacheWidth)是为了**和画布同一个缓存键** ——
+  /// 同一张图两边共用一次解码,而不是各解一张。
+  Future<Uint8List?> _warmFull(ResultImage r) async {
+    try {
+      final bytes =
+          r.bytes ?? await ref.read(appStoresProvider).gallery.readImage(r.id);
+      if (bytes == null || !mounted) return null;
+      await precacheImage(MemoryImage(bytes), context);
+      return bytes;
+    } catch (_) {
+      return null;
     }
   }
 
@@ -1106,12 +1132,20 @@ class _GridThumb extends StatelessWidget {
 /// 用 PopupRoute 而不是自己搭 Overlay:遮罩、返回键、点空白关闭、进出动画
 /// 全是路由自带的,手搭一遍只会漏掉其中一两样。
 class _ThumbMenuRoute extends PopupRoute<String> {
-  _ThumbMenuRoute({required this.from, required this.result});
+  _ThumbMenuRoute({
+    required this.from,
+    required this.result,
+    required this.warm,
+  });
 
   /// 缩略图在 overlay 坐标系里的原始矩形 —— 放大从这里长出来,
   /// 「浮起的是这一张」全指望它。
   final Rect from;
   final ResultImage result;
+
+  /// 开层前已读好并解码过的原图;null = 没赶上(读得慢/读失败),
+  /// 层里自己去 watch,补上之前先用缩略图垫着。
+  final Uint8List? warm;
 
   @override
   Color? get barrierColor => Colors.black.withValues(alpha: .55);
@@ -1133,18 +1167,20 @@ class _ThumbMenuRoute extends PopupRoute<String> {
     BuildContext context,
     Animation<double> anim,
     Animation<double> _,
-  ) => _LiftedThumb(from: from, result: result, anim: anim);
+  ) => _LiftedThumb(from: from, result: result, warm: warm, anim: anim);
 }
 
 class _LiftedThumb extends ConsumerWidget {
   const _LiftedThumb({
     required this.from,
     required this.result,
+    required this.warm,
     required this.anim,
   });
 
   final Rect from;
   final ResultImage result;
+  final Uint8List? warm;
   final Animation<double> anim;
 
   static const _margin = 16.0;
@@ -1191,12 +1227,10 @@ class _LiftedThumb extends ConsumerWidget {
         .toDouble();
     final to = Rect.fromLTWH(left, top, pw, ph);
 
-    // 抬起来本就是为了看清 —— 拿缩略图放大只是把糊的放得更糊,所以读原图。
-    // 解码尺寸按**抬起后的最终宽度**算死:跟着动画的 rect 走会让每一帧都
-    // 重解一张位图,一张 1024 的图能把这段动画卡成幻灯片。
-    final full =
-        result.bytes ?? ref.watch(galleryImageProvider(result.id)).value;
-    final decodeW = (pw * media.devicePixelRatio).round();
+    // 抬起来本就是为了看清 —— 拿缩略图放大只是把糊的放得更糊,所以用原图。
+    // 常态下 warm 已经读好解好(见 _warmFull),第一帧就是清的;只有没赶上
+    // 时才落到这个 watch 上,那条路再淡入。
+    final full = warm ?? ref.watch(galleryImageProvider(result.id)).value;
 
     return AnimatedBuilder(
       animation: anim,
@@ -1222,13 +1256,19 @@ class _LiftedThumb extends ConsumerWidget {
                       height: rect.height,
                       radius: 14,
                     ),
-                    if (full != null)
-                      Image.memory(
-                        full,
-                        fit: BoxFit.cover,
-                        cacheWidth: decodeW,
-                        gaplessPlayback: true,
-                      ),
+                    // 慢路径(warm 没赶上)才会走到这个切换:淡入而不是
+                    // 直接盖上去,免得眼睁睁看着一张糊的跳成清的
+                    AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 180),
+                      child: full == null
+                          ? const SizedBox.shrink(key: ValueKey('wait'))
+                          : Image.memory(
+                              full,
+                              key: const ValueKey('full'),
+                              fit: BoxFit.cover,
+                              gaplessPlayback: true,
+                            ),
+                    ),
                   ],
                 ),
               ),
