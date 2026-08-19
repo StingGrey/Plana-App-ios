@@ -25,8 +25,10 @@ class ProfilePage extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
-          // 右侧留 8:IconButton 自带内衬,合起来与左侧 20 视觉对齐
-          padding: const EdgeInsets.fromLTRB(20, 16, 8, 8),
+          // 右侧也留 20:两颗现在是带底色的实心按钮,可见边缘就是盒子边缘,
+          // 直接与左侧 20 对齐即可。裸 IconButton 时代得留 8 —— 那时可见的
+          // 只有中间那枚字形,圆形点击区在两侧各虚占一截。
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
           child: Row(
             children: [
               Expanded(
@@ -39,15 +41,21 @@ class ProfilePage extends ConsumerWidget {
               ),
               // 这两个都不是"设置项",不值得在列表里占一张与存储管理等宽的卡。
               // 导入备份更是一次性的迁移动作,常驻列表里只会天天碍眼。
-              IconButton(
-                onPressed: () => push(const WebBackupPage()),
-                icon: const Icon(Icons.import_export, size: 22),
-                tooltip: '导入 web 备份',
+              //
+              // 但只挂两枚裸图标又太哑:info 还算通用,import_export 那枚
+              // 没人猜得出是「把 web 的备份搬进来」。各配两个字。
+              _HeaderBtn(
+                icon: Icons.import_export,
+                // 不叫「同步」:这是选文件→预览→落库的单向一次性导入,
+                // 手机这边的改动不会回流,叫同步会让人等一个不存在的回程。
+                label: '导入',
+                onTap: () => push(const WebBackupPage()),
               ),
-              IconButton(
-                onPressed: () => push(const AboutPage()),
-                icon: const Icon(Icons.info_outline, size: 22),
-                tooltip: '关于',
+              const SizedBox(width: 8),
+              _HeaderBtn(
+                icon: Icons.info_outline,
+                label: '关于',
+                onTap: () => push(const AboutPage()),
               ),
             ],
           ),
@@ -169,6 +177,49 @@ class _EntryCard extends StatelessWidget {
               ),
               const SizedBox(width: 4),
               Icon(Icons.chevron_right, size: 20, color: scheme.outline),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 「我的」标题行右侧那两颗:图标 + 两个字。
+class _HeaderBtn extends StatelessWidget {
+  const _HeaderBtn({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return Material(
+      color: scheme.surfaceContainerHigh,
+      borderRadius: BorderRadius.circular(16),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(10, 7, 12, 7),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 18, color: scheme.onSurfaceVariant),
+              const SizedBox(width: 5),
+              Text(
+                label,
+                style: context.texts.labelLarge!.copyWith(
+                  color: scheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
             ],
           ),
         ),

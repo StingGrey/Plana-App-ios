@@ -226,43 +226,6 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
     );
   }
 
-  /// 顶栏右上那两颗。裸图标 + 裸文字并排时,一个只有图标、一个只有字,
-  /// 两边的点击范围和视觉重量都对不上 —— 统一成图标 + 两字的实心小按钮。
-  Widget _headerBtn(
-    ColorScheme scheme, {
-    required IconData icon,
-    required String label,
-    required bool active,
-    required VoidCallback onTap,
-  }) {
-    final fg = active ? scheme.onSecondaryContainer : scheme.onSurfaceVariant;
-    return Material(
-      color: active ? scheme.secondaryContainer : scheme.surfaceContainerHigh,
-      borderRadius: BorderRadius.circular(16),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(10, 6, 12, 6),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 17, color: fg),
-              const SizedBox(width: 5),
-              Text(
-                label,
-                style: context.texts.labelLarge!.copyWith(
-                  color: fg,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
   Widget _chip(
     ColorScheme scheme, {
     required String label,
@@ -738,20 +701,21 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
                             ),
                           ),
                           const Spacer(),
-                          _headerBtn(
-                            scheme,
-                            icon: Icons.search,
-                            label: '搜索',
-                            active: _searchOpen,
-                            onTap: _toggleSearch,
+                          IconButton(
+                            onPressed: _toggleSearch,
+                            visualDensity: VisualDensity.compact,
+                            tooltip: '搜索提示词标签',
+                            icon: Icon(
+                              Icons.search,
+                              size: 21,
+                              color: _searchOpen
+                                  ? scheme.primary
+                                  : scheme.onSurfaceVariant,
+                            ),
                           ),
-                          const SizedBox(width: 8),
-                          _headerBtn(
-                            scheme,
-                            icon: Icons.checklist,
-                            label: '多选',
-                            active: false,
-                            onTap: _enterSelect,
+                          TextButton(
+                            onPressed: () => _enterSelect(),
+                            child: const Text('多选'),
                           ),
                         ],
                       ),
