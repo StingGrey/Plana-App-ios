@@ -350,6 +350,11 @@ class _FilmThumb extends StatelessWidget {
       data: result.id,
       // 长按拖拽用的是延时识别器:按住不动到时才夺指针,一上来就横移的
       // 归列表滚动 —— 两条手势天然分得开,不用自己进竞技场调解。
+      //
+      // 关掉自带触感:它默认为 true,会在起拖时自己 selectionClick 一下,
+      // 和下面这声叠成两下。而且那一下**绕过 Haptics.enabled**,
+      // 设置里关了触感照样震 —— 全应用的振动只许从 Haptics 出去。
+      hapticFeedbackOnStart: false,
       onDragStarted: () {
         Haptics.medium();
         onDragStart();
