@@ -6,6 +6,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../generate/widgets/common.dart' show hintSnack;
 import '../data/suggestions.dart';
 import '../data/tag_completion.dart';
+import '../data/tag_translation_service.dart';
 import 'completion_bar.dart' show CompletionGrip, suggestionGlyph;
 
 /// 形态 B · 展开态:分类竖向列表(键盘收起,腾出纵向空间)。
@@ -49,6 +50,27 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
   final Map<String, WikiPreview?> _wiki = {}; // text → 预览(null=无/失败)
   final Set<String> _wikiLoading = {};
 
+  /// 后端翻译通道。面板拿的是查询快照,译文是之后才到货的 ——
+  /// 不自己听一耳朵,展开态就得一直空着(编辑器那边的 setState 隔着路由传不进来)。
+  late final TagTranslationService _transSvc;
+
+  @override
+  void initState() {
+    super.initState();
+    _transSvc = ref.read(tagTranslationServiceProvider)
+      ..addListener(_onTrans);
+  }
+
+  @override
+  void dispose() {
+    _transSvc.removeListener(_onTrans);
+    super.dispose();
+  }
+
+  void _onTrans() {
+    if (mounted) setState(() {});
+  }
+
   Future<void> _loadWiki(String tag) async {
     if (_wiki.containsKey(tag) || _wikiLoading.contains(tag)) return;
     setState(() => _wikiLoading.add(tag));
@@ -70,22 +92,24 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
     return c;
   }
 
+  /// 行副标题。译文走 [transOf] 而非 `s.trans`:D 站来的行自带译名只有
+  /// wiki 那一路,反查缓存(离线词库 / 共享翻译库 / LLM 回填)里的得现查。
   String? _subtitle(Suggestion s) {
     switch (s.kind) {
       case SuggestionKind.character:
         return [
-          s.trans,
+          transOf(s),
           s.source,
         ].whereType<String>().where((e) => e.isNotEmpty).join(' · ');
       case SuggestionKind.work:
         return [
-          s.trans,
+          transOf(s),
           s.note,
         ].whereType<String>().where((e) => e.isNotEmpty).join(' · ');
       case SuggestionKind.oc:
         return s.note ?? s.trans;
       case SuggestionKind.tag:
-        return s.trans;
+        return transOf(s);
       case SuggestionKind.artist:
         return s.trans;
     }

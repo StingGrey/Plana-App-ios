@@ -93,19 +93,25 @@ String? _firstTrans(String? zh) {
   return first.isEmpty ? null : first;
 }
 
-/// 回填某标签的中文名/热度(键用小写形式)。由 `TagCompletion` 调用。
-/// 上限防无界增长(一次会话几万个独特标签才会触发,清空只影响注音
-/// 显示,重查询即回填)。
+/// 反查缓存上限。**必须高于离线库全量**:进编辑器时 `LocalTagDb.warmTagMeta`
+/// 一次就灌进 7 万条译文 / 9 万条热度,而这里满了是整表清空 —— 上限写 20000
+/// 的话灌注途中自己清了三四次,最后只剩尾部那截最冷门的标签。词库按热度降序,
+/// 被清掉的恰恰是 1girl、solo 这些最常用的,注音层和补全反查全查不到。
+/// 15 万给灌注之后的网络回填留了余量。
+const _metaCap = 150000;
+
+/// 回填某标签的中文名/热度(键用小写形式)。由 `TagCompletion` 与离线库灌注调用。
+/// 上限防无界增长(清空只影响反查显示,重查询即回填)。
 void cacheTagMeta(String text, {String? trans, int? count}) {
   final k = text.trim().toLowerCase();
   final t = _firstTrans(trans);
   if (t != null) {
-    if (_transCache.length > 20000) _transCache.clear();
+    if (_transCache.length > _metaCap) _transCache.clear();
     _transCache[k] = t;
     _transRev++;
   }
   if (count != null && count > 0) {
-    if (_countCache.length > 20000) _countCache.clear();
+    if (_countCache.length > _metaCap) _countCache.clear();
     _countCache[k] = count;
   }
 }
@@ -434,6 +440,23 @@ SuggestResult querySuggestions(String query, {bool alphabetical = false}) {
     works: _filter(_works, q),
     tags: tags,
   );
+}
+
+/// 补全行要显示的中文:优先用结果自带的译名,缺则反查缓存
+/// (离线词库全量 + wiki/共享库/LLM 的网络回填)。
+///
+/// D 站来的行只有 `/api/tags/wiki` 那一路译名,wiki 没写中文别名就一直空着 ——
+/// 而同一个标签在离线词库里往往是有中文的,只是没人去查。
+/// 反查还捡到 [TagTranslationService] 后来补上的那批:那是异步到货的,
+/// 结果快照里不可能有,只能显示时现查。
+String? transOf(Suggestion s) {
+  final t = s.trans;
+  if (t != null && t.isNotEmpty) return t;
+  return switch (s.kind) {
+    // 画师串 / OC 是本地库实体,名字不是 Danbooru 标签,反查只会串味
+    SuggestionKind.artist || SuggestionKind.oc => null,
+    _ => translationOf(s.text),
+  };
 }
 
 /// 供注音流反查某个已确定标签的中文翻译(先查网络回填缓存,再退回内置词库)

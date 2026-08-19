@@ -261,6 +261,9 @@ class CompletionBar extends StatelessWidget {
 
   /// chip 副标题。横向态没有分节标题,光靠图标分不清 OC 与画师串,
   /// 所以这两类直接写类型名;角色带作品来源;其余用译文。
+  ///
+  /// 译文走 [transOf] 而非 `s.trans`:D 站来的行自带译名只有 wiki 那一路,
+  /// 反查缓存(离线词库 / 共享翻译库 / LLM 回填)里的得现查。
   String? _subtitle(Suggestion s) {
     switch (s.kind) {
       case SuggestionKind.oc:
@@ -268,12 +271,12 @@ class CompletionBar extends StatelessWidget {
       case SuggestionKind.artist:
         return '画风';
       case SuggestionKind.character:
-        final t = s.trans;
+        final t = transOf(s);
         if (t == null || t.isEmpty) return s.source;
         return s.source != null ? '$t · ${s.source}' : t;
       case SuggestionKind.work:
       case SuggestionKind.tag:
-        return s.trans;
+        return transOf(s);
     }
   }
 

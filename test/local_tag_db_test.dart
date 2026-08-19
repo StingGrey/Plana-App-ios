@@ -39,6 +39,41 @@ void main() {
     expect(await db.search('a'), isEmpty);
   }, timeout: const Timeout(Duration(seconds: 60)));
 
+  // 回归:`cacheTagMeta` 的上限原本是 20000,而灌注要塞进 7 万条译文 /
+  // 9 万条热度,满了又是**整表清空** —— 词库按热度降序,于是灌完只剩尾部那截
+  // 最冷门的标签,1girl 这种最常用的反查全落空。断言拿热度第一的标签来问。
+  test('warmTagMeta 之后,最热门的标签也还在反查缓存里', () async {
+    final db = LocalTagDb();
+    await db.warmTagMeta();
+    // 特意挑内置占位词库里**没有**的词:1girl / long hair 那些即使缓存被清空
+    // 也能从 `_tags` 兜底答出来,拿它们断言等于什么都没测。
+    expect(translationOf('highres'), isNotNull, reason: '灌注不能把自己灌没了');
+    expect(countOf('highres'), greaterThan(1000000));
+    expect(translationOf('blush'), isNotNull);
+  }, timeout: const Timeout(Duration(seconds: 120)));
+
+  test('transOf:自带译名优先,缺则反查;画师/OC 不反查', () {
+    cacheTagMeta('cache only tag', trans: '只在缓存里');
+    const own = Suggestion(
+      text: 'cache only tag',
+      kind: SuggestionKind.tag,
+      trans: '自带的',
+    );
+    expect(transOf(own), '自带的');
+    expect(
+      transOf(const Suggestion(text: 'cache only tag', kind: SuggestionKind.tag)),
+      '只在缓存里',
+      reason: 'D 站来的行没有 trans,得回头查缓存',
+    );
+    expect(
+      transOf(
+        const Suggestion(text: 'cache only tag', kind: SuggestionKind.artist),
+      ),
+      isNull,
+      reason: '画师串的名字不是 Danbooru 标签,反查只会串味',
+    );
+  });
+
   test('firstZh:多译只取第一个', () {
     expect(LocalTagDb.firstZh('少女,女孩'), '少女');
     expect(LocalTagDb.firstZh('长发、黑发'), '长发');

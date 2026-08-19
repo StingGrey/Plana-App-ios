@@ -211,6 +211,9 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _controller.refresh();
     _muting = false;
     if (_panelTok != null && _query.isEmpty) _reroute();
+    // 补全条的译文也是显示时现查(transOf)。结果快照没变,不重建就一直空着 ——
+    // 只重绘注音层不够,那是另一棵树。
+    if (!_result.isEmpty) setState(() {});
   }
 
   /// 把注音未命中的词喂给后端翻译通道(增强模式;离线模式 no-op)。
@@ -218,6 +221,23 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _transSvc.request([
       for (final t in parseToks(text))
         if (t.trans == null) t.name,
+    ]);
+  }
+
+  /// 补全结果里没译文的行,交给同一条后端翻译通道(共享库 → LLM → 回写)。
+  ///
+  /// D 站给的行只有 `/api/tags/wiki` 那一路中文名,wiki 没写中文别名的就空着 ——
+  /// web 那边正是在这一步回头去取翻译,app 先前漏了整步。到货后
+  /// [_refreshAnnotations] 重建补全条,[transOf] 现查即显示。
+  ///
+  /// 只喂标签与角色:画师串 / OC 是本地库实体,名字不是 Danbooru 标签。
+  void _feedSuggestTranslation(SuggestResult res) {
+    _transSvc.request([
+      for (final s in res.flat)
+        if (s.trans == null &&
+            (s.kind == SuggestionKind.tag ||
+                s.kind == SuggestionKind.character))
+          s.text,
     ]);
   }
 
@@ -516,6 +536,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
         _loading = false;
         _result = res;
       });
+      _feedSuggestTranslation(res);
     });
   }
 
