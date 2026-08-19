@@ -1177,6 +1177,9 @@ class _LiftedThumb extends ConsumerWidget {
   static const _dividerH = 9.0;
   static const _menuH = _itemH * 3 + _dividerH + 16;
 
+  /// 抬起的图占「可用框」(去掉边距与菜单之后那块)的面积比例。
+  static const _fill = .42;
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final media = MediaQuery.of(context);
@@ -1185,19 +1188,29 @@ class _LiftedThumb extends ConsumerWidget {
     final bot0 = size.height - media.padding.bottom - _margin;
 
     // 抬起后按图的**真实长宽比**摊开 —— 网格里是方裁的,这一下顺带把裁掉的
-    // 部分还回来。宽度只取屏宽六成:铺满就成了看图页,没有「一张卡浮在网格上」
-    // 的意思,而这个「浮在网格上」正是指向感的来源。
+    // 部分还回来。
+    //
+    // 预算给的是**面积**,不是宽度。原先一律取屏宽六成,横图等于被砍了两刀:
+    // 宽度先削到六成,高度再按长宽比除一次,最后只有同尺寸竖图的四成大 ——
+    // 而它下面那截纵向空间明明空着。改成「什么比例都占可用框的 [_fill]」,
+    // 竖图与原先基本同尺寸,横图翻倍,方图也不再偏小。
+    //
+    // 不铺满是刻意的:铺满就成了看图页,没有「一张卡浮在网格上」的意思,
+    // 而这个「浮在网格上」正是指向感的来源。
+    final aspect = (result.aspect.isFinite && result.aspect > 0)
+        ? result.aspect
+        : 1.0; // 老索引里 0 宽/0 高的条目,别把 NaN 送进布局
     final maxW = size.width - _margin * 2;
     final maxH = math.max(80.0, bot0 - top0 - _menuH - _gap);
-    var pw = math.min(maxW, size.width * .62);
-    var ph = pw / result.aspect;
+    var pw = math.sqrt(maxW * maxH * _fill * aspect);
+    var ph = pw / aspect;
     if (ph > maxH) {
       ph = maxH;
-      pw = ph * result.aspect;
+      pw = ph * aspect;
     }
     if (pw > maxW) {
       pw = maxW;
-      ph = pw / result.aspect;
+      ph = pw / aspect;
     }
 
     // 尽量停在原位附近:抬起来的是「刚按的那一张」,不是从屏幕中央蹦出来的
