@@ -147,6 +147,15 @@ class EditorSettingsSheet extends ConsumerWidget {
                       onChanged: (v) =>
                           notifier.patch((c) => c.copyWith(enableTagPanel: v)),
                     ),
+                    _SettingRow(
+                      icon: Icons.density_small,
+                      title: '精简词条栏',
+                      desc: '压成一行,只留权重与删除,正文多露两行',
+                      value: s.compactTagPanel,
+                      enabled: s.enableTagPanel,
+                      onChanged: (v) =>
+                          notifier.patch((c) => c.copyWith(compactTagPanel: v)),
+                    ),
                     _ChoiceRow<double>(
                       icon: Icons.exposure,
                       title: '权重步进',

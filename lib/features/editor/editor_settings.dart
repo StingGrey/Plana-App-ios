@@ -18,6 +18,7 @@ class EditorSettings {
     this.fontSize = 16,
     this.abnormalThreshold = 10,
     this.chipMode = false,
+    this.compactTagPanel = false,
   });
 
   /// 正文字号可选档位。
@@ -60,6 +61,14 @@ class EditorSettings {
   /// 底栏一键切,记在设置里 —— 这是用惯了哪种的问题,不该每次进页面重选。
   final bool chipMode;
 
+  /// 词条栏的形态:false=三行完整版(默认),true=一行精简版。
+  ///
+  /// 精简版只留**权重相关的全部功能**(括号 / 数值加减 / 清除)加删除与关闭,
+  /// 名字、热度、译文、维基、复制、改名、禁用、关联全部收走 —— 换来的是
+  /// 词条栏从一百多高压到四十几,正文能多露两行。同 chipMode,是用惯了哪种
+  /// 的问题,所以记在设置里而不是每次重选。
+  final bool compactTagPanel;
+
   EditorSettings copyWith({
     bool? showTranslation,
     bool? showWeightWash,
@@ -71,6 +80,7 @@ class EditorSettings {
     double? fontSize,
     double? abnormalThreshold,
     bool? chipMode,
+    bool? compactTagPanel,
   }) => EditorSettings(
     showTranslation: showTranslation ?? this.showTranslation,
     showWeightWash: showWeightWash ?? this.showWeightWash,
@@ -82,6 +92,7 @@ class EditorSettings {
     fontSize: fontSize ?? this.fontSize,
     abnormalThreshold: abnormalThreshold ?? this.abnormalThreshold,
     chipMode: chipMode ?? this.chipMode,
+    compactTagPanel: compactTagPanel ?? this.compactTagPanel,
   );
 
   /// 读回的数值不在档位表里(旧版本/脏数据)时回退默认。
@@ -108,6 +119,7 @@ class EditorSettings {
       10,
     ),
     chipMode: j['chipMode'] as bool? ?? false,
+    compactTagPanel: j['compactTagPanel'] as bool? ?? false,
   );
 
   Map<String, dynamic> toJson() => {
@@ -121,6 +133,7 @@ class EditorSettings {
     'fontSize': fontSize,
     'abnormalThreshold': abnormalThreshold,
     'chipMode': chipMode,
+    'compactTagPanel': compactTagPanel,
   };
 
   @override
@@ -135,7 +148,8 @@ class EditorSettings {
       other.weightStep == weightStep &&
       other.fontSize == fontSize &&
       other.abnormalThreshold == abnormalThreshold &&
-      other.chipMode == chipMode;
+      other.chipMode == chipMode &&
+      other.compactTagPanel == compactTagPanel;
 
   @override
   int get hashCode => Object.hash(
@@ -149,6 +163,7 @@ class EditorSettings {
     fontSize,
     abnormalThreshold,
     chipMode,
+    compactTagPanel,
   );
 }
 

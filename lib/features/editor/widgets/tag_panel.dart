@@ -22,6 +22,7 @@ class TagPanel extends StatefulWidget {
     required this.related,
     this.relatedLoading = false,
     this.weightStep = 0.1,
+    this.compact = false,
     this.warning,
     this.sdConvert,
     this.onSelectGroup,
@@ -56,6 +57,9 @@ class TagPanel extends StatefulWidget {
   /// 数值加减每步的调整量(编辑器设置:0.05 / 0.1)。
   final double weightStep;
 
+  /// 一行精简版(编辑器设置「精简词条栏」)。见 [_TagPanelState._compactRow]。
+  final bool compact;
+
   /// 关联标签正在异步拉取(按钮不置灰,左侧显示转圈)。
   final bool relatedLoading;
 
@@ -77,6 +81,13 @@ class TagPanel extends StatefulWidget {
   @override
   State<TagPanel> createState() => _TagPanelState();
 }
+
+/// 精简词条栏的控件尺寸。抽成常量是因为 [_TagPanelState._compactRow] 要靠
+/// 它们算「还放不放得下名字」—— 硬编码两份迟早对不上。
+const double _kWrapW = 34; // [ ] / { }
+const double _kStepW = 32; // ⊖ / ⊕
+const double _kReadW = 50; // 读数
+const double _kTailW = 34; // ⌫ / 🗑 / ✕ / ⚠ / ⇄
 
 class _TagPanelState extends State<TagPanel> {
   bool _relatedOpen = false; // 关联标签是否展开
@@ -145,6 +156,16 @@ class _TagPanelState extends State<TagPanel> {
         : scheme.onSurface;
 
     final hasRelated = widget.related.isNotEmpty;
+
+    if (widget.compact) {
+      return Material(
+        color: scheme.surfaceContainer,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 6, 8, 6),
+          child: _compactRow(context, wc),
+        ),
+      );
+    }
 
     return Material(
       color: scheme.surfaceContainer,
@@ -434,6 +455,217 @@ class _TagPanelState extends State<TagPanel> {
     );
   }
 
+  /// 一行精简版。**只留权重的全部功能 + 删除**,外加一枚关闭。
+  ///
+  ///     [⚠] blue eyes [⇄]   [ ] { }   ⊖ ×1.20 ⊕   ⌫  🗑  ✕
+  ///
+  /// 取舍:
+  ///  · 名字之外的头部信息(热度 / 译文 / 维基 / 复制 / 改名)全收走 ——
+  ///    译文在正文的注音层里就有,热度只在挑词时有用,而这一栏是**调权重**的;
+  ///  · 禁用、关联也收走:前者不是权重,后者要展开第二行,和「一行」冲突;
+  ///  · 括号、数值加减、清除权重三样一个不少 —— 用户要的是「权重相关的所有
+  ///    功能」,把清除塞进读数的长按里省宽度是省错了地方,那等于砍功能;
+  ///  · 警示与 SD 转换只在命中时才占位,平时不占宽。它们本来各是一整行,
+  ///    在这儿压成一枚图标:⚠ 点开说原委,⇄ 直接就是那个转换动作。
+  ///
+  /// 宽度不够时**分两级让**,而不是让 Row 溢出(那会画出黄黑条并且真的点不到):
+  ///  ① 先让名字 —— 挤成一个「…」既没信息又难看,而这枚标签就在正上方的
+  ///    正文里高亮着;
+  ///  ② 名字让完还是不够(分屏 / 超窄机)就整排改成横向可滚 —— 功能一个
+  ///    不少,只是要划一下。
+  Widget _compactRow(BuildContext context, Color wc) {
+    final scheme = context.scheme;
+    final pal = context.editor;
+    final tok = widget.tok;
+    final on = !tok.disabled;
+    final canClear =
+        on && (tok.braceLevel != 0 || (tok.numMult - 1.0).abs() >= 0.005);
+    final inGroup = (tok.groupMult - 1).abs() > 0.0001;
+
+    // 固定宽的那几段。**改控件尺寸要同步改这里** —— 这几个数是让位判断的
+    // 依据,对不上就会在该滚的时候不滚(溢出)或者不该滚的时候滚。
+    const wrapW = _kWrapW * 2 + 3; // [ ] { }
+    const stepW = _kStepW * 2 + _kReadW; // ⊖ 读数 ⊕
+    const tailW = _kTailW * 3 + 4; // ⌫ 🗑 ✕
+    const gaps = 8.0 + 8 + 6;
+    final extra =
+        (widget.warning != null ? _kTailW + 6 : 0) +
+        (widget.sdConvert != null ? _kTailW : 0);
+    final fixed = wrapW + stepW + tailW + gaps + extra;
+
+    Widget readout() => SizedBox(
+      width: _kReadW,
+      // 在权重组里时长按报组信息:组权重与合计在精简版里没地方常驻,
+      // 而不说的话读数(自身 ×1.0)会和正文里明显被加权的样子对不上,
+      // 那是这一栏在骗人。
+      child: GestureDetector(
+        onLongPress: inGroup
+            ? () {
+                Haptics.selection();
+                hintSnack(
+                  context,
+                  '处于权重组 ×${fmtMult(tok.groupMult)} · '
+                  '合计 ×${fmtMult(tok.effMult)}',
+                  icon: Icons.layers_outlined,
+                );
+              }
+            : null,
+        // 三位数权重(×12.5)或加上组标记时会顶破这 50 宽 —— 缩字而不是溢出
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (inGroup) ...[
+                Icon(
+                  Icons.layers_outlined,
+                  size: 12,
+                  color: scheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 2),
+              ],
+              Text(
+                '×${fmtMult(tok.ownMult)}',
+                // 读数只报数,不跟着权重变红蓝 —— 高低看名字色与正文色带
+                style: mono(
+                  context,
+                  size: 13,
+                  color: tok.disabled
+                      ? scheme.onSurfaceVariant
+                      : scheme.onSurface,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    // 名字之后那一整串(顺序固定,两种排法共用)
+    List<Widget> controls() => [
+      if (widget.sdConvert != null)
+        _denseIcon(
+          context,
+          Icons.autorenew,
+          color: scheme.tertiary,
+          tooltip: 'SD 权重语法 · 转成 NAI',
+          onTap: widget.sdConvert!,
+        ),
+      const SizedBox(width: 8),
+      _weightBtn(
+        context,
+        '[ ]',
+        pal.weightDown,
+        scheme.onError,
+        enabled: on,
+        onTap: () => widget.onWrap(false),
+        width: _kWrapW,
+        height: 32,
+      ),
+      const SizedBox(width: 3),
+      _weightBtn(
+        context,
+        '{ }',
+        pal.weightUp,
+        scheme.onError,
+        enabled: on,
+        onTap: () => widget.onWrap(true),
+        width: _kWrapW,
+        height: 32,
+      ),
+      const SizedBox(width: 8),
+      _RepeatBtn(
+        icon: Icons.remove,
+        enabled: on,
+        size: _kStepW,
+        step: () => widget.onSetMult(tok.numMult - widget.weightStep),
+      ),
+      readout(),
+      _RepeatBtn(
+        icon: Icons.add,
+        enabled: on,
+        size: _kStepW,
+        step: () => widget.onSetMult(tok.numMult + widget.weightStep),
+      ),
+      const SizedBox(width: 6),
+      _denseIcon(
+        context,
+        Icons.backspace_outlined,
+        tooltip: '清除权重',
+        enabled: canClear,
+        onTap: widget.onClear,
+      ),
+      const SizedBox(width: 2),
+      _denseIcon(
+        context,
+        Icons.delete_outline,
+        color: scheme.error,
+        tooltip: '删除',
+        onTap: widget.onDelete,
+      ),
+      const SizedBox(width: 2),
+      _denseIcon(
+        context,
+        Icons.close,
+        tooltip: '关闭',
+        onTap: widget.onClose,
+      ),
+    ];
+
+    Widget warn() => _denseIcon(
+      context,
+      Icons.warning_amber_rounded,
+      color: scheme.error,
+      tooltip: '疑似丢了逗号',
+      onTap: () => hintSnack(
+        context,
+        '「${widget.warning}」可能被误识别为权重,疑似丢了逗号',
+        icon: Icons.warning_amber_rounded,
+      ),
+    );
+
+    return LayoutBuilder(
+      builder: (context, c) {
+        // 名字至少要能放下两三个字才值得留
+        final showName = c.maxWidth - fixed >= 44;
+        if (c.maxWidth < fixed) {
+          // 连控件都放不下:横向可滚,一个功能都不砍
+          return SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (widget.warning != null) ...[warn(), const SizedBox(width: 6)],
+                ...controls(),
+              ],
+            ),
+          );
+        }
+        return Row(
+          children: [
+            if (widget.warning != null) ...[warn(), const SizedBox(width: 6)],
+            if (showName)
+              Expanded(
+                child: Text(
+                  tok.name.isEmpty ? '标签' : tok.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: context.texts.bodyMedium!.copyWith(
+                    color: wc,
+                    fontWeight: FontWeight.w700,
+                    decoration: tok.disabled ? TextDecoration.lineThrough : null,
+                  ),
+                ),
+              )
+            else
+              const Spacer(),
+            ...controls(),
+          ],
+        );
+      },
+    );
+  }
+
   /// 关联 chip:英文 + 中文双行(web RelatedTagsRow 同形态),点按插入。
   Widget _relChip(BuildContext context, String tag, VoidCallback onTap) {
     final scheme = context.scheme;
@@ -676,23 +908,25 @@ Widget _weightBtn(
   Color fg, {
   required bool enabled,
   required VoidCallback onTap,
+  double width = 46,
+  double height = 38,
 }) {
   final scheme = context.scheme;
   return Material(
     color: enabled ? bg : scheme.surfaceContainerHighest,
-    borderRadius: BorderRadius.circular(11),
+    borderRadius: BorderRadius.circular(width >= 46 ? 11 : 9),
     clipBehavior: Clip.antiAlias,
     child: InkWell(
       onTap: enabled ? onTap : null,
       child: SizedBox(
-        width: 46,
-        height: 38,
+        width: width,
+        height: height,
         child: Center(
           child: Text(
             label,
             style: TextStyle(
               fontFamily: 'monospace',
-              fontSize: 14,
+              fontSize: width >= 46 ? 14 : 13,
               fontWeight: FontWeight.w700,
               color: enabled ? fg : scheme.outlineVariant,
             ),
@@ -781,6 +1015,40 @@ Widget _circleIcon(
         width: 40,
         height: 40,
         child: Icon(icon, size: 18, color: scheme.onSurfaceVariant),
+      ),
+    ),
+  );
+}
+
+/// 精简词条栏里的小圆钮(34)。置灰时不可点,颜色跟着语义走。
+Widget _denseIcon(
+  BuildContext context,
+  IconData icon, {
+  required VoidCallback onTap,
+  required String tooltip,
+  Color? color,
+  bool enabled = true,
+}) {
+  final scheme = context.scheme;
+  return Tooltip(
+    message: tooltip,
+    child: Material(
+      color: scheme.surfaceContainerHighest,
+      shape: const CircleBorder(),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: enabled ? onTap : null,
+        child: SizedBox(
+          width: 34,
+          height: 34,
+          child: Icon(
+            icon,
+            size: 17,
+            color: enabled
+                ? (color ?? scheme.onSurfaceVariant)
+                : scheme.outlineVariant,
+          ),
+        ),
       ),
     ),
   );
@@ -1092,11 +1360,15 @@ class _RepeatBtn extends StatefulWidget {
     required this.icon,
     required this.enabled,
     required this.step,
+    this.size = 38,
   });
 
   final IconData icon;
   final bool enabled;
   final VoidCallback step;
+
+  /// 圆钮直径。精简版收到 32(图标跟着缩)。
+  final double size;
 
   @override
   State<_RepeatBtn> createState() => _RepeatBtnState();
@@ -1159,11 +1431,11 @@ class _RepeatBtnState extends State<_RepeatBtn> {
           shape: const CircleBorder(),
           clipBehavior: Clip.antiAlias,
           child: SizedBox(
-            width: 38,
-            height: 38,
+            width: widget.size,
+            height: widget.size,
             child: Icon(
               widget.icon,
-              size: 20,
+              size: widget.size >= 38 ? 20 : 18,
               color: widget.enabled ? scheme.onSurface : scheme.outlineVariant,
             ),
           ),

@@ -1530,6 +1530,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
         related: tok.name == _relatedFor ? _related : const [],
         relatedLoading: tok.name == _relatedFor && _relatedLoading,
         weightStep: _settings.weightStep,
+        compact: _settings.compactTagPanel,
         warning: abnormalWeightOf(
           _controller.text,
           tok,
