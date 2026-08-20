@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/net/anlas_provider.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/ui/param_input.dart';
+import '../../../core/util/haptics.dart';
 import '../cost.dart';
 import '../gen_modules.dart';
 import '../generate_state.dart';
@@ -41,10 +42,48 @@ class StepsSliderNotifier extends Notifier<StepsSliderState> {
   @override
   StepsSliderState build() => const StepsSliderState();
 
-  void toggle() => state = StepsSliderState(open: !state.open);
+  void toggle() {
+    // 两个浮动药丸落在同一处,同时开着会叠在一起 —— 开一个就把另一个收了
+    if (!state.open) ref.read(batchPickerProvider.notifier).close();
+    state = StepsSliderState(open: !state.open);
+  }
+
   void drag(int v) => state = StepsSliderState(open: state.open, draft: v);
   void endDrag() => state = StepsSliderState(open: state.open);
+  void close() => state = StepsSliderState(draft: state.draft);
 }
+
+/// 张数选择器的开合。与 [stepsSliderProvider] 同一套路:药丸浮在创作页列表上,
+/// 开关是吸底栏里那颗读数。
+final batchPickerProvider = NotifierProvider<BatchPickerNotifier, bool>(
+  BatchPickerNotifier.new,
+);
+
+class BatchPickerNotifier extends Notifier<bool> {
+  @override
+  bool build() => false;
+
+  void toggle() {
+    if (!state) ref.read(stepsSliderProvider.notifier).close();
+    state = !state;
+  }
+
+  void close() => state = false;
+}
+
+/// 会**真正发出去**的那份参数(剥掉隐藏模块之后)。
+///
+/// 读数和浮动选择器都得按它显示:重绘放大模块被藏起来时 `hires.enabled`
+/// 会被剥成 false,而载荷正是按剥离后那份拼的 —— 拿没剥的那份判,界面会说
+/// 「锁定 1」而实际发 4。三处各自 strip 一遍迟早只改对一处,所以收在这里。
+///
+/// 大多数改动下 `stripHiddenModules` 会原样返回同一个 [GenParams] 实例,
+/// 所以订阅方不会跟着整页重建。
+final sentParamsProvider = Provider<GenParams>((ref) {
+  final s = ref.watch(generateProvider);
+  final mods = ref.watch(genModulesProvider).value ?? const GenModuleSettings();
+  return stripHiddenModules(s, mods).params;
+});
 
 /// 吸底操作栏:参数读数 chips + 循环伴钮 + 生成主按钮
 class BottomActionBar extends ConsumerStatefulWidget {
@@ -89,26 +128,22 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            // 均分而不是「左边挤成一堆 + 右边钉一个」:加进「张数」之后,
+            // 左边那串把 Spacer 压没了,它和「高级」直接贴在一起。
+            // spaceBetween 让几个读数在两种情况下(有没有张数)都摊得匀。
             Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 _ReadoutChip(
                   caption: '尺寸',
                   value: '${p.width}×${p.height}',
                   onTap: () => showResolutionSheet(context),
                 ),
-                const SizedBox(width: 8),
                 const _StepsChip(),
                 // 张数只有 anima / krea 有(NAI 那条路一单一张)。**不给它常驻
                 // 一个位置**:NAI 下摆个恒为 1、点了还得解释「这个模型不支持」
                 // 的读数,只是白占那条本来就挤的行。
-                if (sent.params.batchable) ...[
-                  const SizedBox(width: 8),
-                  // 传**剥离后**那份参数:重绘放大模块被藏起来时它是关着的
-                  // (stripHiddenModules 会把 enabled 置 false),而载荷正是
-                  //  按这一份拼的 —— 拿没剥的那份判,会显示「锁定 1」却发 4。
-                  _BatchChip(params: sent.params),
-                ],
-                const Spacer(),
+                if (sent.params.batchable) const _BatchChip(),
                 _ReadoutChip(
                   icon: Icons.tune,
                   value: '高级',
@@ -468,25 +503,24 @@ class _StepsChip extends ConsumerWidget {
 /// 调大,定稿了就调回 1),和「生成」这个动作绑在一起才顺手 —— 旁边那颗循环
 /// 生成也是同一类东西。高级设置那一屏放的是调好就不常动的采样参数。
 class _BatchChip extends ConsumerWidget {
-  const _BatchChip({required this.params});
-
-  /// **剥离隐藏模块之后**的那份参数(见调用处):载荷按哪份拼,这里就按哪份显示。
-  final GenParams params;
+  const _BatchChip();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final p = params;
+    // 按**会发出去**的那份参数显示,见 sentParamsProvider
+    final p = ref.watch(sentParamsProvider);
+    final open = ref.watch(batchPickerProvider);
     // 开着重绘放大时服务端强制单张(二段要跑 N × scale² 的量)。这里显示
-    // **实际会出的张数**并且点不动 —— web 早期是服务端静默覆盖,选 4 出 1 张
-    // 且没有任何提示,那种不一致最难查。
-    final locked = p.batchable && p.effectiveBatch != p.batchCount;
+    // **实际会出的张数**并且点不开选择器 —— web 早期是服务端静默覆盖,
+    // 选 4 出 1 张且没有任何提示,那种不一致最难查。
+    final locked = p.effectiveBatch != p.batchCount;
     return _ReadoutChip(
-      // 锁着的时候挂把小锁,而不是把数字改成「锁定 1」:读数那一格要一直是
-      // 读数,「为什么是 1」点一下才说 —— 那句话在这条窄行里放不下。
-      icon: locked ? Icons.lock_outline : null,
       caption: '张数',
       value: '${p.effectiveBatch}',
+      // 锁着时把读数压灰(和「高级」那颗同一种「这不是可调的数」的说法),
+      // 不加锁形图标:那会让这一格忽宽忽窄,整行跟着抖。为什么是 1,点一下才说。
       valueMuted: locked,
+      active: open,
       onTap: () {
         if (locked) {
           hintSnack(
@@ -497,58 +531,173 @@ class _BatchChip extends ConsumerWidget {
           );
           return;
         }
-        _pickBatch(context, ref, p.batchCount);
+        ref.read(batchPickerProvider.notifier).toggle();
       },
     );
   }
+}
 
-  Future<void> _pickBatch(BuildContext context, WidgetRef ref, int cur) async {
-    final picked = await showModalBottomSheet<int>(
-      context: context,
-      useSafeArea: true,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+/// 张数浮动选择器。和步数滑杆同一处、同一套视觉,只是 1–4 这种离散小集合
+/// 用分段比用滑杆合适 —— 一眼看全、一下点中。
+class BatchPickerOverlay extends ConsumerWidget {
+  const BatchPickerOverlay({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final p = ref.watch(sentParamsProvider);
+    // 换模型 / 打开重绘放大之后这颗读数会消失或锁上,药丸得跟着收 ——
+    // 不收的话下次切回来它会自己冒出来,像见了鬼。
+    ref.listen<bool>(
+      sentParamsProvider.select(
+        (x) => x.batchable && x.effectiveBatch == x.batchCount,
+      ),
+      (_, ok) {
+        if (!ok) ref.read(batchPickerProvider.notifier).close();
+      },
+    );
+    final open =
+        ref.watch(batchPickerProvider) &&
+        p.batchable &&
+        p.effectiveBatch == p.batchCount;
+    return AnimatedSwitcher(
+      duration: Motion.fast,
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeIn,
+      transitionBuilder: (child, anim) => FadeTransition(
+        opacity: anim,
+        child: SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(0, .3),
+            end: Offset.zero,
+          ).animate(anim),
+          child: child,
+        ),
+      ),
+      child: open ? const _BatchPickerPill() : const SizedBox.shrink(),
+    );
+  }
+}
+
+class _BatchPickerPill extends ConsumerWidget {
+  const _BatchPickerPill();
+
+  static const _h = 36.0;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final scheme = context.scheme;
+    final cur = ref.watch(sentParamsProvider).batchCount.clamp(1, kBatchMax);
+    return GestureDetector(
+      // 不透明:否则药丸空白处的拖动会穿过去滚动底下的列表
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        height: 48,
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        decoration: BoxDecoration(
+          color: scheme.surface.withValues(alpha: .85),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(
+            color: scheme.outlineVariant.withValues(alpha: .7),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: .14),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 6),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  '一次出几张',
-                  style: ctx.texts.titleMedium!.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
+            Text(
+              '张数',
+              style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Container(
+                height: _h,
+                padding: const EdgeInsets.all(3),
+                decoration: BoxDecoration(
+                  color: scheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(_h / 2),
+                ),
+                child: LayoutBuilder(
+                  builder: (context, c) {
+                    final segW = c.maxWidth / kBatchMax;
+                    return Stack(
+                      // 默认 topStart 会让那排数字只拿到自身高度、被顶在框顶上
+                      alignment: Alignment.center,
+                      children: [
+                        AnimatedAlign(
+                          duration: Motion.medium,
+                          curve: Motion.emphasized,
+                          // -1..1 的对齐值:第 i 段的中心
+                          alignment: Alignment(
+                            kBatchMax == 1
+                                ? 0
+                                : (cur - 1) / (kBatchMax - 1) * 2 - 1,
+                            0,
+                          ),
+                          child: Container(
+                            width: segW,
+                            height: _h - 6,
+                            decoration: BoxDecoration(
+                              color: scheme.primary,
+                              borderRadius: BorderRadius.circular((_h - 6) / 2),
+                            ),
+                          ),
+                        ),
+                        Row(
+                          children: [
+                            for (var n = 1; n <= kBatchMax; n++)
+                              Expanded(
+                                child: GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
+                                  onTap: () {
+                                    Haptics.selection();
+                                    ref
+                                        .read(generateProvider.notifier)
+                                        .setBatchCount(n);
+                                    // 选完就收:1–4 是一下点中的事,
+                                    // 不像滑杆要留着来回拖
+                                    ref
+                                        .read(batchPickerProvider.notifier)
+                                        .close();
+                                  },
+                                  // 撑满滑块那么高:整段都可点,不写高度的话
+                                  // 只有数字那一小块按得动
+                                  child: SizedBox(
+                                    height: _h - 6,
+                                    child: Center(
+                                      child: Text(
+                                        '$n',
+                                        style: TextStyle(
+                                          fontSize: 13,
+                                          fontWeight: n == cur
+                                              ? FontWeight.w700
+                                              : FontWeight.w600,
+                                          color: n == cur
+                                              ? scheme.onPrimary
+                                              : scheme.onSurfaceVariant,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ],
+                    );
+                  },
                 ),
               ),
             ),
-            for (var n = 1; n <= kBatchMax; n++)
-              ListTile(
-                onTap: () => Navigator.pop(ctx, n),
-                title: Text('$n 张', style: ctx.texts.bodyMedium),
-                // 「一条任务出 N 张」这件事得说一次:它决定了失败和取消的粒度。
-                // 只挂在第一条多张的选项上,四行各写一遍就成了噪音。
-                subtitle: n == 2
-                    ? Text(
-                        '同一次采样,共用一个 seed;失败或取消是整批一起',
-                        style: ctx.texts.bodySmall!.copyWith(
-                          color: ctx.scheme.onSurfaceVariant,
-                        ),
-                      )
-                    : null,
-                trailing: n == cur
-                    ? Icon(Icons.check, size: 18, color: ctx.scheme.primary)
-                    : null,
-                dense: true,
-              ),
-            const SizedBox(height: 8),
           ],
         ),
       ),
     );
-    if (picked != null) {
-      ref.read(generateProvider.notifier).setBatchCount(picked);
-    }
   }
 }
 

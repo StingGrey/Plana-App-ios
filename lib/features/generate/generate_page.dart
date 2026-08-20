@@ -67,12 +67,20 @@ class GeneratePage extends ConsumerWidget {
                   ],
                 ),
               ),
-              // 步数滑杆浮在列表上方(紧贴吸底栏):不占布局,开合不推动任何东西
+              // 步数滑杆 / 张数选择器浮在列表上方(紧贴吸底栏):不占布局,
+              // 开合不推动任何东西。两者**共用这一处**,所以开一个会把另一个
+              // 收掉(见 StepsSliderNotifier.toggle),不会叠在一起。
               const Positioned(
                 left: 14,
                 right: 14,
                 bottom: 10,
                 child: StepsSliderOverlay(),
+              ),
+              const Positioned(
+                left: 14,
+                right: 14,
+                bottom: 10,
+                child: BatchPickerOverlay(),
               ),
             ],
           ),
