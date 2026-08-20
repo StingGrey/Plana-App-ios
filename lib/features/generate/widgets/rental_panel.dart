@@ -583,9 +583,13 @@ class _RentalConfig extends ConsumerWidget {
   }
 }
 
-/// 一档机型。名字与单价一行,规格/风险只在**选中**那档下面展开 ——
-/// 三档全铺开会把「启动实例」顶出屏幕,而没选中的那两档此刻只需要回答
-/// 「叫什么、多少钱」。
+/// 一档机型:名字与单价一行,规格与风险跟在下面。
+///
+/// **三档全写全**,不做「选中才展开」:选机型要的就是横着比,
+/// 一台 24G 一台 32G、一台会被收走一台不会 —— 藏起来两档只留价格,
+/// 等于逼人一档一档点开来回记。抢占那句风险原样用服务端的文案
+/// (它同时交代了「会被收走」和「收走了怎么算钱」),别自己改写成
+/// 「更便宜」之类的话,那是在替用户低估风险。
 class _TierRow extends StatelessWidget {
   const _TierRow({
     required this.tier,
@@ -638,39 +642,31 @@ class _TierRow extends StatelessWidget {
                 ),
               ],
             ),
-            // 选中那档才展开细节。抢占档那句风险原样用服务端的文案 ——
-            // 它同时交代了「会被收走」和「收走了怎么算钱」,别自己改写成
-            // 「更便宜」之类的话,那是在替用户低估风险。
-            AnimatedSize(
-              duration: Motion.medium,
-              curve: Motion.emphasized,
-              alignment: Alignment.topCenter,
-              child: selected
-                  ? Padding(
-                      padding: const EdgeInsets.only(left: 26, top: 2),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            tier.spec.detail,
-                            style: context.texts.labelSmall!.copyWith(
-                              color: scheme.outline,
-                            ),
-                          ),
-                          if (tier.spot && tier.desc.isNotEmpty) ...[
-                            const SizedBox(height: 2),
-                            Text(
-                              tier.desc,
-                              style: context.texts.labelSmall!.copyWith(
-                                color: scheme.tertiary,
-                              ),
-                            ),
-                          ],
-                        ],
+            Padding(
+              padding: const EdgeInsets.only(left: 26, top: 2),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    tier.spec.detail,
+                    style: context.texts.labelSmall!.copyWith(
+                      color: scheme.outline,
+                    ),
+                  ),
+                  if (tier.desc.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      tier.desc,
+                      style: context.texts.labelSmall!.copyWith(
+                        // 抢占那句是风险,独享那句(「不会被回收」)是卖点,
+                        // 两者不该同色 —— 一个要人多看一眼,一个不用
+                        color: tier.spot ? scheme.tertiary : scheme.outline,
                       ),
-                    )
-                  : const SizedBox(width: double.infinity),
+                    ),
+                  ],
+                ],
+              ),
             ),
           ],
         ),

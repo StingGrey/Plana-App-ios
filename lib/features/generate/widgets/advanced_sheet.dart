@@ -317,9 +317,10 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                   label: '提示词引导 CFG',
                   help: Help.cfg,
                   value: draft.cfg,
-                  min: 0,
-                  max: 25,
-                  divisions: 250, // step 0.1(对齐 web)
+                  // 与吸底栏那根浮动滑杆同源(naiCfgRange),step 0.1
+                  min: naiCfgRange.min,
+                  max: naiCfgRange.max,
+                  divisions: ((naiCfgRange.max - naiCfgRange.min) * 10).round(),
                   valueText: draft.cfg.toStringAsFixed(1),
                   // Variety+ 借住在 CFG 这行,自己那份说明只能挂个独立问号
                   trailing: Row(

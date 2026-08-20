@@ -10,7 +10,7 @@ import '../gen_modules.dart';
 import '../generate_state.dart';
 import '../generation_controller.dart';
 import '../loop_controller.dart';
-import '../models.dart' show GenParams, kBatchMax, stepsRangeOf;
+import '../models.dart' show GenParams, kBatchMax, naiCfgRange, stepsRangeOf;
 import '../vibe_encoder.dart';
 import '../../import/import_panel.dart';
 import 'advanced_sheet.dart';
@@ -18,57 +18,49 @@ import 'common.dart' show hintSnack;
 import 'loop_sheet.dart';
 import 'resolution_sheet.dart';
 
-/// 步数滑杆的开合 + 拖动草稿。
+/// 吸底栏上方那一处浮动控件,现在是**谁开着**。
 ///
-/// 滑杆本体浮在创作页列表上([StepsSliderOverlay]),开关是吸底栏里的读数按钮,
-/// 两处不在同一子树,靠这个 provider 连。滑杆**不能**塞进吸底栏——那样整条
-/// 灰底会跟着一起抬高,不是「浮动」。
+/// 三个读数(步数 / CFG / 张数)共用创作页同一个位置,所以状态收成一个 ——
+/// 原先两个各存各的 open,还得互相 close 一把,再加一个就是三处两两配对。
+enum FloatingPill { none, steps, cfg, batch }
+
+/// 浮动控件的开合 + 拖动草稿。
+///
+/// 控件本体浮在创作页列表上([FloatingPillOverlay]),开关是吸底栏里的读数
+/// 按钮,两处不在同一子树,靠这个 provider 连。**不能**塞进吸底栏——那样
+/// 整条灰底会跟着一起抬高,不是「浮动」。
 ///
 /// 拖动期间只写 [draft]:每帧改全局参数会连着整页和费用估算一起重建,读数与
 /// 费用两个 AnimatedSwitcher 每帧重新起转,肉眼就是抖。松手才提交一次。
-class StepsSliderState {
-  const StepsSliderState({this.open = false, this.draft});
+/// 同一时刻只可能有一根滑杆开着,所以草稿一份就够,切控件时跟着清掉。
+class FloatingPillState {
+  const FloatingPillState({this.which = FloatingPill.none, this.draft});
 
-  final bool open;
-  final int? draft;
+  final FloatingPill which;
+  final double? draft;
+
+  bool isOpen(FloatingPill p) => which == p;
 }
 
-final stepsSliderProvider =
-    NotifierProvider<StepsSliderNotifier, StepsSliderState>(
-      StepsSliderNotifier.new,
+final floatingPillProvider =
+    NotifierProvider<FloatingPillNotifier, FloatingPillState>(
+      FloatingPillNotifier.new,
     );
 
-class StepsSliderNotifier extends Notifier<StepsSliderState> {
+class FloatingPillNotifier extends Notifier<FloatingPillState> {
   @override
-  StepsSliderState build() => const StepsSliderState();
+  FloatingPillState build() => const FloatingPillState();
 
-  void toggle() {
-    // 两个浮动药丸落在同一处,同时开着会叠在一起 —— 开一个就把另一个收了
-    if (!state.open) ref.read(batchPickerProvider.notifier).close();
-    state = StepsSliderState(open: !state.open);
-  }
+  void toggle(FloatingPill p) => state = FloatingPillState(
+    which: state.which == p ? FloatingPill.none : p,
+  );
 
-  void drag(int v) => state = StepsSliderState(open: state.open, draft: v);
-  void endDrag() => state = StepsSliderState(open: state.open);
-  void close() => state = StepsSliderState(draft: state.draft);
-}
+  void close() => state = const FloatingPillState();
 
-/// 张数选择器的开合。与 [stepsSliderProvider] 同一套路:药丸浮在创作页列表上,
-/// 开关是吸底栏里那颗读数。
-final batchPickerProvider = NotifierProvider<BatchPickerNotifier, bool>(
-  BatchPickerNotifier.new,
-);
+  void drag(double v) => state = FloatingPillState(which: state.which, draft: v);
 
-class BatchPickerNotifier extends Notifier<bool> {
-  @override
-  bool build() => false;
-
-  void toggle() {
-    if (!state) ref.read(stepsSliderProvider.notifier).close();
-    state = !state;
-  }
-
-  void close() => state = false;
+  /// 松手 / 提交:留着开合状态,只把草稿清掉。
+  void endDrag() => state = FloatingPillState(which: state.which);
 }
 
 /// 会**真正发出去**的那份参数(剥掉隐藏模块之后)。
@@ -143,7 +135,15 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
                 // 张数只有 anima / krea 有(NAI 那条路一单一张)。**不给它常驻
                 // 一个位置**:NAI 下摆个恒为 1、点了还得解释「这个模型不支持」
                 // 的读数,只是白占那条本来就挤的行。
-                if (sent.params.batchable) const _BatchChip(),
+                if (sent.params.batchable)
+                  const _BatchChip()
+                else
+                  // NAI 没有张数这回事,那一格空着只剩三颗读数、摆得发虚。
+                  // 补 CFG:它和步数是同一类「每次都可能微调」的采样参数,
+                  // 本来就该够得着,不必为它掀开整张高级设置。
+                  // anima / krea 不给这颗 —— 那边已经有张数,五颗挤不下,
+                  // 而且它们的 CFG 多半跟着档位默认走、不常动。
+                  const _CfgChip(),
                 _ReadoutChip(
                   icon: Icons.tune,
                   value: '高级',
@@ -485,14 +485,37 @@ class _StepsChip extends ConsumerWidget {
     final committed = ref.watch(
       generateProvider.select((s) => s.params.activeSteps),
     );
-    final slider = ref.watch(stepsSliderProvider);
+    final pill = ref.watch(floatingPillProvider);
+    final open = pill.isOpen(FloatingPill.steps);
     return _ReadoutChip(
       caption: '步数',
-      value: '${slider.draft ?? committed}',
-      active: slider.open,
+      value: '${(open ? pill.draft?.round() : null) ?? committed}',
+      active: open,
       // 拖动时逐帧换数,再叠淡入淡出只会糊成一团
-      animateValue: !slider.open,
-      onTap: () => ref.read(stepsSliderProvider.notifier).toggle(),
+      animateValue: !open,
+      onTap: () =>
+          ref.read(floatingPillProvider.notifier).toggle(FloatingPill.steps),
+    );
+  }
+}
+
+/// CFG 读数按钮(NAI):点开/收起浮动滑杆,与步数那颗同一套行为。
+class _CfgChip extends ConsumerWidget {
+  const _CfgChip();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final committed = ref.watch(generateProvider.select((s) => s.params.cfg));
+    final pill = ref.watch(floatingPillProvider);
+    final open = pill.isOpen(FloatingPill.cfg);
+    return _ReadoutChip(
+      caption: 'CFG',
+      value: ((open ? pill.draft : null) ?? committed).toStringAsFixed(1),
+      active: open,
+      // 拖动时逐帧换数,再叠淡入淡出只会糊成一团
+      animateValue: !open,
+      onTap: () =>
+          ref.read(floatingPillProvider.notifier).toggle(FloatingPill.cfg),
     );
   }
 }
@@ -509,7 +532,9 @@ class _BatchChip extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     // 按**会发出去**的那份参数显示,见 sentParamsProvider
     final p = ref.watch(sentParamsProvider);
-    final open = ref.watch(batchPickerProvider);
+    final open = ref.watch(
+      floatingPillProvider.select((x) => x.isOpen(FloatingPill.batch)),
+    );
     // 开着重绘放大时服务端强制单张(二段要跑 N × scale² 的量)。这里显示
     // **实际会出的张数**并且点不开选择器 —— web 早期是服务端静默覆盖,
     // 选 4 出 1 张且没有任何提示,那种不一致最难查。
@@ -531,34 +556,40 @@ class _BatchChip extends ConsumerWidget {
           );
           return;
         }
-        ref.read(batchPickerProvider.notifier).toggle();
+        ref.read(floatingPillProvider.notifier).toggle(FloatingPill.batch);
       },
     );
   }
 }
 
-/// 张数浮动选择器。和步数滑杆同一处、同一套视觉,只是 1–4 这种离散小集合
-/// 用分段比用滑杆合适 —— 一眼看全、一下点中。
-class BatchPickerOverlay extends ConsumerWidget {
-  const BatchPickerOverlay({super.key});
+/// 吸底栏上方那一处浮动控件。挂在创作页 Stack 顶层,浮在列表上方、吸底栏
+/// 之上——不占布局,开合不会推动任何东西。视觉与重绘面板的浮动滑杆同款。
+///
+/// 三个读数共用这一处,由 [floatingPillProvider] 决定画哪个;
+/// AnimatedSwitcher 顺带让「从步数切到 CFG」是一次交叉淡入,不是闪一下。
+class FloatingPillOverlay extends ConsumerWidget {
+  const FloatingPillOverlay({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final p = ref.watch(sentParamsProvider);
-    // 换模型 / 打开重绘放大之后这颗读数会消失或锁上,药丸得跟着收 ——
+    var which = ref.watch(floatingPillProvider.select((x) => x.which));
+    // 换模型 / 开重绘放大之后,对应那颗读数会消失或锁上,浮层得跟着收 ——
     // 不收的话下次切回来它会自己冒出来,像见了鬼。
+    // (只在这儿判「还该不该画」,真正把状态清掉交给下面那次 listen。)
+    final okFor = switch (which) {
+      FloatingPill.batch =>
+        p.batchable && p.effectiveBatch == p.batchCount,
+      FloatingPill.cfg => !p.batchable, // CFG 读数只给 NAI,见 _CfgChip
+      _ => true,
+    };
+    if (!okFor) which = FloatingPill.none;
     ref.listen<bool>(
       sentParamsProvider.select(
         (x) => x.batchable && x.effectiveBatch == x.batchCount,
       ),
-      (_, ok) {
-        if (!ok) ref.read(batchPickerProvider.notifier).close();
-      },
+      (_, _) => ref.read(floatingPillProvider.notifier).close(),
     );
-    final open =
-        ref.watch(batchPickerProvider) &&
-        p.batchable &&
-        p.effectiveBatch == p.batchCount;
     return AnimatedSwitcher(
       duration: Motion.fast,
       switchInCurve: Curves.easeOutCubic,
@@ -573,7 +604,56 @@ class BatchPickerOverlay extends ConsumerWidget {
           child: child,
         ),
       ),
-      child: open ? const _BatchPickerPill() : const SizedBox.shrink(),
+      child: switch (which) {
+        FloatingPill.steps => const _StepsSliderPill(),
+        FloatingPill.cfg => const _CfgSliderPill(),
+        FloatingPill.batch => const _BatchPickerPill(),
+        FloatingPill.none => const SizedBox.shrink(),
+      },
+    );
+  }
+}
+
+/// 浮动控件的外壳:药丸底 + 左侧标题。三个控件长得一样,只是里面装的不同。
+class _PillShell extends StatelessWidget {
+  const _PillShell({required this.label, required this.child});
+
+  final String label;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return GestureDetector(
+      // 不透明:否则药丸空白处的拖动会穿过去滚动底下的列表
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        height: 48,
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        decoration: BoxDecoration(
+          color: scheme.surface.withValues(alpha: .85),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(
+            color: scheme.outlineVariant.withValues(alpha: .7),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: .14),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Text(
+              label,
+              style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+            ),
+            Expanded(child: child),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -587,145 +667,87 @@ class _BatchPickerPill extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final scheme = context.scheme;
     final cur = ref.watch(sentParamsProvider).batchCount.clamp(1, kBatchMax);
-    return GestureDetector(
-      // 不透明:否则药丸空白处的拖动会穿过去滚动底下的列表
-      behavior: HitTestBehavior.opaque,
-      child: Container(
-        height: 48,
-        padding: const EdgeInsets.symmetric(horizontal: 14),
-        decoration: BoxDecoration(
-          color: scheme.surface.withValues(alpha: .85),
-          borderRadius: BorderRadius.circular(24),
-          border: Border.all(
-            color: scheme.outlineVariant.withValues(alpha: .7),
+    return _PillShell(
+      label: '张数',
+      child: Padding(
+        padding: const EdgeInsets.only(left: 12),
+        child: Container(
+          height: _h,
+          padding: const EdgeInsets.all(3),
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerHighest,
+            // 方角(与高级设置里那排选择块同款),不是药丸:外面那圈浮层已经是
+            // 圆的了,里面再套一圈圆的会糊成一团
+            borderRadius: BorderRadius.circular(12),
           ),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: .14),
-              blurRadius: 12,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Row(
-          children: [
-            Text(
-              '张数',
-              style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Container(
-                height: _h,
-                padding: const EdgeInsets.all(3),
-                decoration: BoxDecoration(
-                  color: scheme.surfaceContainerHighest,
-                  // 方角(与高级设置里那排选择块同款 11),不是药丸:
-                  // 外面那圈浮层已经是圆的了,里面再套一圈圆的会糊成一团
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: LayoutBuilder(
-                  builder: (context, c) {
-                    final segW = c.maxWidth / kBatchMax;
-                    return Stack(
-                      // 默认 topStart 会让那排数字只拿到自身高度、被顶在框顶上
-                      alignment: Alignment.center,
-                      children: [
-                        AnimatedAlign(
-                          duration: Motion.medium,
-                          curve: Motion.emphasized,
-                          // -1..1 的对齐值:第 i 段的中心
-                          alignment: Alignment(
-                            kBatchMax == 1
-                                ? 0
-                                : (cur - 1) / (kBatchMax - 1) * 2 - 1,
-                            0,
-                          ),
-                          child: Container(
-                            width: segW,
-                            height: _h - 6,
-                            decoration: BoxDecoration(
-                              color: scheme.primary,
-                              borderRadius: BorderRadius.circular(9),
-                            ),
-                          ),
-                        ),
-                        Row(
-                          children: [
-                            for (var n = 1; n <= kBatchMax; n++)
-                              Expanded(
-                                child: GestureDetector(
-                                  behavior: HitTestBehavior.opaque,
-                                  onTap: () {
-                                    Haptics.selection();
-                                    ref
-                                        .read(generateProvider.notifier)
-                                        .setBatchCount(n);
-                                    // 选完就收:1–4 是一下点中的事,
-                                    // 不像滑杆要留着来回拖
-                                    ref
-                                        .read(batchPickerProvider.notifier)
-                                        .close();
-                                  },
-                                  // 撑满滑块那么高:整段都可点,不写高度的话
-                                  // 只有数字那一小块按得动
-                                  child: SizedBox(
-                                    height: _h - 6,
-                                    child: Center(
-                                      child: Text(
-                                        '$n',
-                                        style: TextStyle(
-                                          fontSize: 13,
-                                          fontWeight: n == cur
-                                              ? FontWeight.w700
-                                              : FontWeight.w600,
-                                          color: n == cur
-                                              ? scheme.onPrimary
-                                              : scheme.onSurfaceVariant,
-                                        ),
-                                      ),
-                                    ),
+          child: LayoutBuilder(
+            builder: (context, c) {
+              final segW = c.maxWidth / kBatchMax;
+              return Stack(
+                // 默认 topStart 会让那排数字只拿到自身高度、被顶在框顶上
+                alignment: Alignment.center,
+                children: [
+                  AnimatedAlign(
+                    duration: Motion.medium,
+                    curve: Motion.emphasized,
+                    // -1..1 的对齐值:第 i 段的中心
+                    alignment: Alignment(
+                      kBatchMax == 1 ? 0 : (cur - 1) / (kBatchMax - 1) * 2 - 1,
+                      0,
+                    ),
+                    child: Container(
+                      width: segW,
+                      height: _h - 6,
+                      decoration: BoxDecoration(
+                        color: scheme.primary,
+                        borderRadius: BorderRadius.circular(9),
+                      ),
+                    ),
+                  ),
+                  Row(
+                    children: [
+                      for (var n = 1; n <= kBatchMax; n++)
+                        Expanded(
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: () {
+                              Haptics.selection();
+                              ref
+                                  .read(generateProvider.notifier)
+                                  .setBatchCount(n);
+                              // 选完就收:1–4 是一下点中的事,
+                              // 不像滑杆要留着来回拖
+                              ref.read(floatingPillProvider.notifier).close();
+                            },
+                            // 撑满滑块那么高:整段都可点,不写高度的话只有
+                            // 数字那一小块按得动
+                            child: SizedBox(
+                              height: _h - 6,
+                              child: Center(
+                                child: Text(
+                                  '$n',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: n == cur
+                                        ? FontWeight.w700
+                                        : FontWeight.w600,
+                                    color: n == cur
+                                        ? scheme.onPrimary
+                                        : scheme.onSurfaceVariant,
                                   ),
                                 ),
                               ),
-                          ],
+                            ),
+                          ),
                         ),
-                      ],
-                    );
-                  },
-                ),
-              ),
-            ),
-          ],
+                    ],
+                  ),
+                ],
+              );
+            },
+          ),
         ),
       ),
-    );
-  }
-}
-
-/// 步数浮动滑杆。挂在创作页 Stack 顶层,浮在列表上方、吸底栏之上——不占布局,
-/// 开合不会推动任何东西。视觉与重绘面板的浮动滑杆同款。
-class StepsSliderOverlay extends ConsumerWidget {
-  const StepsSliderOverlay({super.key});
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final open = ref.watch(stepsSliderProvider.select((s) => s.open));
-    return AnimatedSwitcher(
-      duration: Motion.fast,
-      switchInCurve: Curves.easeOutCubic,
-      switchOutCurve: Curves.easeIn,
-      transitionBuilder: (child, anim) => FadeTransition(
-        opacity: anim,
-        child: SlideTransition(
-          position: Tween<Offset>(
-            begin: const Offset(0, .3),
-            end: Offset.zero,
-          ).animate(anim),
-          child: child,
-        ),
-      ),
-      child: open ? const _StepsSliderPill() : const SizedBox.shrink(),
     );
   }
 }
@@ -735,7 +757,6 @@ class _StepsSliderPill extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final scheme = context.scheme;
     // NAI / Anima / Krea 各有一套独立步数,范围也不同(与高级面板同源)
     final range = ref.watch(
       generateProvider.select((s) => stepsRangeOf(s.params.model)),
@@ -746,83 +767,137 @@ class _StepsSliderPill extends ConsumerWidget {
     final min = range.min;
     final max = range.max;
     final steps =
-        (ref.watch(stepsSliderProvider.select((s) => s.draft)) ?? committed)
+        (ref.watch(floatingPillProvider.select((x) => x.draft))?.round() ??
+                committed)
             .clamp(min, max);
-    return GestureDetector(
-      // 不透明:否则药丸空白处的拖动会穿过去滚动底下的列表
-      behavior: HitTestBehavior.opaque,
-      child: Container(
-        height: 48,
-        padding: const EdgeInsets.symmetric(horizontal: 14),
-        decoration: BoxDecoration(
-          color: scheme.surface.withValues(alpha: .85),
-          borderRadius: BorderRadius.circular(24),
-          border: Border.all(
-            color: scheme.outlineVariant.withValues(alpha: .7),
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: .14),
-              blurRadius: 12,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Row(
-          children: [
-            Text(
-              '步数',
-              style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
-            ),
-            Expanded(
-              child: SliderTheme(
-                data: compactSliderTheme,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: Slider(
-                    value: steps.toDouble(),
-                    min: min.toDouble(),
-                    max: max.toDouble(),
-                    // 不传 divisions:离散 Slider 会用 75ms 曲线把滑块吸到刻度,
-                    // 拖起来黏手。步长(整数)就地取整。
-                    onChanged: (v) =>
-                        ref.read(stepsSliderProvider.notifier).drag(v.round()),
-                    // 松手才写回全局:先提交再清草稿,同一帧生效,不会闪回旧值
-                    onChangeEnd: (v) {
-                      final p = ref.read(generateProvider).params;
-                      ref
-                          .read(generateProvider.notifier)
-                          .applyParams(p.withActiveSteps(v.round()));
-                      ref.read(stepsSliderProvider.notifier).endDrag();
-                    },
-                  ),
-                ),
-              ),
-            ),
-            ParamValueBox(
-              text: '$steps',
-              dense: true,
-              onTap: () async {
-                // 弹窗期间不能再动别的,提前把 notifier 和参数取好,
-                // 醒来直接写 —— 不留 await 之后再摸 ref 的口子
-                final notifier = ref.read(generateProvider.notifier);
-                final slider = ref.read(stepsSliderProvider.notifier);
-                final p = ref.read(generateProvider).params;
-                final v = await showParamInput(
-                  context,
-                  title: '步数 Steps',
+    return _PillShell(
+      label: '步数',
+      child: Row(
+        children: [
+          Expanded(
+            child: SliderTheme(
+              data: compactSliderTheme,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Slider(
                   value: steps.toDouble(),
                   min: min.toDouble(),
                   max: max.toDouble(),
-                  divisions: max - min,
-                );
-                if (v == null) return;
-                notifier.applyParams(p.withActiveSteps(v.round()));
-                slider.endDrag();
-              },
+                  // 不传 divisions:离散 Slider 会用 75ms 曲线把滑块吸到刻度,
+                  // 拖起来黏手。步长(整数)就地取整。
+                  onChanged: (v) => ref
+                      .read(floatingPillProvider.notifier)
+                      .drag(v.roundToDouble()),
+                  // 松手才写回全局:先提交再清草稿,同一帧生效,不会闪回旧值
+                  onChangeEnd: (v) {
+                    final p = ref.read(generateProvider).params;
+                    ref
+                        .read(generateProvider.notifier)
+                        .applyParams(p.withActiveSteps(v.round()));
+                    ref.read(floatingPillProvider.notifier).endDrag();
+                  },
+                ),
+              ),
             ),
-          ],
-        ),
+          ),
+          ParamValueBox(
+            text: '$steps',
+            dense: true,
+            onTap: () async {
+              // 弹窗期间不能再动别的,提前把 notifier 和参数取好,
+              // 醒来直接写 —— 不留 await 之后再摸 ref 的口子
+              final notifier = ref.read(generateProvider.notifier);
+              final pill = ref.read(floatingPillProvider.notifier);
+              final p = ref.read(generateProvider).params;
+              final v = await showParamInput(
+                context,
+                title: '步数 Steps',
+                value: steps.toDouble(),
+                min: min.toDouble(),
+                max: max.toDouble(),
+                divisions: max - min,
+              );
+              if (v == null) return;
+              notifier.applyParams(p.withActiveSteps(v.round()));
+              pill.endDrag();
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// CFG 浮动滑杆(NAI)。和步数那根同一处、同一套操作 —— 拖动只写草稿,
+/// 松手才提交;右边那格点开可以直接键入。
+///
+/// 步长 0.1、区间与高级面板同源([naiCfgRange]):同一个参数在两处给出不同的
+/// 可选范围,是最容易让人以为「app 坏了」的那种不一致。
+class _CfgSliderPill extends ConsumerWidget {
+  const _CfgSliderPill();
+
+  /// 0.1 一档。滑杆本身走连续值,这里只负责把落点收成一位小数 ——
+  /// 离散 Slider 会用 75ms 曲线把滑块吸到刻度,250 个刻度拖起来全程黏手。
+  static double _snap(double v) => (v * 10).roundToDouble() / 10;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    // 记录的字段取值不是常量表达式,只能 final
+    final min = naiCfgRange.min;
+    final max = naiCfgRange.max;
+    final committed = ref.watch(
+      generateProvider.select((s) => s.params.cfg),
+    );
+    final cfg =
+        (ref.watch(floatingPillProvider.select((x) => x.draft)) ?? committed)
+            .clamp(min, max);
+    return _PillShell(
+      label: 'CFG',
+      child: Row(
+        children: [
+          Expanded(
+            child: SliderTheme(
+              data: compactSliderTheme,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Slider(
+                  value: cfg,
+                  min: min,
+                  max: max,
+                  onChanged: (v) =>
+                      ref.read(floatingPillProvider.notifier).drag(_snap(v)),
+                  onChangeEnd: (v) {
+                    final p = ref.read(generateProvider).params;
+                    ref
+                        .read(generateProvider.notifier)
+                        .applyParams(p.copyWith(cfg: _snap(v)));
+                    ref.read(floatingPillProvider.notifier).endDrag();
+                  },
+                ),
+              ),
+            ),
+          ),
+          ParamValueBox(
+            text: cfg.toStringAsFixed(1),
+            dense: true,
+            onTap: () async {
+              final notifier = ref.read(generateProvider.notifier);
+              final pill = ref.read(floatingPillProvider.notifier);
+              final p = ref.read(generateProvider).params;
+              final v = await showParamInput(
+                context,
+                title: '提示词引导 CFG',
+                value: cfg,
+                min: min,
+                max: max,
+                divisions: ((max - min) * 10).round(),
+              );
+              if (v == null) return;
+              notifier.applyParams(p.copyWith(cfg: _snap(v)));
+              pill.endDrag();
+            },
+          ),
+        ],
       ),
     );
   }
