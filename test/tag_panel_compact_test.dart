@@ -74,8 +74,8 @@ void main() {
     final compactH = t.getSize(find.byType(TagPanel)).height;
     expect(
       compactH,
-      lessThanOrEqualTo(52),
-      reason: '一行 = 控件 34 + 上下各 6 的内边距;超过就是排成两行了',
+      lessThanOrEqualTo(60),
+      reason: '一行 = 控件 40 + 上下各 8 的内边距;超过就是排成两行了',
     );
 
     await pumpAt(t, _host(compact: false));
@@ -95,16 +95,36 @@ void main() {
     expect(find.text('{ }'), findsOneWidget, reason: '加权括号');
     expect(find.byIcon(Icons.remove), findsOneWidget);
     expect(find.byIcon(Icons.add), findsOneWidget);
-    expect(find.text('×1.2'), findsOneWidget, reason: '读数');
     expect(find.byIcon(Icons.backspace_outlined), findsOneWidget, reason: '清除权重');
     expect(find.byIcon(Icons.delete_outline), findsOneWidget, reason: '删除');
-    expect(find.byIcon(Icons.close), findsOneWidget, reason: '关闭');
+    // 关闭去掉了:光标挪开 / 再点一下 chip / 点空白都会收走这一栏,
+    // 一枚只为「原地藏起来」的 ✕ 不值 40 宽
+    expect(find.byIcon(Icons.close), findsNothing);
+  });
+
+  testWidgets('权重缀在名字后面,而不是单占一格读数', (t) async {
+    await pumpAt(t, _host(compact: true, tok: _tok(numMult: 1.2)));
+    expect(find.text('×1.2'), findsOneWidget);
+    // 名字和权重是两段文字,但同属一个标签 —— 都在,且都只有一份
+    expect(find.text('blue eyes'), findsOneWidget);
+  });
+
+  testWidgets('×1 不显示:没有权重的时候那三个字符什么也没说', (t) async {
+    await pumpAt(t, _host(compact: true));
+    expect(find.textContaining('×'), findsNothing);
+  });
+
+  testWidgets('括号档也算权重,照样缀出来', (t) async {
+    // braceLevel=2 → ×1.05² ≈ 1.1
+    await pumpAt(t, _host(compact: true, tok: _tok(braceLevel: 2)));
+    expect(find.textContaining('×'), findsOneWidget);
   });
 
   testWidgets('收走的东西真的不在:热度 / 译文 / 禁用 / 关联 / 维基 / 复制', (t) async {
     await pumpAt(t, _host(compact: true));
     expect(find.text('禁用'), findsNothing);
     expect(find.text('关联'), findsNothing);
+    expect(find.text('权重'), findsNothing, reason: '一行里没有给标题的位置');
     expect(find.text('清除权重'), findsNothing, reason: '精简版里它是图标不是文字按钮');
     expect(find.text('蓝眼'), findsNothing, reason: '译文在正文注音层里有,这儿不重复');
     expect(find.byIcon(Icons.travel_explore), findsNothing);
@@ -118,11 +138,26 @@ void main() {
     expect(find.byIcon(Icons.warning_amber_rounded), findsOneWidget);
     expect(
       t.getSize(find.byType(TagPanel)).height,
-      lessThanOrEqualTo(52),
+      lessThanOrEqualTo(60),
       reason: '带警示时也还是一行,不然「一行」这个承诺就是有条件的',
     );
     // 完整版那句话在这儿不该常驻(点图标才说)
     expect(find.textContaining('疑似丢了逗号'), findsNothing);
+  });
+
+  testWidgets('按钮比第一版粗一圈:够得上 40 的触摸目标', (t) async {
+    await pumpAt(t, _host(compact: true));
+    // 数值圆钮与括号键都是拿拇指按的,小于 40 在真机上不好使
+    expect(t.getSize(find.byIcon(Icons.add).first).height, greaterThanOrEqualTo(19));
+    expect(t.getSize(find.text('{ }')).width, greaterThanOrEqualTo(20));
+    final del = t.getSize(
+      find.ancestor(
+        of: find.byIcon(Icons.delete_outline),
+        matching: find.byType(SizedBox),
+      ).first,
+    );
+    expect(del.width, greaterThanOrEqualTo(38));
+    expect(del.height, greaterThanOrEqualTo(38));
   });
 
   testWidgets('窄屏挤不下时名字整个让位,而不是挤成一个省略号', (t) async {
@@ -132,5 +167,16 @@ void main() {
     expect(find.byIcon(Icons.delete_outline), findsOneWidget);
     expect(find.text('{ }'), findsOneWidget);
     expect(t.takeException(), isNull, reason: '不能溢出');
+  });
+
+  testWidgets('名字放不下但有权重时:先保权重,名字才是可以丢的那半', (t) async {
+    // 360 上留给标签那段只剩六十几,装不下「名字 + ×1.2」的整段
+    await pumpAt(t, _host(compact: true, tok: _tok(numMult: 1.2)), width: 360);
+    expect(find.text('blue eyes'), findsNothing);
+    expect(
+      find.text('×1.2'),
+      findsOneWidget,
+      reason: '这一栏就是拿来调权重的;是哪一枚在正上方的正文里高亮着',
+    );
   });
 }
