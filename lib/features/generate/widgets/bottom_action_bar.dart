@@ -9,7 +9,7 @@ import '../gen_modules.dart';
 import '../generate_state.dart';
 import '../generation_controller.dart';
 import '../loop_controller.dart';
-import '../models.dart' show stepsRangeOf;
+import '../models.dart' show GenParams, kBatchMax, stepsRangeOf;
 import '../vibe_encoder.dart';
 import '../../import/import_panel.dart';
 import 'advanced_sheet.dart';
@@ -98,6 +98,16 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
                 ),
                 const SizedBox(width: 8),
                 const _StepsChip(),
+                // 张数只有 anima / krea 有(NAI 那条路一单一张)。**不给它常驻
+                // 一个位置**:NAI 下摆个恒为 1、点了还得解释「这个模型不支持」
+                // 的读数,只是白占那条本来就挤的行。
+                if (sent.params.batchable) ...[
+                  const SizedBox(width: 8),
+                  // 传**剥离后**那份参数:重绘放大模块被藏起来时它是关着的
+                  // (stripHiddenModules 会把 enabled 置 false),而载荷正是
+                  //  按这一份拼的 —— 拿没剥的那份判,会显示「锁定 1」却发 4。
+                  _BatchChip(params: sent.params),
+                ],
                 const Spacer(),
                 _ReadoutChip(
                   icon: Icons.tune,
@@ -449,6 +459,96 @@ class _StepsChip extends ConsumerWidget {
       animateValue: !slider.open,
       onTap: () => ref.read(stepsSliderProvider.notifier).toggle(),
     );
+  }
+}
+
+/// 一次出几张(anima / krea 的 `batch_size`)。
+///
+/// 摆在吸底栏而不是高级设置里:这是**每次都会变**的决策(想多看几个构图就
+/// 调大,定稿了就调回 1),和「生成」这个动作绑在一起才顺手 —— 旁边那颗循环
+/// 生成也是同一类东西。高级设置那一屏放的是调好就不常动的采样参数。
+class _BatchChip extends ConsumerWidget {
+  const _BatchChip({required this.params});
+
+  /// **剥离隐藏模块之后**的那份参数(见调用处):载荷按哪份拼,这里就按哪份显示。
+  final GenParams params;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final p = params;
+    // 开着重绘放大时服务端强制单张(二段要跑 N × scale² 的量)。这里显示
+    // **实际会出的张数**并且点不动 —— web 早期是服务端静默覆盖,选 4 出 1 张
+    // 且没有任何提示,那种不一致最难查。
+    final locked = p.batchable && p.effectiveBatch != p.batchCount;
+    return _ReadoutChip(
+      // 锁着的时候挂把小锁,而不是把数字改成「锁定 1」:读数那一格要一直是
+      // 读数,「为什么是 1」点一下才说 —— 那句话在这条窄行里放不下。
+      icon: locked ? Icons.lock_outline : null,
+      caption: '张数',
+      value: '${p.effectiveBatch}',
+      valueMuted: locked,
+      onTap: () {
+        if (locked) {
+          hintSnack(
+            context,
+            '重绘放大开着时只能出 1 张:二段采样要按放大后的尺寸再跑一遍,'
+            '显存吃不下一批。',
+            icon: Icons.info_outline,
+          );
+          return;
+        }
+        _pickBatch(context, ref, p.batchCount);
+      },
+    );
+  }
+
+  Future<void> _pickBatch(BuildContext context, WidgetRef ref, int cur) async {
+    final picked = await showModalBottomSheet<int>(
+      context: context,
+      useSafeArea: true,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 6),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  '一次出几张',
+                  style: ctx.texts.titleMedium!.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ),
+            for (var n = 1; n <= kBatchMax; n++)
+              ListTile(
+                onTap: () => Navigator.pop(ctx, n),
+                title: Text('$n 张', style: ctx.texts.bodyMedium),
+                // 「一条任务出 N 张」这件事得说一次:它决定了失败和取消的粒度。
+                // 只挂在第一条多张的选项上,四行各写一遍就成了噪音。
+                subtitle: n == 2
+                    ? Text(
+                        '同一次采样,共用一个 seed;失败或取消是整批一起',
+                        style: ctx.texts.bodySmall!.copyWith(
+                          color: ctx.scheme.onSurfaceVariant,
+                        ),
+                      )
+                    : null,
+                trailing: n == cur
+                    ? Icon(Icons.check, size: 18, color: ctx.scheme.primary)
+                    : null,
+                dense: true,
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (picked != null) {
+      ref.read(generateProvider.notifier).setBatchCount(picked);
+    }
   }
 }
 

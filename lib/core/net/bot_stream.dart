@@ -9,7 +9,11 @@ import 'gen_abort.dart';
 
 /// 跑一个 bot 生成任务的实时链路:WebSocket `/ws/bot`(逐步进度 + 中间预览图)
 /// 为主,HTTP 轮询 `GET /api/bot/task/{id}` 为兜底(防 WS 丢消息/连不上)。
-/// 首个到达完成/失败的通道胜出。返回最终结果 PNG 字节;失败抛 [BackendException]。
+/// 首个到达完成/失败的通道胜出。失败抛 [BackendException]。
+///
+/// 返回的是**这一批的全部 PNG**:anima / krea 的 `batch_size` 让一次采样出
+/// N 张(上限 4),它们共用一条任务、一份进度,只在结果里分开。单张时列表
+/// 长度就是 1 —— 调用方不用分两条路走。
 ///
 /// - [onProgress] `(step, total, preview?, stageText)`:逐步进度,WS 携带预览图
 ///   base64。同一条消息里可能**既有读数也有阶段文案**(「生成中 3/36」、采样
@@ -55,7 +59,7 @@ import 'gen_abort.dart';
   );
 }
 
-Future<Uint8List> streamBotTask({
+Future<List<Uint8List>> streamBotTask({
   required String baseUrl,
   required String sessionId,
   required String taskId,
@@ -74,17 +78,10 @@ Future<Uint8List> streamBotTask({
   // ⚠ 这是**采样期**的预算,不含准备阶段 —— 见下面 armWatchdog 的说明。
   Duration timeout = const Duration(minutes: 13),
 }) async {
-  final completer = Completer<Uint8List>();
+  final completer = Completer<List<Uint8List>>();
   var lastStep = -1;
   // WS 和轮询都会带同一条 warning,只报一次
   var warned = false;
-
-  void done(Uint8List bytes) {
-    if (!completer.isCompleted) {
-      logi('[bot] $taskId done: ${bytes.length}B');
-      completer.complete(bytes);
-    }
-  }
 
   void fail(Object e) {
     if (!completer.isCompleted) {
@@ -92,6 +89,20 @@ Future<Uint8List> streamBotTask({
       completer.completeError(
         e is BackendException ? e : BackendException('$e'),
       );
+    }
+  }
+
+  /// 完成。[b64] 是这一批的全部图(单张时长度 1)——**在这里一次性解码**,
+  /// 解不动就整批算失败:半批图入库比没有图更糟,用户看不出少了哪张。
+  void done(List<String> b64) {
+    if (completer.isCompleted) return;
+    try {
+      final out = [for (final s in b64) base64Decode(s)];
+      logi('[bot] $taskId done: ${out.length} 张 / '
+          '${out.fold<int>(0, (a, b) => a + b.length)}B');
+      completer.complete(out);
+    } catch (_) {
+      fail(BackendException('结果解码失败'));
     }
   }
 
@@ -173,14 +184,11 @@ Future<Uint8List> streamBotTask({
         warn(m['warning'] as String?);
         switch (m['status']) {
           case 'completed':
-            final r = m['result'];
-            final b64 = (r is Map) ? r['imageBase64'] as String? : null;
-            if (b64 != null && b64.isNotEmpty) {
-              try {
-                done(base64Decode(b64));
-              } catch (_) {
-                fail(BackendException('结果解码失败'));
-              }
+            // batch:结果里额外带了 images(含第 0 张);单张时退回 imageBase64。
+            // 两条都空才是真没图 —— 见 botResultImages。
+            final all = botResultImages(m['result']);
+            if (all.isNotEmpty) {
+              done(all);
             } else {
               // completed 但没带图:不能吞掉,否则会一直卡在最后一步等结果
               logi('[bot] $taskId ws completed 无图,等轮询取结果');
@@ -235,9 +243,8 @@ Future<Uint8List> streamBotTask({
       if (!t.success) return; // 尚未可见,继续
       warn(t.warning);
       if (t.completed) {
-        final b64 = t.imageBase64;
-        if (b64 != null && b64.isNotEmpty) {
-          done(base64Decode(b64));
+        if (t.images.isNotEmpty) {
+          done(t.images);
         } else {
           logi('[bot] $taskId poll completed 但 result 无图');
         }

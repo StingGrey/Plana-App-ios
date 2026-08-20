@@ -432,6 +432,11 @@ const animaSchedulers = <AnimaOption>[
 const animaStepsRange = (min: 6, max: 50);
 const animaCfgRange = (min: 1.0, max: 7.0);
 
+/// 一次最多出几张(anima / krea 的 `batch_size`)。
+/// **和服务端同一个数**:`anima_provider` / `krea_provider` 里都是
+/// `max(1, min(4, ...))`,这边放宽没用,服务端照样掐。
+const kBatchMax = 4;
+
 /// 各档位推荐采样参数(切档时自动套用;对齐 web ANIMA_TIER_DEFAULTS)。
 ///
 /// 非蒸馏两档 36 步:官方模型卡给的是 30-50 步 / CFG 4-5。这里长期停在 28
@@ -804,6 +809,7 @@ class GenParams {
     this.kreaSampler = 'er_sde',
     this.kreaScheduler = 'simple',
     this.hires = const HiresConfig(),
+    this.batchCount = 1,
   });
 
   final String model;
@@ -835,6 +841,31 @@ class GenParams {
 
   /// 重绘放大(anima 专属模块;非 anima 或模块隐藏时由剥离层置 enabled=false)。
   final HiresConfig hires;
+
+  /// 一次采样出几张(anima / krea 的 `batch_size`)。**一条任务出 N 张**,
+  /// 不是 N 条任务:同一次采样,所以进度共用、失败整批失败、取消整批取消。
+  /// 真正会发出去的值见 [effectiveBatch] —— 这里存的只是用户的选择。
+  final int batchCount;
+
+  /// 这一单**实际**会出几张。规则跟服务端对齐,不是界面上选什么就是什么:
+  ///  - 只有 anima / krea 走 ComfyUI 的 `batch_size`,NAI 那条路没有这回事;
+  ///  - anima 开着重绘放大时服务端**强制单张**(二段要跑 N × scale² 的量,
+  ///    显存吃不消,见 `anima_provider` 里 `n28["batch_size"] = 1`)。
+  ///
+  /// 界面和载荷都走这一个口径 —— web 早期是服务端静默覆盖,用户选 4 出 1 张
+  /// 且没有任何提示,那是最难查的一类「不一致」。
+  int get effectiveBatch => switch (providerOfModel(model)) {
+    GenProvider.anima =>
+      hires.enabled ? 1 : batchCount.clamp(1, kBatchMax),
+    GenProvider.krea => batchCount.clamp(1, kBatchMax),
+    GenProvider.nai => 1,
+  };
+
+  /// 这个模型支不支持一次出多张(决定界面上那颗「张数」显不显示)。
+  bool get batchable => switch (providerOfModel(model)) {
+    GenProvider.anima || GenProvider.krea => true,
+    GenProvider.nai => false,
+  };
 
   /// 当前模型实际生效的那份步数(三套互不干扰:切模型不会把对方的值带过去)。
   int get activeSteps => switch (providerOfModel(model)) {
@@ -875,6 +906,7 @@ class GenParams {
     String? kreaSampler,
     String? kreaScheduler,
     HiresConfig? hires,
+    int? batchCount,
   }) {
     return GenParams(
       model: model ?? this.model,
@@ -898,6 +930,7 @@ class GenParams {
       kreaSampler: kreaSampler ?? this.kreaSampler,
       kreaScheduler: kreaScheduler ?? this.kreaScheduler,
       hires: hires ?? this.hires,
+      batchCount: batchCount ?? this.batchCount,
     );
   }
 }

@@ -492,7 +492,8 @@ class GenerationNotifier extends Notifier<GenPool> {
     ({Map<String, dynamic> body, int seed})? built;
 
     Future<void> finish(Uint8List bytes, int seed) async {
-      await _storeResult(s, bytes, seed, jobId: jobId);
+      // NAI 直连一单一张:batch 是 anima / krea 走 ComfyUI 才有的东西
+      await _storeResult(s, [bytes], seed, jobId: jobId);
       _recordKeyGen(s); // 直连不经过后端,统计在本机落账(bot 由服务端记)
       unawaited(ref.read(anlasProvider.notifier).refresh()); // 点数已扣
       // 循环期间通知由循环控制器统一收尾(保持挂机进度连续、只弹一条汇总)
@@ -1022,11 +1023,64 @@ class GenerationNotifier extends Notifier<GenPool> {
 
   /// 结果入库(直连/bot 共用):局部重绘先把结果贴回原图,
   /// 重绘任务统一打「重绘」角标;快照原样入库供「重新生成」复现。
+  /// 一次采样的产出入库。[batch] 是这一批的全部 PNG —— anima / krea 的
+  /// `batch_size` 让一次采样出 N 张(NAI 那条路恒为 1)。
+  ///
+  /// N 张各自成为一条图库记录,但**只有第 0 张可能抢画布**:
+  /// ① 它是「主」的那张(seed 直接对应它);
+  /// ② 后面几张跟着抢焦点的话,画布会在入库过程中连闪 N 次。
   Future<void> _storeResult(
+    GenerateState s,
+    List<Uint8List> batch,
+    int seed, {
+    required String jobId,
+  }) async {
+    if (batch.isEmpty) return;
+    // 画布正跟着这条 → 出图后把画布交给成图;跟着别的(或在看历史)→ 只前插、
+    // **不夺焦点**。并行之后这条最要紧:后台某一张出完就把你正看着的画面换掉,
+    // 比不显示还糟。
+    //
+    // ⚠ 这一问必须**赶在 _remove 之前**:移掉任务卡会让 selectedId 跟着变,
+    //   之后再问就永远是 false 了。原先只入一张时两句挨着,顺序不成问题;
+    //   现在中间隔着一个循环,得把它拎到最前面。
+    final followed = state.selectedId == jobId;
+    _remove(jobId);
+    for (var i = 0; i < batch.length; i++) {
+      await _storeOne(
+        s,
+        batch[i],
+        seed,
+        batchIndex: batch.length > 1 ? i : -1,
+        select: followed && i == 0,
+      );
+    }
+    // 库来源的 vibe 回写「最近使用」(fire-and-forget,失败无害)
+    final usedVibeIds = {
+      for (final v in s.vibes)
+        if (v.enabled && v.sourceId != null) v.sourceId!,
+    };
+    if (usedVibeIds.isNotEmpty) {
+      unawaited(ref.read(vibeLibraryProvider.notifier).markUsed(usedVibeIds));
+    }
+    // 库来源的角色参考回写「最近使用」(内容哈希即库条目 id)
+    final usedCharRefIds = {
+      for (final r in s.charRefs)
+        if (r.enabled && r.imageHash != null) r.imageHash!,
+    };
+    if (usedCharRefIds.isNotEmpty) {
+      unawaited(
+        ref.read(charLibraryProvider.notifier).markUsed(usedCharRefIds),
+      );
+    }
+  }
+
+  /// 批里的一张入库(重绘贴回 + 落盘)。[batchIndex] < 0 = 不是批次产物。
+  Future<void> _storeOne(
     GenerateState s,
     Uint8List bytes,
     int seed, {
-    required String jobId,
+    required int batchIndex,
+    required bool select,
   }) async {
     final job = s.inpaint;
     var out = bytes;
@@ -1052,11 +1106,6 @@ class GenerationNotifier extends Notifier<GenPool> {
         logd('[gen] pasteBack failed: $e'); // 贴回失败退化为子图入库
       }
     }
-    // 画布正跟着这条 → 出图后把画布交给成图;跟着别的(或在看历史)→ 只前插、
-    // **不夺焦点**。并行之后这条最要紧:后台某一张出完就把你正看着的画面换掉,
-    // 比不显示还糟。
-    final followed = state.selectedId == jobId;
-    _remove(jobId);
     ref
         .read(galleryProvider.notifier)
         .addResult(
@@ -1064,28 +1113,11 @@ class GenerationNotifier extends Notifier<GenPool> {
           width: w,
           height: h,
           seed: seed,
+          batchIndex: batchIndex,
           badge: job != null ? ResultBadge.inpaint : ResultBadge.none,
           input: s, // 参数快照,供图库「重新生成」按本图参数复现
-          select: followed,
+          select: select,
         );
-    // 库来源的 vibe 回写「最近使用」(fire-and-forget,失败无害)
-    final usedVibeIds = {
-      for (final v in s.vibes)
-        if (v.enabled && v.sourceId != null) v.sourceId!,
-    };
-    if (usedVibeIds.isNotEmpty) {
-      unawaited(ref.read(vibeLibraryProvider.notifier).markUsed(usedVibeIds));
-    }
-    // 库来源的角色参考回写「最近使用」(内容哈希即库条目 id)
-    final usedCharRefIds = {
-      for (final r in s.charRefs)
-        if (r.enabled && r.imageHash != null) r.imageHash!,
-    };
-    if (usedCharRefIds.isNotEmpty) {
-      unawaited(
-        ref.read(charLibraryProvider.notifier).markUsed(usedCharRefIds),
-      );
-    }
   }
 
   /// Krea 风格参考:每张启用的下采样成 JPEG base64。非 krea 模型返回空

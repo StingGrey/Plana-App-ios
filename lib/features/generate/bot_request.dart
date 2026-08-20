@@ -151,6 +151,9 @@ Map<String, dynamic> buildBotParams(
       'scheduler': p.animaScheduler,
       'model': tier,
       'turbo': tier == 'turbo',
+      // 一次出几张。发 `effectiveBatch` 而不是用户选的那个数:开着重绘放大时
+      // 服务端会强制单张,这里跟着发 1,免得界面上摆着「×4」而实际只出一张。
+      'batch_size': p.effectiveBatch,
       if (loras.isNotEmpty) 'loras': loras,
       if (hires.enabled)
         'hires': {
@@ -171,6 +174,7 @@ Map<String, dynamic> buildBotParams(
       'sampler': p.kreaSampler,
       'scheduler': p.kreaScheduler,
       'model': kreaTierOf(p.model),
+      'batch_size': p.effectiveBatch,
       if (loras.isNotEmpty) 'loras': loras,
       // 风格参考:raw 档不拦(用户想试就让他试),服务端会回一条 warning ——
       // 卡片上也已经就地提示过了。

@@ -78,6 +78,8 @@ class GalleryStore {
               seed: (e['seed'] as num?)?.toInt() ?? 0,
               badge: badge,
               createdAt: (e['t'] as num?)?.toInt() ?? 0,
+              // 老索引没这键 → -1(不是批次产物)
+              batchIndex: (e['bi'] as num?)?.toInt() ?? -1,
               hasInput: e['hasInput'] == true,
             ),
           );
@@ -282,6 +284,9 @@ class GalleryStore {
                 'seed': r.seed,
                 'badge': r.badge.name,
                 't': r.createdAt,
+                // 批次内位置。只有批次产物才写,单张不占位 ——
+                // 这张索引每次出图都要整份重写,能省一个键是一个。
+                if (r.batchIndex >= 0) 'bi': r.batchIndex,
                 'hasInput': r.hasInput,
               },
           ],

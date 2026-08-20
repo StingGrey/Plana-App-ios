@@ -118,13 +118,16 @@ Future<Uint8List> generateTagPreview(
     if (!sub.success || sub.taskId == null) {
       throw BackendException(sub.message.isEmpty ? '任务提交失败' : sub.message);
     }
-    return streamBotTask(
+    // 预览恒是单张:上面那份 params 是现搭的(`const GenParams()`),
+    // batchCount 就是默认的 1,不会继承创作页里选的张数。
+    final out = await streamBotTask(
       baseUrl: base,
       sessionId: session.sessionId,
       taskId: sub.taskId!,
       client: client,
       onProgress: (step, total, _, _) => onStep?.call(step, total),
     );
+    return out.first;
   }
 
   final token = await ref.read(tokenProvider.future);

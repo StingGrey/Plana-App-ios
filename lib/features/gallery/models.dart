@@ -39,6 +39,7 @@ class ResultImage {
     required this.seed,
     this.badge = ResultBadge.none,
     this.createdAt = 0,
+    this.batchIndex = -1,
     this.bytes,
     this.input,
     bool? hasInput,
@@ -53,6 +54,16 @@ class ResultImage {
   /// 生成时刻(ms epoch)。0 = 未知(升级前的老索引由文件 mtime 回填,
   /// 回填也失败才会留 0,展开页归入「更早」段)。
   final int createdAt;
+
+  /// 这张在批次里的位置。-1 = 不是批次产物(单张生成 / 老记录)。
+  ///
+  /// **和 seed、以及参数快照里的 batchCount 三个凑齐才能复现这一张。**
+  /// 一批 N 张共用同一个 seed,ComfyUI 按批次布局从同一个生成器切噪声,
+  /// 光有 seed 永远只能复现第 0 张;服务端靠 `LatentFromBatch` 按 index 还原。
+  /// ⚠ 出图那一刻没存下来的话,那张图**以后永远复现不出来**,事后补不了 ——
+  /// 所以哪怕 app 目前还没有「按 index 复现」的入口(服务端也还没把
+  /// batch_index 接到 HTTP 层),这个字段也必须从第一天就开始存。
+  final int batchIndex;
 
   /// PNG 字节(内存缓存);null 时按需从盘读,读不到才是真无像素。
   final Uint8List? bytes;
@@ -75,6 +86,7 @@ class ResultImage {
           seed: seed,
           badge: badge,
           createdAt: createdAt,
+          batchIndex: batchIndex,
           hasInput: hasInput,
         );
 
@@ -86,6 +98,7 @@ class ResultImage {
     seed: seed,
     badge: badge,
     createdAt: t,
+    batchIndex: batchIndex,
     bytes: bytes,
     input: input,
     hasInput: hasInput,

@@ -133,6 +133,10 @@ class GalleryNotifier extends Notifier<GalleryState> {
     ResultBadge badge = ResultBadge.none,
     GenerateState? input,
 
+    /// 这张在批次里的位置(-1 = 不是批次产物)。与 seed 一起决定这张图
+    /// 将来还能不能复现,见 [ResultImage.batchIndex]。
+    int batchIndex = -1,
+
     /// 是否顺带选中新图。并行出图时只有「画布正跟着的那条」才该抢选中 ——
     /// 后台某一条出完就把用户正看的图换掉,是并行最容易踩的坑。
     bool select = true,
@@ -144,6 +148,7 @@ class GalleryNotifier extends Notifier<GalleryState> {
       seed: seed,
       badge: badge,
       createdAt: DateTime.now().millisecondsSinceEpoch,
+      batchIndex: batchIndex,
       bytes: bytes,
       input: input,
     );

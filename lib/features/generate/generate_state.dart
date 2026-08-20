@@ -704,6 +704,12 @@ class GenerateNotifier extends Notifier<GenerateState> {
   void setLoop(LoopCount l) =>
       state = state.copyWith(params: state.params.copyWith(loop: l));
 
+  /// 一次出几张(anima / krea)。夹在服务端上限内 —— 那边也会夹一遍,
+  /// 但界面上显示的必须是真会出的数。
+  void setBatchCount(int n) => state = state.copyWith(
+    params: state.params.copyWith(batchCount: n.clamp(1, kBatchMax)),
+  );
+
   // ---- 长按拖动排序(onReorderItem 语义:newIndex 已按移除后调整)----
 
   List<T> _reordered<T>(List<T> src, int oldIndex, int newIndex) {

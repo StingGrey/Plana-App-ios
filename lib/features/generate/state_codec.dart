@@ -151,6 +151,7 @@ Future<EncodedState> encodeGenerateState(
       'kreaCfg': p.kreaCfg,
       'kreaSampler': p.kreaSampler,
       'kreaScheduler': p.kreaScheduler,
+      'batchCount': p.batchCount,
       // 整块常驻(不只在 enabled 时写):同一份 codec 也在存创作页工作区,
       // 只存开着的那份,用户关掉开关重启后调好的倍率/强度就没了。
       'hires': {
@@ -391,6 +392,13 @@ Future<GenerateState> decodeGenerateState(
       kreaScheduler: e['kreaScheduler'] is String
           ? e['kreaScheduler'] as String
           : params.kreaScheduler,
+      // 老记录没这键 → 1 张(与此前恒为单张的行为一致)。夹一遍范围:
+      // 服务端上限降下来的话,存档里那个 4 不该把新的限制绕过去。
+      batchCount:
+          ((e['batchCount'] as num?)?.toInt() ?? params.batchCount).clamp(
+            1,
+            kBatchMax,
+          ),
       hires: hires,
     );
   }

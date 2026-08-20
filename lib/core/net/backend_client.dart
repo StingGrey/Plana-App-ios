@@ -18,6 +18,28 @@ class BackendException implements Exception {
   String toString() => message;
 }
 
+/// 从任务结果里取**这一批的全部图**(base64)。
+///
+/// 契约是加法式的:`imageBase64` 永远是第 0 张,batch_size>1 时**额外**多出
+/// `images`(含第 0 张)与 `count`。所以顺序是「有 images 用 images,
+/// 没有就用 imageBase64 凑一张」—— 两条都空才是真没图。
+///
+/// WS 的 `task_update` 和轮询的 `GET /api/bot/task/{id}` 用的是同一份结构,
+/// 所以这段拆出来共用:两处各写一遍迟早只改对一处。
+List<String> botResultImages(Object? result) {
+  if (result is! Map) return const [];
+  final all = result['images'];
+  if (all is List) {
+    final out = [
+      for (final v in all)
+        if (v is String && v.isNotEmpty) v,
+    ];
+    if (out.isNotEmpty) return out;
+  }
+  final one = result['imageBase64'];
+  return (one is String && one.isNotEmpty) ? [one] : const [];
+}
+
 /// bot 模式一次任务查询的快照(`GET /api/bot/task/{id}`)。
 class BotTask {
   BotTask({
@@ -26,6 +48,7 @@ class BotTask {
     this.step = 0,
     this.totalSteps = 0,
     this.imageBase64,
+    this.images = const [],
     this.error,
     this.warning,
     this.queuePosition = 0,
@@ -35,7 +58,12 @@ class BotTask {
   final String? status; // queued/starting/generating/completed/failed/cancelled
   final int step;
   final int totalSteps;
-  final String? imageBase64; // 完成时的结果图
+  final String? imageBase64; // 完成时的结果图(batch 时是第 0 张)
+
+  /// batch_size>1 时的**全部**图。服务端刻意保留 `imageBase64` 不动、只在
+  /// count>1 时**额外**给 `images` —— 老 app 只认前者,新旧都能用。
+  /// 单张时这里是空的,别拿它当唯一来源。
+  final List<String> images;
   final String? error;
 
   /// 非致命提醒:图照常出,但有东西没生效(目前只有 LoRA 超上限被丢弃)。
@@ -57,6 +85,7 @@ class BotTask {
       step: (j['step'] as num?)?.toInt() ?? 0,
       totalSteps: (j['total_steps'] as num?)?.toInt() ?? 0,
       imageBase64: img,
+      images: botResultImages(result),
       error: j['error'] as String?,
       warning: j['warning'] as String?,
       queuePosition: (j['queue_position'] as num?)?.toInt() ?? 0,
