@@ -1221,23 +1221,39 @@ class BackendClient {
   /// 超时留 90 秒而不是默认那 15 秒:一来下单本身要跟平台 OpenAPI 打个来回,
   /// 二来服务端万一还是老的阻塞版,这段能盖住一部分;真超时了调用方也会回去
   /// 问状态,不会误报成「没开成」。
+  /// [count] 一次开几台(服务端并发建,所以耗时和开一台差不多)。已经有机器
+  /// 时是**加开**到 N+count,超过 `IMG_MAX_RENTALS` 会被服务端顶回来
+  /// (`ok:false` + 一句「最多同时租 N 台」),那时它一台都不建。
   Future<Map<String, dynamic>> rentalStart(
     String sessionId, {
     int? idleTimeout,
     String tier = '',
+    int count = 1,
   }) => _postJson(
     '/rental/start',
-    {'idle_timeout': ?idleTimeout, if (tier.isNotEmpty) 'tier': tier},
+    {
+      'idle_timeout': ?idleTimeout,
+      if (tier.isNotEmpty) 'tier': tier,
+      if (count > 1) 'count': count,
+    },
     sessionId,
     const Duration(seconds: 90),
   );
 
   /// 停机结账(先 purge 实例上的内容再销毁)。返回 seconds / minutes / price。
   ///
-  /// ⚠ 不带 `instance_id` = 这个账号名下**全部**停止(服务端 2026-08-19 起
-  /// 支持一人多机)。app 没有多机界面,这里就是「全部关掉」。
-  Future<Map<String, dynamic>> rentalStop(String sessionId) =>
-      _postJson('/rental/stop', const {}, sessionId, const Duration(minutes: 3));
+  /// ⚠ [instanceId] 给了只停那一台;**不给 = 这个账号名下全部停止**
+  /// (服务端 2026-08-19 起支持一人多机)。漏传那个 id 就是替用户做了一个
+  /// 他没授权的决定,所以界面上这两件事必须是两个说法。
+  Future<Map<String, dynamic>> rentalStop(
+    String sessionId, {
+    String instanceId = '',
+  }) => _postJson(
+    '/rental/stop',
+    {'instance_id': instanceId},
+    sessionId,
+    const Duration(minutes: 3),
+  );
 
   /// 改空闲自动关机时长(秒,0 = 不自动关)。运行中即时生效。
   Future<Map<String, dynamic>> rentalSetIdle(

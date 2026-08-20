@@ -405,11 +405,22 @@ class RentalCard extends ConsumerWidget {
 
 
 /// 未启动:机型 + 空闲关机 + 启动。
-class _RentalConfig extends ConsumerWidget {
+class _RentalConfig extends ConsumerStatefulWidget {
   const _RentalConfig();
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_RentalConfig> createState() => _RentalConfigState();
+}
+
+class _RentalConfigState extends ConsumerState<_RentalConfig> {
+  /// 这一单开几台。**刻意不进偏好**:档位是「我惯用哪种卡」,台数是
+  /// 「这회要几台」—— 后者存下来的话,下次打开面板会顶着上次那个 4,
+  /// 一按就是四台的钱,而按之前界面上没有任何东西提醒你它还记着。
+  /// 每次重开面板都从 1 起。
+  int _count = 1;
+
+  @override
+  Widget build(BuildContext context) {
     final scheme = context.scheme;
     final s = ref.watch(gpuRentalProvider);
     final prefs = ref.watch(rentalPrefsProvider).value ?? const RentalPrefs();
@@ -424,6 +435,9 @@ class _RentalConfig extends ConsumerWidget {
     final pickable = s.tiers.length > 1;
     final rate = tier?.ratePerHour ?? s.ratePerHour;
     final spec = tier?.spec ?? s.spec;
+    // 上限是服务端下发的,status 到货前兜底是 1 —— 夹一遍,免得停在一个
+    // 已经不合法的台数上(界面写 4、服务端只肯给 2)
+    final count = _count.clamp(1, s.maxCount);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,
@@ -514,10 +528,36 @@ class _RentalConfig extends ConsumerWidget {
             ),
           ),
         ),
+        // 一次开几台。服务端**并发建**,所以开 4 台和开 1 台等的时间差不多;
+        // 但钱是 4 份 —— 所以按钮上把台数和总价一起写出来,别让人按完才发现。
+        if (s.maxCount > 1) ...[
+          Divider(height: 15, color: scheme.outlineVariant.withValues(alpha: .5)),
+          Row(
+            children: [
+              Icon(Icons.dns_outlined, size: 17, color: scheme.onSurfaceVariant),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Text(
+                  '台数',
+                  style: context.texts.bodyMedium!.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              _CountPicker(
+                value: count,
+                max: s.maxCount,
+                onPick: (v) {
+                  Haptics.selection();
+                  setState(() => _count = v);
+                },
+              ),
+            ],
+          ),
+        ],
         const SizedBox(height: 12),
         // 开机/首图的等待时长不写在这:按下去之后的运行卡会实时说(见
         // _RentalRunning 的启动中那段),提前铺两行反而把「启动实例」推下去。
-        // 单价在上面机型那行右侧,不重复。
         FilledButton.icon(
           onPressed: s.busy
               ? null
@@ -526,11 +566,15 @@ class _RentalConfig extends ConsumerWidget {
                   unawaited(
                     ref
                         .read(gpuRentalProvider.notifier)
-                        .start(idle, tier: tier?.key ?? ''),
+                        .start(idle, tier: tier?.key ?? '', count: count),
                   );
                 },
           icon: const Icon(Icons.play_arrow_rounded, size: 20),
-          label: const Text('启动实例'),
+          label: Text(
+            count > 1
+                ? '启动 $count 台 · ${(rate * count).toStringAsFixed(2)} 元/时'
+                : '启动实例',
+          ),
           style: FilledButton.styleFrom(
             minimumSize: const Size(double.infinity, 44),
             shape: const StadiumBorder(),
@@ -580,6 +624,85 @@ class _RentalConfig extends ConsumerWidget {
     if (picked != null) {
       await ref.read(gpuRentalProvider.notifier).setIdle(picked);
     }
+  }
+}
+
+/// 台数分段选择(1..max)。方角,与创作页那排张数同一种说法。
+class _CountPicker extends StatelessWidget {
+  const _CountPicker({
+    required this.value,
+    required this.max,
+    required this.onPick,
+  });
+
+  final int value;
+  final int max;
+  final ValueChanged<int> onPick;
+
+  static const _h = 30.0;
+  static const _segW = 34.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return Container(
+      height: _h,
+      width: _segW * max + 6,
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          AnimatedAlign(
+            duration: Motion.medium,
+            curve: Motion.emphasized,
+            // -1..1 的对齐值:第 i 段的中心
+            alignment: Alignment(
+              max == 1 ? 0 : (value - 1) / (max - 1) * 2 - 1,
+              0,
+            ),
+            child: Container(
+              width: _segW,
+              height: _h - 6,
+              decoration: BoxDecoration(
+                color: scheme.primary,
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+          ),
+          Row(
+            children: [
+              for (var n = 1; n <= max; n++)
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => onPick(n),
+                  child: SizedBox(
+                    width: _segW,
+                    height: _h - 6,
+                    child: Center(
+                      child: Text(
+                        '$n',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: n == value
+                              ? FontWeight.w700
+                              : FontWeight.w600,
+                          color: n == value
+                              ? scheme.onPrimary
+                              : scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -684,8 +807,11 @@ class _RentalRunning extends ConsumerWidget {
     final scheme = context.scheme;
     final s = ref.watch(gpuRentalProvider);
     final now = ref.watch(_tickProvider).value ?? _now();
-    final booting = s.status == RentalStatus.creating;
     final ending = s.status == RentalStatus.ending;
+    final multi = s.machines.length > 1;
+    // 「启动中」这句只在**一台都还没就绪**时说。多台时先起来的那几台已经在
+    // 出图、在收钱了,整卡挂着「启动中」既不准也让人不敢用。
+    final booting = !s.billing && s.status == RentalStatus.creating;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,
@@ -707,11 +833,9 @@ class _RentalRunning extends ConsumerWidget {
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                // 档位名(「抢占 4090」)比卡名信息量大:同是 5090 还分独享和
-                // 抢占,而后者随时可能被平台收走 —— 那是这张卡上最该一眼看见的事。
-                // 多台时把台数缀在后面:app 不能加开,但 web 能,同一个账号
-                // 这边不报出来的话,下面那颗「关机」会悄悄多关几台。
-                s.count > 1 ? '${s.runningLabel} · ${s.count} 台' : s.runningLabel,
+                // 一台就报它的档位名(比卡名信息量大:同是 5090 还分独享和
+                // 抢占);多台各不相同,这里只报台数,明细在下面逐台列。
+                multi ? '${s.count} 台' : s.runningLabel,
                 style: context.texts.labelSmall!.copyWith(
                   color: scheme.onSurfaceVariant,
                 ),
@@ -762,6 +886,20 @@ class _RentalRunning extends ConsumerWidget {
               _stat(context, '空闲关机', idleLabel(s.idleSeconds)),
             ],
           ),
+        // 逐台明细。只在多台时列 —— 一台的话上面那行已经把它说完了,
+        // 再抄一遍是纯噪音。每台自带关机键:这个端点不带 instance_id 就是
+        // 全停,「只停这一台」必须有自己的入口,否则就是替人做没授权的决定。
+        if (multi) ...[
+          const SizedBox(height: 10),
+          for (final m in s.machines)
+            _MachineRow(
+              machine: m,
+              fetchedAtMs: s.fetchedAtMs,
+              now: now,
+              busy: s.busy || ending,
+              onStop: () => _stopOne(context, ref, s, m, now),
+            ),
+        ],
         if (s.error.isNotEmpty) ...[
           const SizedBox(height: 6),
           Text(
@@ -770,11 +908,17 @@ class _RentalRunning extends ConsumerWidget {
           ),
         ],
         const SizedBox(height: 10),
+        // 加开。服务端 start 在已有机器时就是「加开到 N+count」,所以这颗按钮
+        // 和配置卡上那颗「启动实例」走的是同一个端点。
+        if (s.room > 0 && !ending) ...[
+          const _AddMoreButton(),
+          const SizedBox(height: 8),
+        ],
         OutlinedButton.icon(
           onPressed: (ending || s.busy)
               ? null
               : () async {
-                  final ok = await _confirmStop(context, s, now);
+                  final ok = await _confirmStopAll(context, s, now);
                   if (!ok || !context.mounted) return;
                   Haptics.medium();
                   final r = await ref.read(gpuRentalProvider.notifier).stop();
@@ -796,7 +940,7 @@ class _RentalRunning extends ConsumerWidget {
           label: Text(
             ending
                 ? '关机中…'
-                : (s.count > 1 ? '全部关机并结账(${s.count} 台)' : '关机并结账'),
+                : (multi ? '全部关机并结账(${s.count} 台)' : '关机并结账'),
           ),
           style: OutlinedButton.styleFrom(
             minimumSize: const Size(double.infinity, 42),
@@ -809,22 +953,65 @@ class _RentalRunning extends ConsumerWidget {
     );
   }
 
-  Future<bool> _confirmStop(
+  /// 只停一台。同一个端点,带上 instance_id 就只关那一台。
+  Future<void> _stopOne(
+    BuildContext context,
+    WidgetRef ref,
+    RentalState s,
+    RentalMachine m,
+    int now,
+  ) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('关掉「${m.label}」'),
+        content: Text(
+          '这一台结算 ${fmtUptime(m.elapsedAt(s.fetchedAtMs, now))}(${fmtYuan(m.priceAt(s.fetchedAtMs, now))})。'
+          '其余 ${s.count - 1} 台继续跑。\n\n'
+          '实例会被销毁而不是挂起,机器上的内容一并清除。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('关掉这台'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+    Haptics.medium();
+    final r = await ref
+        .read(gpuRentalProvider.notifier)
+        .stop(instanceId: m.instanceId);
+    if (!context.mounted) return;
+    final yuan = (r?['price'] as num?)?.toDouble() ?? 0;
+    hintSnack(
+      context,
+      r == null ? '关机失败,稍后再试' : '已关掉 ${m.label} · ${fmtYuan(yuan)}',
+      icon: r == null ? Icons.error_outline : Icons.check_circle_outline,
+    );
+  }
+
+  Future<bool> _confirmStopAll(
     BuildContext context,
     RentalState s,
     int now,
   ) async {
+    final multi = s.count > 1;
     final r = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text(s.count > 1 ? '全部关机并结账' : '关机并结账'),
+        title: Text(multi ? '全部关机并结账' : '关机并结账'),
         // 「停止 = 销毁」这件事必须说 —— 用户以为是暂停,回来发现要重开机
         content: Text(
           // 多台时先把「关的是几台」摆在最前面:这个端点没有「只关这一台」
           // 的用法,而在 web 上加开的那几台用户在这个界面上根本看不见。
-          '${s.count > 1 ? '这会关掉你名下全部 ${s.count} 台。\n\n' : ''}'
-          '本次将结算 ${fmtUptime(s.elapsedAt(now))}'
-          '(${fmtYuan(s.priceAt(now))})。\n\n'
+          '${multi ? '这会关掉你名下全部 ${s.count} 台。\n\n' : ''}'
+          '本次将结算 ${fmtUptime(s.elapsedAt(now))}(${fmtYuan(s.priceAt(now))})。\n\n'
           '实例会被销毁而不是挂起,机器上的内容一并清除;'
           '下次使用要重新开机(约 ${s.bootHintS} 秒)。',
         ),
@@ -862,6 +1049,106 @@ class _RentalRunning extends ConsumerWidget {
         const SizedBox(height: 1),
         Text(value, style: mono(context, size: 13, weight: FontWeight.w700)),
       ],
+    );
+  }
+}
+
+/// 逐台一行:档位名 + 自己的读数 + 只关这一台。
+class _MachineRow extends StatelessWidget {
+  const _MachineRow({
+    required this.machine,
+    required this.fetchedAtMs,
+    required this.now,
+    required this.busy,
+    required this.onStop,
+  });
+
+  final RentalMachine machine;
+  final int fetchedAtMs;
+  final int now;
+  final bool busy;
+  final VoidCallback onStop;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    final m = machine;
+    final ready = m.status == RentalStatus.ready;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: Row(
+        children: [
+          Icon(
+            ready ? Icons.circle : Icons.more_horiz,
+            size: ready ? 7 : 14,
+            color: ready ? scheme.primary : scheme.outline,
+          ),
+          SizedBox(width: ready ? 10 : 5),
+          Expanded(
+            child: Text(
+              m.label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: context.texts.labelMedium!.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          Text(
+            // 没就绪的那台没有读数(服务端 billed_seconds 在 ready 之前恒为 0),
+            // 摆一串 00:00 · ¥0.00 会看着像「这台白跑」
+            ready ? '${fmtUptime(m.elapsedAt(fetchedAtMs, now))} · ${fmtYuan(m.priceAt(fetchedAtMs, now))}' : '启动中',
+            style: ready
+                ? mono(context, size: 12, color: scheme.onSurfaceVariant)
+                : context.texts.labelSmall!.copyWith(color: scheme.outline),
+          ),
+          IconButton(
+            onPressed: busy ? null : onStop,
+            tooltip: '只关这一台',
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+            icon: Icon(Icons.power_settings_new, size: 16, color: scheme.error),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 加开一台。用的是偏好里存的那一档 —— 运行卡上没有档位选择器,
+/// 所以档位名写进按钮,别让人盲按。
+class _AddMoreButton extends ConsumerWidget {
+  const _AddMoreButton();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(gpuRentalProvider);
+    final prefs = ref.watch(rentalPrefsProvider).value ?? const RentalPrefs();
+    final tier = s.resolveTier(prefs.tier);
+    final name = tier?.label ?? s.spec.name;
+    return OutlinedButton.icon(
+      onPressed: s.busy
+          ? null
+          : () {
+              Haptics.medium();
+              unawaited(
+                ref
+                    .read(gpuRentalProvider.notifier)
+                    .start(s.idleSeconds, tier: tier?.key ?? '', addMore: true),
+              );
+            },
+      icon: const Icon(Icons.add, size: 18),
+      label: Text(
+        '再开一台 · $name',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      style: OutlinedButton.styleFrom(
+        minimumSize: const Size(double.infinity, 42),
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        shape: const StadiumBorder(),
+      ),
     );
   }
 }

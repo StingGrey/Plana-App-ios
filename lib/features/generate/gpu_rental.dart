@@ -17,10 +17,10 @@ import '../../core/store/prefs_store.dart';
 ///
 ///  - 租来的机器**同时服务 Anima 与 Krea 2** —— 所以通道是这两家模型共用的
 ///    一份设置,不是每个型号各选一份;
-///  - 服务端 2026-08-19 起支持**一人多机**(上限 4 台)与**三档机型**
-///    (独享 5090 / 抢占 5090 / 抢占 4090)。app 只做「选一档、开一台」,
-///    加开是 web 那边的入口;但状态里如实带着 `count`,因为同一个账号在
-///    web 开的机器这边照样在计费、也照样会被这边的「关机」一起关掉;
+///  - 服务端 2026-08-19 起支持**一人多机**(上限 `IMG_MAX_RENTALS`,现为 4)
+///    与**三档机型**(独享 5090 / 抢占 5090 / 抢占 4090)。开机时可以一次开
+///    N 台,在跑时还能再加开;停机不带 `instance_id` 就是**全停**,所以
+///    「只停这一台」和「全部停止」在界面上必须是两个说法;
 ///  - **计费从「建实例」起算**,开机与首张图的加载时间都算在租用时长里
 ///    (租的是机器的使用权,不是从打着火才开始计时)。**但没起来过就一分不收**;
 ///  - 中途失联只计到最后一次探通(服务端 `bill_to`),发现前的空转不收;
@@ -157,9 +157,9 @@ class RentalTier {
 const kIdleChoicesFallback = <int>[180, 600, 1800, 0];
 const kIdleDefaultFallback = 600;
 const kMaxUptimeFallback = 4 * 3600;
-/// 同时最多几台(服务端 `IMG_MAX_RENTALS`)。app 自己不提供加开入口,这个数
-/// 只用来解释「你已经有 N 台在跑」—— 多机是 web 那边开出来的。
-/// 兜底写 1 而不是 4:没拿到 status 时按最保守的假设显示。
+/// 同时最多几台(服务端 `IMG_MAX_RENTALS`,现为 4)。
+/// 兜底写 1 而不是 4:没拿到 status 时按最保守的假设显示 —— 台数选择器
+/// 据此决定给不给选,宁可少给一个选项,也不要凭猜下一单四台的钱。
 const kMaxCountFallback = 1;
 // 只在首帧(status 还没回来)用得上。真实售价一律以服务端
 // config.IMG_PRICE_PER_HOUR 为准,改价改那边,这里跟着对齐就行 —— 对不上时
@@ -186,6 +186,83 @@ RentalStatus _parseStatus(Object? v) => switch (v) {
   'failed' => RentalStatus.failed,
   _ => RentalStatus.none,
 };
+
+/// 在跑的一台(status 的 `machines[i]`)。
+///
+/// 一人多机之后,机型/档位/读数**逐台**才有:合并视图 `_agg()` 里只剩几个
+/// 汇总数(elapsed 取最早那台的、price 与 rate 是和),连 `spec` 都没有。
+class RentalMachine {
+  const RentalMachine({
+    required this.instanceId,
+    this.status = RentalStatus.none,
+    this.tierKey = '',
+    this.tierLabel = '',
+    this.spot = false,
+    this.spec = const RentalSpec(),
+    this.ratePerHour = kRateFallback,
+    this.elapsedS = 0,
+    this.price = 0,
+    this.jobsDone = 0,
+    this.jobsFailed = 0,
+    this.note = '',
+  });
+
+  final String instanceId;
+  final RentalStatus status;
+  final String tierKey;
+  final String tierLabel;
+  final bool spot;
+  final RentalSpec spec;
+  final double ratePerHour;
+  final int elapsedS;
+  final double price;
+  final int jobsDone;
+  final int jobsFailed;
+  final String note;
+
+  /// 这台叫什么。档位名(「抢占 4090」)比卡名信息量大 —— 同是 5090 还分
+  /// 独享和抢占,而后者随时可能被平台收走。老服务端没有档位,退到卡名。
+  String get label => tierLabel.isNotEmpty ? tierLabel : spec.name;
+
+  /// 就绪之前恒为 0(服务端 `billed_seconds` 在 ready 之前不计),
+  /// 所以插值也只在就绪之后往前走。
+  int elapsedAt(int fetchedAtMs, int nowMs) =>
+      elapsedS + _rentalDrift(status == RentalStatus.ready, fetchedAtMs, nowMs);
+
+  double priceAt(int fetchedAtMs, int nowMs) =>
+      price +
+      _rentalDrift(status == RentalStatus.ready, fetchedAtMs, nowMs) /
+          3600.0 *
+          ratePerHour;
+
+  static RentalMachine? fromJson(Object? j) {
+    if (j is! Map) return null;
+    final iid = j['instance_id'];
+    if (iid is! String || iid.isEmpty) return null;
+    return RentalMachine(
+      instanceId: iid,
+      status: _parseStatus(j['state']),
+      tierKey: j['tier'] as String? ?? '',
+      tierLabel: j['tier_label'] as String? ?? '',
+      spot: j['spot'] == true,
+      spec: RentalSpec.fromJson(j['spec']) ?? const RentalSpec(),
+      ratePerHour: (j['rate_per_hour'] as num?)?.toDouble() ?? kRateFallback,
+      elapsedS: (j['elapsed_s'] as num?)?.toInt() ?? 0,
+      price: (j['price'] as num?)?.toDouble() ?? 0,
+      jobsDone: (j['jobs_done'] as num?)?.toInt() ?? 0,
+      jobsFailed: (j['jobs_failed'] as num?)?.toInt() ?? 0,
+      note: j['note'] as String? ?? '',
+    );
+  }
+}
+
+/// 两次轮询之间往前走的秒数。**只往前**:服务端那个读数是锚点也是下限,
+/// 时钟回拨(用户改时间 / NTP 校正)时若让漂移变负,界面上的时长会当着人面
+/// 往回缩 —— 那比不走字更像出了错。
+int _rentalDrift(bool billing, int fetchedAtMs, int nowMs) =>
+    (!billing || fetchedAtMs == 0)
+    ? 0
+    : ((nowMs - fetchedAtMs) ~/ 1000).clamp(0, 1 << 30);
 
 class RentalState {
   const RentalState({
@@ -214,6 +291,7 @@ class RentalState {
     this.spot = false,
     this.count = 0,
     this.maxCount = kMaxCountFallback,
+    this.machines = const [],
   });
 
   final RentalStatus status;
@@ -259,35 +337,52 @@ class RentalState {
   final String tierLabel;
   final bool spot;
 
-  /// 在跑几台,以及服务端允许的上限。app 不提供加开入口,但 web 那边能开到
-  /// 4 台 —— 同一个账号,这边必须如实报出来,否则「关机」会悄悄多关几台。
+  /// 在跑几台,以及服务端允许的上限(`IMG_MAX_RENTALS`)。
   final int count;
   final int maxCount;
+
+  /// 逐台明细。老服务端不下发这个键,那时列表是空的,界面退回单机的说法。
+  final List<RentalMachine> machines;
+
+  /// 还能加开几台。
+  int get room => (maxCount - count).clamp(0, maxCount);
 
   bool get active =>
       status == RentalStatus.creating ||
       status == RentalStatus.ready ||
       status == RentalStatus.ending;
 
+  /// 有台在计费(至少一台就绪)。老服务端不下发 machines,退回看总状态。
+  ///
+  /// 多台时**不能看合并状态**:`_agg()` 只要有一台还在开就整体报 creating,
+  /// 而另外几台可能早就在跑、在收钱了 —— 那时候读数停着不动是错的。
+  bool get billing => machines.isEmpty
+      ? status == RentalStatus.ready
+      : machines.any((m) => m.status == RentalStatus.ready);
+
+  /// **正在计费**那几台的费率之和。服务端下发的 `rate_per_hour` 是所有台
+  /// (含还在开机的)之和,拿它插值会在开机那一两分钟里多算,下一轮轮询
+  /// 又被真值拉回去 —— 表现成金额当着人面往回跳。
+  double get billingRate => machines.isEmpty
+      ? ratePerHour
+      : machines
+            .where((m) => m.status == RentalStatus.ready)
+            .fold(0.0, (a, m) => a + m.ratePerHour);
+
   /// 插值后的已计费秒数。服务端读数 + 距上次取到的时间差。
   ///
   /// **启动中恒为 0**:服务端 `billed_seconds` 在就绪前返回 0(没交付就不收),
   /// 就绪那一刻才跳到「含启动时长」的值。这个跳变是对的,不要在本地抹平。
-  ///
-  /// 插值只**往前**走:服务端那个读数是锚点也是下限。时钟回拨(用户改时间 /
-  /// NTP 校正)时若让漂移变负,界面上的已计费时长会当着人面往回缩 ——
-  /// 那比不走字更像出了错。
-  int elapsedAt(int nowMs) {
-    if (status != RentalStatus.ready) return elapsedS;
-    final drift = fetchedAtMs == 0
-        ? 0
-        : ((nowMs - fetchedAtMs) ~/ 1000).clamp(0, 1 << 30);
-    return elapsedS + drift;
-  }
+  /// 多台时服务端给的是**最早那台**的,插值也跟着它走。
+  int elapsedAt(int nowMs) =>
+      elapsedS + _rentalDrift(billing, fetchedAtMs, nowMs);
 
-  double priceAt(int nowMs) => status != RentalStatus.ready
-      ? price
-      : elapsedAt(nowMs) / 3600.0 * ratePerHour;
+  /// 插值后的费用。**以服务端给的 price 为锚点往前推**,不要拿
+  /// 「已计费时长 × 费率」重算 —— 多台时那两个数口径不同:elapsed_s 取的是
+  /// 最早那台的,rate_per_hour 是所有台之和,乘在一起等于按最早那台的时长
+  /// 给后开的几台收钱,越走越多。
+  double priceAt(int nowMs) =>
+      price + _rentalDrift(billing, fetchedAtMs, nowMs) / 3600.0 * billingRate;
 
   RentalState copyWith({
     RentalStatus? status,
@@ -315,6 +410,7 @@ class RentalState {
     bool? spot,
     int? count,
     int? maxCount,
+    List<RentalMachine>? machines,
   }) => RentalState(
     status: status ?? this.status,
     instanceId: instanceId ?? this.instanceId,
@@ -341,6 +437,7 @@ class RentalState {
     spot: spot ?? this.spot,
     count: count ?? this.count,
     maxCount: maxCount ?? this.maxCount,
+    machines: machines ?? this.machines,
   );
 
   /// 合入服务端返回的一份状态(status / start / idle 都是同一张视图)。
@@ -391,8 +488,11 @@ class RentalState {
       tierKey: (first['tier'] as String?) ?? (j['tier'] as String?) ?? tierKey,
       tierLabel: (first['tier_label'] as String?) ?? '',
       spot: first['spot'] == true,
-      count: (j['count'] as num?)?.toInt() ?? 0,
+      count: (j['count'] as num?)?.toInt() ?? (machines is List ? machines.length : 0),
       maxCount: (j['max_count'] as num?)?.toInt() ?? maxCount,
+      machines: machines is List
+          ? [for (final m in machines) ?RentalMachine.fromJson(m)]
+          : const [],
     );
   }
 
@@ -619,20 +719,33 @@ class GpuRentalNotifier extends Notifier<RentalState> {
   /// 所以:`ok` 只当作「下单收到了」,状态一律去 [refresh] 现问 ——
   /// `_boot_one` 的第一件事就是把 Rental 建出来置 creating,那一步在 create_task
   /// 调度之后、我们这条 refresh 请求到达之前必然已经跑完,查得到。
-  Future<void> start(int idleSeconds, {String tier = ''}) async {
+  Future<void> start(
+    int idleSeconds, {
+    String tier = '',
+    int count = 1,
+    bool addMore = false,
+  }) async {
     final sid = _session;
-    if (sid == null || sid.isEmpty || state.busy || state.active) return;
-    state = state.copyWith(
-      status: RentalStatus.creating,
-      busy: true,
-      error: '',
-      note: '',
-      elapsedS: 0,
-      price: 0,
-      count: 1, // 乐观值,下面 refresh 会用服务端的真数覆盖
-      tierKey: tier.isEmpty ? state.tierKey : tier,
-      fetchedAtMs: _now(),
-    );
+    if (sid == null || sid.isEmpty || state.busy) return;
+    // 已经在跑时只有「加开」这一种合法调用:否则重复点会真的多开几台
+    // (服务端 start 的语义是加开到 N+count,不是「返回那台已有的」)。
+    if (state.active && !addMore) return;
+    if (addMore && state.room <= 0) return;
+    state = addMore
+        // 加开:在跑那几台的读数一个都不能动 —— 归零的话界面上刚花的钱会
+        // 凭空消失一轮,等下一次轮询才回来。
+        ? state.copyWith(busy: true, error: '')
+        : state.copyWith(
+            status: RentalStatus.creating,
+            busy: true,
+            error: '',
+            note: '',
+            elapsedS: 0,
+            price: 0,
+            count: count, // 乐观值,下面 refresh 会用服务端的真数覆盖
+            tierKey: tier.isEmpty ? state.tierKey : tier,
+            fetchedAtMs: _now(),
+          );
     _rearm(); // 开机这一两分钟也轮询:连接万一断了,状态仍旧跟得上
     Object? thrown;
     try {
@@ -640,14 +753,20 @@ class GpuRentalNotifier extends Notifier<RentalState> {
         sid,
         idleTimeout: idleSeconds,
         tier: tier,
+        count: count,
       );
       if (j['ok'] != true) {
-        // 服务端明说没下成单(名额满 / 参数不对):那边什么都没建,一分不收
-        state = state.copyWith(
-          status: RentalStatus.failed,
-          busy: false,
-          note: j['message'] as String? ?? '开机失败',
-        );
+        // 服务端明说没下成单(名额满 / 参数不对):那边什么都没建,一分不收。
+        // ⚠ 加开失败**不能**把状态判成 failed —— 在跑的那几台还好好的,
+        //   整卡切成失败页等于把关机入口也一起藏了。
+        final msg = j['message'] as String? ?? '开机失败';
+        state = addMore
+            ? state.copyWith(busy: false, error: msg)
+            : state.copyWith(
+                status: RentalStatus.failed,
+                busy: false,
+                note: msg,
+              );
         _rearm();
         return;
       }
@@ -662,7 +781,7 @@ class GpuRentalNotifier extends Notifier<RentalState> {
     // 打回「未启动」。refresh 里的 busy 分支正是为这一小段准备的。
     await refresh();
     state = state.copyWith(busy: false);
-    if (thrown != null && !_serverHasRental) {
+    if (thrown != null && !addMore && !_serverHasRental) {
       // 请求没打出去,而且服务端名下确实一台都没有 —— 这才是真的没开成。
       // (服务端 `_boot_one` 的第一件事就是把 Rental 建出来置 creating,
       //  只要它跑过一次,上面那发 status 就查得到。)
@@ -678,23 +797,32 @@ class GpuRentalNotifier extends Notifier<RentalState> {
   /// ⚠ **不带 instance_id = 这个账号名下全部停止。** 服务端 2026-08-19 起支持
   /// 一人多机(上限 4 台,web 那边能加开),app 没有多机界面,所以这里就是
   /// 「全部关掉」—— 界面上的按钮文案必须跟着说清楚,不能让人以为只关了一台。
-  Future<Map<String, dynamic>?> stop() async {
+  Future<Map<String, dynamic>?> stop({String instanceId = ''}) async {
     final sid = _session;
     if (sid == null || sid.isEmpty || state.busy || !state.active) return null;
-    state = state.copyWith(status: RentalStatus.ending, busy: true, error: '');
+    // 只停其中一台时**不切整卡状态**:别的机器还在跑,把整张卡切成「关机中」
+    // 会让人以为全停了。忙位挡住重复点就够,真状态交给下面那发 refresh。
+    final all = instanceId.isEmpty;
+    state = all
+        ? state.copyWith(status: RentalStatus.ending, busy: true, error: '')
+        : state.copyWith(busy: true, error: '');
     try {
-      final j = await _client.rentalStop(sid);
-      state = const RentalState().copyWith(
-        idleChoices: state.idleChoices,
-        idleDefault: state.idleDefault,
-        maxUptimeS: state.maxUptimeS,
-        bootHintS: state.bootHintS,
-        ratePerHour: state.ratePerHour,
-        // 档位清单是「有哪些能开」,与开没开机无关 —— 关机后清掉的话,
-        // 配置卡会退回没有选择器的老样子,直到下一次 status 回来才恢复。
-        tiers: state.tiers,
-        maxCount: state.maxCount,
-      );
+      final j = await _client.rentalStop(sid, instanceId: instanceId);
+      if (all) {
+        state = const RentalState().copyWith(
+          idleChoices: state.idleChoices,
+          idleDefault: state.idleDefault,
+          maxUptimeS: state.maxUptimeS,
+          bootHintS: state.bootHintS,
+          ratePerHour: state.ratePerHour,
+          // 档位清单是「有哪些能开」,与开没开机无关 —— 关机后清掉的话,
+          // 配置卡会退回没有选择器的老样子,直到下一次 status 回来才恢复。
+          tiers: state.tiers,
+          maxCount: state.maxCount,
+        );
+      } else {
+        state = state.copyWith(busy: false);
+      }
       unawaited(refresh());
       return j['ok'] == true ? j : null;
     } catch (e) {

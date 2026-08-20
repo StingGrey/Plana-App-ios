@@ -25,6 +25,8 @@ class _FakeClient extends BackendClient {
   final Map<String, dynamic>? startJson;
   int statusCalls = 0;
   String? startedTier;
+  int startedCount = 0;
+  String? stoppedIid;
 
   @override
   Future<Map<String, dynamic>> rentalStatus(String sessionId) async {
@@ -37,11 +39,22 @@ class _FakeClient extends BackendClient {
     String sessionId, {
     int? idleTimeout,
     String tier = '',
+    int count = 1,
   }) async {
     startedTier = tier;
+    startedCount = count;
     final j = startJson;
     if (j == null) throw BackendException('连接后端超时,请检查地址与网络');
     return j;
+  }
+
+  @override
+  Future<Map<String, dynamic>> rentalStop(
+    String sessionId, {
+    String instanceId = '',
+  }) async {
+    stoppedIid = instanceId;
+    return {'ok': true, 'price': 0.3, 'minutes': 6.0};
   }
 }
 
@@ -122,6 +135,41 @@ Map<String, dynamic> _booting() => {
   'rate_per_hour': 1.4,
 };
 
+/// 两台在跑:一台已就绪、一台还在开。合并视图里 elapsed 取最早那台的、
+/// price 与 rate 是**和**,而机型/档位/逐台读数只在 machines[i] 里。
+Map<String, dynamic> _twoMachines() => {
+  'ok': true,
+  'active': true,
+  'state': 'creating', // 有一台还在开 → 合并状态就是 creating
+  'count': 2,
+  'max_count': 4,
+  'machines': [
+    {
+      'instance_id': 'a',
+      'state': 'ready',
+      'tier': 'sh2-5090',
+      'tier_label': '独享 5090',
+      'rate_per_hour': 2.7,
+      'elapsed_s': 600,
+      'price': 0.45,
+    },
+    {
+      'instance_id': 'b',
+      'state': 'creating',
+      'tier': 'wlcb-4090-spot',
+      'tier_label': '抢占 4090',
+      'spot': true,
+      'rate_per_hour': 1.4,
+      'elapsed_s': 0,
+      'price': 0.0,
+    },
+  ],
+  'elapsed_s': 600,
+  'price': 0.45,
+  'rate_per_hour': 4.1, // 两台之和,含还在开机那台
+  'jobs_done': 3,
+};
+
 void main() {
   // GpuRentalNotifier.build 里挂了 AppLifecycleListener(回前台补一次状态),
   // 那个要 widgets binding
@@ -189,6 +237,74 @@ void main() {
       reason: '服务端对不认识的键就是静默回落默认档,界面得跟着落,不能显示一套开出另一套',
     );
     expect(s.resolveTier('')?.key, 'a');
+  });
+
+  test('一次开多台:count 发出去,逐台明细读得回来', () async {
+    final client = _FakeClient(
+      statusJson: [_none(), _twoMachines()],
+      startJson: _startAccepted(),
+    );
+    final c = _container(client);
+    await c.read(botSessionProvider.future);
+    await Future<void>.delayed(Duration.zero);
+
+    await c.read(gpuRentalProvider.notifier).start(600, count: 3);
+    expect(client.startedCount, 3, reason: '选了几台就得发几台');
+
+    final s = c.read(gpuRentalProvider);
+    expect(s.count, 2);
+    expect(s.machines, hasLength(2));
+    expect(s.machines[0].label, '独享 5090');
+    expect(s.machines[1].label, '抢占 4090');
+    expect(s.machines[1].spot, isTrue);
+    expect(s.room, 2, reason: '上限 4 台,已有 2 台');
+  });
+
+  test('多台的读数:有一台在跑就得走字,费用以 price 为锚点而不是时长×费率',
+      () async {
+    final client = _FakeClient(
+      statusJson: [_none(), _twoMachines()],
+      startJson: _startAccepted(),
+    );
+    final c = _container(client);
+    await c.read(botSessionProvider.future);
+    await Future<void>.delayed(Duration.zero);
+    await c.read(gpuRentalProvider.notifier).start(600, count: 2);
+    final s = c.read(gpuRentalProvider);
+
+    // 合并状态是 creating(有一台还在开),但另一台早就在收钱了
+    expect(s.status, RentalStatus.creating);
+    expect(s.billing, isTrue, reason: '有一台 ready 就是在计费,读数不能停着');
+    expect(
+      s.billingRate,
+      2.7,
+      reason: '插值只能按**在跑那几台**的费率;把还在开机那台的 1.4 也算进去,'
+          '下一轮轮询就会把金额往回拉,看着像跳票',
+    );
+
+    // 拿 60 秒之后的读数:price 0.45 + 60s × 2.7/时 = 0.495
+    final later = s.fetchedAtMs + 60000;
+    expect(s.priceAt(later), closeTo(0.495, 1e-6));
+    // 反例:elapsedAt × rate_per_hour = 660/3600 × 4.1 = 0.7517,差了六成
+    expect(s.elapsedAt(later), 660);
+  });
+
+  test('只关一台:instance_id 要发出去,别把别人的机器一起关了', () async {
+    final client = _FakeClient(
+      statusJson: [_none(), _twoMachines()],
+      startJson: _startAccepted(),
+    );
+    final c = _container(client);
+    await c.read(botSessionProvider.future);
+    await Future<void>.delayed(Duration.zero);
+    await c.read(gpuRentalProvider.notifier).start(600, count: 2);
+
+    await c.read(gpuRentalProvider.notifier).stop(instanceId: 'b');
+    expect(client.stoppedIid, 'b');
+
+    // 全停才是空 id
+    await c.read(gpuRentalProvider.notifier).stop();
+    expect(client.stoppedIid, isEmpty);
   });
 
   test('start 抛异常但服务端其实开成了 → 不能报「开机失败」', () async {
