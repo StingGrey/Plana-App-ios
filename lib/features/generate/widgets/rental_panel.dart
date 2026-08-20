@@ -417,40 +417,80 @@ class _RentalConfig extends ConsumerWidget {
     final idle = s.idleChoices.contains(prefs.idleSeconds)
         ? prefs.idleSeconds
         : s.idleDefault;
+    // 用户存的档位可能已经不在服务端清单里(改过 IMG_TIERS):退回默认档 ——
+    // 显示的必须是真会开出来的那一档,服务端对不认识的键就是静默回落。
+    final tier = s.resolveTier(prefs.tier);
+    // 老服务端不下发 tiers,那时候只有一种机型,还原成原来的只读行。
+    final pickable = s.tiers.length > 1;
+    final rate = tier?.ratePerHour ?? s.ratePerHour;
+    final spec = tier?.spec ?? s.spec;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,
       children: [
-        // 机型是**只读**的:服务端 create_instance 里 GpuType 写死,没有参数位,
-        // 摆个选择器出来点了也发不出去。等服务端把它做成参数再换成选择行。
-        Row(
-          children: [
-            Icon(
-              Icons.developer_board,
-              size: 17,
-              color: scheme.onSurfaceVariant,
-            ),
-            const SizedBox(width: 9),
-            Expanded(
-              child: Text(
-                s.spec.name,
-                style: context.texts.bodyMedium!.copyWith(
-                  fontWeight: FontWeight.w600,
+        // 档位清单由服务端下发(config.IMG_TIERS → status.tiers),**别在这边
+        // 写死**:加档位是改服务端那张表,这里跟着渲染。清单只有一档(或老
+        // 服务端根本不下发)时不给箭头也不可点 —— 点开只有一个选项是骗人的。
+        InkWell(
+          onTap: pickable ? () => _pickTier(context, ref, s, prefs.tier) : null,
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      Icons.developer_board,
+                      size: 17,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 9),
+                    Expanded(
+                      child: Text(
+                        tier?.label ?? spec.name,
+                        style: context.texts.bodyMedium!.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      '${rate.toStringAsFixed(2)} 元/时',
+                      style: mono(context, size: 13, color: scheme.primary),
+                    ),
+                    if (pickable)
+                      Icon(Icons.chevron_right, size: 17, color: scheme.outline),
+                  ],
                 ),
-              ),
+                const SizedBox(height: 2),
+                Padding(
+                  padding: const EdgeInsets.only(left: 26),
+                  child: Text(
+                    spec.detail,
+                    style: context.texts.labelSmall!.copyWith(
+                      color: scheme.outline,
+                    ),
+                  ),
+                ),
+                // 抢占档那句风险**必须留在卡面上**,不能只写在选择弹层里:
+                // 选完就关了,而这张卡是按下「启动实例」之前最后看到的东西。
+                // 原样用服务端的文案(它同时交代了「会被收走」和「收走怎么算钱」)。
+                if (tier != null && tier.spot && tier.desc.isNotEmpty) ...[
+                  const SizedBox(height: 3),
+                  Padding(
+                    padding: const EdgeInsets.only(left: 26),
+                    child: Text(
+                      tier.desc,
+                      style: context.texts.labelSmall!.copyWith(
+                        color: scheme.tertiary,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
             ),
-            Text(
-              '${s.ratePerHour.toStringAsFixed(2)} 元/时',
-              style: mono(context, size: 13, color: scheme.primary),
-            ),
-          ],
-        ),
-        const SizedBox(height: 2),
-        Padding(
-          padding: const EdgeInsets.only(left: 26),
-          child: Text(
-            s.spec.detail,
-            style: context.texts.labelSmall!.copyWith(color: scheme.outline),
           ),
         ),
         Divider(height: 15, color: scheme.outlineVariant.withValues(alpha: .5)),
@@ -497,7 +537,11 @@ class _RentalConfig extends ConsumerWidget {
               ? null
               : () {
                   Haptics.medium();
-                  unawaited(ref.read(gpuRentalProvider.notifier).start(idle));
+                  unawaited(
+                    ref
+                        .read(gpuRentalProvider.notifier)
+                        .start(idle, tier: tier?.key ?? ''),
+                  );
                 },
           icon: const Icon(Icons.play_arrow_rounded, size: 20),
           label: const Text('启动实例'),
@@ -508,6 +552,67 @@ class _RentalConfig extends ConsumerWidget {
         ),
       ],
     );
+  }
+
+  /// 档位选择。三档的差别是**价格 + 会不会被收走**,所以每行把这两样摆齐:
+  /// 名字与单价一行,规格与风险一行。
+  Future<void> _pickTier(
+    BuildContext context,
+    WidgetRef ref,
+    RentalState s,
+    String curKey,
+  ) async {
+    final cur = s.resolveTier(curKey)?.key;
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      useSafeArea: true,
+      builder: (ctx) => SafeArea(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _sheetTitle(ctx, '机型'),
+              for (final t in s.tiers)
+                ListTile(
+                  onTap: () => Navigator.pop(ctx, t.key),
+                  title: Row(
+                    children: [
+                      Expanded(
+                        child: Text(t.label, style: ctx.texts.bodyMedium),
+                      ),
+                      Text(
+                        '${t.ratePerHour.toStringAsFixed(2)} 元/时',
+                        style: mono(ctx, size: 13, color: ctx.scheme.primary),
+                      ),
+                    ],
+                  ),
+                  subtitle: Text(
+                    // 抢占档把风险接在规格后面:那句是服务端写的,原样带过来
+                    t.spot && t.desc.isNotEmpty
+                        ? '${t.spec.detail}\n${t.desc}'
+                        : t.spec.detail,
+                    style: ctx.texts.bodySmall!.copyWith(
+                      color: t.spot
+                          ? ctx.scheme.tertiary
+                          : ctx.scheme.onSurfaceVariant,
+                    ),
+                  ),
+                  isThreeLine: t.spot && t.desc.isNotEmpty,
+                  trailing: t.key == cur
+                      ? Icon(Icons.check, size: 18, color: ctx.scheme.primary)
+                      : null,
+                ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (picked != null) {
+      await ref
+          .read(rentalPrefsProvider.notifier)
+          .patch((p) => p.copyWith(tier: picked));
+    }
   }
 
   Future<void> _pickIdle(
@@ -585,7 +690,11 @@ class _RentalRunning extends ConsumerWidget {
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                s.spec.name,
+                // 档位名(「抢占 4090」)比卡名信息量大:同是 5090 还分独享和
+                // 抢占,而后者随时可能被平台收走 —— 那是这张卡上最该一眼看见的事。
+                // 多台时把台数缀在后面:app 不能加开,但 web 能,同一个账号
+                // 这边不报出来的话,下面那颗「关机」会悄悄多关几台。
+                s.count > 1 ? '${s.runningLabel} · ${s.count} 台' : s.runningLabel,
                 style: context.texts.labelSmall!.copyWith(
                   color: scheme.onSurfaceVariant,
                 ),
@@ -595,7 +704,8 @@ class _RentalRunning extends ConsumerWidget {
         ),
         const SizedBox(height: 8),
         if (booting)
-          // 服务端 start 是**阻塞**到就绪才返回的,这段界面只能等。
+          // 开机是**后台建机 + 轮询报状态**(服务端 2026-08-19 起不再阻塞到
+          // 就绪),这段界面靠 6 秒一次的轮询等它翻成「运行中」。
           // 不写读数:服务端在就绪前 billed_seconds 恒为 0,摆个 ¥0.00 反倒
           // 像「这段不要钱」—— 其实就绪后会连这段一起算进去。
           Row(
@@ -664,7 +774,13 @@ class _RentalRunning extends ConsumerWidget {
                   );
                 },
           icon: const Icon(Icons.power_settings_new, size: 18),
-          label: Text(ending ? '关机中…' : '关机并结账'),
+          // 多台时按钮上必须写「全部」:这个端点不带 instance_id 就是全停,
+          // 而那几台里可能有一台是在 web 上开的、用户以为只关手机上这台。
+          label: Text(
+            ending
+                ? '关机中…'
+                : (s.count > 1 ? '全部关机并结账(${s.count} 台)' : '关机并结账'),
+          ),
           style: OutlinedButton.styleFrom(
             minimumSize: const Size(double.infinity, 42),
             shape: const StadiumBorder(),
@@ -684,9 +800,12 @@ class _RentalRunning extends ConsumerWidget {
     final r = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('关机并结账'),
+        title: Text(s.count > 1 ? '全部关机并结账' : '关机并结账'),
         // 「停止 = 销毁」这件事必须说 —— 用户以为是暂停,回来发现要重开机
         content: Text(
+          // 多台时先把「关的是几台」摆在最前面:这个端点没有「只关这一台」
+          // 的用法,而在 web 上加开的那几台用户在这个界面上根本看不见。
+          '${s.count > 1 ? '这会关掉你名下全部 ${s.count} 台。\n\n' : ''}'
           '本次将结算 ${fmtUptime(s.elapsedAt(now))}'
           '(${fmtYuan(s.priceAt(now))})。\n\n'
           '实例会被销毁而不是挂起,机器上的内容一并清除;'

@@ -1,34 +1,47 @@
-// 开机那 80 多秒里,客户端这边断网 / 超时 **不等于没开成**。
+// 开机路径上的两条「不能骗人」的规矩,都是**会花钱**的那种错。
 //
-// 服务端 /api/rental/start 是阻塞到就绪才返回的,期间机器已经建起来、已经在
-// 计费。如果 app 一见异常就把状态标成「开机失败 · 没有扣费」,用户会以为什么
-// 都没发生地走开,而那台机器在后台一路烧到 4 小时硬上限(¥12)。
-// 所以异常路径必须回去问服务端,以它的 status 为准。
+// ① 客户端断网 / 超时 **不等于没开成**:服务端很可能已经把机器建起来了。
+//    一见异常就标成「开机失败 · 没有扣费」的话,用户会以为什么都没发生地走开,
+//    而那台机器在后台一路烧到 4 小时硬上限。异常路径必须回去问服务端。
+// ② 2026-08-19 起 /api/rental/start **不再阻塞到就绪**:服务端把建机丢进
+//    后台(_fire_and_forget)然后同步取合并视图就返回,那几个后台任务一行都
+//    还没跑 —— 所以返回体里恒是 state:"none"、machines:[]。照单全收的话界面
+//    立刻退回「未启动」、轮询也跟着停掉,而机器在后台照开照计费;更糟的是这时
+//    busy 和 active 都是 false,再点一次会**真的加开一台**(start 的语义已经
+//    从「返回那台已有的」变成「加开」,上限 4 台)。
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plana_app/core/auth/bot_session_store.dart';
 import 'package:plana_app/core/net/backend_client.dart';
 import 'package:plana_app/features/generate/gpu_rental.dart';
 
-/// 可编排的假 client:start 抛异常,status 按预设返回。
+/// 可编排的假 client:start 默认抛异常([startJson] 给了就改成正常返回),
+/// status 按预设返回(给多份就按调用次序逐个吐,用来演「先 none 后 creating」)。
 class _FakeClient extends BackendClient {
-  _FakeClient({required this.statusJson}) : super('http://test');
+  _FakeClient({required this.statusJson, this.startJson}) : super('http://test');
 
-  final Map<String, dynamic> statusJson;
+  /// 每次 rentalStatus 依次取一份,取完之后一直用最后一份。
+  final List<Map<String, dynamic>> statusJson;
+  final Map<String, dynamic>? startJson;
   int statusCalls = 0;
+  String? startedTier;
 
   @override
   Future<Map<String, dynamic>> rentalStatus(String sessionId) async {
-    statusCalls++;
-    return statusJson;
+    final i = statusCalls++;
+    return statusJson[i < statusJson.length ? i : statusJson.length - 1];
   }
 
   @override
   Future<Map<String, dynamic>> rentalStart(
     String sessionId, {
     int? idleTimeout,
+    String tier = '',
   }) async {
-    throw BackendException('连接后端超时,请检查地址与网络');
+    startedTier = tier;
+    final j = startJson;
+    if (j == null) throw BackendException('连接后端超时,请检查地址与网络');
+    return j;
   }
 }
 
@@ -67,13 +80,119 @@ Map<String, dynamic> _none() => {
   'rate_per_hour': 3.0,
 };
 
+/// 服务端 `_agg()` 在还没有 Rental 时的样子。**start 成功返回的就是这一份** ——
+/// 后台建机任务此刻一行都还没跑。
+Map<String, dynamic> _startAccepted() => {
+  'ok': true,
+  'message': '正在启动',
+  'active': false,
+  'state': 'none',
+  'count': 0,
+  'machines': <dynamic>[],
+  'rate_per_hour': 2.7,
+};
+
+/// 建机任务跑起来之后的 status:每台的机型/档位只在 machines[i] 里。
+Map<String, dynamic> _booting() => {
+  'ok': true,
+  'active': true,
+  'state': 'creating',
+  'count': 1,
+  'max_count': 4,
+  'machines': [
+    {
+      'instance_id': 'uhost-abc',
+      'state': 'creating',
+      'tier': 'wlcb-4090-spot',
+      'tier_label': '抢占 4090',
+      'spot': true,
+      'spec': {
+        'gpu': 'RTX 4090',
+        'gpu_count': 1,
+        'cpu': 16,
+        'memory_gb': 64,
+        'disk_gb': 100,
+        'vram_gb': 24,
+      },
+      'rate_per_hour': 1.4,
+    },
+  ],
+  'elapsed_s': 0,
+  'price': 0.0,
+  'rate_per_hour': 1.4,
+};
+
 void main() {
   // GpuRentalNotifier.build 里挂了 AppLifecycleListener(回前台补一次状态),
   // 那个要 widgets binding
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test('start 返回的空视图不能把界面打回「未启动」(会重复开机)', () async {
+    // 第 1 发是会话到货时的 refresh(还没开机),第 2 发是 start 之后补问的
+    final client = _FakeClient(
+      statusJson: [_none(), _booting()],
+      startJson: _startAccepted(),
+    );
+    final c = _container(client);
+    await c.read(botSessionProvider.future);
+    await Future<void>.delayed(Duration.zero);
+
+    await c.read(gpuRentalProvider.notifier).start(600, tier: 'wlcb-4090-spot');
+    final s = c.read(gpuRentalProvider);
+
+    expect(client.startedTier, 'wlcb-4090-spot', reason: '选的档位要发出去');
+    expect(
+      s.status,
+      RentalStatus.creating,
+      reason: 'start 返回体里的 state 是空视图,不能拿它当真',
+    );
+    expect(s.active, isTrue, reason: '不 active 的话 _rearm 会把轮询停掉,状态就再也不更新了');
+    expect(s.busy, isFalse);
+    // 机型/档位只在 machines[i] 里 —— 合并视图 _agg 根本没有 spec 这个键
+    expect(s.tierLabel, '抢占 4090');
+    expect(s.spot, isTrue);
+    expect(s.spec.gpu, 'RTX 4090');
+    expect(s.spec.vramGb, 24);
+    expect(s.count, 1);
+  });
+
+  test('启动中的机器从服务端名单里消失 = 开机失败,不是悄悄回到未启动', () async {
+    final client = _FakeClient(
+      statusJson: [_none(), _booting(), _none()],
+      startJson: _startAccepted(),
+    );
+    final c = _container(client);
+    await c.read(botSessionProvider.future);
+    await Future<void>.delayed(Duration.zero);
+
+    await c.read(gpuRentalProvider.notifier).start(600);
+    expect(c.read(gpuRentalProvider).status, RentalStatus.creating);
+
+    // 第 3 发:服务端 _boot_one 失败后把这台从名单里摘掉了(销毁 + 一分不收)
+    await c.read(gpuRentalProvider.notifier).refresh();
+    final s = c.read(gpuRentalProvider);
+    expect(s.status, RentalStatus.failed);
+    expect(s.note, isNotEmpty, reason: '失败原因要说出来,不能无声无息退回未启动');
+  });
+
+  test('档位清单跟着 status 下发,存的档位没了就退回默认档', () {
+    const s = RentalState(
+      tiers: [
+        RentalTier(key: 'a', label: '独享 5090', ratePerHour: 2.7, isDefault: true),
+        RentalTier(key: 'b', label: '抢占 4090', ratePerHour: 1.4, spot: true),
+      ],
+    );
+    expect(s.resolveTier('b')?.key, 'b');
+    expect(
+      s.resolveTier('gone')?.key,
+      'a',
+      reason: '服务端对不认识的键就是静默回落默认档,界面得跟着落,不能显示一套开出另一套',
+    );
+    expect(s.resolveTier('')?.key, 'a');
+  });
+
   test('start 抛异常但服务端其实开成了 → 不能报「开机失败」', () async {
-    final client = _FakeClient(statusJson: _running());
+    final client = _FakeClient(statusJson: [_running()]);
     final c = _container(client);
     // 会话到货那一发 refresh 先跑掉
     await c.read(botSessionProvider.future);
@@ -91,7 +210,7 @@ void main() {
   });
 
   test('start 抛异常且服务端确实没有实例 → 才是开机失败', () async {
-    final client = _FakeClient(statusJson: _none());
+    final client = _FakeClient(statusJson: [_none()]);
     final c = _container(client);
     await c.read(botSessionProvider.future);
     await Future<void>.delayed(Duration.zero);
@@ -105,7 +224,7 @@ void main() {
   });
 
   test('没有会话时整条路不可用,也不去打接口', () async {
-    final client = _FakeClient(statusJson: _none());
+    final client = _FakeClient(statusJson: [_none()]);
     final c = ProviderContainer(
       overrides: [backendClientProvider.overrideWithValue(client)],
     );

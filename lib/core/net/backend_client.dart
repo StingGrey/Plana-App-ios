@@ -1180,22 +1180,35 @@ class BackendClient {
   Future<Map<String, dynamic>> rentalStatus(String sessionId) =>
       _getJson('/rental/status', sessionId);
 
-  /// 开一台。**这个调用会一直阻塞到服务就绪**(服务端实测约 85s,上限 300s),
-  /// 所以超时必须放到 5 分钟以上,不能用默认那 15 秒。
-  /// 已有在跑的会直接返回那一台(一人一实例,重复点不会开出第二台)。
+  /// 下单开一台。[tier] 是服务端 `IMG_TIERS` 的键,空 = 用服务端默认档
+  /// (不认识的键服务端也静默回落默认档,不报错)。
+  ///
+  /// ⚠ **这个调用不再阻塞到就绪。** 2026-08-19 起服务端把建机丢进后台
+  /// (`_fire_and_forget`)、立刻返回,理由是开机要 40~120 秒,而 nginx 默认
+  /// `proxy_read_timeout` 才 60 秒 —— 阻塞式必然被中间某一跳掐断,前端报
+  /// 「开机失败」,机器却照开。所以**返回体里的 state 恒是 none**(那几个
+  /// 后台任务还没跑),只能当作「下单收到了」,真状态去 `/rental/status` 问。
+  ///
+  /// 超时留 90 秒而不是默认那 15 秒:一来下单本身要跟平台 OpenAPI 打个来回,
+  /// 二来服务端万一还是老的阻塞版,这段能盖住一部分;真超时了调用方也会回去
+  /// 问状态,不会误报成「没开成」。
   Future<Map<String, dynamic>> rentalStart(
     String sessionId, {
     int? idleTimeout,
+    String tier = '',
   }) => _postJson(
     '/rental/start',
-    {'idle_timeout': ?idleTimeout},
+    {'idle_timeout': ?idleTimeout, if (tier.isNotEmpty) 'tier': tier},
     sessionId,
-    const Duration(minutes: 6),
+    const Duration(seconds: 90),
   );
 
   /// 停机结账(先 purge 实例上的内容再销毁)。返回 seconds / minutes / price。
+  ///
+  /// ⚠ 不带 `instance_id` = 这个账号名下**全部**停止(服务端 2026-08-19 起
+  /// 支持一人多机)。app 没有多机界面,这里就是「全部关掉」。
   Future<Map<String, dynamic>> rentalStop(String sessionId) =>
-      _postJson('/rental/stop', const {}, sessionId, const Duration(minutes: 2));
+      _postJson('/rental/stop', const {}, sessionId, const Duration(minutes: 3));
 
   /// 改空闲自动关机时长(秒,0 = 不自动关)。运行中即时生效。
   Future<Map<String, dynamic>> rentalSetIdle(

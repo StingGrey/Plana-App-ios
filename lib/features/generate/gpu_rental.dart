@@ -15,8 +15,12 @@ import '../../core/store/prefs_store.dart';
 /// 对接服务端 `agent_router/img_rental.py` 的 `/api/rental/*`。
 /// 下面几条是**服务端的规则**,app 侧只负责如实呈现,不能自行发挥:
 ///
-///  - **一人一实例**,而且这一台同时服务 Anima 与 Krea 2 —— 所以通道是这两家
-///    模型共用的一份设置,不是每个型号各选一份;
+///  - 租来的机器**同时服务 Anima 与 Krea 2** —— 所以通道是这两家模型共用的
+///    一份设置,不是每个型号各选一份;
+///  - 服务端 2026-08-19 起支持**一人多机**(上限 4 台)与**三档机型**
+///    (独享 5090 / 抢占 5090 / 抢占 4090)。app 只做「选一档、开一台」,
+///    加开是 web 那边的入口;但状态里如实带着 `count`,因为同一个账号在
+///    web 开的机器这边照样在计费、也照样会被这边的「关机」一起关掉;
 ///  - **计费从「建实例」起算**,开机与首张图的加载时间都算在租用时长里
 ///    (租的是机器的使用权,不是从打着火才开始计时)。**但没起来过就一分不收**;
 ///  - 中途失联只计到最后一次探通(服务端 `bill_to`),发现前的空转不收;
@@ -39,12 +43,10 @@ import '../../core/store/prefs_store.dart';
 ///    那个开关只是「要不要租」的意图,不是每一单的路由。
 const bool kRentalRoutingReady = true;
 
-/// 机型。**服务端下单和界面展示共用同一份**(`compshare_api.SPEC`,随 status
-/// 下发 `spec`)—— 前端别自己写死:改配置得记着改三处,迟早对不上
-/// (服务端那份注释里点名了这个教训)。下面两个只是 status 还没到货时的占位。
-///
-/// 仍然只有一种机型:`create_instance` 里 `GpuType` 写死 "5090",没有参数位,
-/// 所以这是展示项不是选择项。
+/// 机型。**服务端下单和界面展示共用同一份**(`compshare_api.spec_of()`,随
+/// status 下发 `spec` 与 `tiers[].spec`)—— 前端别自己写死:改配置得记着改三处,
+/// 迟早对不上(服务端那份注释里点名了这个教训)。下面两个只是 status 还没到货
+/// 时的占位,取的是服务端默认档。
 const kRentalMachineName = 'RTX 5090';
 const kRentalMachineSpec = '14 核 · 64 GB · 100 GB SSD';
 
@@ -56,6 +58,7 @@ class RentalSpec {
     this.cpu = 14,
     this.memoryGb = 64,
     this.diskGb = 100,
+    this.vramGb = 0,
   });
 
   final String gpu;
@@ -64,11 +67,21 @@ class RentalSpec {
   final int memoryGb;
   final int diskGb;
 
+  /// 显存 GB。0 = 服务端没给(老服务端的 `spec` 里没这个键)。
+  final int vramGb;
+
   /// 卡名。多卡时带上张数(现在恒为 1,但下发的是个数字,别假设)。
   String get name => gpuCount > 1 ? '$gpu ×$gpuCount' : gpu;
 
-  /// 副行规格:`14 核 · 64 GB · 100 GB SSD`。
-  String get detail => '$cpu 核 · $memoryGb GB · $diskGb GB SSD';
+  /// 副行规格:`32 GB 显存 · 14 核 · 64 GB · 100 GB SSD`。
+  /// 显存摆第一位 —— 三档之间真正会影响出图的差别就是它(4090 24G / 5090 32G),
+  /// 核数内存是跟着卡走的附属项。
+  String get detail => [
+    if (vramGb > 0) '$vramGb GB 显存',
+    '$cpu 核',
+    '$memoryGb GB',
+    '$diskGb GB SSD',
+  ].join(' · ');
 
   static RentalSpec? fromJson(Object? j) {
     if (j is! Map) return null;
@@ -80,6 +93,62 @@ class RentalSpec {
       cpu: (j['cpu'] as num?)?.toInt() ?? 14,
       memoryGb: (j['memory_gb'] as num?)?.toInt() ?? 64,
       diskGb: (j['disk_gb'] as num?)?.toInt() ?? 100,
+      vramGb: (j['vram_gb'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
+/// 一个可选档位(服务端 `config.IMG_TIERS`,随 status 下发 `tiers[]`)。
+///
+/// **别在 app 里写死档位清单**:加档位是改服务端那张表,这边跟着渲染就行。
+/// 服务端 `img_tier()` 对不认识的键一律回落默认档而不是报错,所以 app 版本
+/// 落后于服务端时最差也只是开出一台默认档,不会开不了机。
+///
+/// 只有售价没有成本 —— 服务端 `_tier_options()` 刻意不下发 `cost_per_hour`。
+class RentalTier {
+  const RentalTier({
+    required this.key,
+    required this.label,
+    this.desc = '',
+    this.ratePerHour = kRateFallback,
+    this.spot = false,
+    this.spec = const RentalSpec(),
+    this.isDefault = false,
+  });
+
+  final String key;
+
+  /// 档位名,如「抢占 4090」。
+  final String label;
+
+  /// 一句话说清风险/卖点。抢占档那句写的是「会被收走」和「收走时怎么算钱」,
+  /// 原样显示,别自己改写成「更便宜」之类的话 —— 那是在替用户低估风险。
+  final String desc;
+
+  final double ratePerHour;
+
+  /// 可能被平台随时回收。
+  final bool spot;
+
+  final RentalSpec spec;
+
+  /// 服务端的默认档(不传 tier 时开出来的那个)。
+  final bool isDefault;
+
+  static RentalTier? fromJson(Object? j) {
+    if (j is! Map) return null;
+    final key = j['key'];
+    if (key is! String || key.isEmpty) return null;
+    return RentalTier(
+      key: key,
+      label: (j['label'] as String?)?.trim().isNotEmpty == true
+          ? (j['label'] as String).trim()
+          : key,
+      desc: (j['desc'] as String?)?.trim() ?? '',
+      ratePerHour: (j['rate_per_hour'] as num?)?.toDouble() ?? kRateFallback,
+      spot: j['spot'] == true,
+      spec: RentalSpec.fromJson(j['spec']) ?? const RentalSpec(),
+      isDefault: j['default'] == true,
     );
   }
 }
@@ -88,6 +157,10 @@ class RentalSpec {
 const kIdleChoicesFallback = <int>[180, 600, 1800, 0];
 const kIdleDefaultFallback = 600;
 const kMaxUptimeFallback = 4 * 3600;
+/// 同时最多几台(服务端 `IMG_MAX_RENTALS`)。app 自己不提供加开入口,这个数
+/// 只用来解释「你已经有 N 台在跑」—— 多机是 web 那边开出来的。
+/// 兜底写 1 而不是 4:没拿到 status 时按最保守的假设显示。
+const kMaxCountFallback = 1;
 // 只在首帧(status 还没回来)用得上。真实售价一律以服务端
 // config.IMG_PRICE_PER_HOUR 为准,改价改那边,这里跟着对齐就行 —— 对不上时
 // 那零点几秒里会闪一个错的单价出来。(2026-08-17 服务端 3.0 → 2.7)
@@ -135,6 +208,12 @@ class RentalState {
     this.error = '',
     this.authed = true,
     this.spec = const RentalSpec(),
+    this.tiers = const [],
+    this.tierKey = '',
+    this.tierLabel = '',
+    this.spot = false,
+    this.count = 0,
+    this.maxCount = kMaxCountFallback,
   });
 
   final RentalStatus status;
@@ -167,8 +246,23 @@ class RentalState {
   /// 没有 Bot 会话:租卡整条路都不可用,面板据此给出去授权的提示。
   final bool authed;
 
-  /// 机型(服务端下发;没到货前是占位)。
+  /// 机型(服务端下发;没到货前是占位)。在跑时取**第一台**的 ——
+  /// 合并视图 `_agg` 里根本没有 `spec` 这个键,只有 `machines[i].spec`。
   final RentalSpec spec;
+
+  /// 可选档位清单(服务端 `IMG_TIERS`)。空 = status 还没到货,或服务端是
+  /// 不认识档位的老版本 —— 两种情况下界面都退回「只有一种机型」的老样子。
+  final List<RentalTier> tiers;
+
+  /// 在跑的那台是哪一档 / 叫什么 / 是不是抢占式。同样只有 `machines[i]` 里有。
+  final String tierKey;
+  final String tierLabel;
+  final bool spot;
+
+  /// 在跑几台,以及服务端允许的上限。app 不提供加开入口,但 web 那边能开到
+  /// 4 台 —— 同一个账号,这边必须如实报出来,否则「关机」会悄悄多关几台。
+  final int count;
+  final int maxCount;
 
   bool get active =>
       status == RentalStatus.creating ||
@@ -215,6 +309,12 @@ class RentalState {
     String? error,
     bool? authed,
     RentalSpec? spec,
+    List<RentalTier>? tiers,
+    String? tierKey,
+    String? tierLabel,
+    bool? spot,
+    int? count,
+    int? maxCount,
   }) => RentalState(
     status: status ?? this.status,
     instanceId: instanceId ?? this.instanceId,
@@ -235,21 +335,42 @@ class RentalState {
     error: error ?? this.error,
     authed: authed ?? this.authed,
     spec: spec ?? this.spec,
+    tiers: tiers ?? this.tiers,
+    tierKey: tierKey ?? this.tierKey,
+    tierLabel: tierLabel ?? this.tierLabel,
+    spot: spot ?? this.spot,
+    count: count ?? this.count,
+    maxCount: maxCount ?? this.maxCount,
   );
 
-  /// 合入服务端返回的一份状态(status / start / idle 都是同一张 `public()` 视图)。
+  /// 合入服务端返回的一份状态(status / start / idle 都是同一张视图)。
+  ///
+  /// ⚠ **两张视图不是一张。** 没在跑时给的是「开机面板要的东西」(`spec`、
+  /// `idle_default`、两个 hint);在跑时给的是 `_agg()` 的合并视图,里面
+  /// **没有** `spec` / `tier` / `idle_default` / hint,那几样只在
+  /// `machines[i]` 里逐台给。所以机型与档位必须从 `machines[0]` 取,
+  /// 顶层缺键时一律沿用旧值(`?? 现值`)而不是清空 —— 否则一开机,
+  /// 卡上的机型就会退回默认档那套,显示的和真租的对不上。
   RentalState merge(Map<String, dynamic> j, int nowMs) {
     final list = j['idle_choices'];
+    final tierList = j['tiers'];
+    // 多台时用第一台代表:app 没有多机界面,而机型/档位这几样逐台才有。
+    // (真开了多台的话下面 count 会 >1,界面另有一句交代。)
+    final machines = j['machines'];
+    final first = (machines is List && machines.isNotEmpty && machines.first is Map)
+        ? machines.first as Map
+        : const {};
     return copyWith(
       status: _parseStatus(j['state']),
-      instanceId: j['instance_id'] as String? ?? '',
+      instanceId:
+          (j['instance_id'] as String?) ?? (first['instance_id'] as String?) ?? '',
       idleSeconds: (j['idle_timeout'] as num?)?.toInt() ?? idleSeconds,
       elapsedS: (j['elapsed_s'] as num?)?.toInt() ?? 0,
       price: (j['price'] as num?)?.toDouble() ?? 0,
       ratePerHour: (j['rate_per_hour'] as num?)?.toDouble() ?? ratePerHour,
       jobsDone: (j['jobs_done'] as num?)?.toInt() ?? 0,
       jobsFailed: (j['jobs_failed'] as num?)?.toInt() ?? 0,
-      note: j['note'] as String? ?? '',
+      note: (j['note'] as String?) ?? (first['note'] as String?) ?? '',
       fetchedAtMs: nowMs,
       idleChoices: list is List
           ? [
@@ -263,9 +384,42 @@ class RentalState {
       firstImageHintS:
           (j['first_image_hint_s'] as num?)?.toInt() ?? firstImageHintS,
       authed: true,
-      spec: RentalSpec.fromJson(j['spec']) ?? spec,
+      spec: RentalSpec.fromJson(first['spec'] ?? j['spec']) ?? spec,
+      tiers: tierList is List
+          ? [for (final t in tierList) ?RentalTier.fromJson(t)]
+          : tiers,
+      tierKey: (first['tier'] as String?) ?? (j['tier'] as String?) ?? tierKey,
+      tierLabel: (first['tier_label'] as String?) ?? '',
+      spot: first['spot'] == true,
+      count: (j['count'] as num?)?.toInt() ?? 0,
+      maxCount: (j['max_count'] as num?)?.toInt() ?? maxCount,
     );
   }
+
+  /// 当前该按哪一档显示/开机。`tierKey` 在跑时来自服务端,没在跑时来自偏好。
+  RentalTier? tierOf(String key) {
+    for (final t in tiers) {
+      if (t.key == key) return t;
+    }
+    return null;
+  }
+
+  /// 服务端标了 default 的那一档(清单为空时 null)。
+  RentalTier? get defaultTier {
+    for (final t in tiers) {
+      if (t.isDefault) return t;
+    }
+    return tiers.isEmpty ? null : tiers.first;
+  }
+
+  /// 把用户存的档位落到当前清单上。存的那档被服务端删了就退回默认档 ——
+  /// 界面上显示的必须是**真会开出来的那一档**,而服务端对不认识的键就是
+  /// 静默回落默认档,这边跟着回落才不会显示一套、开出另一套。
+  RentalTier? resolveTier(String prefKey) => tierOf(prefKey) ?? defaultTier;
+
+  /// 在跑的那台该显示什么名字。服务端在跑时给的是 `tier_label`(「抢占 4090」),
+  /// 拿不到就退到卡名 —— 老服务端没有档位这回事,那时卡名就是全部信息。
+  String get runningLabel => tierLabel.isNotEmpty ? tierLabel : spec.name;
 }
 
 /// Anima / Krea 的算力来源。免费 = 服务端共享 Modal 队列(排队,不花钱);
@@ -278,25 +432,37 @@ class RentalPrefs {
   const RentalPrefs({
     this.channel = ModalChannel.free,
     this.idleSeconds = kIdleDefaultFallback,
+    this.tier = '',
   });
 
   final ModalChannel channel;
   final int idleSeconds;
 
-  RentalPrefs copyWith({ModalChannel? channel, int? idleSeconds}) =>
-      RentalPrefs(
-        channel: channel ?? this.channel,
-        idleSeconds: idleSeconds ?? this.idleSeconds,
-      );
+  /// 想开哪一档(服务端 `IMG_TIERS` 的键)。**空 = 跟服务端默认档**,不是
+  /// 「没选过要拦住用户」—— 存的档位可能已经被服务端删了,那时也得能开机,
+  /// 所以发出去之前一律拿当前清单校一遍,对不上就当空(见 `_effectiveTier`)。
+  final String tier;
+
+  RentalPrefs copyWith({
+    ModalChannel? channel,
+    int? idleSeconds,
+    String? tier,
+  }) => RentalPrefs(
+    channel: channel ?? this.channel,
+    idleSeconds: idleSeconds ?? this.idleSeconds,
+    tier: tier ?? this.tier,
+  );
 
   factory RentalPrefs.fromJson(Map<String, dynamic> j) => RentalPrefs(
     channel: j['channel'] == 'rented' ? ModalChannel.rented : ModalChannel.free,
     idleSeconds: (j['idleSeconds'] as num?)?.toInt() ?? kIdleDefaultFallback,
+    tier: j['tier'] as String? ?? '',
   );
 
   Map<String, dynamic> toJson() => {
     'channel': channel == ModalChannel.rented ? 'rented' : 'free',
     'idleSeconds': idleSeconds,
+    'tier': tier,
   };
 }
 
@@ -338,9 +504,24 @@ final gpuRentalProvider = NotifierProvider<GpuRentalNotifier, RentalState>(
 class GpuRentalNotifier extends Notifier<RentalState> {
   Timer? _poll;
 
+  /// 上一次 status 成功回来时,服务端名下**到底有没有机器**。
+  ///
+  /// 单独存一份是因为不能拿合并后的 [state] 回答这个问题:那里有一条
+  /// 「下单请求还在飞的时候不许被打回未启动」的保护,会把服务端的真实答案盖住。
+  /// 而 start 抛异常之后恰恰要靠这个答案分辨「请求没打出去」和「打出去了、
+  /// 机器已经在开」——后者报成失败的话,用户会以为什么都没发生地走开,
+  /// 那台机器却在后台一路烧到硬上限。
+  bool _serverHasRental = false;
+
   /// 轮询间隔。服务端巡检 30s 一轮(空闲超时/硬上限就是那里执行的),
   /// app 侧比它快一点,机器被自动关掉后界面不会挂着一个假的「运行中」。
   static const _pollEvery = Duration(seconds: 20);
+
+  /// 启动中单独一档。开机现在是**后台建机 + 轮询报状态**,「什么时候能用了」
+  /// 完全靠这条轮询 —— 20 秒一问的话,机器早就绪了界面还挂着「启动中」,
+  /// 而那段时间出的图会被服务端回落到免费队列。抢占档实测要一两分钟,
+  /// 多问几次的开销可以忽略。
+  static const _pollBooting = Duration(seconds: 6);
 
   String? get _session => ref.read(botSessionProvider).value?.sessionId;
   BackendClient get _client => ref.read(backendClientProvider);
@@ -378,7 +559,10 @@ class GpuRentalNotifier extends Notifier<RentalState> {
   void _rearm() {
     _poll?.cancel();
     if (!state.active) return;
-    _poll = Timer(_pollEvery, refresh);
+    _poll = Timer(
+      state.status == RentalStatus.creating ? _pollBooting : _pollEvery,
+      refresh,
+    );
   }
 
   /// 拉一次状态。失败不清空已有读数 —— 网络抖一下就把运行中的实例显示成
@@ -394,11 +578,27 @@ class GpuRentalNotifier extends Notifier<RentalState> {
       if (j['ok'] != true) {
         state = state.copyWith(error: j['message'] as String? ?? '');
       } else {
+        final was = state.status;
         final next = state.merge(j, _now()).copyWith(error: '');
+        _serverHasRental = next.status != RentalStatus.none;
         // 开机在途时别被一次「还没登记上」的轮询打回未启动:start 那边是先
-        // 落盘再建机器,理论上查得到,但两条请求赛跑不值得赌。以 start 的
-        // 返回为准,轮询期间只允许它往前走(creating → ready)。
-        state = (state.busy && next.status == RentalStatus.none) ? state : next;
+        // 落盘再建机器,理论上查得到,但两条请求赛跑不值得赌。请求还在飞的
+        // 期间只允许状态往前走(creating → ready),不许被打回。
+        if (state.busy && next.status == RentalStatus.none) {
+          // 保持现状
+        } else if (was == RentalStatus.creating &&
+            next.status == RentalStatus.none) {
+          // 启动中的机器从服务端名单里消失 = **开机失败**。服务端 `_boot_one`
+          // 的每条失败路径都是「销毁实例 + 从名单摘掉 + 一分不收」,不会留下
+          // 任何可查的痕迹 —— 不在这儿判,界面就会无声无息地退回「未启动」,
+          // 而用户刚刚明明按了开机。
+          state = next.copyWith(
+            status: RentalStatus.failed,
+            note: state.note.isEmpty ? '开机失败,实例已自动销毁' : state.note,
+          );
+        } else {
+          state = next;
+        }
       }
     } catch (e) {
       state = state.copyWith(error: '$e');
@@ -406,9 +606,20 @@ class GpuRentalNotifier extends Notifier<RentalState> {
     _rearm();
   }
 
-  /// 开机。**服务端会一直阻塞到就绪**(约 85s,上限 300s),所以本地先进
-  /// 「启动中」,请求回来才落地;期间按钮置忙,重复点不会开出第二台。
-  Future<void> start(int idleSeconds) async {
+  /// 开机。本地先进「启动中」,期间按钮置忙,重复点不会重复下单。
+  ///
+  /// ⚠ **不要信这个调用返回的 state。** 2026-08-19 起服务端把建机丢进后台
+  /// (`_fire_and_forget(_boot_one(...))`)然后**同步**拿合并视图就返回 ——
+  /// 那几个 task 一行都还没跑,所以返回体里恒是 `state: "none", count: 0,
+  /// machines: []`。照单全收的话:界面立刻退回「未启动」、`_rearm()` 看到
+  /// 不 active 于是连轮询都停掉,而机器在后台照开照计费,用户什么都看不到;
+  /// 更糟的是这时 `busy` 和 `active` 都是 false,再点一次就**真的会加开一台**
+  /// (服务端 start 的语义已经从「返回那台已有的」变成「加开到 N+count」)。
+  ///
+  /// 所以:`ok` 只当作「下单收到了」,状态一律去 [refresh] 现问 ——
+  /// `_boot_one` 的第一件事就是把 Rental 建出来置 creating,那一步在 create_task
+  /// 调度之后、我们这条 refresh 请求到达之前必然已经跑完,查得到。
+  Future<void> start(int idleSeconds, {String tier = ''}) async {
     final sid = _session;
     if (sid == null || sid.isEmpty || state.busy || state.active) return;
     state = state.copyWith(
@@ -418,35 +629,55 @@ class GpuRentalNotifier extends Notifier<RentalState> {
       note: '',
       elapsedS: 0,
       price: 0,
+      count: 1, // 乐观值,下面 refresh 会用服务端的真数覆盖
+      tierKey: tier.isEmpty ? state.tierKey : tier,
       fetchedAtMs: _now(),
     );
-    _rearm(); // 开机这 80 多秒也轮询:连接万一断了,状态仍旧跟得上
+    _rearm(); // 开机这一两分钟也轮询:连接万一断了,状态仍旧跟得上
+    Object? thrown;
     try {
-      final j = await _client.rentalStart(sid, idleTimeout: idleSeconds);
-      state = j['ok'] == true
-          // 这个调用是阻塞到就绪才返回的,所以「返回」就是「可以用了」
-          ? state.merge(j, _now()).copyWith(busy: false)
-          // 服务端明说失败:那边已经把实例销毁了,而且一分不收
-          : state.copyWith(
-              status: RentalStatus.failed,
-              busy: false,
-              note: j['message'] as String? ?? '开机失败',
-            );
+      final j = await _client.rentalStart(
+        sid,
+        idleTimeout: idleSeconds,
+        tier: tier,
+      );
+      if (j['ok'] != true) {
+        // 服务端明说没下成单(名额满 / 参数不对):那边什么都没建,一分不收
+        state = state.copyWith(
+          status: RentalStatus.failed,
+          busy: false,
+          note: j['message'] as String? ?? '开机失败',
+        );
+        _rearm();
+        return;
+      }
     } catch (e) {
       // ⚠ 客户端这边出错(断网 / 超时)**不等于没开成**:服务端很可能已经把
       // 机器建起来了,正在计费。直接标成「开机失败」会让用户以为什么都没发生,
       // 而那台机器在后台一路烧到 4 小时硬上限。所以回去问服务端,以它为准。
-      state = state.copyWith(busy: false, error: '$e');
-      await refresh();
-      if (!state.active) {
-        state = state.copyWith(status: RentalStatus.failed, note: '$e');
-      }
-      return;
+      thrown = e;
+      state = state.copyWith(error: '$e');
     }
+    // busy 撑到真状态到手为止:这中间界面显示「启动中」,而不是被那份空视图
+    // 打回「未启动」。refresh 里的 busy 分支正是为这一小段准备的。
+    await refresh();
+    state = state.copyWith(busy: false);
+    if (thrown != null && !_serverHasRental) {
+      // 请求没打出去,而且服务端名下确实一台都没有 —— 这才是真的没开成。
+      // (服务端 `_boot_one` 的第一件事就是把 Rental 建出来置 creating,
+      //  只要它跑过一次,上面那发 status 就查得到。)
+      state = state.copyWith(status: RentalStatus.failed, note: '$thrown');
+    }
+    // 剩下的情况:下单成功 → creating(轮询接手);下单成功但机器瞬间就没了
+    // → 下一轮轮询的 creating→none 分支判成失败。
     _rearm();
   }
 
   /// 关机结账。返回服务端给的结账摘要(秒数 / 金额 / 出图张数),供 UI 回执。
+  ///
+  /// ⚠ **不带 instance_id = 这个账号名下全部停止。** 服务端 2026-08-19 起支持
+  /// 一人多机(上限 4 台,web 那边能加开),app 没有多机界面,所以这里就是
+  /// 「全部关掉」—— 界面上的按钮文案必须跟着说清楚,不能让人以为只关了一台。
   Future<Map<String, dynamic>?> stop() async {
     final sid = _session;
     if (sid == null || sid.isEmpty || state.busy || !state.active) return null;
@@ -459,6 +690,10 @@ class GpuRentalNotifier extends Notifier<RentalState> {
         maxUptimeS: state.maxUptimeS,
         bootHintS: state.bootHintS,
         ratePerHour: state.ratePerHour,
+        // 档位清单是「有哪些能开」,与开没开机无关 —— 关机后清掉的话,
+        // 配置卡会退回没有选择器的老样子,直到下一次 status 回来才恢复。
+        tiers: state.tiers,
+        maxCount: state.maxCount,
       );
       unawaited(refresh());
       return j['ok'] == true ? j : null;
