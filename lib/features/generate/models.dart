@@ -536,11 +536,6 @@ bool kreaNegativeWorks(String tier) => kreaTierDefaults(tier).cfg > 1.0;
 const kreaStepsRange = (min: 4, max: 60);
 const kreaCfgRange = (min: 1.0, max: 7.0);
 
-/// NAI 的 CFG 区间(对齐 web)。吸底栏那根浮动滑杆与高级面板共用同一份 ——
-/// 同一个参数在两处给出不同的可选范围,是最容易让人以为「app 坏了」的
-/// 那种不一致。步长 0.1。
-const naiCfgRange = (min: 0.0, max: 25.0);
-
 /// 步数滑杆与高级面板共用的取值范围(三个父类各一套)。
 ({int min, int max}) stepsRangeOf(String displayModel) =>
     switch (providerOfModel(displayModel)) {

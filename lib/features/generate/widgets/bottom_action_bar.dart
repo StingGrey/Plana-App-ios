@@ -10,7 +10,7 @@ import '../gen_modules.dart';
 import '../generate_state.dart';
 import '../generation_controller.dart';
 import '../loop_controller.dart';
-import '../models.dart' show GenParams, kBatchMax, naiCfgRange, stepsRangeOf;
+import '../models.dart' show GenParams, kBatchMax, stepsRangeOf;
 import '../vibe_encoder.dart';
 import '../../import/import_panel.dart';
 import 'advanced_sheet.dart';
@@ -20,9 +20,9 @@ import 'resolution_sheet.dart';
 
 /// 吸底栏上方那一处浮动控件,现在是**谁开着**。
 ///
-/// 三个读数(步数 / CFG / 张数)共用创作页同一个位置,所以状态收成一个 ——
-/// 原先两个各存各的 open,还得互相 close 一把,再加一个就是三处两两配对。
-enum FloatingPill { none, steps, cfg, batch }
+/// 几个读数共用创作页同一个位置,所以状态收成一个 —— 原先两个各存各的
+/// open、还得互相 close 一把,再加一个就是三处两两配对。
+enum FloatingPill { none, steps, batch }
 
 /// 浮动控件的开合 + 拖动草稿。
 ///
@@ -112,6 +112,8 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
     if (fee != null) _lastVibeFee = fee;
     final totalCost =
         estimateCost(sent, isOpus: isOpus) + (fee ?? _lastVibeFee);
+    // 按**会发出去**的那份参数判(见 sentParamsProvider)
+    final batchable = sent.params.batchable;
 
     return Material(
       color: scheme.surfaceContainer,
@@ -120,30 +122,27 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // 均分而不是「左边挤成一堆 + 右边钉一个」:加进「张数」之后,
-            // 左边那串把 Spacer 压没了,它和「高级」直接贴在一起。
-            // spaceBetween 让几个读数在两种情况下(有没有张数)都摊得匀。
+            // 两种排法,按有没有「张数」分:
+            //  · anima / krea 四颗 —— 均分。左边挤成一堆的话 Spacer 被压没,
+            //    张数会和「高级」贴在一起;
+            //  · NAI 三颗 —— 还是「左边一串 + 高级钉右边」。三颗均分会把步数
+            //    甩到正中间,中间那片空白比贴在一起更晃眼。
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              mainAxisAlignment: batchable
+                  ? MainAxisAlignment.spaceBetween
+                  : MainAxisAlignment.start,
               children: [
                 _ReadoutChip(
                   caption: '尺寸',
                   value: '${p.width}×${p.height}',
                   onTap: () => showResolutionSheet(context),
                 ),
+                if (!batchable) const SizedBox(width: 8),
                 const _StepsChip(),
                 // 张数只有 anima / krea 有(NAI 那条路一单一张)。**不给它常驻
                 // 一个位置**:NAI 下摆个恒为 1、点了还得解释「这个模型不支持」
                 // 的读数,只是白占那条本来就挤的行。
-                if (sent.params.batchable)
-                  const _BatchChip()
-                else
-                  // NAI 没有张数这回事,那一格空着只剩三颗读数、摆得发虚。
-                  // 补 CFG:它和步数是同一类「每次都可能微调」的采样参数,
-                  // 本来就该够得着,不必为它掀开整张高级设置。
-                  // anima / krea 不给这颗 —— 那边已经有张数,五颗挤不下,
-                  // 而且它们的 CFG 多半跟着档位默认走、不常动。
-                  const _CfgChip(),
+                if (batchable) const _BatchChip() else const Spacer(),
                 _ReadoutChip(
                   icon: Icons.tune,
                   value: '高级',
@@ -499,27 +498,6 @@ class _StepsChip extends ConsumerWidget {
   }
 }
 
-/// CFG 读数按钮(NAI):点开/收起浮动滑杆,与步数那颗同一套行为。
-class _CfgChip extends ConsumerWidget {
-  const _CfgChip();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final committed = ref.watch(generateProvider.select((s) => s.params.cfg));
-    final pill = ref.watch(floatingPillProvider);
-    final open = pill.isOpen(FloatingPill.cfg);
-    return _ReadoutChip(
-      caption: 'CFG',
-      value: ((open ? pill.draft : null) ?? committed).toStringAsFixed(1),
-      active: open,
-      // 拖动时逐帧换数,再叠淡入淡出只会糊成一团
-      animateValue: !open,
-      onTap: () =>
-          ref.read(floatingPillProvider.notifier).toggle(FloatingPill.cfg),
-    );
-  }
-}
-
 /// 一次出几张(anima / krea 的 `batch_size`)。
 ///
 /// 摆在吸底栏而不是高级设置里:这是**每次都会变**的决策(想多看几个构图就
@@ -578,9 +556,7 @@ class FloatingPillOverlay extends ConsumerWidget {
     // 不收的话下次切回来它会自己冒出来,像见了鬼。
     // (只在这儿判「还该不该画」,真正把状态清掉交给下面那次 listen。)
     final okFor = switch (which) {
-      FloatingPill.batch =>
-        p.batchable && p.effectiveBatch == p.batchCount,
-      FloatingPill.cfg => !p.batchable, // CFG 读数只给 NAI,见 _CfgChip
+      FloatingPill.batch => p.batchable && p.effectiveBatch == p.batchCount,
       _ => true,
     };
     if (!okFor) which = FloatingPill.none;
@@ -606,7 +582,6 @@ class FloatingPillOverlay extends ConsumerWidget {
       ),
       child: switch (which) {
         FloatingPill.steps => const _StepsSliderPill(),
-        FloatingPill.cfg => const _CfgSliderPill(),
         FloatingPill.batch => const _BatchPickerPill(),
         FloatingPill.none => const SizedBox.shrink(),
       },
@@ -819,81 +794,6 @@ class _StepsSliderPill extends ConsumerWidget {
               );
               if (v == null) return;
               notifier.applyParams(p.withActiveSteps(v.round()));
-              pill.endDrag();
-            },
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// CFG 浮动滑杆(NAI)。和步数那根同一处、同一套操作 —— 拖动只写草稿,
-/// 松手才提交;右边那格点开可以直接键入。
-///
-/// 步长 0.1、区间与高级面板同源([naiCfgRange]):同一个参数在两处给出不同的
-/// 可选范围,是最容易让人以为「app 坏了」的那种不一致。
-class _CfgSliderPill extends ConsumerWidget {
-  const _CfgSliderPill();
-
-  /// 0.1 一档。滑杆本身走连续值,这里只负责把落点收成一位小数 ——
-  /// 离散 Slider 会用 75ms 曲线把滑块吸到刻度,250 个刻度拖起来全程黏手。
-  static double _snap(double v) => (v * 10).roundToDouble() / 10;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    // 记录的字段取值不是常量表达式,只能 final
-    final min = naiCfgRange.min;
-    final max = naiCfgRange.max;
-    final committed = ref.watch(
-      generateProvider.select((s) => s.params.cfg),
-    );
-    final cfg =
-        (ref.watch(floatingPillProvider.select((x) => x.draft)) ?? committed)
-            .clamp(min, max);
-    return _PillShell(
-      label: 'CFG',
-      child: Row(
-        children: [
-          Expanded(
-            child: SliderTheme(
-              data: compactSliderTheme,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                child: Slider(
-                  value: cfg,
-                  min: min,
-                  max: max,
-                  onChanged: (v) =>
-                      ref.read(floatingPillProvider.notifier).drag(_snap(v)),
-                  onChangeEnd: (v) {
-                    final p = ref.read(generateProvider).params;
-                    ref
-                        .read(generateProvider.notifier)
-                        .applyParams(p.copyWith(cfg: _snap(v)));
-                    ref.read(floatingPillProvider.notifier).endDrag();
-                  },
-                ),
-              ),
-            ),
-          ),
-          ParamValueBox(
-            text: cfg.toStringAsFixed(1),
-            dense: true,
-            onTap: () async {
-              final notifier = ref.read(generateProvider.notifier);
-              final pill = ref.read(floatingPillProvider.notifier);
-              final p = ref.read(generateProvider).params;
-              final v = await showParamInput(
-                context,
-                title: '提示词引导 CFG',
-                value: cfg,
-                min: min,
-                max: max,
-                divisions: ((max - min) * 10).round(),
-              );
-              if (v == null) return;
-              notifier.applyParams(p.copyWith(cfg: _snap(v)));
               pill.endDrag();
             },
           ),
