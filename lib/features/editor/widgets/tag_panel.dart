@@ -83,17 +83,20 @@ class TagPanel extends StatefulWidget {
 }
 
 /// 精简词条栏的控件尺寸。抽成常量是因为 [_TagPanelState._compactRow] 要靠
-/// 它们算「还放不放得下名字」—— 硬编码两份迟早对不上。
+/// 它们判断放不放得下 —— 硬编码两份迟早对不上。
 ///
-/// 比第一版粗了一圈(34/32/34 → 42/40/38):省掉那格 ×N 读数腾出来的 50 宽
-/// 分给了按钮。这一栏就是拿来按的,第一版那种 32 的圆钮在拇指下面不好使。
+/// 比第一版粗一圈(34/32/34 → 40/38/36)。这一栏是拿来按的,第一版那种 32 的
+/// 圆钮在拇指下面不好使;腾出这一圈的是**去掉名字**,见 `_compactRow` 的说明。
 ///
-/// 也没有粗到顶格 —— 再大一圈的话 393 那类常见宽度上就留不下名字了,
-/// 而「你在改哪一枚」比「按钮再宽两像素」值钱。
-const double _kWrapW = 42; // [ ] / { }
+/// 上限是**真机宽度**定的,不是拍脑袋:测试机 1200px / 520dpi = **369 dp**,
+/// 去掉内边距只剩 347 装八个控件。按这一版的数是 334,留 13 的余量;再粗一号
+/// (42/40/38)就是 356,当场退化成横向滚动 —— 一条要连点的控件栏要划着用,
+/// 那比按钮小两像素难受得多。
+const double _kWrapW = 40; // [ ] / { }
 const double _kWrapH = 40;
-const double _kStepW = 40; // ⊖ / ⊕
-const double _kTailW = 38; // ⌫ / 🗑 / ⚠ / ⇄
+const double _kStepW = 38; // ⊖ / ⊕
+const double _kReadW = 46; // ×N 读数
+const double _kTailW = 36; // ⌫ / 👁 / 🗑 / ⚠ / ⇄
 
 class _TagPanelState extends State<TagPanel> {
   bool _relatedOpen = false; // 关联标签是否展开
@@ -462,30 +465,25 @@ class _TagPanelState extends State<TagPanel> {
     );
   }
 
-  /// 一行精简版。**只留权重的全部功能 + 删除**。
+  /// 一行精简版。
   ///
-  ///     [⚠] blue eyes ×1.2 [⇄]     [ ] ⊖   ⊕ { }     ⌫  🗑
+  ///     [⚠][⇄]   [ ] ⊖ ×1.2 ⊕ { }  ⌫        👁  🗑
+  ///               └────── 权重 ──────┘        └标签┘
   ///
-  /// 取舍:
-  ///  · 名字之外的头部信息(热度 / 译文 / 维基 / 复制 / 改名)全收走 ——
-  ///    译文在正文的注音层里就有,热度只在挑词时有用,而这一栏是**调权重**的;
-  ///  · 禁用、关联也收走:前者不是权重,后者要展开第二行,和「一行」冲突;
-  ///  · 括号、数值加减、清除权重三样一个不少 —— 用户要的是「权重相关的所有
-  ///    功能」,把清除塞进读数的长按里省宽度是省错了地方,那等于砍功能;
-  ///  · **没有独立的 ×N 读数格**:×1 占着 50 宽却什么也没说,而真有权重时
-  ///    直接缀在名字后面就够了(那是同一件事的两半:哪一枚、多重)。省下的
-  ///    宽度全给了按钮 —— 这一栏是拿来按的,不是拿来读的;
-  ///  · 关闭也去了:光标挪开(文本模式)、再点一下那枚 chip 或点空白
-  ///    (芯片模式)都会收走它,一枚只为「原地藏起来」的 ✕ 不值 40 宽。
+  /// **不显示标签名。** 这一栏吸在正文正下方,而那枚标签此刻正在正文里高亮着 ——
+  /// 再抄一遍名字是复述,却要吃掉一百来宽。省下来的位置换成了三样真能用的:
+  /// ×N 读数、启用/禁用,以及粗一圈的按钮。
   ///
-  /// 四颗权重键排成 `[ ] ⊖ ⊕ { }` —— 左半降权右半加权,中间留一道缝当轴。
-  /// 括号是彩的、数值是中性圆钮,两种机制一眼分得开(和完整版同一套配色)。
+  /// 分两组,中间用弹性空隙隔开:
+  ///  · **权重组** —— 括号、数值加减、读数、清除。括号在最外、数值在里,
+  ///    读数居中,左半降权右半加权,四颗键排成一条从轻到重的轴;
+  ///  · **标签组** —— 启用/禁用、删除。它们改的是这枚词本身,不是它的权重。
   ///
-  /// 宽度不够时**分两级让**,而不是让 Row 溢出(那会画出黄黑条并且真的点不到):
-  ///  ① 先让名字 —— 挤成一个「…」既没信息又难看,而这枚标签就在正上方的
-  ///    正文里高亮着;
-  ///  ② 名字让完还是不够(分屏 / 超窄机)就整排改成横向可滚 —— 功能一个
-  ///    不少,只是要划一下。
+  /// 收走的仍然是:热度、译文、维基、复制、改名、关联。译文在正文的注音层里
+  /// 就有;关联要展开第二行,和「一行」直接冲突。关闭 ✕ 也没有 —— 光标挪开
+  /// (文本模式)、再点一下那枚 chip 或点空白(芯片模式)都会收走这一栏。
+  ///
+  /// 放不下时整排改成横向可滚,一个功能都不砍(分屏 / 超窄机会走到这条)。
   Widget _compactRow(BuildContext context, Color wc) {
     final scheme = context.scheme;
     final pal = context.editor;
@@ -496,47 +494,29 @@ class _TagPanelState extends State<TagPanel> {
     final inGroup = (tok.groupMult - 1).abs() > 0.0001;
     final weighted = (tok.ownMult - 1).abs() > 0.005;
 
-    // 固定宽的那几段。**改控件尺寸要同步改这里** —— 这几个数是让位判断的
-    // 依据,对不上就会在该滚的时候不滚(溢出)或者不该滚的时候滚。
-    const clusterW = (_kWrapW + 2 + _kStepW) * 2 + 6; // [ ]⊖ ⊕{ }
-    const tailW = _kTailW * 2 + 2; // ⌫ 🗑
-    const gaps = 8.0 + 10; // 名字→簇、簇→尾
+    // 固定宽的那几段。**改控件尺寸要同步改这里** —— 这几个数是「滚不滚」的
+    // 依据,对不上就会在该滚的时候不滚(溢出)。
+    const weightW =
+        (_kWrapW + 2 + _kStepW) * 2 + _kReadW + 8 + _kTailW; // …⊕{ } ⌫
+    const tagW = _kTailW * 2 + 2; // 👁 🗑
+    const minGap = 10.0;
     final extra =
-        (widget.warning != null ? _kTailW + 6 : 0) +
-        (widget.sdConvert != null ? _kTailW + 8 : 0);
-    final fixed = clusterW + tailW + gaps + extra;
+        (widget.warning != null ? _kTailW + 4 : 0) +
+        (widget.sdConvert != null ? _kTailW + 4 : 0);
+    final fixed = weightW + tagW + minGap + extra;
 
-    // 权重后缀实际有多宽 —— **量出来,不要估**。第一版按「四个字符 × 半宽」
-    // 估成 30,真实是 51(× 在等宽字体里不窄,而且系统字号还会放大它),
-    // 于是「放得下」判成了放不下的宽度,当场溢出。
-    final suffixStyle = mono(context, size: 12.5);
-    final scaler = MediaQuery.textScalerOf(context);
-    double measure(String t) {
-      final tp = TextPainter(
-        text: TextSpan(text: t, style: suffixStyle),
-        textDirection: TextDirection.ltr,
-        textScaler: scaler,
-      )..layout();
-      return tp.width;
-    }
-
-    final suffixW =
-        (weighted ? measure('×${fmtMult(tok.ownMult)}') + 5 : 0.0) +
-        (inGroup ? 17.0 : 0.0);
-
-    /// 名字 + 权重后缀。**合成一段**:哪一枚、多重,本来就是同一件事的两半,
-    /// 拆成两个控件反而要多占一格。×1 时后缀整个不出现 —— 没有权重的时候
-    /// 「×1」这三个字符什么也没说。
-    Widget label({bool nameless = false}) {
-      final style = context.texts.bodyMedium!.copyWith(
-        color: wc,
-        fontWeight: FontWeight.w700,
-        decoration: tok.disabled ? TextDecoration.lineThrough : null,
-      );
-      return GestureDetector(
-        // 在权重组里时长按报组信息:组权重与合计在精简版里没地方常驻,
-        // 而不说的话后缀(自身 ×1)会和正文里明显被加权的样子对不上,
-        // 那是这一栏在骗人。旁边那枚图层图标是「这里还有话」的记号。
+    /// ×N 读数。**槽是定宽的**,×1 也照常显示 —— 让它在有没有权重之间伸缩,
+    /// 整排键会跟着左右挪,而这一栏正是拿来连点加减的。没权重时压灰:
+    /// 在场但不喧宾夺主。
+    ///
+    /// 读数只报数,不跟着权重变红蓝 —— 高低看正文的色带,以及旁边那两颗
+    /// 本来就是彩的括号键。
+    Widget readout() => SizedBox(
+      width: _kReadW,
+      // 在权重组里时长按报组信息:组权重与合计在这儿没地方常驻,而不说的话
+      // 读数(自身 ×1)会和正文里明显被加权的样子对不上,那是这一栏在骗人。
+      // 旁边那枚图层图标是「这里还有话」的记号。
+      child: GestureDetector(
         onLongPress: inGroup
             ? () {
                 Haptics.selection();
@@ -548,42 +528,52 @@ class _TagPanelState extends State<TagPanel> {
                 );
               }
             : null,
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (!nameless)
-              Flexible(
-                child: Text(
-                  tok.name.isEmpty ? '标签' : tok.name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: style,
+        // 三位数权重(×12.5)加上组标记会顶破这 50 宽 —— 缩字而不是溢出
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (inGroup) ...[
+                Icon(
+                  Icons.layers_outlined,
+                  size: 12,
+                  color: scheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 2),
+              ],
+              Text(
+                '×${fmtMult(tok.ownMult)}',
+                style: mono(
+                  context,
+                  size: 14,
+                  weight: weighted ? FontWeight.w700 : FontWeight.w500,
+                  color: (weighted && on)
+                      ? scheme.onSurface
+                      : scheme.onSurfaceVariant,
                 ),
               ),
-            if (weighted) ...[
-              if (!nameless) const SizedBox(width: 5),
-              Text(
-                // 跟着名字一起着色(完整版那格读数是中性的,那是因为它旁边就是
-                // 两颗彩色按钮;这里它是名字的一部分,配色不一致反而像坏了)
-                '×${fmtMult(tok.ownMult)}',
-                style: suffixStyle.copyWith(color: wc),
-              ),
             ],
-            if (inGroup) ...[
-              const SizedBox(width: 4),
-              Icon(
-                Icons.layers_outlined,
-                size: 13,
-                color: scheme.onSurfaceVariant,
-              ),
-            ],
-          ],
+          ),
         ),
-      );
-    }
+      ),
+    );
 
-    // 名字之后那一整串(顺序固定,两种排法共用)
-    List<Widget> controls() => [
+    List<Widget> lead() => [
+      if (widget.warning != null) ...[
+        _denseIcon(
+          context,
+          Icons.warning_amber_rounded,
+          color: scheme.error,
+          tooltip: '疑似丢了逗号',
+          onTap: () => hintSnack(
+            context,
+            '「${widget.warning}」可能被误识别为权重,疑似丢了逗号',
+            icon: Icons.warning_amber_rounded,
+          ),
+        ),
+        const SizedBox(width: 4),
+      ],
       if (widget.sdConvert != null) ...[
         _denseIcon(
           context,
@@ -592,9 +582,11 @@ class _TagPanelState extends State<TagPanel> {
           tooltip: 'SD 权重语法 · 转成 NAI',
           onTap: widget.sdConvert!,
         ),
-        const SizedBox(width: 8),
+        const SizedBox(width: 4),
       ],
-      const SizedBox(width: 8),
+    ];
+
+    List<Widget> weightGroup() => [
       _weightBtn(
         context,
         '[ ]',
@@ -612,7 +604,7 @@ class _TagPanelState extends State<TagPanel> {
         size: _kStepW,
         step: () => widget.onSetMult(tok.numMult - widget.weightStep),
       ),
-      const SizedBox(width: 6), // 降权 | 加权 的轴
+      readout(),
       _RepeatBtn(
         icon: Icons.add,
         enabled: on,
@@ -630,13 +622,25 @@ class _TagPanelState extends State<TagPanel> {
         width: _kWrapW,
         height: _kWrapH,
       ),
-      const SizedBox(width: 10),
+      const SizedBox(width: 8),
       _denseIcon(
         context,
         Icons.backspace_outlined,
         tooltip: '清除权重',
         enabled: canClear,
         onTap: widget.onClear,
+      ),
+    ];
+
+    List<Widget> tagGroup() => [
+      _denseIcon(
+        context,
+        // 禁用是给这枚词套 `~ ~`,正文里它会被划掉。图标报的是**按下去会
+        // 变成什么**:禁着的时候给一只睁眼(点了就启用)。
+        tok.disabled ? Icons.visibility : Icons.visibility_off,
+        color: tok.disabled ? scheme.primary : null,
+        tooltip: tok.disabled ? '启用' : '禁用',
+        onTap: widget.onToggleDisabled,
       ),
       const SizedBox(width: 2),
       _denseIcon(
@@ -648,51 +652,30 @@ class _TagPanelState extends State<TagPanel> {
       ),
     ];
 
-    Widget warn() => _denseIcon(
-      context,
-      Icons.warning_amber_rounded,
-      color: scheme.error,
-      tooltip: '疑似丢了逗号',
-      onTap: () => hintSnack(
-        context,
-        '「${widget.warning}」可能被误识别为权重,疑似丢了逗号',
-        icon: Icons.warning_amber_rounded,
-      ),
-    );
-
     return LayoutBuilder(
       builder: (context, c) {
-        // 名字至少要能放下两三个字**外加权重后缀**才值得留整段
-        final room = c.maxWidth - fixed;
-        // +36:名字至少要能露两三个字。再高就会在 393 那类常见宽度上
-        // 把名字整个判掉,而那时候明明还塞得下
-        final showName = room >= suffixW + 36;
-        // 名字放不下但权重放得下:**先保权重**。这一栏就是拿来调权重的,
-        // 而「是哪一枚」在正上方的正文里高亮着,名字只是复述。
-        final showWeight = !showName && suffixW > 0 && room >= suffixW;
         if (c.maxWidth < fixed) {
-          // 连控件都放不下:横向可滚,一个功能都不砍
+          // 放不下:横向可滚,一个功能都不砍
           return SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (widget.warning != null) ...[warn(), const SizedBox(width: 6)],
-                ...controls(),
+                ...lead(),
+                ...weightGroup(),
+                const SizedBox(width: minGap),
+                ...tagGroup(),
               ],
             ),
           );
         }
         return Row(
           children: [
-            if (widget.warning != null) ...[warn(), const SizedBox(width: 6)],
-            if (showName)
-              Expanded(child: label())
-            else if (showWeight)
-              Expanded(child: label(nameless: true))
-            else
-              const Spacer(),
-            ...controls(),
+            ...lead(),
+            ...weightGroup(),
+            // 弹性空隙:宽屏上把两组分得开,窄屏上自己收到 0
+            const Spacer(),
+            ...tagGroup(),
           ],
         );
       },

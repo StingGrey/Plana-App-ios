@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../generate/widgets/common.dart' show hintSnack;
@@ -78,22 +79,22 @@ class _CodexViewState extends ConsumerState<CodexView> {
         final selId = _resolveSelectedId(index);
         final meta = index.firstWhere((m) => m.id == selId);
         // 首次进入法典功能:读盘确认为「没读过」时弹一次说明。
-        if (ref.watch(codexIntroProvider) == false) _maybeShowIntro(meta);
+        if (ref.watch(codexIntroProvider) == false) _maybeShowIntro();
         return _body(index, meta);
       },
     );
   }
 
   /// 首次进入弹一次说明(post-frame 起弹,防重入)。
-  void _maybeShowIntro(CodexMeta meta) {
+  void _maybeShowIntro() {
     if (_introScheduled) return;
     _introScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _showIntroDialog(meta);
+      if (mounted) _showIntroDialog();
     });
   }
 
-  void _showIntroDialog(CodexMeta meta) {
+  void _showIntroDialog() {
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -101,8 +102,9 @@ class _CodexViewState extends ConsumerState<CodexView> {
         icon: Icon(Icons.menu_book_outlined, color: context.scheme.primary),
         title: const Text('法典图鉴'),
         content: SelectableText(
-          '数据源来自 https://novelai.quicktagcloud.com/\n\n'
-          '(正式发布前会补齐所有作者出处)',
+          '词条与例图数据来自\nhttps://novelai.quicktagcloud.com/\n\n'
+          '本应用仅作展示与检索,内容版权归各法典作者所有。\n\n'
+          '感谢所有法典作者与贡献者的整理分享。',
           style: context.texts.bodyMedium,
         ),
         actions: [
