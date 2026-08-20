@@ -15,6 +15,7 @@ import '../../migrate/web_backup.dart';
 import '../../migrate/web_backup_import.dart';
 import '../tag_library.dart';
 import '../tag_models.dart';
+import 'prompt_chips.dart';
 
 /// 灵感页的三个弹层:条目详情、标签池管理、数据备份
 /// (新建/编辑走全屏 TagEditorPage)。
@@ -53,77 +54,102 @@ class _DetailSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(18, 14, 18, 18),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  e.name,
-                  style: context.texts.titleMedium!.copyWith(
-                    fontWeight: FontWeight.w800,
+    // 定高封顶:正文(分类标签 + 正负向芯片)在内部滚,标题与「复制」常驻
+    // 两端 —— 长词条不再把按钮顶出屏幕、整张弹层跟着无限拉长(法典详情同款)。
+    return SafeArea(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * 0.9,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 14, 18, 0),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      e.name,
+                      style: context.texts.titleMedium!.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
                   ),
+                  if (e.aliases.isNotEmpty)
+                    Expanded(
+                      child: Text(
+                        e.aliases.join(' / '),
+                        textAlign: TextAlign.end,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: context.texts.bodySmall!.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(18, 0, 18, 0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (e.tags.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 4,
+                        children: [
+                          for (final t in e.tags)
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 2,
+                              ),
+                              decoration: BoxDecoration(
+                                color: scheme.surfaceContainerHigh,
+                                borderRadius: BorderRadius.circular(9),
+                              ),
+                              child: Text(
+                                '#$t',
+                                style: context.texts.labelSmall,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ],
+                    const SizedBox(height: 12),
+                    _block(context, '正向', e.positive),
+                    if (e.negative.trim().isNotEmpty) ...[
+                      const SizedBox(height: 10),
+                      _block(context, '负面', e.negative),
+                    ],
+                  ],
                 ),
               ),
-              if (e.aliases.isNotEmpty)
-                Expanded(
-                  child: Text(
-                    e.aliases.join(' / '),
-                    textAlign: TextAlign.end,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: context.texts.bodySmall!.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ),
-                ),
-            ],
-          ),
-          if (e.tags.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 6,
-              runSpacing: 4,
-              children: [
-                for (final t in e.tags)
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 2,
-                    ),
-                    decoration: BoxDecoration(
-                      color: scheme.surfaceContainerHigh,
-                      borderRadius: BorderRadius.circular(9),
-                    ),
-                    child: Text('#$t', style: context.texts.labelSmall),
-                  ),
-              ],
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 12, 18, 14),
+              child: FilledButton.tonalIcon(
+                onPressed: () async {
+                  await Clipboard.setData(ClipboardData(text: e.positive));
+                  if (context.mounted) {
+                    Navigator.pop(context);
+                    hintSnack(context, '已复制提示词', icon: Icons.copy);
+                  }
+                },
+                icon: const Icon(Icons.copy, size: 18),
+                label: const Text('复制提示词'),
+                style: FilledButton.styleFrom(minimumSize: const Size(0, 44)),
+              ),
             ),
           ],
-          const SizedBox(height: 12),
-          _block(context, '正向', e.positive),
-          if (e.negative.trim().isNotEmpty) ...[
-            const SizedBox(height: 10),
-            _block(context, '负面', e.negative),
-          ],
-          const SizedBox(height: 14),
-          FilledButton.tonalIcon(
-            onPressed: () async {
-              await Clipboard.setData(ClipboardData(text: e.positive));
-              if (context.mounted) {
-                Navigator.pop(context);
-                hintSnack(context, '已复制提示词', icon: Icons.copy);
-              }
-            },
-            icon: const Icon(Icons.copy, size: 18),
-            label: const Text('复制提示词'),
-            style: FilledButton.styleFrom(minimumSize: const Size(0, 44)),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -140,6 +166,7 @@ class _DetailSheet extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 4),
+        // 芯片流不可选字,整段复制走底部「复制提示词」
         Container(
           width: double.infinity,
           padding: const EdgeInsets.all(10),
@@ -147,7 +174,7 @@ class _DetailSheet extends StatelessWidget {
             color: scheme.surfaceContainerHigh,
             borderRadius: BorderRadius.circular(12),
           ),
-          child: SelectableText(text, style: mono(context, size: 12)),
+          child: PromptChips.single(text),
         ),
       ],
     );

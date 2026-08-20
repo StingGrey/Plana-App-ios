@@ -410,8 +410,9 @@ class _CodexViewState extends ConsumerState<CodexView> {
     required double leftPad,
     required double rightPad,
   }) {
+    // 顶部不留边:筛选行自带下外边距,再留一道就叠出双倍空隙
     return SliverPadding(
-      padding: EdgeInsets.only(left: leftPad, right: rightPad, top: 6),
+      padding: EdgeInsets.only(left: leftPad, right: rightPad),
       sliver: SliverList.builder(
         itemCount: items.length,
         itemBuilder: (_, i) => Padding(

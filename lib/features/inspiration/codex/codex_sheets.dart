@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:math';
+import 'dart:ui' as ui;
 
 import 'package:animations/animations.dart';
 import 'package:flutter/material.dart';
@@ -16,6 +18,7 @@ import '../../generate/widgets/common.dart' show confirmDialog, hintSnack;
 import '../../shell/shell_state.dart';
 import '../tag_models.dart'
     show TagCategory, TagEntry, appendTagPositivesFolded;
+import '../widgets/prompt_chips.dart';
 import 'codex_card.dart';
 import 'codex_char_split.dart';
 import 'codex_favorites.dart';
@@ -536,9 +539,8 @@ class _DetailSheetState extends ConsumerState<_DetailSheet>
                               color: scheme.surfaceContainerHigh,
                               borderRadius: BorderRadius.circular(12),
                             ),
-                            child: SelectableText(
-                              e.fullText,
-                              style: mono(context, size: 12),
+                            child: PromptChips(
+                              sections: _codexPromptSections(e),
                             ),
                           ),
                       ],
@@ -933,58 +935,61 @@ class _CodexHeroImagesState extends ConsumerState<_CodexHeroImages>
   }
 
   /// 最上面那张:会翻面的卡本体(拖动位移由外面的 [_dragged] 再套一层)。
-  Widget _topCard(int n, ColorScheme scheme) => GestureDetector(
-    // opaque:图没加载出来时的空白处也要能翻
-    behavior: HitTestBehavior.opaque,
-    onTap: _flip,
-    child: AnimatedBuilder(
-      animation: _turn,
-      builder: (context, _) {
-        final angle = _turn.value * pi;
-        // 侧棱程度:正对为 0,转到 90° 为 1。缩放/明暗/影子都挂它上面。
-        final edge = sin(angle);
-        // 转起来略微后退。这一下同时压住近边的放大量,不至于盖住标题
-        final scale = 1 - .14 * edge;
-        return Transform(
-          alignment: Alignment.center,
-          transform: Matrix4.identity()
-            ..setEntry(3, 2, .0016) // 透视,不然只是横向压扁的贴纸
-            ..rotateY(angle)
-            ..scaleByDouble(scale, scale, 1, 1),
-          child: _cardSurface(
-            elevation: edge,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                // 转过一半才换脸,正好是侧棱最窄的那一帧,看不见切换。
-                // 图片面用 Offstage 藏而不是移除:多图那张 PageView 一旦被拆掉,
-                // 翻回来就是新建的一张,停在第一页 —— 你翻到第二张再翻牌,
-                // 回来图片会变回第一张,就是这么来的。
-                Offstage(
-                  offstage: _turn.value > .5,
-                  child: _imageFace(n, scheme),
-                ),
-                if (_turn.value > .5)
-                  // 背面再转 180°,否则内容是镜像的
-                  Transform(
-                    alignment: Alignment.center,
-                    transform: Matrix4.identity()..rotateY(pi),
-                    child: _promptFace(scheme),
-                  ),
-                // 受光:转离正对方向就变暗。少了这层,透视再准也像贴纸
-                if (edge > .01)
-                  IgnorePointer(
-                    child: ColoredBox(
-                      color: Colors.black.withValues(alpha: .34 * edge),
+  Widget _topCard(int n, ColorScheme scheme) {
+    // 两张脸各建**一次**再交给 AnimatedBuilder:它每帧只重建几何变换那几层,
+    // 同一实例传下去 element 直接短路 —— 否则翻面动画里整片芯片流每帧
+    // 跟着 diff 一遍,白烧 CPU。
+    final front = _imageFace(n, scheme);
+    final back = Transform(
+      alignment: Alignment.center,
+      // 背面再转 180°,否则内容是镜像的
+      transform: Matrix4.identity()..rotateY(pi),
+      child: _promptFace(),
+    );
+    return GestureDetector(
+      // opaque:图没加载出来时的空白处也要能翻
+      behavior: HitTestBehavior.opaque,
+      onTap: _flip,
+      child: AnimatedBuilder(
+        animation: _turn,
+        builder: (context, _) {
+          final angle = _turn.value * pi;
+          // 侧棱程度:正对为 0,转到 90° 为 1。缩放/明暗/影子都挂它上面。
+          final edge = sin(angle);
+          // 转起来略微后退。这一下同时压住近边的放大量,不至于盖住标题
+          final scale = 1 - .14 * edge;
+          return Transform(
+            alignment: Alignment.center,
+            transform: Matrix4.identity()
+              ..setEntry(3, 2, .0016) // 透视,不然只是横向压扁的贴纸
+              ..rotateY(angle)
+              ..scaleByDouble(scale, scale, 1, 1),
+            child: _cardSurface(
+              elevation: edge,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  // 转过一半才换脸,正好是侧棱最窄的那一帧,看不见切换。
+                  // 图片面用 Offstage 藏而不是移除:多图那张 PageView 一旦被拆掉,
+                  // 翻回来就是新建的一张,停在第一页 —— 你翻到第二张再翻牌,
+                  // 回来图片会变回第一张,就是这么来的。
+                  Offstage(offstage: _turn.value > .5, child: front),
+                  if (_turn.value > .5) back,
+                  // 受光:转离正对方向就变暗。少了这层,透视再准也像贴纸
+                  if (edge > .01)
+                    IgnorePointer(
+                      child: ColoredBox(
+                        color: Colors.black.withValues(alpha: .34 * edge),
+                      ),
                     ),
-                  ),
-              ],
+                ],
+              ),
             ),
-          ),
-        );
-      },
-    ),
-  );
+          );
+        },
+      ),
+    );
+  }
 
   /// 当前这张。两个方向不是一回事:
   /// 往左 = 把这张甩出去(跟手 1:1 走、微微侧倾、最后一段淡出);
@@ -1099,15 +1104,20 @@ class _CodexHeroImagesState extends ConsumerState<_CodexHeroImages>
       ),
     );
     if (url == null) return fallback;
-    return ColoredBox(
-      color: scheme.surfaceContainerHighest,
-      child: RemoteImage(
-        url,
-        fit: _fit,
-        gaplessPlayback: true,
-        frameBuilder: codexFadeIn,
-        errorBuilder: (_, _, _) => fallback,
-      ),
+    final img = RemoteImage(
+      url,
+      fit: _fit,
+      gaplessPlayback: true,
+      frameBuilder: codexFadeIn,
+      errorBuilder: (_, _, _) => fallback,
+    );
+    if (_fit != BoxFit.contain) {
+      return ColoredBox(color: scheme.surfaceContainerHighest, child: img);
+    }
+    // 邻居卡与顶卡同款毛玻璃留边,一摞牌观感才一致
+    return Stack(
+      fit: StackFit.expand,
+      children: [_BlurredBackdrop(url: url, frost: .35), img],
     );
   }
 
@@ -1117,7 +1127,7 @@ class _CodexHeroImagesState extends ConsumerState<_CodexHeroImages>
   /// (结果就是多图词条切不了下一条)。改成自己按 [pageDrag] 平移两张图,
   /// 手势归属由弹层统一裁决 —— 内层翻到头,才轮到牌堆。
   Widget _imageFace(int n, ColorScheme scheme) {
-    if (n == 0) return _promptFace(scheme);
+    if (n == 0) return _promptFace();
     if (n == 1) return _img(0, scheme);
     return AnimatedBuilder(
       animation: widget.pageDrag,
@@ -1184,63 +1194,273 @@ class _CodexHeroImagesState extends ConsumerState<_CodexHeroImages>
     ),
   );
 
-  /// 背面:提示词。原样展示(含权重语法),长了就在框内滚,不撑开版面。
-  /// 用普通 Text 不用 SelectableText —— 选字手势会和「点一下翻回去」打架,
-  /// 整段复制走底部那枚「复制」。
-  Widget _promptFace(ColorScheme scheme) {
-    const pad = EdgeInsets.all(14);
-    final style = mono(context, size: 12).copyWith(height: 1.5);
-    return ColoredBox(
-      color: scheme.surfaceContainerHigh,
-      child: LayoutBuilder(
-        builder: (context, c) => SingleChildScrollView(
-          padding: pad,
-          // 装得下就不许它滚:内层滚动区会把拖动全吃掉,整张弹层跟着卡住
-          physics:
-              _fits(
-                style,
-                c.maxWidth - pad.horizontal,
-                c.maxHeight - pad.vertical,
-              )
-              ? const NeverScrollableScrollPhysics()
-              : null,
-          child: Text(_prompt, style: style),
-        ),
-      ),
-    );
-  }
-
-  /// 提示词在给定内容区里放不放得下。
-  bool _fits(TextStyle style, double w, double h) {
-    final tp = TextPainter(
-      text: TextSpan(text: _prompt, style: style),
-      textDirection: Directionality.of(context),
-      textScaler: MediaQuery.textScalerOf(context),
-    )..layout(maxWidth: w);
-    final fits = tp.height <= h;
-    tp.dispose();
-    return fits;
-  }
+  /// 背面(或无图词条的正面):提示词芯片面。有例图时拿**当前页**那张
+  /// 垫毛玻璃底。整段复制仍走底部那枚「复制」—— 芯片不可选字,
+  /// 点它就是点卡片,照样翻回去。
+  Widget _promptFace() => _PromptFace(
+    entry: widget.entry,
+    bgUrl: _imgCount == 0
+        ? null
+        : codexImageItemUrl(widget.codex, widget.entry, widget.media, widget.page),
+  );
 
   Widget _img(int i, ColorScheme scheme) {
     final url = codexImageItemUrl(widget.codex, widget.entry, widget.media, i);
     if (url == null) {
       return ColoredBox(color: scheme.surfaceContainerHighest);
     }
-    return ColoredBox(
-      // 定高后比例不一,contain 会留边,底色补上才像一张完整的卡
-      color: scheme.surfaceContainerHighest,
-      child: RemoteImage(
-        url,
-        fit: _fit,
-        gaplessPlayback: true,
-        frameBuilder: codexFadeIn,
-        errorBuilder: (_, _, _) => Center(
-          child: Icon(Icons.broken_image_outlined, color: scheme.outline),
-        ),
+    final img = RemoteImage(
+      url,
+      fit: _fit,
+      gaplessPlayback: true,
+      frameBuilder: codexFadeIn,
+      errorBuilder: (_, _, _) => Center(
+        child: Icon(Icons.broken_image_outlined, color: scheme.outline),
       ),
     );
+    // 随机模式(cover)铺满没有边,不必垫底
+    if (_fit != BoxFit.contain) {
+      return ColoredBox(color: scheme.surfaceContainerHighest, child: img);
+    }
+    // 定高后比例不一,contain 会留边 —— 边不再是死灰,用同一张图的毛玻璃
+    // 垫底,留白像图自己延伸出去
+    return Stack(
+      fit: StackFit.expand,
+      children: [_BlurredBackdrop(url: url, frost: .35), img],
+    );
   }
+}
+
+/// 已烘好的模糊纹理(按图 URL):[_blurJobs] 管在途与去重,[_blurDone] 给
+/// 挂载时同步取 —— 免得每次翻面都先闪一帧底色再淡入。上限之外按插入序淘汰,
+/// **不 dispose**:被淘汰的可能还挂在屏幕上,96px 小图交给 GC 收尾。
+final _blurJobs = <String, Future<ui.Image?>>{};
+final _blurDone = <String, ui.Image>{};
+const _blurCap = 96;
+
+Future<ui.Image?> _bakedBlur(String url) {
+  final hit = _blurJobs.remove(url);
+  if (hit != null) return _blurJobs[url] = hit; // 重插一次 = 记「最近用过」
+  while (_blurJobs.length >= _blurCap) {
+    final oldest = _blurJobs.keys.first;
+    _blurJobs.remove(oldest);
+    _blurDone.remove(oldest);
+  }
+  late final Future<ui.Image?> fut;
+  fut = _bakeBlur(url).then((img) {
+    if (img != null) {
+      _blurDone[url] = img;
+    } else if (identical(_blurJobs[url], fut)) {
+      _blurJobs.remove(url); // 失败不缓存,下次挂载重试
+    }
+    return img;
+  });
+  return _blurJobs[url] = fut;
+}
+
+/// 拉 96px 小图 → 高斯糊一遍 → 落成纹理。σ 按小图给:上屏还要放大十来倍,
+/// 等效全尺寸 σ≈20 的观感。失败返回 null,底色顶着。
+Future<ui.Image?> _bakeBlur(String url) async {
+  final ui.Image src;
+  try {
+    src = await _resolveImage(ResizeImage(RemoteImageProvider(url), width: 96));
+  } catch (_) {
+    return null;
+  }
+  try {
+    final w = src.width, h = src.height;
+    final rec = ui.PictureRecorder();
+    final canvas = Canvas(rec);
+    canvas.saveLayer(
+      Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
+      Paint()
+        ..imageFilter = ui.ImageFilter.blur(
+          sigmaX: 4,
+          sigmaY: 4,
+          tileMode: ui.TileMode.clamp, // 边缘延展,不糊出一圈透明黑边
+        ),
+    );
+    canvas.drawImage(src, Offset.zero, Paint());
+    canvas.restore();
+    final pic = rec.endRecording();
+    final img = pic.toImageSync(w, h);
+    pic.dispose();
+    return img;
+  } finally {
+    src.dispose();
+  }
+}
+
+/// 解一帧图出来(clone 出独立句柄,流内那份还给框架)。
+Future<ui.Image> _resolveImage(ImageProvider provider) {
+  final completer = Completer<ui.Image>();
+  final stream = provider.resolve(ImageConfiguration.empty);
+  late final ImageStreamListener listener;
+  listener = ImageStreamListener(
+    (info, _) {
+      if (!completer.isCompleted) completer.complete(info.image.clone());
+      info.dispose();
+      stream.removeListener(listener);
+    },
+    onError: (e, _) {
+      if (!completer.isCompleted) completer.completeError(e);
+      stream.removeListener(listener);
+    },
+  );
+  stream.addListener(listener);
+  return completer.future;
+}
+
+/// 例图的毛玻璃垫底:同一张图 cover 铺满 + 高斯糊 + 一层主题面色罩。
+/// 模糊**烘焙一次**而不是每帧现算 —— ImageFiltered 在 Impeller 下没有
+/// 光栅缓存,牌堆两三张卡一起动时每帧都按屏幕面积重跑高斯,真机可感掉帧;
+/// 烘成纹理后每帧只是贴图,和普通图片同价。
+class _BlurredBackdrop extends StatefulWidget {
+  const _BlurredBackdrop({required this.url, required this.frost});
+
+  final String url;
+
+  /// 罩层不透明度(surface 色):图面留边只轻罩,提示词面要衬字重罩。
+  final double frost;
+
+  @override
+  State<_BlurredBackdrop> createState() => _BlurredBackdropState();
+}
+
+class _BlurredBackdropState extends State<_BlurredBackdrop> {
+  ui.Image? _img;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void didUpdateWidget(covariant _BlurredBackdrop old) {
+    super.didUpdateWidget(old);
+    if (old.url != widget.url) {
+      _img = null;
+      _load();
+    }
+  }
+
+  void _load() {
+    // 缓存命中就同步上,不走「空一帧再淡入」
+    final done = _blurDone[widget.url];
+    if (done != null) {
+      _img = done;
+      return;
+    }
+    final url = widget.url;
+    _bakedBlur(url).then((img) {
+      if (mounted && img != null && url == widget.url) {
+        setState(() => _img = img);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        ColoredBox(color: scheme.surfaceContainerHighest),
+        // 首次到货淡入;挂载时就有(缓存命中)则第一帧直接是 1,不动画
+        AnimatedOpacity(
+          opacity: _img == null ? 0 : 1,
+          duration: Motion.medium,
+          child: RawImage(
+            image: _img,
+            fit: BoxFit.cover,
+            filterQuality: FilterQuality.low,
+          ),
+        ),
+        ColoredBox(color: scheme.surface.withValues(alpha: widget.frost)),
+      ],
+    );
+  }
+}
+
+/// 提示词面:只读芯片流,例图毛玻璃垫底(无图词条素色)。
+/// 装得下就禁止内滚 —— 内层滚动区会把竖向拖动全吃掉,整张弹层跟着卡住。
+/// 芯片高度没法按字预算,改从真实布局读:帧后看 maxScrollExtent。
+class _PromptFace extends StatefulWidget {
+  const _PromptFace({required this.entry, this.bgUrl});
+
+  final CodexEntry entry;
+  final String? bgUrl;
+
+  @override
+  State<_PromptFace> createState() => _PromptFaceState();
+}
+
+class _PromptFaceState extends State<_PromptFace> {
+  final _scroll = ScrollController();
+  bool _fits = false;
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  void _measure() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scroll.hasClients) return;
+      final fits = _scroll.position.maxScrollExtent <= 0;
+      if (fits != _fits) setState(() => _fits = fits);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    _measure();
+    final content = SingleChildScrollView(
+      controller: _scroll,
+      padding: const EdgeInsets.all(14),
+      physics: _fits ? const NeverScrollableScrollPhysics() : null,
+      child: PromptChips(sections: _codexPromptSections(widget.entry)),
+    );
+    if (widget.bgUrl == null) {
+      return ColoredBox(color: scheme.surfaceContainerHigh, child: content);
+    }
+    return Stack(
+      fit: StackFit.expand,
+      children: [_BlurredBackdrop(url: widget.bgUrl!, frost: .82), content],
+    );
+  }
+}
+
+/// 法典词条按 [PromptChips] 的口径分段:与 [CodexEntry.fullText] 一致,
+/// 公共段 + 各角色段;内联 `charN：` 写法(极少)也拆开 —— 别让 char1
+/// 当字面 tag 占一颗芯片。
+List<PromptSection> _codexPromptSections(CodexEntry e) {
+  final parts = <PromptSection>[];
+  if (e.characters.isNotEmpty) {
+    if (e.tags.trim().isNotEmpty) parts.add((label: null, body: e.tags));
+    for (final c in e.characters) {
+      if (c.prompt.trim().isNotEmpty) {
+        parts.add((label: c.display, body: c.prompt));
+      }
+    }
+  } else {
+    final split = splitCodexCharacters(e.tags);
+    if (split.hasCharacters) {
+      if (split.base.isNotEmpty) parts.add((label: null, body: split.base));
+      for (final c in split.characters) {
+        parts.add((label: '角色 ${c.index}', body: c.positive));
+        if (c.negative.isNotEmpty) {
+          parts.add((label: '角色 ${c.index} · 负向', body: c.negative));
+        }
+      }
+    } else if (e.tags.trim().isNotEmpty) {
+      parts.add((label: null, body: e.tags));
+    }
+  }
+  return parts;
 }
 
 // ---- 法典选择 ----
