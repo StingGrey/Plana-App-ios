@@ -429,70 +429,56 @@ class _RentalConfig extends ConsumerWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         // 档位清单由服务端下发(config.IMG_TIERS → status.tiers),**别在这边
-        // 写死**:加档位是改服务端那张表,这里跟着渲染。清单只有一档(或老
-        // 服务端根本不下发)时不给箭头也不可点 —— 点开只有一个选项是骗人的。
-        InkWell(
-          onTap: pickable ? () => _pickTier(context, ref, s, prefs.tier) : null,
-          borderRadius: BorderRadius.circular(8),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 2),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(
-                  children: [
-                    Icon(
-                      Icons.developer_board,
-                      size: 17,
-                      color: scheme.onSurfaceVariant,
-                    ),
-                    const SizedBox(width: 9),
-                    Expanded(
-                      child: Text(
-                        tier?.label ?? spec.name,
-                        style: context.texts.bodyMedium!.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                    Text(
-                      '${rate.toStringAsFixed(2)} 元/时',
-                      style: mono(context, size: 13, color: scheme.primary),
-                    ),
-                    if (pickable)
-                      Icon(Icons.chevron_right, size: 17, color: scheme.outline),
-                  ],
-                ),
-                const SizedBox(height: 2),
-                Padding(
-                  padding: const EdgeInsets.only(left: 26),
-                  child: Text(
-                    spec.detail,
-                    style: context.texts.labelSmall!.copyWith(
-                      color: scheme.outline,
-                    ),
+        // 写死**:加档位是改服务端那张表,这里跟着渲染。
+        //
+        // 三档**直接摊在卡上**,不做成「点进去再选」:一共就三行,而且这是笔
+        // 花钱的决定 —— 价差和「会不会被收走」得跟「启动实例」那颗按钮摆在
+        // 同一屏里,而不是藏在再下一层弹层、选完就看不见了。
+        if (pickable)
+          for (final t in s.tiers)
+            _TierRow(
+              tier: t,
+              selected: t.key == tier?.key,
+              onTap: () {
+                Haptics.selection();
+                ref
+                    .read(rentalPrefsProvider.notifier)
+                    .patch((p) => p.copyWith(tier: t.key));
+              },
+            )
+        else ...[
+          // 老服务端不下发 tiers:那时只有一种机型,还原成原来的只读行
+          Row(
+            children: [
+              Icon(
+                Icons.developer_board,
+                size: 17,
+                color: scheme.onSurfaceVariant,
+              ),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Text(
+                  spec.name,
+                  style: context.texts.bodyMedium!.copyWith(
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
-                // 抢占档那句风险**必须留在卡面上**,不能只写在选择弹层里:
-                // 选完就关了,而这张卡是按下「启动实例」之前最后看到的东西。
-                // 原样用服务端的文案(它同时交代了「会被收走」和「收走怎么算钱」)。
-                if (tier != null && tier.spot && tier.desc.isNotEmpty) ...[
-                  const SizedBox(height: 3),
-                  Padding(
-                    padding: const EdgeInsets.only(left: 26),
-                    child: Text(
-                      tier.desc,
-                      style: context.texts.labelSmall!.copyWith(
-                        color: scheme.tertiary,
-                      ),
-                    ),
-                  ),
-                ],
-              ],
+              ),
+              Text(
+                '${rate.toStringAsFixed(2)} 元/时',
+                style: mono(context, size: 13, color: scheme.primary),
+              ),
+            ],
+          ),
+          const SizedBox(height: 2),
+          Padding(
+            padding: const EdgeInsets.only(left: 26),
+            child: Text(
+              spec.detail,
+              style: context.texts.labelSmall!.copyWith(color: scheme.outline),
             ),
           ),
-        ),
+        ],
         Divider(height: 15, color: scheme.outlineVariant.withValues(alpha: .5)),
         InkWell(
           onTap: () => _pickIdle(context, ref, s),
@@ -554,67 +540,6 @@ class _RentalConfig extends ConsumerWidget {
     );
   }
 
-  /// 档位选择。三档的差别是**价格 + 会不会被收走**,所以每行把这两样摆齐:
-  /// 名字与单价一行,规格与风险一行。
-  Future<void> _pickTier(
-    BuildContext context,
-    WidgetRef ref,
-    RentalState s,
-    String curKey,
-  ) async {
-    final cur = s.resolveTier(curKey)?.key;
-    final picked = await showModalBottomSheet<String>(
-      context: context,
-      useSafeArea: true,
-      builder: (ctx) => SafeArea(
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _sheetTitle(ctx, '机型'),
-              for (final t in s.tiers)
-                ListTile(
-                  onTap: () => Navigator.pop(ctx, t.key),
-                  title: Row(
-                    children: [
-                      Expanded(
-                        child: Text(t.label, style: ctx.texts.bodyMedium),
-                      ),
-                      Text(
-                        '${t.ratePerHour.toStringAsFixed(2)} 元/时',
-                        style: mono(ctx, size: 13, color: ctx.scheme.primary),
-                      ),
-                    ],
-                  ),
-                  subtitle: Text(
-                    // 抢占档把风险接在规格后面:那句是服务端写的,原样带过来
-                    t.spot && t.desc.isNotEmpty
-                        ? '${t.spec.detail}\n${t.desc}'
-                        : t.spec.detail,
-                    style: ctx.texts.bodySmall!.copyWith(
-                      color: t.spot
-                          ? ctx.scheme.tertiary
-                          : ctx.scheme.onSurfaceVariant,
-                    ),
-                  ),
-                  isThreeLine: t.spot && t.desc.isNotEmpty,
-                  trailing: t.key == cur
-                      ? Icon(Icons.check, size: 18, color: ctx.scheme.primary)
-                      : null,
-                ),
-              const SizedBox(height: 8),
-            ],
-          ),
-        ),
-      ),
-    );
-    if (picked != null) {
-      await ref
-          .read(rentalPrefsProvider.notifier)
-          .patch((p) => p.copyWith(tier: picked));
-    }
-  }
-
   Future<void> _pickIdle(
     BuildContext context,
     WidgetRef ref,
@@ -655,6 +580,102 @@ class _RentalConfig extends ConsumerWidget {
     if (picked != null) {
       await ref.read(gpuRentalProvider.notifier).setIdle(picked);
     }
+  }
+}
+
+/// 一档机型。名字与单价一行,规格/风险只在**选中**那档下面展开 ——
+/// 三档全铺开会把「启动实例」顶出屏幕,而没选中的那两档此刻只需要回答
+/// 「叫什么、多少钱」。
+class _TierRow extends StatelessWidget {
+  const _TierRow({
+    required this.tier,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final RentalTier tier;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  selected
+                      ? Icons.radio_button_checked
+                      : Icons.radio_button_unchecked,
+                  size: 17,
+                  color: selected ? scheme.primary : scheme.outline,
+                ),
+                const SizedBox(width: 9),
+                Expanded(
+                  child: Text(
+                    tier.label,
+                    style: context.texts.bodyMedium!.copyWith(
+                      fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                      color: selected ? null : scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+                Text(
+                  '${tier.ratePerHour.toStringAsFixed(2)} 元/时',
+                  style: mono(
+                    context,
+                    size: 13,
+                    color: selected ? scheme.primary : scheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+            // 选中那档才展开细节。抢占档那句风险原样用服务端的文案 ——
+            // 它同时交代了「会被收走」和「收走了怎么算钱」,别自己改写成
+            // 「更便宜」之类的话,那是在替用户低估风险。
+            AnimatedSize(
+              duration: Motion.medium,
+              curve: Motion.emphasized,
+              alignment: Alignment.topCenter,
+              child: selected
+                  ? Padding(
+                      padding: const EdgeInsets.only(left: 26, top: 2),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            tier.spec.detail,
+                            style: context.texts.labelSmall!.copyWith(
+                              color: scheme.outline,
+                            ),
+                          ),
+                          if (tier.spot && tier.desc.isNotEmpty) ...[
+                            const SizedBox(height: 2),
+                            Text(
+                              tier.desc,
+                              style: context.texts.labelSmall!.copyWith(
+                                color: scheme.tertiary,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    )
+                  : const SizedBox(width: double.infinity),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

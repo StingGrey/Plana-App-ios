@@ -620,7 +620,9 @@ class _BatchPickerPill extends ConsumerWidget {
                 padding: const EdgeInsets.all(3),
                 decoration: BoxDecoration(
                   color: scheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(_h / 2),
+                  // 方角(与高级设置里那排选择块同款 11),不是药丸:
+                  // 外面那圈浮层已经是圆的了,里面再套一圈圆的会糊成一团
+                  borderRadius: BorderRadius.circular(12),
                 ),
                 child: LayoutBuilder(
                   builder: (context, c) {
@@ -644,7 +646,7 @@ class _BatchPickerPill extends ConsumerWidget {
                             height: _h - 6,
                             decoration: BoxDecoration(
                               color: scheme.primary,
-                              borderRadius: BorderRadius.circular((_h - 6) / 2),
+                              borderRadius: BorderRadius.circular(9),
                             ),
                           ),
                         ),
