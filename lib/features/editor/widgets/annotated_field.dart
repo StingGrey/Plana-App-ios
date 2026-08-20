@@ -116,6 +116,7 @@ class AnnotatedField extends StatelessWidget {
                           pal: pal,
                           errorWash: scheme.error,
                           sdWash: scheme.tertiary,
+                          disabledWash: scheme.onSurface,
                           revision: transCacheRev,
                         ),
                       ),
@@ -333,6 +334,7 @@ class _WeightWashPainter extends CustomPainter {
     required this.pal,
     required this.errorWash,
     required this.sdWash,
+    required this.disabledWash,
     required this.revision,
   });
 
@@ -355,6 +357,9 @@ class _WeightWashPainter extends CustomPainter {
   final Color errorWash;
   final Color sdWash;
 
+  /// 禁用词条那层中性底色(调用方给 onSurface,这里再压透明度)。
+  final Color disabledWash;
+
   /// 翻译缓存版本:补偿间距随译文变化会挪断行,必须跟着重绘。
   final int revision;
 
@@ -369,8 +374,16 @@ class _WeightWashPainter extends CustomPainter {
 
     // 词条级警示区间(异常红 / SD tertiary),画在权重色带之上
     final overlays = <(int, int, Color)>[];
+    // 禁用词条的区间。**它们不铺权重色带** —— 一枚关掉的词还顶着一片加权蓝,
+    // 说的是两件互相矛盾的事;chip 那边早就是这个规矩(禁用不铺色),正文这边
+    // 一直漏了。改成铺一层中性灰:划掉 + 压暗 + 一层底,三样一起才看得出来。
+    final off = <(int, int)>[];
     for (final t in toks) {
-      if (t.disabled) continue;
+      if (t.disabled) {
+        off.add((t.segStart, t.segEnd));
+        overlays.add((t.segStart, t.segEnd, disabledWash.withValues(alpha: .1)));
+        continue;
+      }
       if (abnormalWeightOf(text, t, threshold: abnormalThreshold) != null) {
         overlays.add((t.segStart, t.segEnd, errorWash.withValues(alpha: .16)));
       } else if (isSdWeightSeg(text.substring(t.segStart, t.segEnd))) {
@@ -378,6 +391,8 @@ class _WeightWashPainter extends CustomPainter {
       }
     }
     if (spans.isEmpty && overlays.isEmpty) return;
+    bool isOff(int a, int b) =>
+        off.any((r) => a >= r.$1 && b <= r.$2);
 
     final layout = TextPainter(
       text: withSpacing
@@ -428,6 +443,7 @@ class _WeightWashPainter extends CustomPainter {
     }
 
     for (final s in spans) {
+      if (isOff(s.start, s.end)) continue; // 见上:禁用不铺权重色
       final c = pal.weightWash(s.mult);
       if (c != null) drawRange(s.start, s.end, c);
     }
@@ -446,6 +462,7 @@ class _WeightWashPainter extends CustomPainter {
       old.pal != pal ||
       old.errorWash != errorWash ||
       old.sdWash != sdWash ||
+      old.disabledWash != disabledWash ||
       old.revision != revision;
 }
 

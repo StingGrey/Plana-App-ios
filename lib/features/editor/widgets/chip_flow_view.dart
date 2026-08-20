@@ -549,7 +549,13 @@ class _TagChip extends StatelessWidget {
     // 异常权重红底红框优先(web abnormalWeight 同款)。
     var chipBg = scheme.surfaceContainerHigh;
     var chipBorder = scheme.outlineVariant;
-    if (abnormal && !tok.disabled) {
+    if (tok.disabled) {
+      // 禁用要一眼看得出来。原先只是「正常 chip + 灰字 + 一道细划线」,
+      // 底和边框和旁边的普通 chip 一模一样,扫过去根本分不出来(实测反馈)。
+      // 改成往下沉一档的底 + 淡到几乎没有的边:整颗 chip 从这一片里退出去。
+      chipBg = scheme.surfaceContainerLowest;
+      chipBorder = scheme.outlineVariant.withValues(alpha: .4);
+    } else if (abnormal && !tok.disabled) {
       chipBg = Color.alphaBlend(
         scheme.error.withValues(alpha: .14),
         scheme.surfaceContainerHigh,
@@ -609,6 +615,8 @@ class _TagChip extends StatelessWidget {
                         decoration: tok.disabled
                             ? TextDecoration.lineThrough
                             : null,
+                        decorationColor: scheme.outline,
+                        decorationThickness: 2,
                       ),
                     ),
                   ),

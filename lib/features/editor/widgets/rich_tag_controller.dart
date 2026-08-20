@@ -180,6 +180,8 @@ class RichTagController extends TextEditingController {
             color: curColor,
             decoration: curStrike ? TextDecoration.lineThrough : null,
             decorationColor: curColor,
+            // 划线加粗:1px 的细线在正文字号下几乎看不见
+            decorationThickness: curStrike ? 2 : null,
           ),
         ),
       );
@@ -210,8 +212,11 @@ class RichTagController extends TextEditingController {
             ch == '[' ||
             ch == ']' ||
             ch == '~';
-        final tc = tok.disabled ? scheme.onSurfaceVariant : scheme.onSurface;
-        c = marker ? tc.withValues(alpha: .45) : tc;
+        // 禁用要**一眼看得出来**。原先只降到 onSurfaceVariant,那个色和正常
+        // 正文差得太少,加一道细划线基本看不出区别(实测反馈)。改成 outline
+        // (最暗的那档前景色),配合加粗的划线和底下那层灰色带,三样一起说。
+        final tc = tok.disabled ? scheme.outline : scheme.onSurface;
+        c = marker ? tc.withValues(alpha: tok.disabled ? .3 : .45) : tc;
         strike = tok.disabled;
       }
       final sp = spacing[k];
@@ -225,6 +230,7 @@ class RichTagController extends TextEditingController {
               color: c,
               decoration: strike ? TextDecoration.lineThrough : null,
               decorationColor: c,
+              decorationThickness: strike ? 2 : null,
               letterSpacing: sp,
             ),
           ),

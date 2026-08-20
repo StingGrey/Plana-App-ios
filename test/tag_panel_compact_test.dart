@@ -105,7 +105,7 @@ void main() {
     expect(find.byIcon(Icons.visibility_off), findsOneWidget, reason: '禁用');
     expect(find.byIcon(Icons.delete_outline), findsOneWidget, reason: '删除');
     // 关闭去掉了:光标挪开 / 再点一下 chip / 点空白都会收走这一栏,
-    // 一枚只为「原地藏起来」的 ✕ 不值 36 宽
+    // 一枚只为「原地藏起来」的 ✕ 不值 34 宽
     expect(find.byIcon(Icons.close), findsNothing);
   });
 
@@ -148,7 +148,7 @@ void main() {
     expect(find.textContaining('疑似丢了逗号'), findsNothing);
   });
 
-  testWidgets('按钮比第一版粗一圈:够得上 36 的触摸目标', (t) async {
+  testWidgets('按钮不小于第一版:尾部圆钮 34、括号键 38', (t) async {
     await pumpAt(t, _host(compact: true));
     final del = t.getSize(
       find
@@ -158,8 +158,8 @@ void main() {
           )
           .first,
     );
-    expect(del.width, greaterThanOrEqualTo(36));
-    expect(del.height, greaterThanOrEqualTo(36));
+    expect(del.width, greaterThanOrEqualTo(34));
+    expect(del.height, greaterThanOrEqualTo(34));
     expect(t.getSize(find.text('{ }')).width, greaterThanOrEqualTo(20));
   });
 
@@ -171,6 +171,34 @@ void main() {
     expect(find.byIcon(Icons.visibility_off), findsOneWidget);
     expect(find.text('{ }'), findsOneWidget);
     expect(find.byType(SingleChildScrollView), findsWidgets);
+  });
+
+  testWidgets('括号键的字放得进按钮里', (t) async {
+    // 这套等宽字的步进宽度**等于字号**:「[ ]」三个字符在 14 号就是 42,
+    // 比 38 宽的键还宽 —— 一直是被裁着画的,而裁字不报错、analyze 也不吭声
+    await pumpAt(t, _host(compact: true));
+    for (final label in ['[ ]', '{ }']) {
+      final text = t.getSize(find.text(label));
+      final btn = t.getSize(
+        find.ancestor(of: find.text(label), matching: find.byType(SizedBox)).first,
+      );
+      expect(
+        text.width,
+        lessThanOrEqualTo(btn.width),
+        reason: '$label 的字宽 ${text.width} 超出了按钮 ${btn.width}',
+      );
+    }
+  });
+
+  testWidgets('间距均匀:控件之间只有一种缝', (t) async {
+    await pumpAt(t, _host(compact: true));
+    // 定宽的 SizedBox 间隔全都是同一个数(弹性那道是 Spacer,不在此列)
+    final gaps = t
+        .widgetList<SizedBox>(find.byType(SizedBox))
+        .where((b) => b.child == null && (b.width ?? 0) > 0)
+        .map((b) => b.width!)
+        .toSet();
+    expect(gaps, hasLength(1), reason: '出现了不止一种间距:$gaps');
   });
 
   testWidgets('真机宽度上不该退化成可滚:369 / 360 都要能一屏摆下', (t) async {

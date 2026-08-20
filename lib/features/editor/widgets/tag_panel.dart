@@ -85,18 +85,26 @@ class TagPanel extends StatefulWidget {
 /// 精简词条栏的控件尺寸。抽成常量是因为 [_TagPanelState._compactRow] 要靠
 /// 它们判断放不放得下 —— 硬编码两份迟早对不上。
 ///
-/// 比第一版粗一圈(34/32/34 → 40/38/36)。这一栏是拿来按的,第一版那种 32 的
-/// 圆钮在拇指下面不好使;腾出这一圈的是**去掉名字**,见 `_compactRow` 的说明。
+/// 尺寸是**真机宽度**倒推的,不是拍脑袋:测试机 1200px / 520dpi = **369 dp**,
+/// 去掉内边距只剩 353 装八个控件。按这一版的数是 334,留 19 的余量,
+/// 360 那档也放得下。一行里塞八样东西,单颗就只能到这个尺寸 ——
+/// 想再粗只能减功能。
 ///
-/// 上限是**真机宽度**定的,不是拍脑袋:测试机 1200px / 520dpi = **369 dp**,
-/// 去掉内边距只剩 347 装八个控件。按这一版的数是 334,留 13 的余量;再粗一号
-/// (42/40/38)就是 356,当场退化成横向滚动 —— 一条要连点的控件栏要划着用,
-/// 那比按钮小两像素难受得多。
-const double _kWrapW = 40; // [ ] / { }
-const double _kWrapH = 40;
-const double _kStepW = 38; // ⊖ / ⊕
-const double _kReadW = 46; // ×N 读数
-const double _kTailW = 36; // ⌫ / 👁 / 🗑 / ⚠ / ⇄
+/// ⚠ / ⇄ 那两枚条件图标出现时(异常权重、SD 语法,都很少见)会超出这个
+/// 预算,整排退化成横向可滚。那是有意的取舍:为了两个罕见状态把常态的按钮
+/// 再削一圈不划算。
+const double _kWrapW = 38; // [ ] / { }
+const double _kWrapH = 38;
+const double _kStepW = 36; // ⊖ / ⊕
+const double _kReadW = 48; // ×N 读数(mono 12 下「×1.2」正好 48)
+const double _kTailW = 34; // ⌫ / 👁 / 🗑 / ⚠ / ⇄
+
+/// 控件之间**唯一**的间距。原先是 2/2/8/10/2 各不相同,想用疏密表达分组,
+/// 结果只是看着乱 —— 分组交给中间那道弹性空隙就够了。
+///
+/// 5 而不是 6:八个控件排下来差的那 6 宽,正好是 360 那档机型「一屏摆下」
+/// 和「退化成横向滚动」的分界。
+const double _kGap = 5;
 
 class _TagPanelState extends State<TagPanel> {
   bool _relatedOpen = false; // 关联标签是否展开
@@ -170,8 +178,8 @@ class _TagPanelState extends State<TagPanel> {
       return Material(
         color: scheme.surfaceContainer,
         child: Padding(
-          // 上下各 8:按钮 40 高,一行落在 56 —— 完整版是 175
-          padding: const EdgeInsets.fromLTRB(12, 8, 10, 8),
+          // 上下各 10:按钮 38 高,一行落在 58 —— 完整版是 175
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
           child: _compactRow(context, wc),
         ),
       );
@@ -496,14 +504,15 @@ class _TagPanelState extends State<TagPanel> {
 
     // 固定宽的那几段。**改控件尺寸要同步改这里** —— 这几个数是「滚不滚」的
     // 依据,对不上就会在该滚的时候不滚(溢出)。
+    // [ ] ⊖ ×N ⊕ { } ⌫ 六件 + 五道缝
     const weightW =
-        (_kWrapW + 2 + _kStepW) * 2 + _kReadW + 8 + _kTailW; // …⊕{ } ⌫
-    const tagW = _kTailW * 2 + 2; // 👁 🗑
-    const minGap = 10.0;
+        _kWrapW * 2 + _kStepW * 2 + _kReadW + _kTailW + _kGap * 5;
+    const tagW = _kTailW * 2 + _kGap; // 👁 🗑
     final extra =
-        (widget.warning != null ? _kTailW + 4 : 0) +
-        (widget.sdConvert != null ? _kTailW + 4 : 0);
-    final fixed = weightW + tagW + minGap + extra;
+        (widget.warning != null ? _kTailW + _kGap : 0) +
+        (widget.sdConvert != null ? _kTailW + _kGap : 0);
+    // 两组之间至少也留一道同样的缝
+    final fixed = weightW + tagW + _kGap + extra;
 
     /// ×N 读数。**槽是定宽的**,×1 也照常显示 —— 让它在有没有权重之间伸缩,
     /// 整排键会跟着左右挪,而这一栏正是拿来连点加减的。没权重时压灰:
@@ -544,9 +553,11 @@ class _TagPanelState extends State<TagPanel> {
               ],
               Text(
                 '×${fmtMult(tok.ownMult)}',
+                // 12 不是随手挑的:这套等宽字的步进宽度**等于字号**,
+                // ×1.2 四个字符正好 48,卡在 50 的槽里不用缩
                 style: mono(
                   context,
-                  size: 14,
+                  size: 12,
                   weight: weighted ? FontWeight.w700 : FontWeight.w500,
                   color: (weighted && on)
                       ? scheme.onSurface
@@ -572,7 +583,7 @@ class _TagPanelState extends State<TagPanel> {
             icon: Icons.warning_amber_rounded,
           ),
         ),
-        const SizedBox(width: 4),
+        const SizedBox(width: _kGap),
       ],
       if (widget.sdConvert != null) ...[
         _denseIcon(
@@ -582,7 +593,7 @@ class _TagPanelState extends State<TagPanel> {
           tooltip: 'SD 权重语法 · 转成 NAI',
           onTap: widget.sdConvert!,
         ),
-        const SizedBox(width: 4),
+        const SizedBox(width: _kGap),
       ],
     ];
 
@@ -596,22 +607,25 @@ class _TagPanelState extends State<TagPanel> {
         onTap: () => widget.onWrap(false),
         width: _kWrapW,
         height: _kWrapH,
+        fontSize: 12, // 3 × 12 = 36,卡在 38 的键里
       ),
-      const SizedBox(width: 2),
+      const SizedBox(width: _kGap),
       _RepeatBtn(
         icon: Icons.remove,
         enabled: on,
         size: _kStepW,
         step: () => widget.onSetMult(tok.numMult - widget.weightStep),
       ),
+      const SizedBox(width: _kGap),
       readout(),
+      const SizedBox(width: _kGap),
       _RepeatBtn(
         icon: Icons.add,
         enabled: on,
         size: _kStepW,
         step: () => widget.onSetMult(tok.numMult + widget.weightStep),
       ),
-      const SizedBox(width: 2),
+      const SizedBox(width: _kGap),
       _weightBtn(
         context,
         '{ }',
@@ -621,8 +635,9 @@ class _TagPanelState extends State<TagPanel> {
         onTap: () => widget.onWrap(true),
         width: _kWrapW,
         height: _kWrapH,
+        fontSize: 12,
       ),
-      const SizedBox(width: 8),
+      const SizedBox(width: _kGap),
       _denseIcon(
         context,
         Icons.backspace_outlined,
@@ -642,7 +657,7 @@ class _TagPanelState extends State<TagPanel> {
         tooltip: tok.disabled ? '启用' : '禁用',
         onTap: widget.onToggleDisabled,
       ),
-      const SizedBox(width: 2),
+      const SizedBox(width: _kGap),
       _denseIcon(
         context,
         Icons.delete_outline,
@@ -663,7 +678,7 @@ class _TagPanelState extends State<TagPanel> {
               children: [
                 ...lead(),
                 ...weightGroup(),
-                const SizedBox(width: minGap),
+                const SizedBox(width: _kGap),
                 ...tagGroup(),
               ],
             ),
@@ -797,7 +812,7 @@ class _Header extends StatelessWidget {
                       ),
                     ),
                     if (count != null) ...[
-                      const SizedBox(width: 8),
+                      const SizedBox(width: 10),
                       Text(
                         _formatCount(count!),
                         style: mono(
@@ -807,15 +822,18 @@ class _Header extends StatelessWidget {
                         ),
                       ),
                     ],
-                    // 可改名时给个笔:不然「标题能点」这件事没人看得出来
-                    if (onStartRename != null) ...[
-                      const SizedBox(width: 6),
-                      Icon(
-                        Icons.edit_outlined,
-                        size: 14,
-                        color: scheme.outline,
+                    // 可改名时给个笔:不然「标题能点」这件事没人看得出来。
+                    // **自带一格留白**:紧挨着热度那串数字时它像是数字的一部分,
+                    // 分不清那是「1.2M✏」还是两样东西(实测反馈)。
+                    if (onStartRename != null)
+                      Padding(
+                        padding: const EdgeInsets.only(left: 10, right: 2),
+                        child: Icon(
+                          Icons.edit_outlined,
+                          size: 15,
+                          color: scheme.outline,
+                        ),
                       ),
-                    ],
                   ],
                 ),
                 if (tok.trans != null && tok.trans!.isNotEmpty)
@@ -926,6 +944,9 @@ Widget _weightBtn(
   required VoidCallback onTap,
   double width = 46,
   double height = 38,
+  // 「[ ]」是三个等宽字符,而这套字的步进宽度**等于字号** —— 14 号就是 42,
+  // 比 38 宽的按钮还宽,一直被裁着画。默认留给完整版(46 宽,放得下)。
+  double fontSize = 14,
 }) {
   final scheme = context.scheme;
   return Material(
@@ -942,7 +963,7 @@ Widget _weightBtn(
             label,
             style: TextStyle(
               fontFamily: 'monospace',
-              fontSize: 14,
+              fontSize: fontSize,
               fontWeight: FontWeight.w700,
               color: enabled ? fg : scheme.outlineVariant,
             ),

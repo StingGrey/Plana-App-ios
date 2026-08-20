@@ -112,7 +112,10 @@ class _CodexViewState extends ConsumerState<CodexView> {
             onPressed: () {
               ref.read(codexIntroProvider.notifier).ack();
               Navigator.pop(ctx);
-              showCodexAboutSheet(context, meta);
+              launchUrl(
+                Uri.parse('https://novelai.quicktagcloud.com/'),
+                mode: LaunchMode.externalApplication,
+              );
             },
             child: const Text('来源与致谢'),
           ),
