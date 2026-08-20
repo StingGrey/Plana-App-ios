@@ -586,7 +586,12 @@ class _DetailSheetState extends ConsumerState<_DetailSheet>
             children: [
               _favButton(scheme, e),
               const SizedBox(width: 10),
+              // 两颗按钮**不等分**:一个两字、一个五字,五五开等于把富余全给了
+              // 「复制」,而「加入提示词」那颗连字都摆不下(实测换行,整条操作栏
+              // 跟着变高)。2:3 之外还各自收了内边距 —— M3 的 icon 按钮默认
+              // 左 16 右 24,五个汉字加图标本来就顶格,那 40px 是压垮它的那根。
               Expanded(
+                flex: 2,
                 child: OutlinedButton.icon(
                   onPressed: () async {
                     await Clipboard.setData(ClipboardData(text: e.fullText));
@@ -597,16 +602,18 @@ class _DetailSheetState extends ConsumerState<_DetailSheet>
                   },
                   style: OutlinedButton.styleFrom(
                     minimumSize: const Size(0, 46),
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(23),
                     ),
                   ),
                   icon: const Icon(Icons.copy, size: 18),
-                  label: const Text('复制'),
+                  label: const Text('复制', maxLines: 1),
                 ),
               ),
               const SizedBox(width: 10),
               Expanded(
+                flex: 3,
                 child: FilledButton.icon(
                   onPressed: () {
                     final r = codexAddToPrompt(ref, e);
@@ -629,12 +636,19 @@ class _DetailSheetState extends ConsumerState<_DetailSheet>
                   },
                   style: FilledButton.styleFrom(
                     minimumSize: const Size(0, 46),
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(23),
                     ),
                   ),
                   icon: const Icon(Icons.add, size: 18),
-                  label: const Text('加入提示词'),
+                  // 兜底:系统字号调得很大时宁可省略号,也不能换行 ——
+                  // 这条操作栏是钉在底部的,它一变高就把上面的内容挤走
+                  label: const Text(
+                    '加入提示词',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
               ),
             ],
