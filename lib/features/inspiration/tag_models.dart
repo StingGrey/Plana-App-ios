@@ -30,6 +30,8 @@ class TagCategoryDef {
   final String searchHint;
 
   /// 单次可选上限(角色 6 = 角色卡槽位;画风 99;场景/其他 20,对齐 web)。
+  /// 角色分类在灵感页会被按模型覆盖(NAI 5 槽位 20,见 maxCharactersOf),
+  /// 这里的 6 只是 const 表放不下模型参数的兜底。
   final int maxSelectable;
 
   /// 是否有服务端公共库(仅角色/画风)。

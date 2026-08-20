@@ -47,8 +47,12 @@ bool _samplerSupported(String? id) =>
 bool _noiseSupported(String? n) => n != null && noiseSchedules.contains(n);
 
 /// 来源名 → 本机模型展示名(v3 无对应,返回 null 保持当前不变;对齐 web 移动端)。
+/// v5 两行是预载猜测(官方 source 串格式未公布,按 v4.5 的惯例推);
+/// 猜错也只是落到 null 兜底 —— 保持当前模型,比错误映射安全。
 String? _modelFromSource(String source) {
   final s = source.toLowerCase();
+  if (s.contains('v5 curated')) return 'NAI 5.0 Curated';
+  if (s.contains('v5')) return 'NAI 5.0 Full';
   if (s.contains('v4.5 curated')) return 'NAI 4.5 Curated';
   if (s.contains('v4.5')) return 'NAI 4.5 Full';
   if (s.contains('v4 curated')) return 'NAI 4.0 Curated';

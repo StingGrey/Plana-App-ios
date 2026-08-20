@@ -7,9 +7,14 @@ import 'res_rules.dart' show kFreePixelThreshold;
 
 const Object _unset = Object();
 
-/// 角色提示词卡的张数上限(NAI 侧约定,web 同值)。
-/// 手动新增与法典多角色导入共用这一个数,别再各写一份。
+/// 角色提示词卡的张数上限(NAI 侧约定,web 同值)。V4 系 6,NAI 5 官方
+/// 抬到 20 —— 取值一律问 [maxCharactersOf],这个基线常量只作 V4 兜底。
+/// 手动新增 / 法典多角色导入 / 灵感页选择上限 / 卡头读数共用,别再各写一份。
 const kMaxCharacters = 6;
+const kMaxCharactersNai5 = 20;
+
+int maxCharactersOf(String displayModel) =>
+    isNai5Model(displayModel) ? kMaxCharactersNai5 : kMaxCharacters;
 
 /// 角色提示词当前编辑面
 enum CharTab { positive, negative }
@@ -293,9 +298,34 @@ const models = <String>[
   'NAI 4.0 Curated',
 ];
 
+/// NAI 5 两档(2026-08 预载,官方尚未上线)。**仅 Bot 授权模式露出/可用**:
+/// bot 线 app 只发 web 中间格式,真正的 NAI 载荷由后端 convert 构造,上线时
+/// 字段差异全在后端适配,app 不用发版;直连线 buildNaiPayload 只认 V3/V4
+/// 载荷,发出去必坏 —— 弹层不列(top_bar),生成入口另有前置拒收兜底
+/// (bot 模式选完切回 token 直连,存档里还躺着它)。
+/// 已确认:两档、分角色提示词、图生图;角色参考 / Vibe 存疑,见各自门槛。
+const nai5Models = <String>['NAI 5.0 Full', 'NAI 5.0 Curated'];
+
+bool isNai5Model(String displayModel) => displayModel.startsWith('NAI 5.0');
+
 /// 角色参考(Director/Precise Reference)仅 4.5 系模型支持(对齐 web 门槛)。
 /// 载荷构造 / 成本预估 / 卡片提示共用此判定,入参为 UI 展示名。
+/// NAI 5 是否支持官方未公布,预载期按不支持处理(startsWith 天然排除)。
 bool crSupportsModel(String displayModel) => displayModel.startsWith('NAI 4.5');
+
+/// Vibe Transfer 门槛:NAI 5 官方未确认支持(编码接口是否兼容也未知),
+/// 预载期整卡屏蔽 —— 渲染与载荷剥离都走模块可见性,这里一处管住。
+/// 确认支持后放开这里,并给 naiv4vibe_codec.kModelToEncodingKey 补编码键。
+bool vibeSupportsModel(String displayModel) => !isNai5Model(displayModel);
+
+/// 提示词 token 上限(生成页卡头 / 编辑器顶栏的 x/上限 读数共用)。
+/// V4 系 512;NAI 5 官方抬到 Curated 703 / Full 1471。
+/// anima / krea 无官方口径,沿用 512 只作视觉参考。
+int tokenLimitOf(String displayModel) => switch (displayModel) {
+  'NAI 5.0 Full' => 1471,
+  'NAI 5.0 Curated' => 703,
+  _ => 512,
+};
 
 // ============================================================
 // 模型父类(provider)与 Anima(Modal ComfyUI 后端,仅 Bot 授权可用)
@@ -331,9 +361,10 @@ String providerLabel(GenProvider p) => switch (p) {
   GenProvider.krea => 'Krea 2',
 };
 
-/// 某大类下的全部型号,顺序即弹层里的顺序。
-List<String> modelsOf(GenProvider p) => switch (p) {
-  GenProvider.nai => models,
+/// 某大类下的全部型号,顺序即弹层里的顺序。[nai5] = 追加 NAI 5 预载档,
+/// 仅 Bot 授权模式为 true(见 top_bar._pickModel);新旗舰按惯例排最前。
+List<String> modelsOf(GenProvider p, {bool nai5 = false}) => switch (p) {
+  GenProvider.nai => nai5 ? [...nai5Models, ...models] : models,
   GenProvider.anima => animaModels,
   GenProvider.krea => kreaModels,
 };
@@ -372,6 +403,11 @@ String animaTierOf(String displayModel) => switch (displayModel) {
 /// 而本 app 默认模型是 NAI 4.5 Full,七档平铺一张表会被读成"app 的默认"。
 /// 分隔符统一用 ` · `(web 的 NAI 用逗号、anima 用点,混着来一页两套版式)。
 const modelDescriptions = <String, String>{
+  // NAI 5 预载两行只写**已确认**的规格(token 上限官方已公布,SFW/NSFW 是
+  // Curated/Full 的品牌惯例);不写「未上线」—— 描述是静态的,上线当天改的
+  // 是后端,这三个字会一直挂着骗人。
+  'NAI 5.0 Full': '新一代旗舰 · 1471 token · NSFW',
+  'NAI 5.0 Curated': '新一代精选版 · 703 token · SFW',
   'NAI 4.5 Full': '最新旗舰模型 · NSFW',
   'NAI 4.5 Curated': '最新旗舰精选版 · SFW',
   'NAI 4.0 Full': 'V4 旧模型 · NSFW',

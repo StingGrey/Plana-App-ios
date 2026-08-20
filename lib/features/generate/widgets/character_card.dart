@@ -24,13 +24,15 @@ class CharacterCard extends ConsumerWidget {
     final notifier = ref.read(generateProvider.notifier);
     final scheme = context.scheme;
     final chars = state.characters;
-    final canAdd = chars.length < 6;
+    final cap = maxCharactersOf(state.params.model);
+    final canAdd = chars.length < cap;
 
     return SectionCard(
       icon: Icons.group_outlined,
       title: '角色',
       reorderIndex: reorderIndex,
-      badge: CountBadge('${chars.length} / 6'),
+      // 超限 = nai5 攒的角色切回 V4(槽位 6)带不下:超出的不进载荷,标红提醒。
+      badge: CountBadge('${chars.length} / $cap', error: chars.length > cap),
       actions: [
         if (chars.isNotEmpty)
           RoundIconBtn(

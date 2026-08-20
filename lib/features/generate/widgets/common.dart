@@ -80,9 +80,13 @@ class RoundIconBtn extends StatelessWidget {
 
 /// 计数徽章(角色 2/6、Vibe 2 等)
 class CountBadge extends StatelessWidget {
-  const CountBadge(this.text, {super.key});
+  const CountBadge(this.text, {super.key, this.error = false});
 
   final String text;
+
+  /// 超限态(如 NAI 5 存的 20 张角色切回 V4 后只剩 6 个槽位):
+  /// 换错误容器色提醒 —— 超出部分不进载荷,读数得让人看出「多了」。
+  final bool error;
 
   @override
   Widget build(BuildContext context) {
@@ -90,13 +94,17 @@ class CountBadge extends StatelessWidget {
       duration: Motion.fast,
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 1.5),
       decoration: BoxDecoration(
-        color: context.scheme.tertiaryContainer,
+        color: error
+            ? context.scheme.errorContainer
+            : context.scheme.tertiaryContainer,
         borderRadius: BorderRadius.circular(9),
       ),
       child: Text(
         text,
         style: context.texts.labelSmall!.copyWith(
-          color: context.scheme.onTertiaryContainer,
+          color: error
+              ? context.scheme.onErrorContainer
+              : context.scheme.onTertiaryContainer,
           fontWeight: FontWeight.w700,
         ),
       ),

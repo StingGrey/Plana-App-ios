@@ -387,6 +387,13 @@ class GenerationNotifier extends Notifier<GenPool> {
       }
     }
 
+    // NAI 5 预载:载荷差异全在后端适配,直连线 buildNaiPayload 只认 V3/V4 ——
+    // token 模式下直接拒收,而不是按 4.5 兜底静默生成一张错模型的图。
+    // 弹层在直连模式不列它,能走到这儿的是 bot 模式选完切了接入方式的存档/快照。
+    if (isNai5Model(s.params.model) && !isBot) {
+      return _reject('NAI 5.0 仅 Bot 授权模式可用,请在「我的」页切换接入方式');
+    }
+
     // 池子空着时这条才是「这一批的头一条」—— 只有它会把页面拽去图库,见下方。
     final firstOfBatch = state.jobs.isEmpty;
 

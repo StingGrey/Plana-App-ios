@@ -5,6 +5,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/util/nai_tokenizer.dart';
 import '../../editor/editor_page.dart';
 import '../generate_state.dart';
+import '../models.dart' show tokenLimitOf;
 import '../prompt_presets.dart';
 import 'common.dart';
 
@@ -36,8 +37,10 @@ class PromptCard extends ConsumerWidget {
       parts: [for (final c in chars) c.negative],
       preset: preset?.negative ?? '',
     );
-    final over = promptTokens > 512;
-    final ratio = (promptTokens / 512).clamp(0.0, 1.0);
+    // 上限按当前模型取(NAI 5 抬到 703/1471,其余 512),读数与编辑器顶栏同源。
+    final limit = tokenLimitOf(state.params.model);
+    final over = promptTokens > limit;
+    final ratio = (promptTokens / limit).clamp(0.0, 1.0);
     final barColor = over ? scheme.error : scheme.primary;
 
     return Material(
@@ -69,7 +72,7 @@ class PromptCard extends ConsumerWidget {
                   ).copyWith(color: over ? scheme.error : scheme.onSurface),
                 ),
                 Text(
-                  ' / 512',
+                  ' / $limit',
                   style: mono(
                     context,
                     size: 11,

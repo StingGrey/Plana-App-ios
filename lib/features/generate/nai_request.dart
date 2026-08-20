@@ -6,6 +6,13 @@ import 'prompt_presets.dart' show ucPresetDirect;
 
 /// UI 展示名 → NAI 模型 id
 const _modelMap = <String, String>{
+  // NAI 5 是按命名惯例猜的**占位 id**(官方未公布)。真实 id 不同也不用发版:
+  // 后端 convert_web_params_to_stream 的 model_map 本就是「别名 → 真实 id」
+  // 重写层(v4.5-full 就是这么映射的),上线时后端加一行把这俩改写掉即可。
+  // 千万别漏了这张表只加 models.nai5Models —— naiModelId 对未知名兜底 4.5,
+  // 那会静默生成错模型,是最难查的一类错。
+  'NAI 5.0 Full': 'nai-diffusion-5-full',
+  'NAI 5.0 Curated': 'nai-diffusion-5-curated',
   'NAI 4.5 Full': 'nai-diffusion-4-5-full',
   'NAI 4.5 Curated': 'nai-diffusion-4-5-curated',
   'NAI 4.0 Full': 'nai-diffusion-4-full',

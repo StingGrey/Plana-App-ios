@@ -48,7 +48,7 @@ class GenerateNotifier extends Notifier<GenerateState> {
 
   // ---- 角色 ----
   void addCharacter() {
-    if (state.characters.length >= kMaxCharacters) return;
+    if (state.characters.length >= maxCharactersOf(state.params.model)) return;
     final c = CharacterPrompt(
       id: _newId(),
       name: '角色 ${state.characters.length + 1}',
@@ -66,7 +66,7 @@ class GenerateNotifier extends Notifier<GenerateState> {
     List<({String name, String positive, String negative})> items,
   ) {
     if (items.isEmpty) return 0;
-    final room = kMaxCharacters - state.characters.length;
+    final room = maxCharactersOf(state.params.model) - state.characters.length;
     if (room <= 0) return 0;
     final add = [
       for (final it in items.take(room))
@@ -155,15 +155,17 @@ class GenerateNotifier extends Notifier<GenerateState> {
     if (base.isNotEmpty) openPanel(Panel.characters);
   }
 
-  /// 灵感页「加入角色」:带名追加(名字取自角色条目),尊重 6 个上限,
-  /// 超出静默截断(对齐 web availableSlots 语义)。返回实际加入条数。
+  /// 灵感页「加入角色」:带名追加(名字取自角色条目),尊重张数上限
+  /// (按模型取,见 maxCharactersOf),超出静默截断(对齐 web
+  /// availableSlots 语义)。返回实际加入条数。
   int addNamedCharactersFrom(
     List<({String name, String positive, String negative})> chars,
   ) {
+    final cap = maxCharactersOf(state.params.model);
     final base = [...state.characters];
     var added = 0;
     for (final c in chars) {
-      if (base.length >= 6) break;
+      if (base.length >= cap) break;
       base.add(
         CharacterPrompt(
           id: _newId(),

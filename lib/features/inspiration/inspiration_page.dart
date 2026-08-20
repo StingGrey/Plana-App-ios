@@ -14,6 +14,7 @@ import '../../core/ui/selection_bar.dart';
 import '../editor/editor_models.dart' show draftOf, outputOf, pickEditorText;
 import '../generate/gen_modules.dart';
 import '../generate/generate_state.dart';
+import '../generate/models.dart' show maxCharactersOf;
 import '../generate/widgets/common.dart'
     show confirmDialog, hintSnack, sharedAxisRoute;
 import '../shell/shell_state.dart';
@@ -107,17 +108,18 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   Set<String> get _sel => _selected[_cat] ??= {};
 
   void _toggle(TagEntry e) {
+    // 角色分类的单次可选数 = 角色卡槽位,跟当前模型走(NAI 5 是 20);
+    // 其余分类仍用注册表里的静态上限。
+    final cap = _cat == TagCategory.character
+        ? maxCharactersOf(ref.read(generateProvider).params.model)
+        : _def.maxSelectable;
     setState(() {
       if (_sel.contains(e.id)) {
         _sel.remove(e.id);
-      } else if (_sel.length < _def.maxSelectable) {
+      } else if (_sel.length < cap) {
         _sel.add(e.id);
       } else {
-        hintSnack(
-          context,
-          '最多选 ${_def.maxSelectable} 个',
-          icon: Icons.block_outlined,
-        );
+        hintSnack(context, '最多选 $cap 个', icon: Icons.block_outlined);
       }
     });
   }
@@ -280,21 +282,24 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     ref.read(shellIndexProvider.notifier).select(kTabCreate);
   }
 
-  /// 角色 → 加入角色卡(带名追加,上限 6 截断)。
+  /// 角色 → 加入角色卡(带名追加,上限按模型截断,见 maxCharactersOf)。
   Future<void> _confirmAsCharacters(TagLibraryState lib) async {
     final entries = _resolveSelected(lib);
     if (entries.isEmpty) return;
+    final cap = maxCharactersOf(ref.read(generateProvider).params.model);
     final added = ref.read(generateProvider.notifier).addNamedCharactersFrom([
       for (final e in entries)
         (name: e.name, positive: e.positive, negative: e.negative),
     ]);
     if (added == 0) {
-      hintSnack(context, '角色已满 6 个', icon: Icons.block_outlined);
+      hintSnack(context, '角色已满 $cap 个', icon: Icons.block_outlined);
       return;
     }
     await _afterConfirm(
       entries,
-      added < entries.length ? '已加入 $added 个角色(超出 6 个截断)' : '已加入 $added 个角色',
+      added < entries.length
+          ? '已加入 $added 个角色(超出 $cap 个截断)'
+          : '已加入 $added 个角色',
     );
   }
 

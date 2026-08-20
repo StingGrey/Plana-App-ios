@@ -55,7 +55,13 @@ class GenModuleDef {
 /// 新增模块 = 此处加一行 + 主页 `_moduleCard` 加一张卡。
 const kGenModuleDefs = <GenModuleDef>[
   GenModuleDef(GenModule.character, Icons.group_outlined, '角色'),
-  GenModuleDef(GenModule.vibe, Icons.palette_outlined, 'Vibe Transfer'),
+  // NAI 5 预载期屏蔽(官方未确认支持),门槛见 vibeSupportsModel。
+  GenModuleDef(
+    GenModule.vibe,
+    Icons.palette_outlined,
+    'Vibe Transfer',
+    supports: vibeSupportsModel,
+  ),
   GenModuleDef(
     GenModule.charRef,
     Icons.face_retouching_natural,
@@ -236,6 +242,13 @@ GenerateState stripHiddenModules(GenerateState s, GenModuleSettings ms) {
   if (!on(GenModule.character) && out.characters.isNotEmpty) {
     out = out.copyWith(characters: const []);
   }
+  // 角色槽位按模型截断(nai5 攒的 20 张切回 V4 只有前 6 张进载荷):超出的
+  // 发给 NAI 是未定义行为。截前 N 张与卡片顺序一致,卡头徽章同步标红,
+  // token 读数(countedCharacters)也走同一口径 —— 读数与载荷不许分叉。
+  final charCap = maxCharactersOf(model);
+  if (on(GenModule.character) && out.characters.length > charCap) {
+    out = out.copyWith(characters: out.characters.take(charCap).toList());
+  }
   if (!on(GenModule.vibe) && out.vibes.isNotEmpty) {
     out = out.copyWith(vibes: const []);
   }
@@ -277,8 +290,9 @@ GenerateState stripHiddenModules(GenerateState s, GenModuleSettings ms) {
 /// 角色切回去还是关着,anima 下被杀进程也不会把启用位丢掉。
 List<CharacterPrompt> countedCharacters(GenerateState s, GenModuleSettings ms) {
   if (!ms.isVisibleFor(GenModule.character, s.params.model)) return const [];
+  // take:槽位外的角色不进载荷(见 stripHiddenModules),读数也不许算它们。
   return [
-    for (final c in s.characters)
+    for (final c in s.characters.take(maxCharactersOf(s.params.model)))
       if (c.enabled) c,
   ];
 }

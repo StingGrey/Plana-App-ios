@@ -40,6 +40,9 @@ class _GenerateTopBarState extends ConsumerState<GenerateTopBar> {
             m.GenProvider.nai,
             if (modalOk) ...[m.GenProvider.anima, m.GenProvider.krea],
           ],
+          // NAI 5 预载档同样只归 bot 线:直连线 app 自己拼 NAI 载荷,只认
+          // V3/V4 格式;bot 线载荷由后端构造,上线时后端适配即可。
+          nai5: modalOk,
         ),
       ),
     );
@@ -160,10 +163,17 @@ class _GenerateTopBarState extends ConsumerState<GenerateTopBar> {
 /// 没有服务端会话,列出来也点不动 —— 摆一排点不动的 tab 比不摆更让人费解。
 /// 于是只剩一类时连 Tab 条一起收走(孤零零一个 tab 是纯噪声)。
 class _ModelSheet extends StatefulWidget {
-  const _ModelSheet({required this.current, required this.groups});
+  const _ModelSheet({
+    required this.current,
+    required this.groups,
+    this.nai5 = false,
+  });
 
   final String current;
   final List<m.GenProvider> groups;
+
+  /// NAI 组是否追加 NAI 5 预载档(仅 Bot 授权模式)。
+  final bool nai5;
 
   @override
   State<_ModelSheet> createState() => _ModelSheetState();
@@ -258,7 +268,9 @@ class _ModelSheetState extends State<_ModelSheet>
 
   Widget _modelList(m.GenProvider g) => ListView(
     padding: const EdgeInsets.only(top: 4, bottom: 8),
-    children: [for (final model in m.modelsOf(g)) _modelTile(model)],
+    children: [
+      for (final model in m.modelsOf(g, nai5: widget.nai5)) _modelTile(model),
+    ],
   );
 
   Widget _modelTile(String model) {

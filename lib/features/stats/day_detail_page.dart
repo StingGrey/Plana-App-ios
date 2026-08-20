@@ -440,7 +440,11 @@ String _hhmm(DateTime t) =>
 String modelLabel(String id) {
   final s = id.toLowerCase();
   if (!s.startsWith('nai-diffusion')) return id;
-  final ver = s.contains('4-5')
+  // 5.0 用 startsWith 判:contains('5') 会误吞 4-5 系,这是唯一稳的写法。
+  // 不加这行,nai-diffusion-5-* 会一路漏到 '3' 分支错标成「NAI 3 Full」。
+  final ver = s.startsWith('nai-diffusion-5')
+      ? '5.0'
+      : s.contains('4-5')
       ? '4.5'
       : s.contains('4')
       ? '4.0'

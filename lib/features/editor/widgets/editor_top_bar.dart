@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/util/nai_tokenizer.dart';
 import '../../generate/generate_state.dart';
+import '../../generate/models.dart' show tokenLimitOf;
 import '../../generate/prompt_presets.dart';
 import '../editor_state.dart';
 
@@ -52,8 +53,12 @@ class EditorTopBar extends ConsumerWidget {
       parts: parts,
       preset: presetSide,
     );
-    final over = tokens > 512;
-    final ratio = (tokens / 512).clamp(0.0, 1.0);
+    // 上限按当前模型取(NAI 5 抬到 703/1471,其余 512),与生成页卡头同源。
+    final limit = tokenLimitOf(
+      ref.watch(generateProvider.select((s) => s.params.model)),
+    );
+    final over = tokens > limit;
+    final ratio = (tokens / limit).clamp(0.0, 1.0);
     final barColor = over ? scheme.error : scheme.primary;
 
     return Column(
@@ -90,7 +95,7 @@ class EditorTopBar extends ConsumerWidget {
                 ).copyWith(color: over ? scheme.error : scheme.onSurface),
               ),
               Text(
-                ' / 512',
+                ' / $limit',
                 style: mono(
                   context,
                   size: 12,
