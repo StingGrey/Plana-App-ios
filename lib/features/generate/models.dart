@@ -7,11 +7,11 @@ import 'res_rules.dart' show kFreePixelThreshold;
 
 const Object _unset = Object();
 
-/// 角色提示词卡的张数上限(NAI 侧约定,web 同值)。V4 系 6,NAI 5 官方
-/// 抬到 20 —— 取值一律问 [maxCharactersOf],这个基线常量只作 V4 兜底。
-/// 手动新增 / 法典多角色导入 / 灵感页选择上限 / 卡头读数共用,别再各写一份。
+/// 角色提示词卡的张数上限(NAI 侧约定,web 同值)。V4 系 6,NAI 5 抬到 32
+/// (对齐 web maxCharactersForModel)—— 取值一律问 [maxCharactersOf],这个基线
+/// 常量只作 V4 兜底。手动新增 / 法典多角色导入 / 灵感页选择上限 / 卡头读数共用,别再各写一份。
 const kMaxCharacters = 6;
-const kMaxCharactersNai5 = 20;
+const kMaxCharactersNai5 = 32;
 
 int maxCharactersOf(String displayModel) =>
     isNai5Model(displayModel) ? kMaxCharactersNai5 : kMaxCharacters;

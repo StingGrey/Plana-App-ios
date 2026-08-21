@@ -16,6 +16,7 @@ import '../../core/util/image_ops.dart';
 import '../../core/util/image_pick.dart';
 import '../../core/util/prompt_convert.dart' show convertSdToNai;
 import '../char_library/char_library.dart';
+import '../generate/char_position.dart';
 import '../generate/generate_state.dart';
 import '../generate/models.dart';
 import '../generate/nai_request.dart' show naiModelId;
@@ -68,15 +69,10 @@ Uint8List? _tryB64(String s) {
   }
 }
 
-/// 元数据角色 centers(0~1 坐标)→ 站位格('A1'..'E5';无坐标返回 null=AUTO)。
-/// 正向映射是 x=(col+.5)/5、y=(row-.5)/5,这里取反并就近取整 ——
-/// 网格出身的坐标可精确还原,个别手写的奇异坐标吸附到最近格。
-String? gridPosOfCenter(double? x, double? y) {
-  if (x == null || y == null) return null;
-  final col = (x * 5 - 0.5).round().clamp(0, 4);
-  final row = (y * 5 + 0.5).round().clamp(1, 5);
-  return '${'ABCDE'[col]}$row';
-}
+/// 元数据角色 centers(0~1 坐标)→ `position`(无坐标返回 null=AUTO)。
+/// 恰好落 5×5 格心 → 网格 id('A1'..'E5',V4/V4.5 干净往返);否则保留精确自由
+/// 坐标串(V5 自由坐标不吸附丢位置)。统一走 [positionOfCenter]。
+String? gridPosOfCenter(double? x, double? y) => positionOfCenter(x, y);
 
 /// 创作页吸底栏「导入图片」入口:选图 → 推入全屏导入面板。
 Future<void> openImportPanel(BuildContext context) async {
@@ -1664,12 +1660,12 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
             // 本身就看得出来的信息,占着位置反而把真正有用的格号挤窄。
             _itemRow(
               scheme,
-              tag:
-                  gridPosOfCenter(
-                    m.characters[i].centerX,
-                    m.characters[i].centerY,
-                  ) ??
-                  'AUTO',
+              tag: positionChipLabel(
+                gridPosOfCenter(
+                  m.characters[i].centerX,
+                  m.characters[i].centerY,
+                ),
+              ),
               tagColor: scheme.tertiary,
               text: m.characters[i].prompt,
               checked: _charChecked.contains(i),

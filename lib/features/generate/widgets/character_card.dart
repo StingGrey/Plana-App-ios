@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/util/nai_tokenizer.dart';
 import '../../editor/editor_page.dart';
+import '../char_position.dart';
 import '../generate_state.dart';
 import '../models.dart';
 import 'common.dart';
@@ -224,9 +225,9 @@ class _CharacterTile extends ConsumerWidget {
                               ),
                               const SizedBox(width: 5),
                               SizedBox(
-                                width: 38,
+                                width: 48,
                                 child: Text(
-                                  char.position ?? 'AUTO',
+                                  positionChipLabel(char.position),
                                   textAlign: TextAlign.center,
                                   style:
                                       mono(

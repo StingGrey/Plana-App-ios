@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:math';
 
+import 'char_position.dart';
 import 'models.dart';
 import 'prompt_presets.dart' show ucPresetDirect;
 
@@ -80,19 +81,12 @@ const _autoCenters = <Map<String, double>>[
   {'x': 0.7, 'y': 0.7},
 ];
 
-/// 角色中心点:有站位('A1'..'E5',列 A-E×行 1-5)→ `((col+.5)/5,(row-.5)/5)`;
-/// AUTO → 按角色序 [index] 轮换 [_autoCenters]。与 web `novelai.ts` 一致。
+/// 角色中心点:网格 id('A1'..'E5')与自由坐标串('x,y',V5)统一解析(见
+/// [resolveCharacterCenter]);AUTO/无位置 → 按角色序 [index] 轮换 [_autoCenters]。
+/// 与 web `novelai.ts` 一致。
 Map<String, double> _center(String? pos, int index) {
-  if (pos != null && pos.length >= 2) {
-    final col = 'ABCDE'.indexOf(pos[0]);
-    if (col >= 0) {
-      final row = int.tryParse(pos.substring(1)) ?? 3;
-      return {
-        'x': double.parse(((col + 0.5) / 5).toStringAsFixed(4)),
-        'y': double.parse(((row.clamp(1, 5) - 0.5) / 5).toStringAsFixed(4)),
-      };
-    }
-  }
+  final c = resolveCharacterCenter(pos);
+  if (c != null) return {'x': c.x, 'y': c.y};
   return _autoCenters[index % _autoCenters.length];
 }
 

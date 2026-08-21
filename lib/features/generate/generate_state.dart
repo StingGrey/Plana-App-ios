@@ -133,14 +133,16 @@ class GenerateNotifier extends Notifier<GenerateState> {
   void clearCharacters() => state = state.copyWith(characters: const []);
 
   /// 参数导入:把元数据角色写入(replace=完全覆盖清空原有;否则额外追加),
-  /// 尊重 6 个上限。追加时名称按最终位置续号。position 'A1'..'E5',null=AUTO。
+  /// 尊重按模型的角色上限([maxCharactersOf])。追加时名称按最终位置续号。
+  /// position 'A1'..'E5' 网格 id 或 'x,y' 自由坐标(V5),null=AUTO。
   void addCharactersFrom(
     List<({String positive, String negative, String? position})> chars, {
     required bool replace,
   }) {
+    final cap = maxCharactersOf(state.params.model);
     final base = replace ? <CharacterPrompt>[] : [...state.characters];
     for (final c in chars) {
-      if (base.length >= 6) break;
+      if (base.length >= cap) break;
       base.add(
         CharacterPrompt(
           id: _newId(),
