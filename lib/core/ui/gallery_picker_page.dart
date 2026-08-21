@@ -5,6 +5,7 @@ import 'package:photo_manager_image_provider/photo_manager_image_provider.dart';
 
 import '../store/app_stores.dart';
 import '../theme/app_theme.dart';
+import '../util/log.dart';
 import 'selection_bar.dart';
 
 /// 上次选过的相册 id,存 `settings.json`。
@@ -41,15 +42,41 @@ class GalleryPickerPage extends ConsumerStatefulWidget {
 
 class _GalleryPickerPageState extends ConsumerState<GalleryPickerPage>
     with WidgetsBindingObserver {
-  static const _pageSize = 120;
+  /// 每批取多少张。**别往大了调。**
+  ///
+  /// photo_manager 每把一行游标转成资产都要做一次 `File(path).exists()` 文件
+  /// 系统 stat(`toAssetEntity` 的 `checkIfExists` 在插件里写死是 true,Dart 侧
+  /// 关不掉)。普通机器上一次 stat 可以忽略,桥接文件系统上(鸿蒙 + 卓易通那类
+  /// Android 兼容层)一次就是一趟跨运行时调用 —— 原来一批 120 张,进页要盯着
+  /// 骨架空等七秒才出图。
+  ///
+  /// 取到刚好铺满一屏(3 列 × 10 行)即可,余量分批补,见 [_selectAlbum]。
+  static const _pageSize = 30;
+
+  /// 媒体库查询条件,本页所有查询共用一份。
+  ///
+  /// `ignoreSize: true` 是重点:photo_manager 默认往 WHERE 里塞
+  /// `width > 0 AND height > 0 AND width BETWEEN ? AND ?`(高同理)。这几列在
+  /// MediaStore 里没索引,提供方还得为没记尺寸的行现开文件算 —— 库一大就是整
+  /// 表慢查询,媒体库是桥接实现时(鸿蒙 + 卓易通那类 Android 兼容层)更明显。
+  /// 选图不看尺寸,去掉纯赚。
+  static final _filter = FilterOptionGroup(
+    imageOption: const FilterOption(
+      sizeConstraint: SizeConstraint(ignoreSize: true),
+    ),
+    orders: const [OrderOption(type: OrderOptionType.createDate, asc: false)],
+  );
 
   PermissionState? _perm; // null = 请求中
-  List<AssetPathEntity> _albums = const [];
   AssetPathEntity? _album;
   final _assets = <AssetEntity>[];
   int _page = 0;
   bool _exhausted = false;
   bool _loadingMore = false;
+
+  /// 全部相册:首次点标题切相册时才拉(为什么不在进页时拉,见
+  /// [_openInitialAlbum])。失败不缓存,下次点还能重来。
+  Future<List<AssetPathEntity>>? _albumsFuture;
 
   final _sel = <AssetEntity>[];
   final _selIds = <String>{};
@@ -87,34 +114,56 @@ class _GalleryPickerPageState extends ConsumerState<GalleryPickerPage>
     if (!mounted) return;
     setState(() => _perm = ps);
     // 用同步的 get(内存态):多一个 await 就要多一道 mounted 检查,不值当。
-    // 相册没了(被删/权限收窄)时 keepId 匹配不上,_loadAlbums 自己回落第一个。
+    // 相册没了(被删/权限收窄)时取不到,_openInitialAlbum 自己回落全部图片。
     if (ps.hasAccess) {
-      await _loadAlbums(keepId: ref.read(prefsStoreProvider).get(_kAlbumKey));
+      await _openInitialAlbum(
+        keepId: ref.read(prefsStoreProvider).get(_kAlbumKey),
+      );
     }
   }
 
-  Future<void> _loadAlbums({String? keepId}) async {
-    final albums = await PhotoManager.getAssetPathList(
+  /// 进页只解析**这一次要打开的那个相册**,不枚举全部相册。
+  ///
+  /// 全量枚举(`getAssetPathList` 不带 `onlyAll`)在 Android 上要把媒体库整表
+  /// 游标逐行走一遍按 bucket 分桶计数 —— 几千张图就是几千次逐行取值,进页直接
+  /// 卡住几秒;媒体库是桥接实现时(鸿蒙 + 卓易通)一行一行更贵。这里退成两种
+  /// 都只查一行 + count 的便宜路子,相册列表挪到 [_switchAlbum] 里按需拉。
+  Future<void> _openInitialAlbum({String? keepId}) async {
+    final all = await PhotoManager.getAssetPathList(
       type: RequestType.image,
-      filterOption: FilterOptionGroup(
-        orders: const [
-          OrderOption(type: OrderOptionType.createDate, asc: false),
-        ],
-      ),
+      onlyAll: true, // 只要「全部图片」:一次 cursor.count,不逐行分桶
+      filterOption: _filter,
     );
-    if (!mounted) return;
-    AssetPathEntity? cur;
-    if (keepId != null) {
-      for (final a in albums) {
-        if (a.id == keepId) {
-          cur = a;
-          break;
-        }
+    var cur = all.isEmpty ? null : all.first;
+    if (keepId != null && keepId != cur?.id) {
+      // 上次挑的是别的相册:按 id 单取(只查一行 + count)。相册被删/权限
+      // 收窄时取不到,回落「全部图片」—— 与旧的 keepId 匹配不上同样处理。
+      try {
+        cur = await AssetPathEntity.fromId(
+          keepId,
+          type: RequestType.image,
+          filterOption: _filter,
+        );
+      } catch (e) {
+        logd('[picker] 上次的相册取不到($keepId),回落全部图片: $e');
       }
     }
-    cur ??= albums.isEmpty ? null : albums.first;
-    setState(() => _albums = albums);
+    if (!mounted) return;
     await _selectAlbum(cur);
+  }
+
+  /// 拉全部相册(整表分桶,慢),只在用户点开切相册面板时走一次。
+  Future<List<AssetPathEntity>> _fetchAlbums() async {
+    try {
+      return await PhotoManager.getAssetPathList(
+        type: RequestType.image,
+        filterOption: _filter,
+      );
+    } catch (e) {
+      _albumsFuture = null; // 失败不留在缓存里,下次点还能重试
+      logd('[picker] 相册列表读取失败: $e');
+      return const [];
+    }
   }
 
   Future<void> _selectAlbum(AssetPathEntity? album) async {
@@ -125,7 +174,9 @@ class _GalleryPickerPageState extends ConsumerState<GalleryPickerPage>
       _exhausted = album == null;
       _loadingMore = false;
     });
-    if (album != null) await _loadMore();
+    if (album == null) return;
+    await _loadMore(); // 首批:先把一屏喂出来,骨架尽早退场
+    await _loadMore(); // 再补一批当滚动余量,免得一划就断档
   }
 
   Future<void> _loadMore() async {
@@ -165,31 +216,54 @@ class _GalleryPickerPageState extends ConsumerState<GalleryPickerPage>
       a.isAll ? '全部图片' : (a.name.isEmpty ? '图库' : a.name);
 
   Future<void> _switchAlbum() async {
+    final albums = _albumsFuture ??= _fetchAlbums();
     final picked = await showModalBottomSheet<AssetPathEntity>(
       context: context,
       builder: (sheet) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          children: [
-            for (final a in _albums)
-              ListTile(
+        child: FutureBuilder<List<AssetPathEntity>>(
+          future: albums,
+          builder: (context, snap) {
+            final list = snap.data;
+            if (list == null) {
+              return const SizedBox(
+                height: 96,
+                child: Center(child: CircularProgressIndicator()),
+              );
+            }
+            if (list.isEmpty) {
+              return ListTile(
                 dense: true,
-                selected: a.id == _album?.id,
-                title: Text(
-                  _albumLabel(a),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                trailing: FutureBuilder<int>(
-                  future: a.assetCountAsync,
-                  builder: (context, snap) => Text(
-                    snap.hasData ? '${snap.data}' : '',
-                    style: mono(context, color: context.scheme.outline),
+                enabled: false,
+                title: Text('没有相册', style: context.texts.bodyMedium),
+              );
+            }
+            // 逐条懒建:每行的张数都是一次媒体库查询,一次性建完整张列表
+            // 会同时打出几十条查询,慢媒体库上面板会僵住。
+            return ListView.builder(
+              shrinkWrap: true,
+              itemCount: list.length,
+              itemBuilder: (context, i) {
+                final a = list[i];
+                return ListTile(
+                  dense: true,
+                  selected: a.id == _album?.id,
+                  title: Text(
+                    _albumLabel(a),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
-                ),
-                onTap: () => Navigator.of(sheet).pop(a),
-              ),
-          ],
+                  trailing: FutureBuilder<int>(
+                    future: a.assetCountAsync,
+                    builder: (context, snap) => Text(
+                      snap.hasData ? '${snap.data}' : '',
+                      style: mono(context, color: context.scheme.outline),
+                    ),
+                  ),
+                  onTap: () => Navigator.of(sheet).pop(a),
+                );
+              },
+            );
+          },
         ),
       ),
     );
@@ -214,7 +288,7 @@ class _GalleryPickerPageState extends ConsumerState<GalleryPickerPage>
         // 加载态与相册名同一套字样,列表到位时标题不变粗、不跳动
         title: InkWell(
           borderRadius: BorderRadius.circular(10),
-          onTap: _album != null && _albums.length > 1 ? _switchAlbum : null,
+          onTap: _album != null ? _switchAlbum : null,
           child: Padding(
             padding: const EdgeInsets.fromLTRB(8, 4, 4, 4),
             child: Row(
@@ -254,7 +328,9 @@ class _GalleryPickerPageState extends ConsumerState<GalleryPickerPage>
                       await PhotoManager.presentLimited(
                         type: RequestType.image,
                       );
-                      if (mounted) await _loadAlbums(keepId: _album?.id);
+                      if (!mounted) return;
+                      _albumsFuture = null; // 授权范围变了,相册列表得重拉
+                      await _openInitialAlbum(keepId: _album?.id);
                     },
                   ),
                 Expanded(

@@ -112,7 +112,9 @@ Future<List<PickedImage>> _readAssets(GalleryPickOutcome out) async {
   for (final a in out.assets) {
     final bytes = await a.originBytes;
     if (bytes == null || bytes.isEmpty) continue;
-    final name = await a.titleAsync;
+    // title 在 Android 上随列表查询一起带回来了;titleAsync 会为每张图再走一趟
+    // 平台通道查库,多选时就是白等 N 次往返。拿不到才回落。
+    final name = a.title ?? await a.titleAsync;
     picked.add(PickedImage(name.isEmpty ? 'image' : name, bytes));
   }
   return picked;

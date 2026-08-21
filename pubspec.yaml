@@ -17,13 +17,14 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
 # 构建号(+N)是 Android 的 versionCode,**只能单调递增** —— 已分发过的包依次是
-# +1(1.0.0-beta.1 前)、+2(1.0.0-beta.1),所以正式版从 +3 起。降级会被系统拒,
-# 老用户直接装不上。
+# +1(1.0.0-beta.1 前)、+2(1.0.0-beta.1),所以正式版从 +3 起;1.0.5 是 +8,
+# 之后 +9 / +10 出过两版排障用的 fix 包(1.0.5-fix / 1.0.5-fix.2)并已装机,
+# 所以 1.0.6 从 +11 起。降级会被系统拒,老用户直接装不上。
 #
 # 改这里必须同步改 lib/core/app_info.dart 的 kAppVersion / kAppBuild
 # (test/app_info_test.dart 会钉住,对不上直接红)。
 # GitHub 上打的 tag 用 `v1.0.0` —— 检查更新按语义化版本比 tag 与本机 versionName。
-version: 1.0.5+8
+version: 1.0.6+11
 
 environment:
   sdk: ^3.12.2
