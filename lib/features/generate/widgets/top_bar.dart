@@ -40,9 +40,9 @@ class _GenerateTopBarState extends ConsumerState<GenerateTopBar> {
             m.GenProvider.nai,
             if (modalOk) ...[m.GenProvider.anima, m.GenProvider.krea],
           ],
-          // NAI 5 预载档同样只归 bot 线:直连线 app 自己拼 NAI 载荷,只认
-          // V3/V4 格式;bot 线载荷由后端构造,上线时后端适配即可。
-          nai5: modalOk,
+          // NAI 5 已上线,直连线与 bot 线都可用:直连 buildNaiPayload 已支持
+          // V5 载荷(v4_prompt + params_version 4),bot 线由后端构造 —— 两档常列。
+          nai5: true,
         ),
       ),
     );
@@ -172,7 +172,8 @@ class _ModelSheet extends StatefulWidget {
   final String current;
   final List<m.GenProvider> groups;
 
-  /// NAI 组是否追加 NAI 5 预载档(仅 Bot 授权模式)。
+  /// NAI 组是否追加 NAI 5 两档(已上线,直连 + Bot 双线恒 true;留参数
+  /// 是为下一个未上线模型的预载再用同一开关)。
   final bool nai5;
 
   @override

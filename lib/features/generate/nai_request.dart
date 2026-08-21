@@ -25,9 +25,15 @@ String naiModelId(String displayModel) =>
     _modelMap[displayModel] ?? 'nai-diffusion-4-5-full';
 
 /// 生成模型 id → inpainting 模型 id(对齐 web 后端:v3 特例,其余直接拼接)。
-String inpaintModelId(String modelId) => modelId == 'nai-diffusion-3'
-    ? 'nai-diffusion-3-inpainting'
-    : '$modelId-inpainting';
+String inpaintModelId(String modelId) {
+  if (modelId == 'nai-diffusion-3') return 'nai-diffusion-3-inpainting';
+  // V5 Curated 重绘模型官方尚未上线,回退 V4.5 Curated 重绘(对齐 web novelai.ts);
+  // V5 Full 重绘已上线,正常拼 -inpainting。
+  if (modelId == 'nai-diffusion-5-curated') {
+    return 'nai-diffusion-4-5-curated-inpainting';
+  }
+  return '$modelId-inpainting';
+}
 
 /// UI 展示名 → NAI 采样器串(bot 模式构造 web 参数时复用同一映射)。
 String naiSamplerId(String displaySampler) =>
@@ -105,6 +111,10 @@ Map<String, double> _center(String? pos, int index) {
   final model = naiModelId(p.model);
   final sampler = _samplerMap[p.sampler] ?? 'k_euler_ancestral';
   final isV4 = model.startsWith('nai-diffusion-4');
+  // V5 载荷与 V4/V4.5 同构:仍用 v4_prompt/v4_negative_prompt 结构化提示词,
+  // 仅 params_version 3→4(见下)。二者共用同一套结构化提示词分支。
+  final isV5 = model.startsWith('nai-diffusion-5');
+  final usesV4Prompt = isV4 || isV5;
 
   final seedStr = p.seed.trim();
   final seed = seedStr.isEmpty
@@ -122,7 +132,7 @@ Map<String, double> _center(String? pos, int index) {
   ];
 
   final params = <String, dynamic>{
-    'params_version': 3,
+    'params_version': isV5 ? 4 : 3,
     'width': p.width,
     'height': p.height,
     'scale': p.cfg,
@@ -154,8 +164,9 @@ Map<String, double> _center(String? pos, int index) {
     'stream': 'msgpack',
   };
 
-  // v4/v4.5 专属的结构化提示词;v3 走经典字段即可。
-  if (isV4) {
+  // v4/v4.5/v5 共用的结构化提示词(v5 仍用 v4_prompt,仅 params_version 不同);
+  // v3 走经典字段即可。
+  if (usesV4Prompt) {
     params['v4_prompt'] = {
       'caption': {
         'base_caption': s.prompt,

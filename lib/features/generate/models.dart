@@ -298,12 +298,11 @@ const models = <String>[
   'NAI 4.0 Curated',
 ];
 
-/// NAI 5 两档(2026-08 预载,官方尚未上线)。**仅 Bot 授权模式露出/可用**:
-/// bot 线 app 只发 web 中间格式,真正的 NAI 载荷由后端 convert 构造,上线时
-/// 字段差异全在后端适配,app 不用发版;直连线 buildNaiPayload 只认 V3/V4
-/// 载荷,发出去必坏 —— 弹层不列(top_bar),生成入口另有前置拒收兜底
-/// (bot 模式选完切回 token 直连,存档里还躺着它)。
-/// 已确认:两档、分角色提示词、图生图;角色参考 / Vibe 存疑,见各自门槛。
+/// NAI 5 两档(2026-08-20 上线)。**直连 + Bot 双线可用**:直连线 buildNaiPayload
+/// 已支持 V5 载荷(仍用 v4_prompt,仅 params_version 3→4、centers 放开连续),
+/// bot 线载荷由后端 convert 构造 —— 弹层两线都列(top_bar `nai5: true`)。
+/// 已支持:两档、分角色提示词(自由定位)、图生图;角色参考 / Vibe 官方未放出,
+/// 见各自门槛(crSupportsModel / vibeSupportsModel 仍排除 V5)。
 const nai5Models = <String>['NAI 5.0 Full', 'NAI 5.0 Curated'];
 
 bool isNai5Model(String displayModel) => displayModel.startsWith('NAI 5.0');
@@ -361,8 +360,8 @@ String providerLabel(GenProvider p) => switch (p) {
   GenProvider.krea => 'Krea 2',
 };
 
-/// 某大类下的全部型号,顺序即弹层里的顺序。[nai5] = 追加 NAI 5 预载档,
-/// 仅 Bot 授权模式为 true(见 top_bar._pickModel);新旗舰按惯例排最前。
+/// 某大类下的全部型号,顺序即弹层里的顺序。[nai5] = 追加 NAI 5 两档(已上线,
+/// 直连 + Bot 双线均 true,见 top_bar._pickModel);新旗舰按惯例排最前。
 List<String> modelsOf(GenProvider p, {bool nai5 = false}) => switch (p) {
   GenProvider.nai => nai5 ? [...nai5Models, ...models] : models,
   GenProvider.anima => animaModels,
