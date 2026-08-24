@@ -27,19 +27,15 @@ android {
 
     defaultConfig {
         applicationId = "com.sora214.plana.app"
-        minSdk = 24 // Vulkan compute(本地超分 ncnn-vulkan)需 API 24+
+        // 24 原是本地超分的 Vulkan compute 要求;那条线已下线,这里保持 24 不动 ——
+        // 往下降是另一件事(得把所有插件重新验一遍),不该顺手改。
+        minSdk = 24
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
         ndk {
-            abiFilters += "arm64-v8a" // 本地超分 native 只出 arm64(覆盖现代机型)
-        }
-        externalNativeBuild {
-            cmake {
-                arguments += "-DANDROID_STL=c++_shared"
-                cppFlags += "-std=c++17"
-                abiFilters += "arm64-v8a" // native 只编 arm64(只备了这个 ABI 的 ncnn 库)
-            }
+            // 只出 arm64(覆盖现代机型);出包文件名也带着这个 ABI。
+            abiFilters += "arm64-v8a"
         }
     }
 
@@ -67,13 +63,6 @@ android {
             } else {
                 signingConfigs.getByName("debug")
             }
-        }
-    }
-
-    // 本地超分 ncnn-vulkan native
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
         }
     }
 

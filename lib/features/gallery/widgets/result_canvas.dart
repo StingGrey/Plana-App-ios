@@ -5,22 +5,25 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gal/gal.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../../core/ui/param_help.dart';
 import '../../generate/generate_state.dart';
+import '../../generate/gen_modules.dart' show retargetModel;
 import '../../generate/generation_controller.dart';
 import '../../generate/models.dart';
-import '../../generate/widgets/common.dart' show hintSnack, sharedAxisRoute;
+import '../../generate/cost.dart' show estimateInpaintCost;
+import '../../generate/widgets/common.dart'
+    show ParamSlider, hintSnack, sharedAxisRoute;
 import '../../import/import_panel.dart';
 import '../../inpaint/inpaint_overlay.dart';
 import '../../../core/net/anlas_provider.dart';
 import '../../../core/store/app_stores.dart';
+import '../../../core/util/haptics.dart';
 import '../../../core/util/image_ops.dart';
 import '../gallery_state.dart';
 import '../models.dart';
 import '../save_pipeline.dart';
 import '../save_settings.dart';
-import '../upscale_local.dart';
 import '../upscale_model.dart';
-import '../upscale_model_store.dart';
 import '../upscale_nai.dart';
 import 'save_sheet.dart';
 
@@ -330,7 +333,8 @@ class _ActionRail extends ConsumerWidget {
         .open(imageBytes: bytes, sourceId: result.id);
   }
 
-  /// 放大:弹方式面板(本地快/质 · NAI)→ 分发本地 ncnn / NAI 远程 → 进度 → 入库。
+  /// 放大:弹参数面板 → 按方式分发 NAI 远程调用 → 进度 → 入库。
+  /// 本地 ncnn 超分已整条下线,现在三条路全是远程的。
   Future<void> _upscale(BuildContext context, WidgetRef ref) async {
     final bytes = await _bytesOf(ref);
     if (!context.mounted) return;
@@ -340,86 +344,97 @@ class _ActionRail extends ConsumerWidget {
     }
     final w = result.width, h = result.height;
     final naiOk = naiUpscaleSupportsSize(w, h);
-    final redrawOk = result.hasInput && redraw15xSupportsSize(w, h);
+    final naiV5Ok = naiV5UpscaleSupportsSize(w, h);
+    // 重绘走生成管线。快照只负责提供**提示词与采样参数**,模型跟着创作页
+    // 当前选的那个走 —— 重绘是一次新的生成,用哪个模型是用户此刻的选择,
+    // 不是这张图当初拿什么出的。倍率表(Max 只有 V5 有)因此也按当前模型算,
+    // 而且 _redraw 会把这个模型真的写进请求里,两边不会错位。
+    final snapshot = result.hasInput ? await _inputOf(ref) : null;
+    if (!context.mounted) return;
+    final curModel = ref.read(generateProvider).params.model;
+    // 换了模型的快照要按新模型的能力面重新裁一遍(V5 没有 Vibe / 角色参考)
+    final redrawInput = snapshot == null
+        ? null
+        : retargetModel(snapshot, curModel);
+    final scales = redrawInput == null || isModalModel(curModel)
+        ? const <EnhanceScale>[]
+        : enhanceScaleOptions(w, h, curModel);
+    // 不可用时把**原因**一起算出来:三种原因差得远,看不见的缺席最难查。
+    final redrawWhy = snapshot == null
+        ? '这张图没有参数快照,重绘放大用不了(只有本机生成的图带快照)'
+        : isModalModel(curModel)
+        ? '$curModel 不支持图生图,重绘放大要先切回 NAI 模型'
+        : scales.isEmpty
+        ? '源图 $w×$h 已超过 NAI 的总像素上限,重绘放不出任何倍率'
+        : null;
 
-    // 1. 选方式(默认上次;不可用的方式回退本地快速)
-    var current =
-        ref.read(upscaleMethodProvider).value ?? UpscaleMethod.localFast;
-    if ((current == UpscaleMethod.nai && !naiOk) ||
-        (current == UpscaleMethod.redraw15x && !redrawOk)) {
-      current = UpscaleMethod.localFast;
+    // 1. 上次那套参数(不可用的方式/倍率就地回退,免得面板一开就是个死选项)
+    var init =
+        ref.read(upscaleSettingsProvider).value ?? const UpscaleSettings();
+    if ((init.method == UpscaleMethod.nai && !naiOk) ||
+        (init.method == UpscaleMethod.naiV5 && !naiV5Ok) ||
+        (init.method == UpscaleMethod.redraw && redrawWhy != null)) {
+      // 三条路互为兜底:哪条能用就落哪条,别把面板开成一个死选项
+      init = init.copyWith(
+        method: naiV5Ok
+            ? UpscaleMethod.naiV5
+            : (naiOk ? UpscaleMethod.nai : UpscaleMethod.redraw),
+      );
     }
-    final method = await showModalBottomSheet<UpscaleMethod>(
+    if (!scales.contains(init.enhanceScale) && scales.isNotEmpty) {
+      init = init.copyWith(enhanceScale: scales.first);
+    }
+
+    final picked = await showModalBottomSheet<UpscaleSettings>(
       context: context,
       isScrollControlled: true,
-      builder: (_) => _UpscaleMethodSheet(
-        current: current,
+      useSafeArea: true,
+      builder: (_) => _UpscalePanel(
+        init: init,
         naiEnabled: naiOk,
-        redrawEnabled: redrawOk,
-        hasInput: result.hasInput,
+        naiV5Enabled: naiV5Ok,
+        redrawWhy: redrawWhy,
+        redrawScales: scales,
+        redrawInput: redrawInput,
         width: w,
         height: h,
       ),
     );
-    if (method == null || !context.mounted) return;
-    await ref.read(upscaleMethodProvider.notifier).set(method);
+    if (picked == null || !context.mounted) return;
+    await ref.read(upscaleSettingsProvider.notifier).set(picked);
     if (!context.mounted) return;
+    final method = picked.method;
 
-    // 1.5× 重绘:走生成管线(画布流式预览),不弹放大对话框
-    if (method == UpscaleMethod.redraw15x) {
-      await _redraw15x(context, ref, bytes);
+    // 重绘放大:走生成管线(画布流式预览),不弹放大对话框
+    if (method == UpscaleMethod.redraw) {
+      await _redraw(context, ref, bytes, picked, redrawInput);
       return;
     }
 
-    // 2. 本地模型不随包分发。缺了先问一声再下 —— 可能正在移动网络上,
-    //    8.5MB 不该由 App 替用户决定花。
-    if (method.local && !await isUpscaleModelReady(method.asset!)) {
-      if (!context.mounted) return;
-      if (!await _confirmModelDownload(context, method)) return;
-    }
-    // 就绪分支也 await 过了,mounted 检查必须在 if 之外 —— 放里面会漏掉这条路径。
-    if (!context.mounted) return;
-
-    // 3. 进度对话框(本地=下载/tile 真进度条;NAI=不确定动画 + 阶段文案)
+    // 2. 进度对话框:远程一次性调用没有逐步进度,只走阶段文案 + 不确定动画
     final stage = ValueNotifier<String>('准备…');
-    final frac = ValueNotifier<double?>(null);
     unawaited(
       showDialog<void>(
         context: context,
         barrierDismissible: false,
-        builder: (_) =>
-            _UpscaleProgressDialog(method: method, stage: stage, frac: frac),
+        builder: (_) => _UpscaleProgressDialog(method: method, stage: stage),
       ),
     );
 
-    // 4. 执行:按方式分发
+    // 3. 执行
     try {
-      late final Uint8List png;
-      late final int outW;
-      late final int outH;
-      if (method.local) {
-        final r = await upscaleLocal(
-          bytes,
-          model: method.asset!,
-          onStage: (s) => stage.value = s,
-          onProgress: (f) => frac.value = f,
-        );
-        png = r.png;
-        outW = r.width;
-        outH = r.height;
-      } else {
-        final r = await upscaleNai(
-          ref,
-          bytes,
-          width: w,
-          height: h,
-          onStage: (s) => stage.value = s,
-        );
-        png = r.png;
-        outW = r.width;
-        outH = r.height;
-      }
-      // 入库:新条目 + 4x 角标,沿用原图 seed/输入参数(快照懒读补齐)
+      final r = await upscaleNai(
+        ref,
+        bytes,
+        width: w,
+        height: h,
+        v5: method == UpscaleMethod.naiV5,
+        onStage: (s) => stage.value = s,
+      );
+      final png = r.png;
+      final outW = r.width;
+      final outH = r.height;
+      // 入库:新条目 + 放大角标,沿用原图 seed/输入参数(快照懒读补齐)
       final input = await _inputOf(ref);
       ref
           .read(galleryProvider.notifier)
@@ -431,7 +446,7 @@ class _ActionRail extends ConsumerWidget {
             badge: ResultBadge.upscaled,
             input: input,
           );
-      if (!method.local) unawaited(ref.read(anlasProvider.notifier).refresh());
+      unawaited(ref.read(anlasProvider.notifier).refresh());
       if (context.mounted) Navigator.of(context).pop();
       if (context.mounted) {
         hintSnack(
@@ -447,55 +462,34 @@ class _ActionRail extends ConsumerWidget {
       }
     } finally {
       stage.dispose();
-      frac.dispose();
     }
   }
 
-  /// 首次使用某个本地档位时征求下载同意。只下一次,之后一直在本地。
-  Future<bool> _confirmModelDownload(
-    BuildContext context,
-    UpscaleMethod method,
-  ) async {
-    final mb = (upscaleModelBytes(method.asset!) / 1048576).toStringAsFixed(1);
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('需要先下载模型'),
-        content: Text(
-          '「${method.label}」档位的模型不随应用分发,首次使用需从 Upscayl 官方仓库下载 $mb MB。'
-          '下载后一直保存在本机,之后离线可用。',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('下载'),
-          ),
-        ],
-      ),
-    );
-    return ok ?? false;
-  }
-
-  /// 1.5× 重绘放大:以 1.5 倍尺寸 img2img 重新生成(走生成管线,结果画布流式 + 自动入库)。
-  Future<void> _redraw15x(
+  /// 重绘放大:img2img 重新生成(走生成管线,结果画布流式 + 自动入库)。
+  ///
+  /// 数值倍率是**客户端把目标宽高算好再发**;Max ✨ 档相反 —— 发原图尺寸 +
+  /// `upscaled_enhance`,由服务端放大到总像素上限,所以这里不动 params 的宽高。
+  ///
+  /// [input] 是 _upscale 备好的快照:**模型已经换成创作页当前选的那个**。
+  /// 别在这儿重新读一遍快照 —— 那样又会退回成「按这张图当初的模型跑」,
+  /// 和面板上按当前模型算出来的倍率表对不上。
+  Future<void> _redraw(
     BuildContext context,
     WidgetRef ref,
     Uint8List bytes,
+    UpscaleSettings cfg,
+    GenerateState? input,
   ) async {
-    final input = await _inputOf(ref);
-    if (!context.mounted) return;
+    final scale = cfg.enhanceScale;
     if (input == null) {
       hintSnack(context, '缺少参数快照,无法重绘放大', icon: Icons.error_outline);
       return;
     }
-    final t = img2imgResolution(
-      (result.width * 1.5).round(),
-      (result.height * 1.5).round(),
-    );
+    final isMax = scale.factor == null;
+    final target = enhanceTargetSize(result.width, result.height, scale);
+    final t = isMax
+        ? (w: result.width, h: result.height)
+        : img2imgResolution(target.w, target.h);
     unawaited(
       ref
           .read(generationProvider.notifier)
@@ -503,8 +497,9 @@ class _ActionRail extends ConsumerWidget {
             using: input.copyWith(
               img2img: Img2ImgConfig(
                 image: bytes,
-                strength: kRedraw15xStrength,
-                noise: kRedraw15xNoise,
+                strength: cfg.strength,
+                noise: cfg.noise,
+                upscaledEnhance: isMax,
               ),
               params: input.params.copyWith(width: t.w, height: t.h, seed: ''),
             ),
@@ -512,7 +507,9 @@ class _ActionRail extends ConsumerWidget {
     );
     hintSnack(
       context,
-      '开始 1.5× 重绘 ${t.w}×${t.h}(生成中)',
+      isMax
+          ? '开始 Max 重绘 ≈${target.w}×${target.h} · ${input.params.model}'
+          : '开始 ${scale.label} 重绘 ${t.w}×${t.h} · ${input.params.model}',
       icon: Icons.auto_fix_high,
     );
   }
@@ -697,227 +694,447 @@ class _SeedChip extends StatelessWidget {
   }
 }
 
-/// 放大档位选择面板:快速(lite)/ 质量(digital-art),点卡片即选中并开始。
-/// 放大方式面板:本地(快/质,免费不限尺寸)+ NAI 官方(远程,限尺寸/扣点)。点即选并开始。
-class _UpscaleMethodSheet extends StatelessWidget {
-  const _UpscaleMethodSheet({
-    required this.current,
+/// 放大面板。两条支路各自成段,底部一条全宽 CTA(结果尺寸 + 预估点数)——
+/// 与重绘面板同一套「先把参数调好、再按一次开始」的手感,而不是点卡片就走。
+///
+/// 信息结构对齐 web `MobileUpscaleSheet`:
+///  - **超分辨率**:只放大像素,画面内容不变。选处理方式(本地两档 / NAI 传统 /
+///    V5 扩散),本地还能选倍率。
+///  - **图生图放大**:以更高分辨率重新生成,画面会变。选倍率 + Magnitude 档,
+///    强度/噪声两个滑杆可继续微调。
+class _UpscalePanel extends ConsumerStatefulWidget {
+  const _UpscalePanel({
+    required this.init,
     required this.naiEnabled,
-    required this.redrawEnabled,
-    required this.hasInput,
+    required this.naiV5Enabled,
+    required this.redrawWhy,
+    required this.redrawScales,
+    required this.redrawInput,
     required this.width,
     required this.height,
   });
 
-  final UpscaleMethod current;
+  final UpscaleSettings init;
   final bool naiEnabled;
-  final bool redrawEnabled;
-  final bool hasInput;
+  final bool naiV5Enabled;
+
+  /// 图生图那条支路不可用的原因;null = 可用。
+  final String? redrawWhy;
+
+  final List<EnhanceScale> redrawScales;
+
+  /// 这张图的参数快照 —— 重绘走它,点数也按它估(null = 不能重绘)。
+  final GenerateState? redrawInput;
+
   final int width;
   final int height;
 
   @override
-  Widget build(BuildContext context) {
-    final scheme = context.scheme;
-    return SafeArea(
-      // 抓手由 BottomSheetTheme(showDragHandle: true)统一提供,这里不再自画。
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Padding(
-              padding: const EdgeInsets.only(left: 4, bottom: 12),
-              child: Text(
-                '放大方式',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                  color: scheme.onSurface,
-                ),
-              ),
-            ),
-            _groupLabel(context, '本地 · 免费 · 不限尺寸'),
-            _MethodTile(
-              method: UpscaleMethod.localFast,
-              selected: current == UpscaleMethod.localFast,
-              enabled: true,
-            ),
-            const SizedBox(height: 8),
-            _MethodTile(
-              method: UpscaleMethod.localQuality,
-              selected: current == UpscaleMethod.localQuality,
-              enabled: true,
-            ),
-            const SizedBox(height: 16),
-            _groupLabel(
-              context,
-              naiEnabled ? 'NAI 官方 · 联网 · 扣点' : 'NAI 官方 · 当前尺寸不支持',
-            ),
-            _MethodTile(
-              method: UpscaleMethod.nai,
-              selected: current == UpscaleMethod.nai,
-              enabled: naiEnabled,
-              disabledHint: naiEnabled
-                  ? null
-                  : '仅 832×1216 / 1216×832 / 1024²(当前 $width×$height)',
-            ),
-            const SizedBox(height: 16),
-            _groupLabel(
-              context,
-              redrawEnabled ? 'NAI 重绘 · 图生图 · 扣点' : 'NAI 重绘 · 不可用',
-            ),
-            _MethodTile(
-              method: UpscaleMethod.redraw15x,
-              selected: current == UpscaleMethod.redraw15x,
-              enabled: redrawEnabled,
-              disabledHint: redrawEnabled
-                  ? null
-                  : (!hasInput ? '仅生成图可重绘(缺少参数快照)' : '目标尺寸超上限,请用更小的原图'),
-            ),
-          ],
-        ),
-      ),
+  ConsumerState<_UpscalePanel> createState() => _UpscalePanelState();
+}
+
+class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
+  late UpscaleSettings _s = widget.init;
+
+  /// 这张图能用的超分方式(尺寸不合格的直接不列)。
+  late final List<UpscaleMethod> _upscaleMethods = [
+    if (widget.naiEnabled) UpscaleMethod.nai,
+    if (widget.naiV5Enabled) UpscaleMethod.naiV5,
+  ];
+
+  /// 上一次选的**超分**方式。切到图生图再切回来时还原它,而不是每次都跳回第一档。
+  late UpscaleMethod _lastUpscale = _upscaleMethods.contains(widget.init.method)
+      ? widget.init.method
+      : (_upscaleMethods.firstOrNull ?? UpscaleMethod.naiV5);
+
+  bool get _isRedraw => _s.method == UpscaleMethod.redraw;
+
+  void _set(UpscaleSettings next) => setState(() => _s = next);
+
+  void _setMethod(UpscaleMethod m) {
+    if (m != UpscaleMethod.redraw) _lastUpscale = m;
+    _set(_s.copyWith(method: m));
+  }
+
+  /// 结果尺寸 —— 三条路三种算法,别互相套用(见各自函数的注释)。
+  ({int w, int h}) get _target {
+    final w = widget.width, h = widget.height;
+    return switch (_s.method) {
+      UpscaleMethod.redraw => enhanceTargetSize(w, h, _s.enhanceScale),
+      UpscaleMethod.naiV5 => naiV5UpscaleTargetSize(w, h),
+      UpscaleMethod.nai => (w: w * 4, h: h * 4),
+    };
+  }
+
+  /// 预估点数;null = 这条路当前给不出结果(CTA 禁用)。
+  ///
+  /// 三条路三种算法:NAI 传统固定 7(用户实测);V5 扩散按**源图**像素查表;
+  /// 图生图放大走生成公式(按**结果**尺寸 + 强度折算)。
+  int? get _cost => switch (_s.method) {
+    UpscaleMethod.nai => 7,
+    UpscaleMethod.naiV5 => naiV5UpscalePrice(widget.width, widget.height),
+    UpscaleMethod.redraw => _redrawCost(),
+  };
+
+  /// 图生图放大的点数。借 [estimateInpaintCost] —— 它就是「同一套生成公式,
+  /// 但像素按发送尺寸算、再按强度折算」,正好是重绘放大要的那个口径;
+  /// 快照里的 Vibe / 角色参考附加费也照收(那些确实会跟着一起发出去)。
+  int? _redrawCost() {
+    final input = widget.redrawInput;
+    if (input == null) return null;
+    final t = _target;
+    return estimateInpaintCost(
+      input,
+      isOpus: ref.read(anlasProvider).value?.isOpus ?? false,
+      sendW: t.w,
+      sendH: t.h,
+      strength: _s.strength,
+      v5Charged: ref.read(v5ChargedProvider),
     );
   }
 
-  Widget _groupLabel(BuildContext context, String text) => Padding(
-    padding: const EdgeInsets.only(left: 4, top: 2, bottom: 8),
-    child: Text(
-      text,
-      style: TextStyle(
-        fontSize: 12,
-        fontWeight: FontWeight.w600,
-        color: context.scheme.onSurfaceVariant,
-      ),
-    ),
-  );
-}
+  /// 选中那条超分线的一句话说明(含价钱)。两条都不可用时说清为什么。
+  String get _upscaleNote {
+    final price = naiV5UpscalePrice(widget.width, widget.height);
+    if (_upscaleMethods.isEmpty) {
+      return '当前尺寸 ${widget.width}×${widget.height} 两条超分线都不受理';
+    }
+    return switch (_s.method) {
+      UpscaleMethod.nai => '官方传统模型 · 固定 4× · 7 点',
+      _ => '扩散模型 · 任意尺寸(≤3,145,728 像素) · $price 点',
+    };
+  }
 
-/// 单个方式卡片。禁用时(NAI 尺寸不符)置灰 + 不可点 + 显示原因。
-class _MethodTile extends StatelessWidget {
-  const _MethodTile({
-    required this.method,
-    required this.selected,
-    required this.enabled,
-    this.disabledHint,
-  });
-
-  final UpscaleMethod method;
-  final bool selected;
-  final bool enabled;
-  final String? disabledHint;
-
-  IconData get _icon => switch (method) {
-    UpscaleMethod.localFast => Icons.bolt,
-    UpscaleMethod.localQuality => Icons.auto_awesome,
-    UpscaleMethod.nai => Icons.cloud_outlined,
-    UpscaleMethod.redraw15x => Icons.auto_fix_high,
+  /// 当前倍率档在干什么。Max 档的尺寸是服务端定的,这里只能给估值。
+  String get _scaleNote => switch (_s.enhanceScale) {
+    EnhanceScale.x1 => '同尺寸重新生成,只精修细节、不放大',
+    EnhanceScale.max => '发原图尺寸,由 NovelAI 放到最大后重绘',
+    final s => '以 ${s.label} 分辨率重新生成,画面会变',
   };
+
+  /// Max 档为什么没出现。**看不见的缺席最难查** —— 两个条件各有各的说法,
+  /// 不写出来用户只会以为功能坏了。都满足时返回 null(那时它就在列表里)。
+  String? get _maxMissingWhy {
+    if (widget.redrawScales.contains(EnhanceScale.max)) return null;
+    final model = widget.redrawInput?.params.model;
+    if (model == null) return null;
+    if (!isNai5Model(model)) {
+      return 'Max 档只有 V5 有;当前模型是 $model,重绘也按它跑';
+    }
+    // 官方阈值:源图像素要小于 0.8×上限才提供 Max
+    return 'Max 档要求源图小于 2,516,582 像素,'
+        '这张 ${widget.width}×${widget.height} 太大了';
+  }
 
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    final titleColor = enabled
-        ? scheme.onSurface
-        : scheme.onSurfaceVariant.withValues(alpha: .5);
-    final subColor = enabled
-        ? scheme.onSurfaceVariant
-        : scheme.onSurfaceVariant.withValues(alpha: .5);
-    final iconColor = !enabled
-        ? scheme.onSurfaceVariant.withValues(alpha: .5)
-        : selected
-        ? scheme.onSecondaryContainer
-        : scheme.onSurfaceVariant;
-    return Material(
-      color: !enabled
-          ? scheme.surfaceContainerHighest.withValues(alpha: .45)
-          : selected
-          ? scheme.secondaryContainer
-          : scheme.surfaceContainerHighest,
-      borderRadius: BorderRadius.circular(14),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: enabled ? () => Navigator.of(context).pop(method) : null,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-          child: Row(
-            children: [
-              Icon(_icon, color: iconColor),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Text(
-                          method.label,
-                          style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w700,
-                            color: titleColor,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 1,
-                          ),
-                          decoration: BoxDecoration(
-                            color: scheme.surface,
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Text(
-                            method.badge,
-                            style: TextStyle(fontSize: 10, color: subColor),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      disabledHint ?? method.desc,
-                      style: TextStyle(fontSize: 12, color: subColor),
-                    ),
-                  ],
-                ),
-              ),
-              if (selected && enabled)
-                Icon(Icons.check_circle, color: scheme.primary, size: 20)
-              else if (!enabled)
+    final t = _target;
+    final cost = _cost;
+    return SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // 抓手由 BottomSheetTheme(showDragHandle: true)统一提供,这里不再自画。
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
+            child: Row(
+              children: [
                 Icon(
-                  Icons.block,
-                  color: scheme.onSurfaceVariant.withValues(alpha: .5),
-                  size: 18,
+                  Icons.photo_size_select_large,
+                  size: 20,
+                  color: scheme.primary,
                 ),
-            ],
+                const SizedBox(width: 8),
+                Text(
+                  '放大',
+                  style: context.texts.titleMedium!.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  '${widget.width}×${widget.height}',
+                  style: mono(
+                    context,
+                    size: 11,
+                  ).copyWith(color: scheme.outline),
+                ),
+              ],
+            ),
           ),
-        ),
+          Flexible(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // 支路:超分 = 只放大像素;图生图放大 = 重新生成,画面会变
+                  SegmentedButton<bool>(
+                    segments: [
+                      ButtonSegment(
+                        value: false,
+                        label: const Text('超分辨率'),
+                        enabled: _upscaleMethods.isNotEmpty,
+                      ),
+                      ButtonSegment(
+                        value: true,
+                        label: const Text('图生图放大'),
+                        enabled: widget.redrawWhy == null,
+                      ),
+                    ],
+                    selected: {_isRedraw},
+                    showSelectedIcon: false,
+                    onSelectionChanged: (v) => _setMethod(
+                      v.first ? UpscaleMethod.redraw : _lastUpscale,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  if (widget.redrawWhy case final why?) ...[
+                    _note(scheme, why),
+                    const SizedBox(height: 10),
+                  ] else
+                    const SizedBox(height: 4),
+                  if (_isRedraw)
+                    ..._redrawSection(scheme)
+                  else
+                    ..._upscaleSection(scheme),
+                ],
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+            child: _cta(scheme, t, cost),
+          ),
+        ],
       ),
     );
   }
+
+  // ---- 超分辨率支路:两条线并成一行 ----
+
+  List<Widget> _upscaleSection(ColorScheme scheme) => [
+    SegmentedButton<UpscaleMethod>(
+      segments: [
+        ButtonSegment(
+          value: UpscaleMethod.nai,
+          label: const Text('NAI 旧版 4x'),
+          enabled: widget.naiEnabled,
+        ),
+        ButtonSegment(
+          value: UpscaleMethod.naiV5,
+          label: const Text('V5 新版 2x'),
+          enabled: widget.naiV5Enabled,
+        ),
+      ],
+      selected: {_s.method},
+      showSelectedIcon: false,
+      onSelectionChanged: (v) => _setMethod(v.first),
+    ),
+    const SizedBox(height: 8),
+    _note(scheme, _upscaleNote),
+    if (!widget.naiEnabled) ...[
+      const SizedBox(height: 4),
+      _note(scheme, 'NAI 传统超分只收 832×1216 / 1216×832 / 1024²,这张图用不了'),
+    ],
+  ];
+
+  // ---- 图生图放大支路:倍率与档位并成一行 ----
+
+  List<Widget> _redrawSection(ColorScheme scheme) {
+    final mag = _s.magnitudeIndex;
+    return [
+      // 两个都只有两三个选项,各占一整行太空 —— 并成一行两个下拉。
+      Row(
+        children: [
+          Expanded(
+            child: _dropdown<EnhanceScale>(
+              scheme,
+              label: '倍率',
+              value: _s.enhanceScale,
+              items: [
+                for (final s in widget.redrawScales) (value: s, text: s.label),
+              ],
+              onChanged: (v) => _set(_s.copyWith(enhanceScale: v)),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: _dropdown<int>(
+              scheme,
+              label: '档位',
+              value: mag,
+              items: [
+                for (var i = 0; i < kMagnitudePresets.length; i++)
+                  (value: i, text: '档 ${kMagnitudePresets[i].label}'),
+                // 两个滑杆微调过之后就不在任何一档上 —— 列一个占位项,
+                // 否则 DropdownButton 的 value 不在 items 里会直接抛。
+                if (mag < 0) (value: -1, text: '自定义'),
+              ],
+              onChanged: (i) {
+                if (i < 0) return;
+                _set(
+                  _s.copyWith(
+                    strength: kMagnitudePresets[i].strength,
+                    noise: kMagnitudePresets[i].noise,
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+      const SizedBox(height: 8),
+      _note(scheme, _scaleNote),
+      if (_maxMissingWhy case final why?) ...[
+        const SizedBox(height: 3),
+        _note(scheme, why),
+      ],
+      const SizedBox(height: 6),
+      ParamSlider(
+        label: '强度 Strength',
+        help: Help.img2imgStrength,
+        value: _s.strength,
+        min: kStrengthMin,
+        max: kStrengthMax,
+        divisions: ((kStrengthMax - kStrengthMin) / 0.05).round(),
+        valueText: _s.strength.toStringAsFixed(2),
+        dense: true,
+        onChanged: (v) => _set(_s.copyWith(strength: v)),
+      ),
+      ParamSlider(
+        label: '噪声 Noise',
+        help: Help.img2imgNoise,
+        value: _s.noise,
+        max: kNoiseMax,
+        divisions: (kNoiseMax / 0.01).round(),
+        valueText: _s.noise.toStringAsFixed(2),
+        dense: true,
+        onChanged: (v) => _set(_s.copyWith(noise: v)),
+      ),
+    ];
+  }
+
+  Widget _note(ColorScheme scheme, String text) => Padding(
+    padding: const EdgeInsets.only(left: 2),
+    child: Text(
+      text,
+      style: context.texts.labelSmall!.copyWith(color: scheme.outline),
+    ),
+  );
+
+  /// 带前置标签的紧凑下拉(与高级设置里预设那一栏同款外壳)。
+  Widget _dropdown<T>(
+    ColorScheme scheme, {
+    required String label,
+    required T value,
+    required List<({T value, String text})> items,
+    required ValueChanged<T> onChanged,
+  }) => InputDecorator(
+    decoration: InputDecoration(
+      labelText: label,
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+      isDense: true,
+      contentPadding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+    ),
+    child: DropdownButton<T>(
+      value: value,
+      isExpanded: true,
+      isDense: true,
+      underline: const SizedBox.shrink(),
+      borderRadius: BorderRadius.circular(12),
+      style: context.texts.bodyMedium!.copyWith(color: scheme.onSurface),
+      items: [
+        for (final e in items)
+          DropdownMenuItem(
+            value: e.value,
+            child: Text(e.text, maxLines: 1, overflow: TextOverflow.ellipsis),
+          ),
+      ],
+      onChanged: (v) {
+        if (v == null) return;
+        Haptics.selection();
+        onChanged(v);
+      },
+    ),
+  );
+
+  /// 全宽 CTA:结果尺寸 + 点数胶囊,与重绘面板那条同一套(图标 + 数字,免费写「免费」)。
+  Widget _cta(ColorScheme scheme, ({int w, int h}) t, int? cost) =>
+      FilledButton(
+        style: FilledButton.styleFrom(
+          minimumSize: const Size.fromHeight(46),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(23),
+          ),
+        ),
+        onPressed: cost == null ? null : () => Navigator.of(context).pop(_s),
+        // 整块等比缩,不让任何一段省略号 —— 窄屏 + 四位数点数时两边都装不下。
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                _isRedraw ? Icons.auto_fix_high : Icons.photo_size_select_large,
+                size: 18,
+              ),
+              const SizedBox(width: 7),
+              const Text(
+                '开始放大',
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                _isRedraw && _s.enhanceScale == EnhanceScale.max
+                    ? '≈${t.w}×${t.h}'
+                    : '${t.w}×${t.h}',
+                style: mono(
+                  context,
+                  size: 11,
+                ).copyWith(color: scheme.onPrimary.withValues(alpha: .75)),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                decoration: BoxDecoration(
+                  color: scheme.onPrimary.withValues(alpha: .16),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.toll, size: 12, color: scheme.onPrimary),
+                    const SizedBox(width: 3),
+                    Text('${cost ?? '—'}', style: _pill(scheme)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+
+  TextStyle _pill(ColorScheme scheme) => TextStyle(
+    fontSize: 11,
+    fontWeight: FontWeight.w700,
+    color: scheme.onPrimary,
+  );
 }
 
-/// 超分进度对话框:本地=tile 真进度条 + 百分比;NAI=不确定动画 + 阶段文案。
+/// 超分进度对话框。三条路都是远程一次性调用,拿不到逐步进度 ——
+/// 只有阶段文案 + 不确定动画。
 class _UpscaleProgressDialog extends StatelessWidget {
-  const _UpscaleProgressDialog({
-    required this.method,
-    required this.stage,
-    required this.frac,
-  });
+  const _UpscaleProgressDialog({required this.method, required this.stage});
 
   final UpscaleMethod method;
   final ValueNotifier<String> stage;
-  final ValueNotifier<double?> frac;
 
   IconData get _icon => switch (method) {
-    UpscaleMethod.localFast => Icons.bolt,
-    UpscaleMethod.localQuality => Icons.auto_awesome,
     UpscaleMethod.nai => Icons.cloud_outlined,
-    UpscaleMethod.redraw15x => Icons.auto_fix_high,
+    UpscaleMethod.naiV5 => Icons.blur_on,
+    UpscaleMethod.redraw => Icons.auto_fix_high,
   };
 
   @override
@@ -928,7 +1145,10 @@ class _UpscaleProgressDialog extends StatelessWidget {
         children: [
           Icon(_icon, size: 20, color: scheme.primary),
           const SizedBox(width: 8),
-          Text('${method.label} · 4×', style: const TextStyle(fontSize: 16)),
+          Text(
+            '${method.label} · ${method.badge}',
+            style: const TextStyle(fontSize: 16),
+          ),
         ],
       ),
       content: Column(
@@ -943,30 +1163,11 @@ class _UpscaleProgressDialog extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 16),
-          ValueListenableBuilder<double?>(
-            valueListenable: frac,
-            builder: (_, f, _) => Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(4),
-                  child: LinearProgressIndicator(
-                    value: f,
-                    minHeight: 8,
-                    backgroundColor: scheme.surfaceContainerHighest,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: Text(
-                    f == null
-                        ? (method.local ? '准备中…' : '处理中…')
-                        : '${(f * 100).round()}%',
-                    style: mono(context, size: 13, color: scheme.onSurface),
-                  ),
-                ),
-              ],
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              minHeight: 8,
+              backgroundColor: scheme.surfaceContainerHighest,
             ),
           ),
         ],

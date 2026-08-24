@@ -1,7 +1,7 @@
 # Plana App
 
 NovelAI 第三方 Android 客户端。Flutter 编写,面向手机上的完整创作流程 ——
-不是网页版套壳:提示词编辑、图库、Vibe 管理、局部重绘、本地超分都在本地跑。
+不是网页版套壳:提示词编辑、图库、Vibe 管理、局部重绘都在本地跑。
 
 > 与 NovelAI 官方无任何关联。图像由 NovelAI 生成,账号与生成内容产生的一切责任由使用者承担。
 
@@ -14,7 +14,7 @@ NovelAI 第三方 Android 客户端。Flutter 编写,面向手机上的完整创
 - **图库** —— 本地落库,原图与元数据完整保留;导出时可清除元数据(含 alpha 隐写)
 - **Vibe 库** —— `.naiv4vibe` 导入导出、逐模型编码管理、云端备份
 - **导入** —— 从 PNG 元数据还原完整生成参数(含隐写图),逐项可选
-- **本地超分** —— ncnn-vulkan,离线,不经过任何服务器
+- **放大** —— NAI 传统超分 / V5 扩散超分 / 图生图重绘放大(倍率与强度可调)
 
 ## 两种使用方式
 
@@ -63,10 +63,6 @@ flutter build apk --release --target-platform android-arm64
 |---|---|---|
 | 标签补全库 | Danbooru | 离线 TSV,随包分发 |
 | 法典图鉴 | [quicktagcloud](https://novelai.quicktagcloud.com/) | 仅索引与跳转,数据不随包 |
-| 超分模型 | [Upscayl](https://github.com/upscayl/upscayl) | **不随包分发**,首次使用时由设备直接从上游仓库下载 |
-
-超分模型不内置是有意为之:上游未写明权重的再分发条款,由用户设备自源站获取可以
-整个绕开该问题。详见 `lib/features/gallery/upscale_model_store.dart` 顶部说明。
 
 第三方内容的版权归其各自作者所有,本项目仅作索引与调用。
 

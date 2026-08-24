@@ -50,7 +50,7 @@ const _kCacheKeys = ['temp', 'imgCache', 'codexCache', 'blobs'];
 const _cleanable = <_CatSpec>[
   _CatSpec(_kCacheKeys, Icons.cached, '缓存文件', '清理'),
   _CatSpec(['vibeEnc'], Icons.bolt_outlined, 'Vibe 编码缓存', '清空'),
-  _CatSpec(['models'], Icons.hd_outlined, '超分模型', '删除'),
+  _CatSpec(['models'], Icons.hd_outlined, '超分模型(遗留)', '删除'),
   _CatSpec(['tagPrev'], Icons.lightbulb_outline, '灵感预览图', '清空'),
   _CatSpec(['gallery'], Icons.photo_library_outlined, '图库作品', '清空'),
   _CatSpec(['vibeLib'], Icons.palette_outlined, 'Vibe 库', '清空'),
@@ -233,8 +233,8 @@ class _StoragePageState extends ConsumerState<StoragePage> {
           context,
           title: '删除超分模型',
           message:
-              '将删除已下载的 ${fmtBytes(_report?['models']?.bytes ?? 0)} 模型文件。'
-              '下次用本地超分时需重新从 Upscayl 官方仓库下载,请留意流量。',
+              '本地超分功能已下线,这 ${fmtBytes(_report?['models']?.bytes ?? 0)} '
+              '模型文件已经用不上了,删掉不会少任何功能。',
           confirmLabel: '删除',
         );
         if (!ok) return;

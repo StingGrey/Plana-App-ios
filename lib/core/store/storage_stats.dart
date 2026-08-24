@@ -87,8 +87,8 @@ Future<StorageReport> scanStorage() async {
   Directory sub(String p) => Directory('${sup.path}/$p');
 
   // 超分模型:支持目录顶层的 .bin/.param。
-  // 注意这**不是**缓存:模型不随包分发,删掉要重新下载 10.9 MB(见
-  // features/gallery/upscale_model_store.dart),别当临时文件清。
+  // 本地超分已于 2026-08-24 整条下线,这些文件现在是**纯遗留垃圾** —— 但仍然
+  // 单独成组、由用户点一下才删:悄悄删掉用户机器上的文件不是我们该做的事。
   var modelBytes = 0;
   var modelCount = 0;
   try {
@@ -173,8 +173,8 @@ Future<StorageReport> scanStorage() async {
   );
 }
 
-/// 删除已下载的超分模型。**不是无损操作** —— 模型不随包分发,再用要重新
-/// 下载 10.9 MB,所以存储管理里它单独成组、动作叫「删除」不叫「清理」。
+/// 删除遗留的超分模型文件。本地超分下线后它们已经没有任何用处,删了不会
+/// 少任何功能;仍然单独成组是为了让用户自己按一下,而不是替他做主。
 ///
 /// 扫的是支持目录**顶层**的 `.bin`/`.param`,与 [scanStorage] 的 `models`
 /// 口径一致。blob 仓在 `blobs/` 子目录里,扫不到,不会被误删。

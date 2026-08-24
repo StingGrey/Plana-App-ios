@@ -3,7 +3,6 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/app_info.dart';
 import '../../core/theme/app_theme.dart';
-import '../gallery/upscale_model_store.dart' show kUpscaleModelSource;
 import '../generate/widgets/common.dart' show hintSnack;
 import '../update/update_sheet.dart' show UpdateRow;
 import 'widgets/settings_ui.dart';
@@ -103,12 +102,6 @@ class AboutPage extends StatelessWidget {
                 icon: Icons.sell_outlined,
                 title: '标签补全',
                 value: 'Danbooru 离线库',
-              ),
-              SettingsRow(
-                icon: Icons.hd_outlined,
-                title: '本地超分',
-                value: 'Upscayl 模型',
-                onTap: () => _open(context, kUpscaleModelSource),
               ),
             ],
           ),
