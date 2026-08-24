@@ -27,8 +27,24 @@ class GalleryPage extends ConsumerStatefulWidget {
   ConsumerState<GalleryPage> createState() => _GalleryPageState();
 }
 
-/// 「保存」长按入口的一次性引导:提示过就记在 `settings.json`,不再打扰。
-const _kSaveHintKey = 'hint_save_longpress';
+/// 图库的一次性引导。提示过就记在 `settings.json`,不再打扰。
+///
+/// **一次只提一条**:hintSnack 是全局单例,后一条会把前一条顶掉;而且一进
+/// 图库连弹两条本身就很吵。按下面的顺序挑第一条没提过的,剩下的等下次进
+/// 图库(下次冷启动)再说 —— 这两个手势都藏得深,不说没人发现,但也不急在
+/// 同一秒说完。
+const _kGalleryHints = <({String key, String text, IconData icon})>[
+  (
+    key: 'hint_save_longpress',
+    text: '长按「保存」可进入下载设置',
+    icon: Icons.download_outlined,
+  ),
+  (
+    key: 'hint_strip_swipe_delete',
+    text: '底部胶片条里的图,向上滑可以删除',
+    icon: Icons.swipe_up_outlined,
+  ),
+];
 
 class _GalleryPageState extends ConsumerState<GalleryPage>
     with AutomaticKeepAliveClientMixin {
@@ -112,20 +128,21 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
     return false;
   }
 
-  /// 图库里有图了 → 提一次「保存」的长按入口。长按藏得深,不说没人发现。
+  /// 图库里有图了 → 提一条还没提过的引导(见 [_kGalleryHints])。
   /// 每进程只判一次(_hintChecked),真正的"提过没"以落盘的标记为准。
-  void _maybeSaveHint(bool hasImage) {
+  void _maybeHint(bool hasImage) {
     if (_hintChecked || !hasImage) return;
     _hintChecked = true;
     final prefs = ref.read(prefsStoreProvider);
-    if (prefs.get(_kSaveHintKey) != null) return;
-    prefs.write(key: _kSaveHintKey, value: '1');
-    // build 里不能直接弹 overlay,推到帧后
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        hintSnack(context, '长按「保存」可进入下载设置', icon: Icons.download_outlined);
-      }
-    });
+    for (final h in _kGalleryHints) {
+      if (prefs.get(h.key) != null) continue;
+      prefs.write(key: h.key, value: '1');
+      // build 里不能直接弹 overlay,推到帧后
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) hintSnack(context, h.text, icon: h.icon);
+      });
+      return; // 一次一条
+    }
   }
 
   @override
@@ -143,7 +160,7 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
       updateKeepAlive();
     }
 
-    _maybeSaveHint(!state.isEmpty);
+    _maybeHint(!state.isEmpty);
 
     if (!gen.busy && state.isEmpty && inpaint == null) {
       return const _EmptyGallery();

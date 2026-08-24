@@ -38,6 +38,10 @@ Future<void> showGalleryGrid(BuildContext context) =>
       builder: (_) => const _GalleryGridSheet(),
     );
 
+/// 「全部图库」首次打开时提一次长按 —— 网格里点一下是选中回填画布,
+/// 长按才是放大预览 + 导入/保存/删除那套,不说没人会去按。
+const _kGridHintKey = 'hint_grid_longpress';
+
 class _GalleryGridSheet extends ConsumerStatefulWidget {
   const _GalleryGridSheet();
 
@@ -69,6 +73,24 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
   static const _actH = 46.0;
   static const _actSubH = 38.0;
   static const _actGap = 10.0;
+
+  @override
+  void initState() {
+    super.initState();
+    final prefs = ref.read(prefsStoreProvider);
+    if (prefs.get(_kGridHintKey) != null) return;
+    prefs.write(key: _kGridHintKey, value: '1');
+    // 弹层刚推进来那一帧 overlay 还没稳,推到帧后再弹
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        hintSnack(
+          context,
+          '长按一张图可放大预览,并导入 / 保存 / 删除',
+          icon: Icons.touch_app_outlined,
+        );
+      }
+    });
+  }
 
   @override
   void dispose() {

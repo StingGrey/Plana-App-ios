@@ -76,6 +76,56 @@ void main() {
     expect(files(), hasLength(1));
   });
 
+  // 服务端给预览图发的是 ETag + `Cache-Control: no-cache`(作者换图 → mtime 变
+  // → etag 变)。缓存这层不记验证器的话,同一个 URL 换了内容就永远拉不到新的,
+  // 只能手动清缓存 —— 这组用例钉住「记住验证器 / 换了内容就换缓存键」。
+  group('ETag 验证器', () {
+    const url = 'https://x/preview';
+
+    test('带 etag 写入 → 读得回来,且时刻是刚刚', () async {
+      await RemoteImageStore.write(url, _bytes(8), etag: '"abc"');
+      final v = await RemoteImageStore.validator(url);
+      expect(v!.etag, '"abc"'); // 引号原样留着:If-None-Match 要逐字回传
+      expect(DateTime.now().difference(v.at).inSeconds, lessThan(5));
+    });
+
+    test('没有 etag 就没有验证器(老缓存/服务端没发)', () async {
+      await RemoteImageStore.write(url, _bytes(8));
+      expect(await RemoteImageStore.validator(url), isNull);
+    });
+
+    test('后来一次响应没带 etag → 旧验证器要删掉,不能留着误判 304', () async {
+      await RemoteImageStore.write(url, _bytes(8), etag: '"v1"');
+      await RemoteImageStore.write(url, _bytes(8, fill: 9));
+      expect(await RemoteImageStore.validator(url), isNull);
+    });
+
+    test('replaced 才换缓存键:首次下载不换,内容真变了才换', () async {
+      final before = RemoteImageStore.versionOf(url);
+      await RemoteImageStore.write(url, _bytes(8), etag: '"v1"');
+      expect(RemoteImageStore.versionOf(url), before);
+      await RemoteImageStore.write(
+        url,
+        _bytes(8, fill: 9),
+        etag: '"v2"',
+        replaced: true,
+      );
+      expect(RemoteImageStore.versionOf(url), before + 1);
+    });
+
+    test('trim 删主文件时验证器跟着走,不留孤儿', () async {
+      await RemoteImageStore.write('https://x/old', _bytes(3000), etag: '"o"');
+      // mtime 拉开,保证 old 先被淘汰
+      fileWithFill(7).setLastModifiedSync(DateTime(2020));
+      await RemoteImageStore.write('https://x/new', _bytes(100), etag: '"n"');
+      await RemoteImageStore.trim(limit: 500);
+      expect(await RemoteImageStore.read('https://x/old'), isNull);
+      expect(await RemoteImageStore.validator('https://x/old'), isNull);
+      // 留下的那份验证器不受影响
+      expect((await RemoteImageStore.validator('https://x/new'))!.etag, '"n"');
+    });
+  });
+
   test('目录不可用时整层降级为空,读写清理都不抛', () async {
     // 绑到一个不可建的路径(父目录是文件),模拟拿不到 support 目录的极端情况
     final blocker = File('${root.path}/blocker')..writeAsStringSync('x');

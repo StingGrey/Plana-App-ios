@@ -32,6 +32,29 @@ abstract final class RemoteImageStore {
   /// 天级粒度足够把「常看的」和「一年没碰的」区分开。
   static const _touchAfter = Duration(days: 1);
 
+  /// 验证器旁文件的后缀。内容 = 服务端给的 ETag **原样**(含引号,
+  /// If-None-Match 要逐字回传);它自己的 mtime = 上次验证的时刻。
+  ///
+  /// 单开一个文件而不是塞进主文件:主文件是喂给解码器的裸字节,
+  /// 加个头就得所有读路径都先剥一层,还会把老缓存全作废。
+  static const _validatorExt = '.v';
+
+  /// 内容变了就给这个 URL 换一个**缓存键**(见 [RemoteImageProvider.version])。
+  ///
+  /// 只把磁盘那份换掉不够:内存层(`PaintingBinding.imageCache`)存的是解码后
+  /// 位图,键里没有任何内容信息 —— 不换键的话屏幕上挂着的、以及重进页面拿到的
+  /// 都还是旧图,只有杀进程或清缓存才会变。[revision] 变一次,所有 [RemoteImage]
+  /// 跟着重建,新键自然从磁盘拿到新字节。
+  static final revision = ValueNotifier<int>(0);
+  static final _versions = <String, int>{};
+
+  static int versionOf(String url) => _versions[url] ?? 0;
+
+  static void _bumpVersion(String url) {
+    _versions[url] = versionOf(url) + 1;
+    revision.value++;
+  }
+
   static void bind(Directory supportRoot) =>
       _dir = Directory('${supportRoot.path}/img_cache');
 
@@ -39,6 +62,36 @@ abstract final class RemoteImageStore {
     final d = _dir;
     if (d == null) return null;
     return File('${d.path}/${sha1.convert(utf8.encode(url))}');
+  }
+
+  static File? _validatorOf(String url) {
+    final f = _fileOf(url);
+    return f == null ? null : File('${f.path}$_validatorExt');
+  }
+
+  /// 上次验证的结果:(ETag 原文, 验证时刻)。没有旁文件(老缓存/服务端没给
+  /// ETag)返回 null —— 调用方按「该验一次」处理,一次 200 回来就补上了。
+  static Future<({String etag, DateTime at})?> validator(String url) async {
+    final f = _validatorOf(url);
+    if (f == null) return null;
+    try {
+      final st = await f.stat();
+      if (st.type == FileSystemEntityType.notFound) return null;
+      final etag = (await f.readAsString()).trim();
+      if (etag.isEmpty) return null;
+      return (etag: etag, at: st.modified);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 304 之后刷新新鲜期:内容没变,但「刚验过」这件事要记下来。
+  static Future<void> touchValidator(String url) async {
+    final f = _validatorOf(url);
+    if (f == null) return;
+    try {
+      if (await f.exists()) await f.setLastModified(DateTime.now());
+    } catch (_) {}
   }
 
   static Future<Uint8List?> read(String url) async {
@@ -60,12 +113,31 @@ abstract final class RemoteImageStore {
 
   /// 原子写:文件名是 **URL** 的哈希而非内容的,半截文件没法自证损坏,
   /// 会被后续 [read] 当成有效缓存直接喂给解码器。
-  static Future<void> write(String url, Uint8List bytes) async {
+  ///
+  /// [etag] 是服务端这次给的验证器,一并落到旁文件(见 [_validatorExt])。
+  /// [replaced] = 这次是换掉了已有的内容(而不是首次下载),那就要给这个 URL
+  /// 换一个缓存键,把内存里那份旧位图顶掉。
+  static Future<void> write(
+    String url,
+    Uint8List bytes, {
+    String? etag,
+    bool replaced = false,
+  }) async {
     final f = _fileOf(url);
     if (f == null) return;
     try {
       await writeBytesAtomic(f, bytes);
+      final v = _validatorOf(url);
+      if (v != null) {
+        if (etag != null && etag.isNotEmpty) {
+          await writeBytesAtomic(v, Uint8List.fromList(utf8.encode(etag)));
+        } else if (await v.exists()) {
+          // 服务端这次没给 ETag:旧验证器已经对不上内容了,留着会误判 304
+          await v.delete();
+        }
+      }
     } catch (_) {}
+    if (replaced) _bumpVersion(url);
   }
 
   static Future<void> _touch(File f) async {
@@ -84,6 +156,8 @@ abstract final class RemoteImageStore {
       var total = 0;
       await for (final ent in d.list(followLinks: false)) {
         if (ent is! File) continue;
+        // 验证器旁文件不单独参与淘汰:它几十字节,而且脱离主文件毫无意义
+        if (ent.path.endsWith(_validatorExt)) continue;
         try {
           final st = await ent.stat();
           files.add((f: ent, size: st.size, at: st.modified));
@@ -97,6 +171,9 @@ abstract final class RemoteImageStore {
         try {
           await e.f.delete();
           total -= e.size;
+          // 主文件走了,验证器留着只会在下次下载后误判 304
+          final v = File('${e.f.path}$_validatorExt');
+          if (await v.exists()) await v.delete();
         } catch (_) {}
       }
     } catch (_) {}
@@ -116,8 +193,12 @@ abstract final class RemoteImageStore {
         }
       }
     } catch (_) {}
-    // 内存层也要一起倒,否则刚清完的图还在屏幕上挂着,数字对不上观感
+    // 内存层也要一起倒,否则刚清完的图还在屏幕上挂着,数字对不上观感。
+    // imageCache.clear() 碰不到已经挂在 widget 上的那些(它们持有 live image),
+    // 所以再动一下版本号,让 RemoteImage 重建、重新解析。
     PaintingBinding.instance.imageCache.clear();
+    _versions.clear();
+    revision.value++;
   }
 }
 
@@ -126,13 +207,32 @@ abstract final class RemoteImageStore {
 /// 网络恢复了也不会重试)。
 @immutable
 class RemoteImageProvider extends ImageProvider<RemoteImageProvider> {
-  const RemoteImageProvider(this.url, {this.scale = 1.0});
+  const RemoteImageProvider(this.url, {this.scale = 1.0, this.version = 0});
 
   final String url;
   final double scale;
 
+  /// 内容版本(见 [RemoteImageStore.versionOf])。**只为缓存键存在**:
+  /// 同一个 URL 换了内容时它 +1,于是内存里那份解码后的旧位图不再命中。
+  /// 加载路径根本不看它 —— 字节永远以磁盘上那份为准。
+  final int version;
+
   static final _client = http.Client();
   static const _timeout = Duration(seconds: 30);
+
+  /// 后台回源验证的超时。比首次下载短:它是锦上添花,拖着不放只是占连接。
+  static const _revalidateTimeout = Duration(seconds: 15);
+
+  /// 缓存命中后多久才值得再问一次服务端。
+  ///
+  /// 服务端给这些图发的是 `Cache-Control: no-cache`(每次都该验),但一屏几十张
+  /// 图逐张验太吵;留一分钟的窗口,进出页面不会重复问,而作者改完图最多一分钟
+  /// 就能在 app 上看见。
+  static const _revalidateAfter = Duration(minutes: 1);
+
+  /// 正在回源验证的 URL。一张图会被多个 widget(或反复重建)同时解析,
+  /// 不去重就是同一个 URL 并发问好几次。
+  static final _validating = <String>{};
 
   @override
   Future<RemoteImageProvider> obtainKey(ImageConfiguration configuration) =>
@@ -161,11 +261,18 @@ class RemoteImageProvider extends ImageProvider<RemoteImageProvider> {
     try {
       final hit = await RemoteImageStore.read(key.url);
       if (hit != null) {
+        // 先拿缓存显示,过期的**在后台**回源验证 —— 阻塞等 304 会把「秒开」
+        // 变成「每张图都先等一个来回」,而作者改图是低频事件。
+        // 真拿到新内容时 write(replaced: true) 会换掉缓存键,屏幕上那张跟着换。
+        unawaited(_revalidate(key.url));
         return decode(await ui.ImmutableBuffer.fromUint8List(hit));
       }
-      final bytes = await _download(key.url, chunks).timeout(_timeout);
+      final (:bytes, :etag) = await _download(
+        key.url,
+        chunks,
+      ).timeout(_timeout);
       // 落盘是旁路:写失败只是下次还得重下,不该连累这一次显示
-      unawaited(RemoteImageStore.write(key.url, bytes));
+      unawaited(RemoteImageStore.write(key.url, bytes, etag: etag));
       return decode(await ui.ImmutableBuffer.fromUint8List(bytes));
     } catch (_) {
       // 与 NetworkImage 同款:微任务里踢缓存,让下次 build 能真的重试
@@ -178,7 +285,46 @@ class RemoteImageProvider extends ImageProvider<RemoteImageProvider> {
     }
   }
 
-  static Future<Uint8List> _download(
+  /// 回源验证:带 `If-None-Match` 问一次。
+  ///
+  /// 304 → 内容没变,刷一下新鲜期就完事(响应约 200 字节)。
+  /// 200 → 内容换了,落盘并换掉缓存键,界面上那张图随即刷新。
+  /// 出错(离线/超时/非预期状态码)→ 什么也不做,继续用缓存。
+  static Future<void> _revalidate(String url) async {
+    if (!_validating.add(url)) return;
+    try {
+      final v = await RemoteImageStore.validator(url);
+      if (v != null && DateTime.now().difference(v.at) < _revalidateAfter) {
+        return; // 刚验过,不必再问
+      }
+      final req = http.Request('GET', Uri.parse(url));
+      if (v != null) req.headers['If-None-Match'] = v.etag;
+      final resp = await _client.send(req).timeout(_revalidateTimeout);
+      if (resp.statusCode == 304) {
+        await resp.stream.drain<void>();
+        await RemoteImageStore.touchValidator(url);
+        return;
+      }
+      if (resp.statusCode != 200) {
+        await resp.stream.drain<void>();
+        return;
+      }
+      final bytes = await resp.stream.toBytes();
+      if (bytes.isEmpty) return;
+      await RemoteImageStore.write(
+        url,
+        bytes,
+        etag: resp.headers['etag'],
+        replaced: true,
+      );
+    } catch (_) {
+      // 离线照旧看缓存 —— 验证失败绝不该让已经能显示的图变成错误态
+    } finally {
+      _validating.remove(url);
+    }
+  }
+
+  static Future<({Uint8List bytes, String? etag})> _download(
     String url,
     StreamController<ImageChunkEvent> chunks,
   ) async {
@@ -202,15 +348,18 @@ class RemoteImageProvider extends ImageProvider<RemoteImageProvider> {
     }
     final bytes = buf.takeBytes();
     if (bytes.isEmpty) throw Exception('空响应');
-    return bytes;
+    return (bytes: bytes, etag: resp.headers['etag']);
   }
 
   @override
   bool operator ==(Object other) =>
-      other is RemoteImageProvider && other.url == url && other.scale == scale;
+      other is RemoteImageProvider &&
+      other.url == url &&
+      other.scale == scale &&
+      other.version == version;
 
   @override
-  int get hashCode => Object.hash(url, scale);
+  int get hashCode => Object.hash(url, scale, version);
 
   @override
   String toString() => 'RemoteImageProvider("$url")';
@@ -250,7 +399,10 @@ class RemoteImage extends StatelessWidget {
   final ImageErrorWidgetBuilder? errorBuilder;
 
   Widget _image(int? cacheWidth) {
-    final base = RemoteImageProvider(url);
+    final base = RemoteImageProvider(
+      url,
+      version: RemoteImageStore.versionOf(url),
+    );
     return Image(
       image: cacheWidth == null
           ? base
@@ -273,11 +425,20 @@ class RemoteImage extends StatelessWidget {
       return n >= 1 ? n : null;
     }
 
-    final explicit = decodeWidth ?? width;
-    if (explicit != null && explicit.isFinite) return _image(px(explicit));
-    return LayoutBuilder(
-      builder: (context, c) =>
-          _image(c.hasBoundedWidth ? px(c.maxWidth) : null),
+    // 跟着版本号重建:后台验证发现内容换了会把它 +1,这里换出新的缓存键,
+    // 挂在屏幕上的那张图当场刷新 —— 否则只有杀进程或清缓存才看得到新图。
+    // 全局一个计数器,任何一张更新都会让所有 RemoteImage 重建;但没变的 URL
+    // 版本号照旧、键不变,不会引发重解码。
+    return ValueListenableBuilder<int>(
+      valueListenable: RemoteImageStore.revision,
+      builder: (context, _, _) {
+        final explicit = decodeWidth ?? width;
+        if (explicit != null && explicit.isFinite) return _image(px(explicit));
+        return LayoutBuilder(
+          builder: (context, c) =>
+              _image(c.hasBoundedWidth ? px(c.maxWidth) : null),
+        );
+      },
     );
   }
 }

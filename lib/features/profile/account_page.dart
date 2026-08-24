@@ -288,6 +288,13 @@ class _TokenCard extends StatelessWidget {
               'Get Persistent API Token',
               style: context.texts.labelSmall!.copyWith(color: scheme.outline),
             ),
+            const SizedBox(height: 4),
+            // 直连由本机直打 api.novelai.net,不经过 Bot 后端中转:网络到不了
+            // 官网,令牌再对也生成不了。
+            Text(
+              '直连生成需要你的网络可以访问 NovelAI 官网',
+              style: context.texts.labelSmall!.copyWith(color: scheme.outline),
+            ),
             const SizedBox(height: 12),
             TextField(
               controller: controller,

@@ -32,9 +32,16 @@ const _thumbSlotH = _thumbH + (_thumbPad + _thumbBorder) * 2;
 const _moreSize = 44.0; // 圆钮直径
 const _moreRight = 12.0; // 距右边缘
 
-// 拖拽删除的垃圾条:浮在胶片条正上方(overlay 层,不占布局,不推画布)。
+// 上滑删除的垃圾条:浮在胶片条正上方(overlay 层,不占布局,不推画布)。
 const _trashH = 54.0;
-const _trashGap = 10.0; // 与胶片条的间距
+
+/// 与胶片条的间距 —— 同时也是**这个手势唯一的保险**。
+///
+/// 原来靠长按起手:按住不动到时才拿得起来,所以垃圾条贴着条摆(10)也不怕误删。
+/// 改成直接上滑之后那道门没了,保险只能落在行程上:手指从缩略图中心算起要走
+/// 约 `10(条内衬) + 38(缩略图半高) + 64 ≈ 110`,是一个明确的「往上甩一下」,
+/// 横滑翻图或点选时的竖向抖动够不着。
+const _trashGap = 64.0;
 
 /// 极端长宽比的兜底:太窄点不着,太宽一张就把条占满。
 /// 两头都按 [_thumbH] 的倍数写(= 原来 40/116 对 62 的那两个比例)——
@@ -51,8 +58,9 @@ double _thumbSlotW(double aspect) =>
 /// 跟随它,点历史缩略图切走看历史 —— 对齐 web 桌面端的占位卡交互。
 /// 取消不在卡上:卡这么小,取消挨着「切换跟随」这个主手势太容易点错,
 /// 它长在画布那条进度胶囊上(见 ProgressPill,web 也是放在状态条上)。
-/// 长按历史图 = 把它拿起来,条上方浮出垃圾区,拖上去松手即删;
-/// 拖回来或松在别处什么都不发生 —— 所以不再另弹确认。
+/// 历史图**上滑**即拿起,条上方浮出垃圾区,拖上去松手即删;拖回来或松在别处
+/// 什么都不发生 —— 所以不再另弹确认。竖向手势与横向滚动各认各的轴
+/// (见 [_FilmThumb] 的 affinity),不用自己进竞技场调解。
 /// 选中项变化(含画布横滑切图、从展开页跳选)时自动滚动,把选中项摆到视野中央。
 class FilmStrip extends StatefulWidget {
   const FilmStrip({
@@ -117,9 +125,9 @@ class _FilmStripState extends State<FilmStrip> {
   // 跳一下),二来 Stack 越界的子节点根本收不到命中测试,而 DragTarget
   // 认的就是命中测试。
   //
-  // 也不能让它待在手指起始位置底下 —— 长按完原地松手就删,「得拖过去」
-  // 这层保险等于没有。所以摆在胶片条**正上方**:竖直行程短,又完全避开
-  // 横向滚动那条轴。
+  // 也不能让它待在手指起始位置底下 —— 那样原地松手就删,「得拖过去」这层
+  // 保险等于没有。所以摆在胶片条**正上方**,且隔开 [_trashGap]:
+  // 完全避开横向滚动那条轴,而那段距离就是防误删的全部依仗。
 
   OverlayEntry? _trash;
 
@@ -346,15 +354,15 @@ class _FilmThumb extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final w = _thumbImgW(result.aspect);
-    return LongPressDraggable<String>(
+    return Draggable<String>(
       data: result.id,
-      // 长按拖拽用的是延时识别器:按住不动到时才夺指针,一上来就横移的
-      // 归列表滚动 —— 两条手势天然分得开,不用自己进竞技场调解。
+      // affinity 竖直 = 只用 VerticalDragGestureRecognizer 进竞技场:一上来就
+      // 横移的归列表滚动,往上走的才算拿起。两条手势按轴分,天然不打架。
       //
-      // 关掉自带触感:它默认为 true,会在起拖时自己 selectionClick 一下,
-      // 和下面这声叠成两下。而且那一下**绕过 Haptics.enabled**,
-      // 设置里关了触感照样震 —— 全应用的振动只许从 Haptics 出去。
-      hapticFeedbackOnStart: false,
+      // axis 竖直 = 拖起来的那张只跟着上下走。既呼应「上滑」这个动作,
+      // 也免得手一歪飘出垃圾条的横向范围。
+      affinity: Axis.vertical,
+      axis: Axis.vertical,
       onDragStarted: () {
         Haptics.medium();
         onDragStart();

@@ -619,6 +619,17 @@ class _AccessStepState extends ConsumerState<_AccessStep>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                // 直连是本机直打 api.novelai.net:网络到不了官网,令牌填对了
+                // 也一样生成不了(那条路该走下一张卡的 Bot)。
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 9),
+                  child: Text(
+                    '请确保你的网络可以访问 NovelAI 官网',
+                    style: context.texts.labelSmall!.copyWith(
+                      color: scheme.outline,
+                    ),
+                  ),
+                ),
                 TextField(
                   controller: _tokenCtrl,
                   obscureText: _obscure,
