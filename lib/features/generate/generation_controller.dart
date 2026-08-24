@@ -20,7 +20,9 @@ import '../../core/net/gen_abort.dart';
 import '../../core/net/nai_client.dart';
 import '../../core/store/app_stores.dart';
 import '../../core/util/image_ops.dart';
+import '../../core/util/transparency.dart';
 import '../gallery/gallery_state.dart';
+import '../gallery/upscale_model.dart' show enhanceMaxTargetSize;
 import '../gallery/models.dart' show ResultBadge;
 import '../inpaint/inpaint_ops.dart';
 import '../shell/shell_state.dart';
@@ -99,7 +101,23 @@ enum GenOutcome {
   /// **可能已扣点**:请求已发出且服务端没有明确拒收 —— 流中途断开、超时、
   /// 内容审核、非流式回退失败。**绝不自动重试**;分不清就按最坏情况算。
   maybeCharged,
+
+  /// **确定未扣点,但重试也不会好**:额度/资格类拒绝(见 [isNai5QuotaBlock])。
+  /// 和 [notCharged] 的区别只在重试策略 —— 队列不该立刻再打一次:那几种情况下
+  /// 第二次必然同样被拒,只会把失败翻倍、还多让用户等一轮。
+  rejected,
 }
+
+/// NAI 5 额度/资格类拒绝的识别。
+///
+/// 三条文案都由服务端拼装(`NO_NAI_QUOTA_ELIGIBILITY_MSG` 没资格 /
+/// `_nai_quota_exhausted_msg` 个人额度用尽 / `NO_V5_QUOTA_MSG` 共享号电池见底),
+/// 共同点是都带「NAI5」这个**无空格**写法 —— 服务端别处一律写「NAI 5」或
+/// `nai-diffusion-5`,所以这个标记足够窄。
+///
+/// 认不出也只是退回旧行为(多重试一次),不会误伤;所以宁可窄一点。
+bool isNai5QuotaBlock(String msg) =>
+    msg.contains('NAI5') && (msg.contains('额度') || msg.contains('资格'));
 
 /// 服务端明确拒收的状态码:请求没被受理,重试不花钱。
 /// 401 令牌无效 · 402 点数不足 · 404/405 端点不可用 · 429 限流。
@@ -333,20 +351,29 @@ class GenerationNotifier extends Notifier<GenPool> {
     return GenOutcome.cancelled;
   }
 
-  /// 激活的提示词预设作为前缀拼进正/负提示词(web buildGenerateParams 同款)。
+  /// 激活的提示词预设拼进正/负提示词(web buildParamsFromState 同款)。
   /// 只用于构造请求;入库仍存原始提示词,避免「重新生成」时二次拼接。
-  Future<(GenerateState, String)> _applyPreset(GenerateState s) async {
+  ///
+  /// 正面拼前还是拼后由预设自己说了算(V5 档是后缀,见 [PromptPreset.suffixPositive])。
+  /// 当前模型看不到的档(切了模型但档没跟着换)先映射到同强度的那一档 ——
+  /// 否则 4.5 的质量词会被拼进 V5 的请求里。
+  Future<({GenerateState state, String presetId, bool qualityToggle})>
+  _applyPreset(GenerateState s) async {
     final ps = await ref.read(promptPresetsProvider.future);
-    final p = ps.active;
+    final id = remapPromptPresetId(ps.activeId, ps.presets, s.params.model);
+    final p = ps.presets.where((e) => e.id == id).firstOrNull;
+    final qt = p != null && p.positive.isNotEmpty;
     if (p == null || (p.positive.isEmpty && p.negative.isEmpty)) {
-      return (s, ps.activeId);
+      return (state: s, presetId: id, qualityToggle: qt);
     }
+    final merged = applyPromptPreset(p, s.prompt, s.negativePrompt);
     return (
-      s.copyWith(
-        prompt: joinPresetPrefix(p.positive, s.prompt),
-        negativePrompt: joinPresetPrefix(p.negative, s.negativePrompt),
+      state: s.copyWith(
+        prompt: merged.positive,
+        negativePrompt: merged.negative,
       ),
-      ps.activeId,
+      presetId: id,
+      qualityToggle: qt,
     );
   }
 
@@ -441,6 +468,15 @@ class GenerationNotifier extends Notifier<GenPool> {
     return GenOutcome.notCharged;
   }
 
+  /// bot 线的失败出口:额度/资格类拒绝走 [GenOutcome.rejected] 并顺手把配额
+  /// 拉一次 —— 顶栏那格立刻显示真实余额(用尽 / 免额度窗口),否则用户看到的
+  /// 还是被拒之前那个数,只会以为「明明还有额度却出不了图」。
+  GenOutcome _botFail(String jobId, String msg, GenOutcome fallback) {
+    if (!isNai5QuotaBlock(msg)) return _fail(jobId, msg, fallback);
+    unawaited(ref.read(naiQuotaProvider.notifier).refresh());
+    return _fail(jobId, msg, GenOutcome.rejected);
+  }
+
   /// 一条任务失败:摘掉它并把错误交出去。
   ///
   /// 全停了才写池级错误(创作页那条常驻提示);还有别的在跑时只弹一条 snack ——
@@ -513,10 +549,12 @@ class GenerationNotifier extends Notifier<GenPool> {
         // 3. 角色参考:contain 处理底图(无编码调用,载荷层按模型 gate)
         final charRefs = await _processCharRefs(s);
         // 4. 拼载荷 + 流式生成
-        final (sp, presetId) = await _applyPreset(s);
+        final preset = await _applyPreset(s);
         built = buildNaiPayload(
-          sp,
-          presetId: presetId,
+          preset.state,
+          presetId: preset.presetId,
+          qualityToggle: preset.qualityToggle,
+          straightAlpha: _straightAlpha,
           vibes: [
             for (final v in prepared)
               (encoded: v.encoded, strength: v.strength),
@@ -624,6 +662,10 @@ class GenerationNotifier extends Notifier<GenPool> {
 
   /// 生成通知总开关(我的 → 生成设置)。关了就整条静默:不开前台服务、不上岛。
   bool get _notify => ref.read(genSettingsProvider).value?.genNotify ?? true;
+
+  /// 透明图的 alpha 编码约定(见 [GenSettings.straightAlpha])。
+  bool get _straightAlpha =>
+      ref.read(genSettingsProvider).value?.straightAlpha ?? true;
 
   /// 手动单发成功后顺手放行排队任务(循环/队列自身收尾各自拉起,不经此)。
   void _kickQueue() {
@@ -809,11 +851,13 @@ class GenerationNotifier extends Notifier<GenPool> {
         final charRefs = await _processCharRefs(s);
         final prepared = await _prepareVibes(s);
         final styleRefs = await _processKreaStyleRefs(s);
-        final (sp, presetId) = await _applyPreset(s);
+        final preset = await _applyPreset(s);
         final params = buildBotParams(
-          sp,
+          preset.state,
           seed: seed,
-          presetId: presetId,
+          presetId: preset.presetId,
+          qualityToggle: preset.qualityToggle,
+          straightAlpha: _straightAlpha,
           img2img: img2img,
           charRefs: charRefs,
           vibes: [
@@ -915,6 +959,9 @@ class GenerationNotifier extends Notifier<GenPool> {
         unawaited(
           ref.read(anlasProvider.notifier).refresh(),
         ); // 生成后刷新点数(对齐 web)
+        // nai5 出一张就扣一张自己的配额,顶栏那格得跟着动。其它模型不扣,
+        // 但也照拉 —— 免额度窗口开合、回充推进同样会让读数变。
+        unawaited(ref.read(naiQuotaProvider.notifier).refresh());
         if (!_inFlow) {
           _endIsland(success: true);
           _kickQueue();
@@ -927,8 +974,9 @@ class GenerationNotifier extends Notifier<GenPool> {
           continue;
         }
         logi('[gen/bot] 失败: ${e.message} (submitted=$submitted)');
-        // 任务已提交成功(拿到 taskId)之后再失败,服务端很可能已经开跑并计费
-        return _fail(
+        // 任务已提交成功(拿到 taskId)之后再失败,服务端很可能已经开跑并计费。
+        // 例外是额度类拒绝:服务端会把预扣退回去,而且退了也白搭 —— 交给 _botFail。
+        return _botFail(
           jobId,
           e.message,
           !submitted || _rejectedOutright(e.status)
@@ -938,7 +986,7 @@ class GenerationNotifier extends Notifier<GenPool> {
       } catch (e) {
         if (abort.aborted) return _cancelled(jobId);
         logi('[gen/bot] 失败: $e (submitted=$submitted)');
-        return _fail(
+        return _botFail(
           jobId,
           '生成失败:$e',
           submitted ? GenOutcome.maybeCharged : GenOutcome.notCharged,
@@ -1017,8 +1065,20 @@ class GenerationNotifier extends Notifier<GenPool> {
     final cfg = s.img2img;
     final img = cfg?.image;
     if (cfg == null || img == null) return null;
-    final png = await coverResizePng(img, s.params.width, s.params.height);
-    return (image: base64Encode(png), strength: cfg.strength, noise: cfg.noise);
+    // 源图真带 alpha 才保住它:透明图垫黑底 = 把透明区烧成黑色,
+    // 而不透明图垫不垫都看不见(cover 铺满画布),维持旧行为即可。
+    final png = await coverResizePng(
+      img,
+      s.params.width,
+      s.params.height,
+      keepAlpha: await pngHasAlpha(img),
+    );
+    return (
+      image: base64Encode(png),
+      strength: cfg.strength,
+      noise: cfg.noise,
+      upscaledEnhance: cfg.upscaledEnhance,
+    );
   }
 
   /// 结果入库(直连/bot 共用):局部重绘先把结果贴回原图,
@@ -1163,6 +1223,20 @@ class GenerationNotifier extends Notifier<GenPool> {
       // 两边口径必须一致。原先回退 true 会让账本在网络最不稳的时候系统性少记
       // —— 而那正是最需要记准的时候。见 S1B-02。
       final isOpus = ref.read(anlasProvider).value?.isOpus ?? false;
+      // 与按钮同口径:V5 额度见底后免费尺寸是照扣 Anlas 的,本机账本不能记 0
+      final v5Charged = ref.read(v5ChargedProvider);
+      // Max ✨ 放大重绘的输出尺寸是**服务端**定的,params 里还留着原图尺寸。
+      // 按原尺寸记会系统性少记(边长 ×2 = 四倍像素),所以按官方那套算法先把
+      // 实际尺寸算出来再估、再落账。数值倍率不用管:那几档是客户端自己把
+      // params 的宽高改好再发的。
+      final maxSize = s.img2img?.upscaledEnhance == true
+          ? enhanceMaxTargetSize(s.params.width, s.params.height)
+          : null;
+      if (maxSize != null) {
+        s = s.copyWith(
+          params: s.params.copyWith(width: maxSize.w, height: maxSize.h),
+        );
+      }
       final job = s.inpaint;
       final pts = job != null
           ? estimateInpaintCost(
@@ -1171,8 +1245,9 @@ class GenerationNotifier extends Notifier<GenPool> {
               sendW: s.params.width,
               sendH: s.params.height,
               strength: job.strength,
+              v5Charged: v5Charged,
             )
-          : estimateCost(s, isOpus: isOpus);
+          : estimateCost(s, isOpus: isOpus, v5Charged: v5Charged);
       ref
           .read(appStoresProvider)
           .ledger
@@ -1183,6 +1258,9 @@ class GenerationNotifier extends Notifier<GenPool> {
             steps: s.params.steps,
             model: s.params.model,
             inpaint: job != null,
+            // 判定留在这边而不是让账本去解析 model 串:那是存储层,不该认识
+            // 产品的展示名规则(改一次命名两处就会分叉)
+            v5: isNai5Model(s.params.model),
           );
     } catch (_) {}
   }

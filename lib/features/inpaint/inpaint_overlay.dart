@@ -1044,6 +1044,8 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
       }
     });
     final isOpus = ref.watch(anlasProvider).asData?.value?.isOpus ?? false;
+    // V5 额度见底后免费尺寸转扣 Anlas,那时「免费」得变回真实点数(见 provider)
+    final v5Charged = ref.watch(v5ChargedProvider);
     final send = _sendSize;
     // 计价读的是创作页当下的状态,和 _fire 发出去的那份同源(见 _liveInput):
     // 步数进两处 —— 免费门槛 steps≤28 和基础价的 (steps+5) —— 用打开面板时的
@@ -1067,6 +1069,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
                 sendW: send.w,
                 sendH: send.h,
                 strength: _strength,
+                v5Charged: v5Charged,
               ) +
               (fee ?? _lastVibeFee);
     final hasPrev = _prevImg != null; // 至少重绘过一次才有「前后对比」

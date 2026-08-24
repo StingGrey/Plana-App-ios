@@ -124,6 +124,8 @@ class GenQueueNotifier extends Notifier<GenQueueState> {
         // **只有「确定未扣点」才重试。** 流中断 / 超时 / 内容审核这类失败,NAI
         // 可能已经受理并扣了点,盲目重试就是第二次扣费,而且没有任何用户动作。
         // 用户取消(stopping)同样不重试。见 S1B-01。
+        // `rejected`(额度/资格被拒)虽然也确定没扣点,但重试必然同样被拒 ——
+        // 它单独一个值就是为了在这里落到「不重试」这一边。
         if (outcome == GenOutcome.notCharged && !state.stopping) {
           outcome = await gen.generate(using: task.snapshot);
         }

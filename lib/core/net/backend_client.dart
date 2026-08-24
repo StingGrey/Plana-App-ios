@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 
 import '../util/log.dart';
 import 'backend_config.dart';
+import 'nai_client.dart' show NaiUsage, parseNaiUsage;
 
 /// 后端请求失败(网络/非 2xx/格式)。`message` 为可直接展示的人类可读文案。
 class BackendException implements Exception {
@@ -227,6 +228,7 @@ class PublicArtistMeta {
     this.createdTime = 0,
     this.addedBy,
     this.ownerId,
+    this.models = const [],
   });
 
   final String id;
@@ -240,6 +242,11 @@ class PublicArtistMeta {
   final int createdTime; // 秒
   final String? addedBy;
   final String? ownerId;
+
+  /// 适用模型 id(见 features/inspiration/artist_models.dart)。空 = 通用。
+  /// 服务端不校验 id 在不在已知模型表里,所以这里也原样收 —— 新版客户端标的
+  /// id 不该被老版静默吃掉。
+  final List<String> models;
 }
 
 /// 公共 OC(角色)列表项(`GET /api/oc/list`)。
@@ -270,6 +277,63 @@ class PublicOcMeta {
       zhName != null && zhName!.isNotEmpty ? zhName! : enName;
 }
 
+/// 「我的 NAI 5 额度」(`GET /api/user/quota`)—— **我们自己**发给每个用户的
+/// 出图配额,和 [BackendClient.getAnlas] 顺路带回的那块 `usage` 是两码事:
+/// 那块是 NAI 官方发给共享号池的电池,空了是大家一起没得用;这块空了只影响自己。
+///
+/// 只有 nai5 的生成扣它,其它模型(含 V4.5 / V4 / anima / krea)一律不限。
+class NaiQuota {
+  const NaiQuota({
+    this.balance = 0,
+    this.limit = 0,
+    this.extra = 0,
+    this.activated = true,
+    this.isAdmin = false,
+    this.freeMode = false,
+    this.refillPerDay = 0,
+  });
+
+  /// 今日余额(张)。服务端按秒连续回充,所以带小数 —— 显示时**向下**取整,
+  /// 免得报了 1 张、点进去却扣不动。
+  final double balance;
+
+  /// 容量(张)。[isAdmin] 时无意义(管理员不设上限)。
+  final int limit;
+
+  /// 赠送额度(转赠而来)。**不受容量封顶**(可以超过 [limit]),所以单列而不是
+  /// 并进 [balance] —— 塞进同一根进度条会让「上限」这个概念失真。
+  final double extra;
+
+  /// 出图资格。false = 没有:V5 额度只发给上线前用过 bot 出图的老用户。
+  /// 这和「额度用完了」是完全不同的处境 —— 后者等回充就行,前者等多久都不会有。
+  ///
+  /// 老服务端不下发这个字段,缺省按有资格算,免得平白多出一块假警报。
+  final bool activated;
+
+  /// 管理员:不扣额度、不设上限。
+  final bool isAdmin;
+
+  /// 免额度窗口:共享号电池充盈时**既不扣也不挡**(额度为 0 的人照样能出)。
+  /// 窗口一关就自动恢复扣减,所以这期间攒不下任何东西。
+  final bool freeMode;
+
+  /// 每天回充多少张。
+  final double refillPerDay;
+
+  /// 现在能出几张(余额 + 赠送)。
+  int get available => (balance + extra).floor();
+
+  factory NaiQuota.fromJson(Map<String, dynamic> j) => NaiQuota(
+    balance: (j['daily_balance'] as num?)?.toDouble() ?? 0,
+    limit: (j['daily_limit'] as num?)?.toInt() ?? 0,
+    extra: (j['extra_balance'] as num?)?.toDouble() ?? 0,
+    activated: j['activated'] != false,
+    isAdmin: j['is_admin'] == true,
+    freeMode: j['free_mode'] == true,
+    refillPerDay: (j['refill_per_day'] as num?)?.toDouble() ?? 0,
+  );
+}
+
 /// 一段用量统计(个人 `/api/user/stats` 与平台 `/api/platform/stats(/all)`
 /// 共用一个形状,后者多活跃/总用户与起止时间)。
 class UsageStats {
@@ -279,6 +343,9 @@ class UsageStats {
     this.pointsSpent = 0,
     this.activeUsers = 0,
     this.totalUsers = 0,
+    this.v5Calls = 0,
+    this.v5Points = 0,
+    this.v5Users = 0,
     this.firstRecord,
     this.lastRecord,
   });
@@ -289,6 +356,18 @@ class UsageStats {
   final int activeUsers;
   final int totalUsers;
 
+  /// NAI 5 单列:张数、点数、用过的人数([v5Users] 仅平台端点有)。
+  ///
+  /// 点数必须单列 —— V5 扣点是 V4.5 的 1.5 倍,光看张数看不出真实消耗;
+  /// 人数则能看出计费新规(V5 超 10 张就进付费档)的影响面。
+  ///
+  /// ⚠ 服务端 2026-08-23 才给 calls 表加 model 列,更早的行一律 NULL、这里
+  /// 统计不到 —— 所以「历史全局」里这三个数实际是**自那天起**的累计。
+  /// 那之前 V5 还没上线,所以口径本身没错,只是更早的区间恒为 0。
+  final int v5Calls;
+  final int v5Points;
+  final int v5Users;
+
   /// ISO 时间串(仅 `/platform/stats/all` 返回)。
   final String? firstRecord;
   final String? lastRecord;
@@ -297,6 +376,9 @@ class UsageStats {
     imageCalls: (j['image_calls'] as num?)?.toInt() ?? 0,
     aiCalls: (j['ai_calls'] as num?)?.toInt() ?? 0,
     pointsSpent: (j['points_spent'] as num?)?.toInt() ?? 0,
+    v5Calls: (j['v5_calls'] as num?)?.toInt() ?? 0,
+    v5Points: (j['v5_points'] as num?)?.toInt() ?? 0,
+    v5Users: (j['v5_users'] as num?)?.toInt() ?? 0,
     activeUsers: (j['active_users'] as num?)?.toInt() ?? 0,
     totalUsers: (j['total_users'] as num?)?.toInt() ?? 0,
     firstRecord: j['first_record'] as String?,
@@ -345,12 +427,26 @@ class BillingParty {
   const BillingParty({
     this.tierName = '免费',
     this.imageCalls = 0,
+    this.v5Calls = 0,
+    this.localCalls = 0,
     this.anlasUsed = 0,
     this.totalFee = 0,
   });
 
   final String tierName;
+
+  /// **分摊基数**:只含 NAI 出图。anima / krea 走算力账单按机时实付,不进这本账
+  /// (它们的张数在 [localCalls])。
   final int imageCalls;
+
+  /// 其中的 V5 张数。V5 只有一点防误触容差,超了就整体进付费档 —— 不摆出来的话
+  /// 用户完全看不出自己为什么被划到付费档。
+  final int v5Calls;
+
+  /// anima / krea 等自建后端张数。**不参与计费**,只用来说明「这些不进分摊」——
+  /// 不写的话,用自建后端的人对着自己的出图记录会以为这里少算了。
+  final int localCalls;
+
   final int anlasUsed;
   final double totalFee;
 
@@ -361,6 +457,8 @@ class BillingParty {
     return BillingParty(
       tierName: j['tier_name'] as String? ?? '免费',
       imageCalls: (j['image_calls'] as num?)?.toInt() ?? 0,
+      v5Calls: (j['v5_calls'] as num?)?.toInt() ?? 0,
+      localCalls: (j['local_calls'] as num?)?.toInt() ?? 0,
       anlasUsed: (j['anlas_used'] as num?)?.toInt() ?? 0,
       totalFee: total ?? (imgFee + anlasFee),
     );
@@ -377,21 +475,31 @@ class BillingReport {
     this.me,
     this.periodLabel = '',
     this.freeThreshold = 0,
+    this.v5FreeThreshold = 0,
     this.t1 = 0,
     this.t2 = 0,
     this.distribution = const {},
     this.activeUsers = 0,
     this.earlyMode = false,
     this.paymentStatus = '',
+    this.beforeStartFrom = false,
+    this.billingStartFrom = '',
   });
 
   final BillingParty? me;
 
-  /// 周期标签,形如 `06/27 - 07/27`。
+  /// 周期标签,形如 `07/23 - 08/23`。
   final String periodLabel;
 
   /// 免费线(张);[t1]/[t2] 为付费用户内 P50/P80 分界(0 = 人太少走均摊)。
   final int freeThreshold;
+
+  /// V5 的免费容差(张)。和 [freeThreshold] 是**两条各算各的**线:
+  /// V4.5 及更早看自己那条,V5 看这条,两条都不超才算免费档。
+  /// 这条是「防误触」不是「送额度」—— 点错一两张不该把人划进付费档,但真拿
+  /// V5 当主力用就得进付费池,且超了以后 V5 张数一张都不免。
+  final int v5FreeThreshold;
+
   final int t1;
   final int t2;
 
@@ -405,9 +513,31 @@ class BillingReport {
   /// 结算专属:`paid` | `unpaid` | `free`。
   final String paymentStatus;
 
+  /// 该周期整个早于新计费规则的生效日([billingStartFrom])—— 那段消费在旧规则
+  /// 下早就结清了,不重复出账。为真时服务端连明细都不下发,界面要**整块换成
+  /// 空态**而不是把金额显示成 ¥0:后者会连着阶梯表一起画出来(「免费 0 人 /
+  /// 一阶 0 人 … 总计 ¥0」),看着像「这期大家都没用」。
+  final bool beforeStartFrom;
+
+  /// 新规则生效日,`yyyy-MM-dd`。
+  final String billingStartFrom;
+
+  /// 结算日(每月几号)。服务端不单独下发,从 [periodLabel] 的收尾日期里取 ——
+  /// 那个分界日改过一次(27 → 23),写死的话下次再改又得回来改一遍。
+  /// 解析不出就回落到 23(当前配置)。
+  int get cycleDay {
+    final m = RegExp(r'(\d{1,2})\s*$').firstMatch(periodLabel);
+    return int.tryParse(m?.group(1) ?? '') ?? 23;
+  }
+
   /// 该阶梯的张数区间文案(对齐 web);均摊态没有区间。
   String rangeOf(String tier) => switch (tier) {
-    '免费' => '≤$freeThreshold 张',
+    // 免费档现在是**两条线同时满足**。只写「≤200 张」的话,超了 V5 容差却没
+    // 超 200 的人完全看不懂自己为什么在付费档。
+    '免费' =>
+      v5FreeThreshold > 0
+          ? '≤$freeThreshold·V5≤$v5FreeThreshold'
+          : '≤$freeThreshold 张',
     '一阶' => t1 > 0 ? '${freeThreshold + 1}~$t1 张' : '—',
     '二阶' => t2 > 0 ? '${(t1 == 0 ? freeThreshold : t1) + 1}~$t2 张' : '—',
     '三阶' => t2 > 0 ? '>$t2 张' : '—',
@@ -433,6 +563,10 @@ class BillingReport {
           (tiers is Map ? (tiers['free'] as num?)?.toInt() : null) ??
           (j['free_threshold'] as num?)?.toInt() ??
           0,
+      v5FreeThreshold:
+          (tiers is Map ? (tiers['v5_free'] as num?)?.toInt() : null) ??
+          (j['v5_free_threshold'] as num?)?.toInt() ??
+          0,
       t1: tiers is Map ? ((tiers['t1'] as num?)?.toInt() ?? 0) : 0,
       t2: tiers is Map ? ((tiers['t2'] as num?)?.toInt() ?? 0) : 0,
       distribution: {
@@ -449,6 +583,8 @@ class BillingReport {
       activeUsers: (j['active_user_count'] as num?)?.toInt() ?? 0,
       earlyMode: j['estimate_mode'] == 'early',
       paymentStatus: j['payment_status']?.toString() ?? '',
+      beforeStartFrom: j['before_start_from'] == true,
+      billingStartFrom: j['billing_start_from']?.toString() ?? '',
     );
   }
 }
@@ -460,6 +596,7 @@ class PointRecord {
     required this.time,
     required this.points,
     required this.reason,
+    this.isV5 = false,
   });
 
   /// 本地时间(服务端按北京时间落库,无时区后缀)。
@@ -467,10 +604,17 @@ class PointRecord {
   final int points;
   final String reason;
 
+  /// 这笔是不是 V5 出的。服务端 2026-08-23 起才按模型落库,更早的记录一律 false
+  /// —— 那之前 V5 还没上线,所以这个缺省是对的,不是「不知道」。
+  final bool isV5;
+
   factory PointRecord.fromJson(Map<String, dynamic> j) => PointRecord(
     time: DateTime.tryParse(j['timestamp']?.toString() ?? ''),
     points: (j['points'] as num?)?.toInt() ?? 0,
     reason: j['reason']?.toString() ?? '',
+    // 服务端直接给了判定结果,别在客户端再解析一遍 model 前缀:两处各判各的
+    // 迟早分叉(比如以后多一档 nai-diffusion-5-xxx)
+    isV5: j['is_v5'] == true,
   );
 }
 
@@ -521,15 +665,31 @@ class UsageDetails {
     this.breakdown = const [],
     this.imageCalls = 0,
     this.points = 0,
+    this.v5Calls = 0,
+    this.v5Points = 0,
+    this.localCalls = 0,
   });
 
   /// 逐笔消耗,新→旧(服务端上限 50 条)。
   final List<PointRecord> records;
 
-  /// 按 reason 归并 (原因, 点数, 笔数)。
-  final List<({String reason, int points, int count})> breakdown;
+  /// 按 reason 归并 (原因, 点数, 笔数),另带该组里 V5 占的点数/笔数。
+  /// 不按模型拆组 —— reason 里已经写了尺寸步数,再按模型拆会把同一类消耗切成两行。
+  final List<
+    ({String reason, int points, int count, int v5Points, int v5Count})
+  >
+  breakdown;
+
+  /// **全部**出图(含自建后端),与个人中心那个「生图次数」磁贴同口径。
   final int imageCalls;
   final int points;
+
+  /// 其中的 V5 张数与点数。V5 扣点是 V4.5 的 1.5 倍,张数看不出真实消耗。
+  final int v5Calls;
+  final int v5Points;
+
+  /// anima / krea 等自建后端张数 —— 计在 [imageCalls] 里,但**不进 NAI 分摊**。
+  final int localCalls;
 }
 
 /// 一条算力消费。**出图租卡和生成视频合在一条时间线上** —— 它们是同一类账目
@@ -592,11 +752,7 @@ class GpuBillItem {
 /// 还在跑、**还没结算**的那一台。合计里已经算进去了(用户看的是「到现在为止
 /// 花了多少」,不是「已结算多少」),所以界面上要把它单独标出来 —— 它的数还在涨。
 class GpuBillRunning {
-  const GpuBillRunning({
-    this.seconds = 0,
-    this.jobsDone = 0,
-    this.cost = 0,
-  });
+  const GpuBillRunning({this.seconds = 0, this.jobsDone = 0, this.cost = 0});
 
   final int seconds;
   final int jobsDone;
@@ -609,6 +765,54 @@ class GpuBillRunning {
   );
 }
 
+/// 上期算力账单:管理员结算那一刻定死的快照,**只含自己那份**。
+///
+/// 这是实际要付的钱,所以服务端读的是结算行里存下的数、不回头重算 ——
+/// 补录、改价、误删任何一样都会让界面上的数和已经收过的钱对不上。
+///
+/// 上期一分没花的人不下发这块(为从没用过算力的人摆一张 ¥0.00 只是噪音)。
+class GpuLastPeriod {
+  const GpuLastPeriod({
+    this.label = '',
+    this.cost = 0,
+    this.rentalCost = 0,
+    this.rentalCount = 0,
+    this.rentalHours = 0,
+    this.videoCost = 0,
+    this.videoCount = 0,
+    this.videoSeconds = 0,
+  });
+
+  /// 跨度,形如 `7/25 09:30 - 8/23 10:56`。
+  final String label;
+  final double cost;
+
+  final double rentalCost;
+  final int rentalCount;
+  final double rentalHours;
+
+  final double videoCost;
+  final int videoCount;
+  final int videoSeconds;
+
+  factory GpuLastPeriod.fromJson(Map<String, dynamic> j) {
+    Map<String, dynamic> sub(String k) =>
+        (j[k] as Map?)?.cast<String, dynamic>() ?? const {};
+    final r = sub('rental');
+    final v = sub('video');
+    return GpuLastPeriod(
+      label: j['label']?.toString() ?? '',
+      cost: (j['cost'] as num?)?.toDouble() ?? 0,
+      rentalCost: (r['cost'] as num?)?.toDouble() ?? 0,
+      rentalCount: (r['count'] as num?)?.toInt() ?? 0,
+      rentalHours: (r['hours'] as num?)?.toDouble() ?? 0,
+      videoCost: (v['cost'] as num?)?.toDouble() ?? 0,
+      videoCount: (v['count'] as num?)?.toInt() ?? 0,
+      videoSeconds: (v['seconds'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
 /// 算力账单(`GET /api/rental/bills`)。
 ///
 /// ⚠ 服务端**只下发售价**,机时成本/毛利根本不在返回里 —— 别去别处拼一个出来。
@@ -617,6 +821,9 @@ class GpuBills {
     this.ok = false,
     this.items = const [],
     this.running,
+    this.periodLabel = '',
+    this.settled = false,
+    this.lastPeriod,
     this.totalCost = 0,
     this.rentalCost = 0,
     this.rentalHours = 0,
@@ -635,7 +842,16 @@ class GpuBills {
   final List<GpuBillItem> items;
   final GpuBillRunning? running;
 
-  /// 租卡 + 视频之和。
+  /// 上面那些数的**口径**:管理员在 bot 里结一次账就划一期。
+  /// [settled] = 已经结过账(那时这些数只算这一期,[periodLabel] 形如
+  /// `8/23 10:56 结算后`);没结过账时口径仍是全部历史,界面照旧说「累计」。
+  final String periodLabel;
+  final bool settled;
+
+  /// 上期账单快照,见 [GpuLastPeriod]。没结过账 / 上期没花钱时为 null。
+  final GpuLastPeriod? lastPeriod;
+
+  /// 租卡 + 视频之和(本期,见 [settled])。
   final double totalCost;
 
   final double rentalCost;
@@ -650,7 +866,9 @@ class GpuBills {
   final double ratePerHour;
   final String message;
 
-  /// 一分钱都还没花过。
+  /// **本期**一分钱都还没花过。刚结完账正是这个状态,那时 [lastPeriod] 还在,
+  /// 界面要照样把上期那张卡摆出来 —— 不然用户会以为自己的消费记录凭空没了,
+  /// 而那笔钱恰恰是现在要付的。
   bool get isEmpty => items.isEmpty && running == null;
 
   factory GpuBills.fromJson(Map<String, dynamic> j) {
@@ -659,6 +877,8 @@ class GpuBills {
     final r = sub('rental');
     final v = sub('video');
     final run = j['running'];
+    final period = sub('period');
+    final last = j['last_period'];
     return GpuBills(
       ok: j['ok'] == true,
       items: [
@@ -667,6 +887,13 @@ class GpuBills {
       ],
       running: run is Map
           ? GpuBillRunning.fromJson(run.cast<String, dynamic>())
+          : null,
+      // since 为空 = 还没结过账 → 口径是全部历史(老服务端没有 period 块,
+      // 落在同一条路径上,行为不变)
+      settled: (period['since']?.toString() ?? '').isNotEmpty,
+      periodLabel: period['label']?.toString() ?? '',
+      lastPeriod: last is Map
+          ? GpuLastPeriod.fromJson(last.cast<String, dynamic>())
           : null,
       totalCost: (j['total_cost'] as num?)?.toDouble() ?? 0,
       rentalCost: (r['cost'] as num?)?.toDouble() ?? 0,
@@ -1194,10 +1421,35 @@ class BackendClient {
   }
 
   /// 服务账户 Anlas 余额(公开端点,共享池;bot 模式头部显示,对齐 web)。
-  Future<int> getAnlas() async {
+  /// 共享服务账户的点数,外加 NAI 5 额度 —— 服务端把主池里各个 Opus 号的额度
+  /// 电池并成了一块(`usage`,percent 是平均水位 + `accounts` 号数),字段名与
+  /// NAI 直连响应同款,所以直接喂给 [parseNaiUsage]。
+  ///
+  /// 老服务端不带 `usage`,解析出 null,界面自然退回只显示点数,不报错。
+  Future<({int anlas, NaiUsage? usage})> getAnlas() async {
     final j = await _getJson('/anlas');
-    return (j['anlas'] as num?)?.toInt() ?? 0;
+    return (
+      anlas: (j['anlas'] as num?)?.toInt() ?? 0,
+      usage: parseNaiUsage(j['usage']),
+    );
   }
+
+  /// 共享号池的 NAI 官方额度(`GET /api/usage`,公开端点)。
+  ///
+  /// 这是**全平台**的水位(主池各 Opus 号合并),看的是「大家还能免费出多少图」,
+  /// 属于全局视角 —— 个人「我还能出几张」看 [myNaiQuota]。一个 Opus 号都没有
+  /// 时服务端回 null,这里如实返回 null(画个空电池比不画更误导)。
+  ///
+  /// 同一份数据也随 [getAnlas] 顺路回来;单开这条是为了不必为了看池子而去拉点数。
+  Future<NaiUsage?> poolUsage() async =>
+      parseNaiUsage((await _getJson('/usage'))['usage']);
+
+  /// 我的 NAI 5 出图额度(`GET /api/user/quota`)。按会话鉴权,**只能查自己**
+  /// (user_id 取自会话,传不进去别人的)。
+  ///
+  /// 与上面那块 `usage` 的关系见 [NaiQuota]:两道闸都过了才真正出图。
+  Future<NaiQuota> myNaiQuota(String sessionId) async =>
+      NaiQuota.fromJson(await _getJson('/user/quota', sessionId));
 
   // ── 出图租卡(anima / krea2 付费档)──────────────────────────────
   // 服务端 `agent_router/img_rental.py`。四个端点都要 Bot 会话。
@@ -1263,7 +1515,9 @@ class BackendClient {
 
   /// 算力账单(`GET /api/rental/bills`)。租卡 + 视频合成一条时间线。
   Future<GpuBills> rentalBills(String sessionId, {int limit = 50}) async =>
-      GpuBills.fromJson(await _getJson('/rental/bills?limit=$limit', sessionId));
+      GpuBills.fromJson(
+        await _getJson('/rental/bills?limit=$limit', sessionId),
+      );
 
   // ── 公共 Vibe 库 ──────────────────────────────────────────────
 
@@ -1377,6 +1631,10 @@ class BackendClient {
             createdTime: (a['created_time'] as num?)?.toInt() ?? 0,
             addedBy: a['added_by'] as String?,
             ownerId: a['owner_id'] as String?,
+            models: [
+              for (final m in (a['models'] is List ? a['models'] as List : []))
+                if (m is String && m.trim().isNotEmpty) m.trim(),
+            ],
           ),
     ];
   }
@@ -1453,14 +1711,19 @@ class BackendClient {
     String? previewBase64,
     String? createdBy,
   }) async {
-    await _putJson('/oc/${Uri.encodeComponent(enName)}', {
-      'zh_name': ?zhName,
-      'zh_aliases': ?aliases,
-      'tag_group': ?tagGroup,
-      'negative_prompt': ?negativePrompt,
-      'preview_base64': ?previewBase64,
-      'created_by': ?createdBy,
-    }, sessionId, const Duration(seconds: 30));
+    await _putJson(
+      '/oc/${Uri.encodeComponent(enName)}',
+      {
+        'zh_name': ?zhName,
+        'zh_aliases': ?aliases,
+        'tag_group': ?tagGroup,
+        'negative_prompt': ?negativePrompt,
+        'preview_base64': ?previewBase64,
+        'created_by': ?createdBy,
+      },
+      sessionId,
+      const Duration(seconds: 30),
+    );
   }
 
   Future<void> deletePublicOc(String sessionId, String enName) async {
@@ -1481,6 +1744,7 @@ class BackendClient {
     String negative = '',
     String? previewBase64,
     String? addedBy,
+    List<String>? models,
   }) async {
     final j = await _postJson(
       '/artists/create',
@@ -1490,6 +1754,8 @@ class BackendClient {
         'negative': negative,
         'preview_base64': ?previewBase64,
         'added_by': ?addedBy,
+        // 适用模型;不传 = 通用。服务端会再清洗一遍(去空/去重/截断)
+        'models': ?models,
       },
       sessionId,
       const Duration(seconds: 30),
@@ -1505,6 +1771,9 @@ class BackendClient {
   }
 
   /// 更新公共画师串(仅归属者;[addedBy] 单传即转让归属)。
+  ///
+  /// [models] 的 null 与 `[]` **不同义**:null = 本次不改,`[]` = 用户把标注全
+  /// 取消了、改回通用。服务端按同一口径判,别在这里合并成「空就不发」。
   Future<void> updatePublicArtist({
     required String sessionId,
     required String id,
@@ -1512,13 +1781,20 @@ class BackendClient {
     String? negative,
     String? previewBase64,
     String? addedBy,
+    List<String>? models,
   }) async {
-    await _putJson('/artists/${Uri.encodeComponent(id)}', {
-      'artist_string': ?artistString,
-      'negative': ?negative,
-      'preview_base64': ?previewBase64,
-      'added_by': ?addedBy,
-    }, sessionId, const Duration(seconds: 30));
+    await _putJson(
+      '/artists/${Uri.encodeComponent(id)}',
+      {
+        'artist_string': ?artistString,
+        'negative': ?negative,
+        'preview_base64': ?previewBase64,
+        'added_by': ?addedBy,
+        'models': ?models,
+      },
+      sessionId,
+      const Duration(seconds: 30),
+    );
   }
 
   Future<void> deletePublicArtist(String sessionId, String id) async {
@@ -1757,21 +2033,35 @@ class BackendClient {
     }
   }
 
-  /// NAI 官方超分(bot 模式;登录:Bearer 头)。仅支持 832×1216/1216×832/1024² · 4x 固定扣 7 点。
-  /// 后端要远程转发 NAI,给足 2 分钟超时。⚠️ 失败也返 200,看 success/message。
-  /// → (是否成功, 结果图 base64?, 文案)
+  /// NAI 官方超分(bot 模式;登录:Bearer 头)。后端按 [mode] 分流到两个并存的端点:
+  ///  - `legacy`(默认):api 子域传统超分,4×,仅 832×1216/1216×832/1024²,固定 7 点
+  ///  - `nai5`:image 子域 V5 扩散超分,固定 2×、输入尺寸无白名单,按源图 1–4 点
+  ///
+  /// 后端要远程转发 NAI,给足超时(V5 扩散比传统超分慢得多)。
+  /// ⚠️ 失败也返 200,看 success/message。→ (是否成功, 结果图 base64?, 文案)
   Future<({bool success, String? imageBase64, String message})> upscale({
     required String sessionId,
     required String imageBase64,
     required int width,
     required int height,
     int scale = 4,
+    String mode = 'legacy',
+    String? model,
+    double? declaredBlurSigma,
   }) async {
     final j = await _postJson(
       '/upscale',
-      {'image': imageBase64, 'width': width, 'height': height, 'scale': scale},
+      {
+        'image': imageBase64,
+        'width': width,
+        'height': height,
+        'scale': scale,
+        'mode': mode,
+        'model': ?model,
+        'declared_blur_sigma': ?declaredBlurSigma,
+      },
       sessionId,
-      const Duration(seconds: 120),
+      Duration(seconds: mode == 'nai5' ? 300 : 120),
     );
     return (
       success: j['success'] == true,
@@ -1913,8 +2203,13 @@ class BackendClient {
               reason: b['reason']?.toString() ?? '未知',
               points: (b['total_points'] as num?)?.toInt() ?? 0,
               count: (b['count'] as num?)?.toInt() ?? 0,
+              v5Points: (b['v5_points'] as num?)?.toInt() ?? 0,
+              v5Count: (b['v5_count'] as num?)?.toInt() ?? 0,
             ),
       ],
+      v5Calls: (j['total_v5_calls'] as num?)?.toInt() ?? 0,
+      v5Points: (j['total_v5_points'] as num?)?.toInt() ?? 0,
+      localCalls: (j['total_local_calls'] as num?)?.toInt() ?? 0,
       imageCalls: (j['total_image_calls'] as num?)?.toInt() ?? 0,
       points: (j['total_points'] as num?)?.toInt() ?? 0,
     );

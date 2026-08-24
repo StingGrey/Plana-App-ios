@@ -47,6 +47,7 @@ class _Setup extends ConsumerWidget {
     final p = s.params;
     final gen = ref.watch(genStatusProvider);
     final isOpus = ref.watch(anlasProvider).asData?.value?.isOpus ?? false;
+    final v5Charged = ref.watch(v5ChargedProvider);
     // 与吸底栏同口径:按剥离隐藏模块后的实际发送内容估价
     final mods =
         ref.watch(genModulesProvider).value ?? const GenModuleSettings();
@@ -55,7 +56,7 @@ class _Setup extends ConsumerWidget {
     // 注意编码费只在**首张**发生,之后进缓存;所以总价按「单张 × N + 一次编码费」。
     final vibeFee =
         ref.watch(vibeEncodeFeeProvider(vibeEncodeFeeKey(sent))).value ?? 0;
-    final cost = estimateCost(sent, isOpus: isOpus);
+    final cost = estimateCost(sent, isOpus: isOpus, v5Charged: v5Charged);
     final n = p.loop.count;
 
     final costText = cost == 0 && vibeFee == 0

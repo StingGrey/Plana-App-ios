@@ -101,6 +101,8 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
     final loop = ref.watch(loopStatusProvider);
 
     final isOpus = ref.watch(anlasProvider).asData?.value?.isOpus ?? false;
+    // V5 额度见底后免费尺寸转扣 Anlas,那时「免费」得变回真实点数(见 provider)
+    final v5Charged = ref.watch(v5ChargedProvider);
     // 成本按实际会发送的内容估:隐藏模块的数据不发也不计
     final mods =
         ref.watch(genModulesProvider).value ?? const GenModuleSettings();
@@ -111,7 +113,8 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
     final fee = ref.watch(vibeEncodeFeeProvider(vibeEncodeFeeKey(sent))).value;
     if (fee != null) _lastVibeFee = fee;
     final totalCost =
-        estimateCost(sent, isOpus: isOpus) + (fee ?? _lastVibeFee);
+        estimateCost(sent, isOpus: isOpus, v5Charged: v5Charged) +
+        (fee ?? _lastVibeFee);
     // 按**会发出去**的那份参数判(见 sentParamsProvider)
     final batchable = sent.params.batchable;
 
