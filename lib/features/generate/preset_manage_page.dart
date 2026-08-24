@@ -172,8 +172,14 @@ class _PresetTile extends StatelessWidget {
                               color: scheme.surfaceContainerHigh,
                               borderRadius: BorderRadius.circular(6),
                             ),
+                            // 带系列的内置档直接报系列 —— 4.5 的 Light 和 V5 的
+                            // Light 同名,只挂个「默认」两条会长得一模一样。
                             child: Text(
-                              '默认',
+                              switch (preset.scope) {
+                                'v5' => 'V5',
+                                'legacy' => '4.5 及更早',
+                                _ => '默认',
+                              },
                               style: context.texts.labelSmall!.copyWith(
                                 color: scheme.onSurfaceVariant,
                               ),

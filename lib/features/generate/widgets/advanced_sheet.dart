@@ -82,6 +82,10 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
     final scheme = context.scheme;
     final isAnima = isAnimaModel(draft.model);
     final isKrea = isKreaModel(draft.model);
+    // 官方能力表里 V5 的 noiseSchedule / cfgDelay 都是 false —— 请求发出前
+    // noise_schedule 被硬写回 karras、skip_cfg_above_sigma 被删掉。这两个控件
+    // 在 V5 下点了完全没反应,继续摆着就是骗人,所以按能力面藏掉。
+    final isV5 = isNai5Model(draft.model);
     return Column(
       children: [
         Padding(
@@ -111,10 +115,10 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
               // 预设选择即时生效(全局偏好,不随「恢复默认/确认」走草稿)。
               _SectionLabel('提示词预设'),
               const SizedBox(height: 10),
-              const _PresetRow(),
+              _PresetRow(model: draft.model),
               const SizedBox(height: 4),
               Text(
-                '生成时自动作为前缀拼进正/负提示词,不占用输入框。',
+                '生成时自动拼进正/负提示词,不占用输入框。V5 与 4.5 各有一套档。',
                 style: context.texts.labelSmall!.copyWith(
                   color: scheme.outline,
                 ),
@@ -322,32 +326,39 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                   divisions: 250, // step 0.1(对齐 web)
                   valueText: draft.cfg.toStringAsFixed(1),
                   // Variety+ 借住在 CFG 这行,自己那份说明只能挂个独立问号
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      FilterChip(
-                        avatar: Icon(
-                          Icons.shuffle,
-                          size: 13,
-                          color: draft.varietyPlus
-                              ? scheme.onSecondaryContainer
-                              : scheme.onSurfaceVariant,
+                  trailing: isV5
+                      ? null
+                      : Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            FilterChip(
+                              avatar: Icon(
+                                Icons.shuffle,
+                                size: 13,
+                                color: draft.varietyPlus
+                                    ? scheme.onSecondaryContainer
+                                    : scheme.onSurfaceVariant,
+                              ),
+                              label: const Text(
+                                'Variety+',
+                                style: TextStyle(fontSize: 11),
+                              ),
+                              selected: draft.varietyPlus,
+                              showCheckmark: false,
+                              visualDensity: const VisualDensity(
+                                horizontal: -3,
+                                vertical: -3,
+                              ),
+                              onSelected: (v) =>
+                                  _set(draft.copyWith(varietyPlus: v)),
+                            ),
+                            const HelpDot(
+                              Help.varietyPlus,
+                              size: 30,
+                              iconSize: 17,
+                            ),
+                          ],
                         ),
-                        label: const Text(
-                          'Variety+',
-                          style: TextStyle(fontSize: 11),
-                        ),
-                        selected: draft.varietyPlus,
-                        showCheckmark: false,
-                        visualDensity: const VisualDensity(
-                          horizontal: -3,
-                          vertical: -3,
-                        ),
-                        onSelected: (v) => _set(draft.copyWith(varietyPlus: v)),
-                      ),
-                      const HelpDot(Help.varietyPlus, size: 30, iconSize: 17),
-                    ],
-                  ),
                   onChanged: (v) => _set(draft.copyWith(cfg: v)),
                 ),
                 const SizedBox(height: 12),
@@ -375,30 +386,33 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                       ),
                   ],
                 ),
-                const SizedBox(height: 14),
-                HelpLabel(
-                  text: '噪声调度 Noise Schedule',
-                  help: Help.noiseSchedule,
-                  style: context.texts.bodySmall!.copyWith(
-                    color: scheme.onSurfaceVariant,
+                // V5 恒 karras,不给选(见上面 isV5 的说明)
+                if (!isV5) ...[
+                  const SizedBox(height: 14),
+                  HelpLabel(
+                    text: '噪声调度 Noise Schedule',
+                    help: Help.noiseSchedule,
+                    style: context.texts.bodySmall!.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    for (final n in noiseSchedules) ...[
-                      Expanded(
-                        child: _SelectTile(
-                          label: n,
-                          selected: draft.noiseSchedule == n,
-                          height: 34,
-                          onTap: () => _set(draft.copyWith(noiseSchedule: n)),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      for (final n in noiseSchedules) ...[
+                        Expanded(
+                          child: _SelectTile(
+                            label: n,
+                            selected: draft.noiseSchedule == n,
+                            height: 34,
+                            onTap: () => _set(draft.copyWith(noiseSchedule: n)),
+                          ),
                         ),
-                      ),
-                      if (n != noiseSchedules.last) const SizedBox(width: 7),
+                        if (n != noiseSchedules.last) const SizedBox(width: 7),
+                      ],
                     ],
-                  ],
-                ),
+                  ),
+                ],
               ],
               const SizedBox(height: 18),
               Divider(
@@ -648,13 +662,22 @@ class _SelectTile extends StatelessWidget {
 /// 预设切换行:下拉单选即时生效(自定义多了 chip 行放不下,用户定稿下拉)
 /// + 尾部「管理」进独立管理页。
 class _PresetRow extends ConsumerWidget {
-  const _PresetRow();
+  const _PresetRow({required this.model});
+
+  /// 当前(草稿里的)模型 —— 内置档按系列过滤要用。
+  final String model;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final scheme = context.scheme;
     final s = ref.watch(promptPresetsProvider).value;
     if (s == null) return const SizedBox(height: 44);
+    // V5 与 4.5 的内置档是两套文本,各只在自己那边出现;自定义档两边都留。
+    final visible = promptPresetsForModel(s.presets, model);
+    // 存的那个档在当前模型下可能根本不在列表里(切了模型、档没跟着换)。
+    // 这里只是**显示**成同强度的那一档 —— 真正落地由 _applyPreset 再算一次,
+    // 不在这儿写回:草稿里的模型用户还可能取消。
+    final activeId = remapPromptPresetId(s.activeId, s.presets, model);
     return Row(
       children: [
         Expanded(
@@ -672,7 +695,7 @@ class _PresetRow extends ConsumerWidget {
               ),
             ),
             child: DropdownButton<String>(
-              value: s.activeId,
+              value: activeId,
               isExpanded: true,
               isDense: true,
               underline: const SizedBox.shrink(),
@@ -681,7 +704,7 @@ class _PresetRow extends ConsumerWidget {
                 color: scheme.onSurface,
               ),
               items: [
-                for (final p in s.presets)
+                for (final p in visible)
                   DropdownMenuItem(
                     value: p.id,
                     child: Text(

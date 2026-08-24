@@ -1,5 +1,8 @@
 import 'dart:convert';
 
+import '../../core/util/transparency.dart';
+import 'auto_text.dart';
+import 'char_position.dart';
 import 'models.dart';
 import 'nai_request.dart'
     show
@@ -7,8 +10,10 @@ import 'nai_request.dart'
         Img2ImgRef,
         naiModelId,
         naiSamplerId,
+        naiSupportsTransparency,
         normalizeVibeStrengths;
-import 'prompt_presets.dart' show ucPresetBot;
+import 'prompt_presets.dart'
+    show builtinPresetHasPositive, promptPresetTagHints, ucPresetValue;
 
 /// bot 模式的一条 vibe:后端编码串 + 强度 + 信息提取(原样透传,归一化交后端)。
 typedef BotVibe = ({String encodedVibe, double strength, double infoExtracted});
@@ -24,6 +29,12 @@ Map<String, dynamic> buildBotParams(
   GenerateState s, {
   required int seed,
   required String presetId,
+
+  /// 见 [buildNaiPayload] 的同名参数:自定义预设的 qualityToggle 光看 id 答不上来。
+  bool? qualityToggle,
+
+  /// 见 [buildNaiPayload]:透明图的 alpha 编码约定。
+  bool straightAlpha = true,
   Img2ImgRef? img2img,
   List<CharRefPayload> charRefs = const [],
   List<BotVibe> vibes = const [],
@@ -32,13 +43,37 @@ Map<String, dynamic> buildBotParams(
   final p = s.params;
   final model = naiModelId(p.model);
   final is45 = crSupportsModel(p.model);
+  final isV5 = model.startsWith('nai-diffusion-5');
 
   final chars = s.characters
       .where((c) => c.enabled && c.positive.trim().isNotEmpty)
       .toList();
 
+  // autoText / 档位提示:与直连线同一套(见 nai_request)。后端把 tagHint* 原样
+  // 转成 payload 的 tag_hint_qt / tag_hint_uc_preset。
+  final promptText = isV5
+      ? applyAutoText(
+          s.prompt,
+          characters: [
+            for (final c in chars)
+              AutoTextChar(
+                prompt: c.positive,
+                center: switch (resolveCharacterCenter(c.position)) {
+                  final v? => (x: v.x, y: v.y),
+                  _ => null,
+                },
+              ),
+          ],
+          useCoords: chars.isNotEmpty,
+        )
+      : s.prompt;
+  final tagHints = promptPresetTagHints(presetId);
+  // 透明背景:同直连。这边发的是基准模型 —— 重绘时的 -inpainting 换名由服务端
+  // 做,它自己也按最终模型再判一次 V5,所以这里不用替它算。
+  final canTransparent = naiSupportsTransparency(model);
+
   final params = <String, dynamic>{
-    'positivePrompt': s.prompt,
+    'positivePrompt': promptText,
     'negativePrompt': s.negativePrompt,
     'width': p.width,
     'height': p.height,
@@ -47,10 +82,23 @@ Map<String, dynamic> buildBotParams(
     'scale': p.cfg,
     'sampler': naiSamplerId(p.sampler),
     'cfgRescale': p.cfgRescale,
-    'noiseSchedule': p.noiseSchedule,
-    'varietyPlus': p.varietyPlus,
-    'qualityToggle': presetId == 'heavy',
-    'ucPreset': ucPresetBot(presetId), // 数值映射对齐 web bot 线 ucPresetMap
+    // V5 没有 noiseSchedule / cfgDelay 这两项能力(后端也会再兜一道):
+    // 别把用户切到 V5 之前留下的值带过去,与直连线同一口径
+    'noiseSchedule': isV5 ? 'karras' : p.noiseSchedule,
+    'varietyPlus': !isV5 && p.varietyPlus,
+    'qualityToggle': qualityToggle ?? builtinPresetHasPositive(presetId),
+    'tagHintQt': tagHints.qt,
+    'tagHintUcPreset': tagHints.ucPreset,
+    if (canTransparent) ...{
+      'straightAlpha': straightAlpha,
+      'tagHintTransparentBackground': anyPromptHasTransparentBackground(
+        promptText,
+        [for (final c in chars) c.positive],
+      ),
+    },
+    if (img2img?.upscaledEnhance == true) 'upscaledEnhance': true,
+    // 与直连同一张官方表:后端对 int 是原样透传的,这里发错就直接写进图片元数据
+    'ucPreset': ucPresetValue(presetId),
     'normalizeVibeStrength': p.normalizeVibe,
     'model': model, // 后端接受 API 内部名,直接透传
     'characterPrompts': [

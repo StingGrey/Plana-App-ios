@@ -222,7 +222,12 @@ class InpaintPaste {
 }
 
 class Img2ImgConfig {
-  const Img2ImgConfig({this.strength = 0.7, this.noise = 0.0, this.image});
+  const Img2ImgConfig({
+    this.strength = 0.7,
+    this.noise = 0.0,
+    this.image,
+    this.upscaledEnhance = false,
+  });
 
   final double strength;
   final double noise;
@@ -230,12 +235,22 @@ class Img2ImgConfig {
   /// 原始底图字节;生成时 cover 到目标分辨率再编码发送。
   final Uint8List? image;
 
-  Img2ImgConfig copyWith({double? strength, double? noise, Uint8List? image}) =>
-      Img2ImgConfig(
-        strength: strength ?? this.strength,
-        noise: noise ?? this.noise,
-        image: image ?? this.image,
-      );
+  /// 官方 Max ✨ 放大重绘:发**原图尺寸** + 此标志,由服务端放大到总像素上限。
+  /// 仅 V5 支持(能力表 maxEnhance)。只有重绘放大的 Max 档会置 true —— 别的
+  /// 倍率是客户端自己把 params 的宽高算好再发的。
+  final bool upscaledEnhance;
+
+  Img2ImgConfig copyWith({
+    double? strength,
+    double? noise,
+    Uint8List? image,
+    bool? upscaledEnhance,
+  }) => Img2ImgConfig(
+    strength: strength ?? this.strength,
+    noise: noise ?? this.noise,
+    image: image ?? this.image,
+    upscaledEnhance: upscaledEnhance ?? this.upscaledEnhance,
+  );
 }
 
 enum LoopCount {
@@ -890,8 +905,7 @@ class GenParams {
   /// 界面和载荷都走这一个口径 —— web 早期是服务端静默覆盖,用户选 4 出 1 张
   /// 且没有任何提示,那是最难查的一类「不一致」。
   int get effectiveBatch => switch (providerOfModel(model)) {
-    GenProvider.anima =>
-      hires.enabled ? 1 : batchCount.clamp(1, kBatchMax),
+    GenProvider.anima => hires.enabled ? 1 : batchCount.clamp(1, kBatchMax),
     GenProvider.krea => batchCount.clamp(1, kBatchMax),
     GenProvider.nai => 1,
   };

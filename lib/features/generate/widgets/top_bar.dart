@@ -2,25 +2,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/auth/auth_mode.dart';
-import '../../../core/net/anlas_provider.dart';
 import '../../../core/theme/app_theme.dart';
 import '../generate_state.dart';
 import '../gpu_rental.dart';
 import '../models.dart' as m;
+import 'anlas_panel.dart';
 import 'rental_panel.dart';
 
-/// 顶栏:模型选择胶囊(左)+ Anlas 余额胶囊(右)
-class GenerateTopBar extends ConsumerStatefulWidget {
+/// 顶栏:模型选择胶囊(左)+ 余额 / 额度胶囊(右)
+class GenerateTopBar extends ConsumerWidget {
   const GenerateTopBar({super.key});
 
-  @override
-  ConsumerState<GenerateTopBar> createState() => _GenerateTopBarState();
-}
-
-class _GenerateTopBarState extends ConsumerState<GenerateTopBar> {
-  double _refreshTurns = 0;
-
-  Future<void> _pickModel() async {
+  Future<void> _pickModel(BuildContext context, WidgetRef ref) async {
     final current = ref.read(generateProvider).params.model;
     // anima / krea 都走服务端 Modal 后端,仅 Bot 授权模式提供
     // (对齐 web isAnimaAvailable / isKreaAvailable:token 直连模式没有服务端会话)
@@ -50,104 +43,78 @@ class _GenerateTopBarState extends ConsumerState<GenerateTopBar> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(generateProvider);
-    final anlasValue = ref.watch(anlasProvider).asData?.value?.anlas;
     final rentalActive = ref.watch(gpuRentalProvider).active;
     final scheme = context.scheme;
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
+      // 右边那枚胶囊撑到多宽由它自己说了算(NAI 5 时点数+额度两个数并排),
+      // 所以让模型名这边先让步:spaceBetween 把右胶囊钉在右边,模型胶囊拿余量
+      // 且只在真放不下时才打省略号 —— 换成 Spacer 会跟 Flexible 对半分余量。
       child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           // 模型选择
-          Material(
-            color: scheme.surfaceContainerHigh,
-            borderRadius: BorderRadius.circular(19),
-            clipBehavior: Clip.antiAlias,
-            child: InkWell(
-              onTap: _pickModel,
-              child: Padding(
-                padding: const EdgeInsets.only(left: 14, right: 8),
-                child: SizedBox(
-                  height: 42,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      AnimatedSwitcher(
-                        duration: Motion.fast,
-                        child: Text(
-                          state.params.model,
-                          key: ValueKey(state.params.model),
-                          style: context.texts.bodyMedium!.copyWith(
-                            fontWeight: FontWeight.w600,
-                            color: scheme.onSurface,
+          Flexible(
+            child: Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: Material(
+                color: scheme.surfaceContainerHigh,
+                borderRadius: BorderRadius.circular(19),
+                clipBehavior: Clip.antiAlias,
+                child: InkWell(
+                  onTap: () => _pickModel(context, ref),
+                  child: Padding(
+                    padding: const EdgeInsets.only(left: 14, right: 8),
+                    child: SizedBox(
+                      height: 42,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Flexible(
+                            child: AnimatedSwitcher(
+                              duration: Motion.fast,
+                              child: Text(
+                                state.params.model,
+                                key: ValueKey(state.params.model),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: context.texts.bodyMedium!.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                  color: scheme.onSurface,
+                                ),
+                              ),
+                            ),
                           ),
-                        ),
+                          const SizedBox(width: 2),
+                          Icon(
+                            Icons.expand_more,
+                            size: 20,
+                            color: scheme.outline,
+                          ),
+                        ],
                       ),
-                      const SizedBox(width: 2),
-                      Icon(Icons.expand_more, size: 20, color: scheme.outline),
-                    ],
+                    ),
                   ),
                 ),
               ),
             ),
           ),
-          const Spacer(),
           // 右侧那个位置给谁,看当前模型花的是哪种钱:
           //  - Anima / Krea 不扣 Anlas,余额摆在那儿是个永远不动的死数 ——
           //    换成算力来源(免费共享 / 独享实例,运行中直接报计时与费用);
           //  - NAI 但实例还活着:那台在烧 ¥4/时,比余额紧急,也让位;
-          //  - 其余照旧显示余额。
+          //  - 其余交给余额胶囊 —— 它自己再按模型分:NAI 5 花的是按时间回充的
+          //    额度电池,报百分比;别的报 Anlas。
           // 单独取出来再判:写成 `isModal || rental.active` 会因为短路
           // 让 NAI 之外的路径**不订阅** gpuRentalProvider —— 那样冷启动时
           // 没人把它建起来,也就不会去问「我上次那台还在不在跑」。
           if (m.isModalModel(state.params.model) || rentalActive)
             const RentalSourceChip(height: 42)
           else
-            // Anlas 余额
-            Material(
-              color: scheme.surfaceContainerHigh,
-              borderRadius: BorderRadius.circular(19),
-              clipBehavior: Clip.antiAlias,
-              child: InkWell(
-                onTap: () {
-                  setState(() => _refreshTurns += 1);
-                  ref.read(anlasProvider.notifier).refresh();
-                },
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 14),
-                  child: SizedBox(
-                    height: 42,
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.toll, size: 17, color: scheme.primary),
-                        const SizedBox(width: 6),
-                        Text(
-                          anlasValue != null ? _formatAnlas(anlasValue) : '—',
-                          style: mono(
-                            context,
-                            size: 14,
-                            weight: FontWeight.w700,
-                          ).copyWith(color: scheme.primary),
-                        ),
-                        const SizedBox(width: 6),
-                        AnimatedRotation(
-                          turns: _refreshTurns,
-                          duration: Motion.slow,
-                          curve: Motion.standard,
-                          child: Icon(
-                            Icons.refresh,
-                            size: 16,
-                            color: scheme.outline,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
+            // 余额 / NAI 5 额度(点开是「点数与额度」弹层)
+            const AnlasChip(height: 42),
         ],
       ),
     );
@@ -297,14 +264,4 @@ class _ModelSheetState extends State<_ModelSheet>
       dense: true,
     );
   }
-}
-
-String _formatAnlas(int v) {
-  final s = v.toString();
-  final buf = StringBuffer();
-  for (var i = 0; i < s.length; i++) {
-    if (i > 0 && (s.length - i) % 3 == 0) buf.write(',');
-    buf.write(s[i]);
-  }
-  return buf.toString();
 }

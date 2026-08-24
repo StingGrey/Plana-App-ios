@@ -1,9 +1,12 @@
 import 'dart:convert';
 import 'dart:math';
 
+import '../../core/util/transparency.dart';
+import 'auto_text.dart';
 import 'char_position.dart';
 import 'models.dart';
-import 'prompt_presets.dart' show ucPresetDirect;
+import 'prompt_presets.dart'
+    show builtinPresetHasPositive, promptPresetTagHints, ucPresetValue;
 
 /// UI 展示名 → NAI 模型 id
 const _modelMap = <String, String>{
@@ -35,6 +38,13 @@ String inpaintModelId(String modelId) {
   return '$modelId-inpainting';
 }
 
+/// 该 **API 模型 id** 是否支持透明输出(官方能力表 transparency)。只有 V5 有。
+///
+/// 注意这个能力**不控制**要不要透明 —— 透明由提示词里的 `transparent background`
+/// 触发(见 [anyPromptHasTransparentBackground])。它只决定 `straight_alpha` 要不要发。
+bool naiSupportsTransparency(String modelId) =>
+    modelId.startsWith('nai-diffusion-5');
+
 /// UI 展示名 → NAI 采样器串(bot 模式构造 web 参数时复用同一映射)。
 String naiSamplerId(String displaySampler) =>
     _samplerMap[displaySampler] ?? 'k_euler_ancestral';
@@ -57,7 +67,13 @@ List<double> normalizeVibeStrengths(
 }
 
 /// 图生图参考:已 cover 到目标分辨率的 PNG base64 + 强度 + 噪声。
-typedef Img2ImgRef = ({String image, double strength, double noise});
+/// [upscaledEnhance] = Max ✨ 放大重绘(见 [Img2ImgConfig.upscaledEnhance])。
+typedef Img2ImgRef = ({
+  String image,
+  double strength,
+  double noise,
+  bool upscaledEnhance,
+});
 
 /// 一个待发的角色参考:已 contain 处理的 PNG base64 + 模式串 + 强度 + 保真度。
 typedef CharRefPayload = ({
@@ -102,6 +118,15 @@ Map<String, double> _center(String? pos, int index) {
 ({Map<String, dynamic> body, int seed}) buildNaiPayload(
   GenerateState s, {
   required String presetId,
+
+  /// 「开了质量标签」= 激活的预设带正面文本(web `!!activePreset?.positive`)。
+  /// 单靠 [presetId] 答不上来:自定义预设不在内置表里。调用方拿得到预设对象时
+  /// 请传进来,不传则按内置表推断(对五个内置档恒正确)。
+  bool? qualityToggle,
+
+  /// 透明图的 alpha 编码约定(true=直通 Straight / false=预乘 Premultiplied)。
+  /// 官方默认直通,见生成设置里的同名开关。
+  bool straightAlpha = true,
   List<EncodedVibe> vibes = const [],
   Img2ImgRef? img2img,
   List<CharRefPayload> charRefs = const [],
@@ -131,6 +156,35 @@ Map<String, double> _center(String? pos, int index) {
     for (var i = 0; i < chars.length; i++) _center(chars[i].position, i),
   ];
 
+  // autoText:引号内容自动转 `text:` 块,仅 V5 有这项能力。
+  // 排在 centers 算完之后 —— 阅读顺序排序要用到每个角色的坐标。
+  // s.prompt 到这里**已经拼过预设**(controller 的 _applyPreset),与 web 同序。
+  final promptText = isV5
+      ? applyAutoText(
+          s.prompt,
+          characters: [
+            for (var i = 0; i < chars.length; i++)
+              AutoTextChar(
+                prompt: chars[i].positive,
+                center: (x: centers[i]['x']!, y: centers[i]['y']!),
+              ),
+          ],
+          useCoords: useCoords,
+        )
+      : s.prompt;
+
+  // 档位提示:官方导入这张图时靠它决定「先试哪个档去把预设文本剥回去」。
+  final tagHints = promptPresetTagHints(presetId);
+
+  // 透明背景:由提示词里的 `transparent background` 触发,不是开关。
+  // straight_alpha 跟官方一样「只要模型支持就无条件发」—— 它只是 alpha 的编码
+  // 约定,跟这次到底透不透明无关;tag_hint 才是记录「这张是不是透明图」的那个。
+  //
+  // ⚠ 看的是**最终要发的** model,不是面板上选的:V5 Curated 的重绘会回退到
+  //   4.5 Curated Inpainting,那个模型没有 transparency 能力,不该跟着发。
+  final sendModel = inpaint != null ? inpaintModelId(model) : model;
+  final canTransparent = naiSupportsTransparency(sendModel);
+
   final params = <String, dynamic>{
     'params_version': isV5 ? 4 : 3,
     'width': p.width,
@@ -140,18 +194,33 @@ Map<String, double> _center(String? pos, int index) {
     'steps': p.steps,
     'n_samples': 1,
     // 数值映射对齐 web UC_PRESET_MAP;预设正/负前缀已在 controller 拼进 s
-    'ucPreset': ucPresetDirect(presetId),
-    'qualityToggle': presetId == 'heavy',
+    'ucPreset': ucPresetValue(presetId),
+    'qualityToggle': qualityToggle ?? builtinPresetHasPositive(presetId),
+    'tag_hint_qt': tagHints.qt,
+    'tag_hint_uc_preset': tagHints.ucPreset,
+    // Max ✨ 放大重绘:只有为真时才发。非 Max 路径带一个 false 会让官方按普通
+    // img2img 处理,而这字段对老模型本就无意义,干脆不发。
+    if (img2img?.upscaledEnhance == true) 'upscaled_enhance': true,
+    if (canTransparent) ...{
+      'straight_alpha': straightAlpha,
+      'tag_hint_transparent_background': anyPromptHasTransparentBackground(
+        promptText,
+        [for (final c in chars) c.positive],
+      ),
+    },
     'autoSmea': false,
     'dynamic_thresholding': false,
     'controlnet_strength': 1,
     'legacy': false,
     'add_original_image': true,
     'cfg_rescale': p.cfgRescale,
-    'noise_schedule': p.noiseSchedule,
+    // 官方能力表里 V5 的 noiseSchedule / cfgDelay 都是 false:请求清洗会先删掉
+    // noise_schedule 再硬写回 karras,skip_cfg_above_sigma 直接删。照它来 ——
+    // 用户切到 V5 之前留下的值不该被带进来(bot 线由后端兜同一道)。
+    'noise_schedule': isV5 ? 'karras' : p.noiseSchedule,
     'legacy_v3_extend': false,
     // Variety+ = 固定值 58(与 web 一致),关闭则 null
-    'skip_cfg_above_sigma': p.varietyPlus ? 58 : null,
+    'skip_cfg_above_sigma': isV5 || !p.varietyPlus ? null : 58,
     'use_coords': useCoords,
     'normalize_reference_strength_multiple': p.normalizeVibe,
     'inpaintImg2ImgStrength': 1,
@@ -169,7 +238,7 @@ Map<String, double> _center(String? pos, int index) {
   if (usesV4Prompt) {
     params['v4_prompt'] = {
       'caption': {
-        'base_caption': s.prompt,
+        'base_caption': promptText,
         'char_captions': [
           for (var i = 0; i < chars.length; i++)
             {
@@ -254,7 +323,7 @@ Map<String, double> _center(String? pos, int index) {
   }
 
   final body = <String, dynamic>{
-    'input': s.prompt,
+    'input': promptText,
     'model': inpaint != null ? inpaintModelId(model) : model,
     'action': inpaint != null
         ? 'infill'

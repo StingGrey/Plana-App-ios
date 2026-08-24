@@ -279,6 +279,30 @@ GenerateState stripHiddenModules(GenerateState s, GenModuleSettings ms) {
   return out;
 }
 
+/// 把快照适配到**另一个模型**:只按型号能力剥,不看用户的模块显隐。
+///
+/// 换模型重跑会碰到这件事(图库的「重绘放大」用创作页当前的模型跑一张老图):
+/// 4.5 的快照带着 Vibe / 角色参考,换到 V5 就得整组去掉 —— V5 不支持它们,
+/// 发过去是未定义行为,费用还会白算一笔。角色数上限同理(V5 32 / 其余 6)。
+///
+/// **刻意不复用 [stripHiddenModules]**:那个还会按用户当前的模块显隐剥,而快照
+/// 该忠实执行自己的内容;更要命的是它会把 img2img 一起剥掉 —— 重绘放大的底图
+/// 正是 img2img,剥了就等于这次放大白跑。
+GenerateState retargetModel(GenerateState s, String model) {
+  var out = s.copyWith(params: s.params.copyWith(model: model));
+  if (!vibeSupportsModel(model) && out.vibes.isNotEmpty) {
+    out = out.copyWith(vibes: const []);
+  }
+  if (!crSupportsModel(model) && out.charRefs.isNotEmpty) {
+    out = out.copyWith(charRefs: const []);
+  }
+  final cap = maxCharactersOf(model);
+  if (out.characters.length > cap) {
+    out = out.copyWith(characters: out.characters.take(cap).toList());
+  }
+  return out;
+}
+
 /// 真正会进载荷、因而该计入 token 读数的角色串。
 ///
 /// 除了各自的启用位,还整组过一遍模块可见性:角色模块对当前模型不可见时
