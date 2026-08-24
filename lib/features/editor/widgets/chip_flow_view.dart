@@ -10,6 +10,61 @@ import '../../../core/util/haptics.dart';
 /// 又不至于自己独占一行把芯片流顶开。
 const double _kInputWidth = 168;
 
+/// 尾部输入框里常驻的**零宽占位符**。
+///
+/// 为什么要塞一个看不见的字符:Android 上输入框真空时,输入法的退格走的是
+/// `deleteSurroundingText`,删无可删就什么都不发 —— app 这头收不到任何信号,
+/// 「空框退格删掉上一枚标签」这个芯片输入的常规操作根本接不上。走键盘事件
+/// 那条路也不保准:各家输入法对 KEYCODE_DEL 的转发口径不一,中文输入法尤其。
+///
+/// 框里永远留一个零宽空格,退格就**必定**产生一次真实删除;占位符被删掉即
+/// 「在空框上按了退格」(见 editor_page 的 `_onInputChanged`)。零宽空格不占
+/// 宽度、不参与断行,光标看着就贴在框首。
+///
+/// 代价是这个框对 TextField 而言永远非空,自带的 hintText 不会出现 ——
+/// 占位提示改由本视图自己画(见 [_inputBox])。
+const String kChipInputPad = '\u200b';
+
+/// 去掉占位符后的**有效**文本。页面与本视图共用一处,免得两边各写各的。
+String chipInputBody(String raw) => raw.replaceAll(kChipInputPad, '');
+
+/// 把选中的这批搬到间隙 [g] 之后顺序完全没变 → 这个落点是空操作。
+/// 直接按 moveUnits 的换算跑一遍新序,与原序比对,省得逐种情况讨论。
+bool _noOpGap(Set<int> sel, int g, int n) {
+  var at = 0;
+  for (var i = 0; i < g && i < n; i++) {
+    if (!sel.contains(i)) at++;
+  }
+  final sorted = sel.toList()..sort();
+  final next = [
+    for (var i = 0; i < n; i++)
+      if (!sel.contains(i)) i,
+  ]..insertAll(at.clamp(0, n - sel.length), sorted);
+  for (var i = 0; i < n; i++) {
+    if (next[i] != i) return false;
+  }
+  return true;
+}
+
+/// 哪些间隙是**有意义**的落点(纯下标运算,不依赖布局)。
+///
+/// ⊕ 画在哪儿、以及面板上那颗「移动」要不要能点,读的都是这一份 ——
+/// 两处各写各的判据,迟早出现「按钮亮着但一个 ⊕ 都没有」。
+Set<int> chipValidGaps(Set<int> sel, int n) {
+  if (sel.isEmpty || n == 0 || sel.length >= n) return const {};
+  final out = <int>{};
+  for (var g = 0; g <= n; g++) {
+    // 落点等于原位就没意义:间隙两侧都被选中(搬过去还是那儿),或者
+    // 紧贴选中块的两端。判据 —— 间隙左右各自是不是选中项。
+    final leftSel = g > 0 && sel.contains(g - 1);
+    final rightSel = g < n && sel.contains(g);
+    if (leftSel && rightSel) continue;
+    if (_noOpGap(sel, g, n)) continue;
+    out.add(g);
+  }
+  return out;
+}
+
 /// 译文相对正文的字号差与行高倍数(chip 内两行的排版基准)。
 /// 行高显式给死是**故意**的:译文是异步到货的,这一行的高度必须在译文来之前
 /// 就能算出来,才好预留(见 [_TagChip] 里的占位)。
@@ -25,13 +80,17 @@ double _transRowHeight(double fontSize) =>
 /// 带权重角标/禁用删除线),折叠段是一颗 `#名字` chip(和普通标签同款外观,
 /// 只多个折叠符号与主色边)。
 ///
-/// 交互:点 chip 加选/取消(**可多选**)→ 未选中处浮现 ⊕ → 点 ⊕ 把所选整批
-/// 搬过去,彼此相对顺序不变。折叠 chip 和散标签一视同仁,选中即整块移动
-/// (moveUnits 保证记号跟随不卷入)。选中后的操作(权重/禁用/删除/解散)全在
-/// 底部面板上 —— 这里没有光标,正文里那套「点标题解散」在本视图不存在。
+/// 交互分两个阶段,**互不干扰**:
+///  1. 选:点 chip 加选/取消(可多选)。这个阶段点什么都不会移动东西。
+///  2. 放:在底部面板点「移动」进入([placing])。⊕ 只在这个阶段出现,点它落位;
+///     这个阶段点芯片什么也不会发生(不会改选中)。
+///
+/// 折叠 chip 和散标签一视同仁,选中即整块移动(moveUnits 保证记号跟随不卷入)。
+/// 选中后的操作(权重/禁用/删除/解散)全在底部面板上 —— 这里没有光标,正文里
+/// 那套「点标题解散」在本视图不存在。
 ///
 /// 末尾跟一个输入框:芯片模式下这是唯一的打字入口,补全照常吸在键盘上。
-/// 点空白处 = 清空选中并聚焦它(直接接着打字,不用瞄准那个小框)。
+/// 没选中时点空白 = 聚焦它(直接接着打字,不用瞄准那个小框)。
 class ChipFlowView extends StatefulWidget {
   const ChipFlowView({
     super.key,
@@ -45,6 +104,7 @@ class ChipFlowView extends StatefulWidget {
     required this.onInputChanged,
     required this.onInputSubmitted,
     required this.translating,
+    this.placing = false,
     this.showTrans = true,
     this.fontSize = 16,
     this.abnormalThreshold = 10,
@@ -62,6 +122,16 @@ class ChipFlowView extends StatefulWidget {
 
   /// 把已选单元整批移到间隙 [to](原序下标)。
   final void Function(int to) onMove;
+
+  /// **落位阶段**:⊕ 只在这个阶段出现,芯片则暂时不响应点击。
+  ///
+  /// 为什么要分这么一个阶段:⊕ 是浮在芯片上的,两件事共用同一片区域就必然
+  /// 互相误触 —— 想点芯片改选中,结果压到 ⊕ 上把整批搬走了。分开之后,
+  /// 选择阶段根本没有 ⊕ 可点,落位阶段点芯片也不会改选中。
+  ///
+  /// 靶子仍是 ⊕ 本身,**没有**放大成整片区域:大靶子换来的是另一种误触
+  /// (随手一点就搬走),而选择阶段已经不会被 ⊕ 干扰,不需要再拿命中率换。
+  final bool placing;
 
   /// 尾部输入框(页面持有:补全管线要读它的文本)。
   final TextEditingController input;
@@ -142,6 +212,7 @@ class _ChipFlowViewState extends State<ChipFlowView>
   Set<int> get _sel => widget.selection;
 
   void _tapChip(int i) {
+    if (widget.placing) return; // 落位阶段只认 ⊕,点芯片不改选中
     Haptics.selection();
     // 在途滑动先归位并清位移,保证下次插入量到干净布局
     if (_startOffsets.isNotEmpty) {
@@ -205,13 +276,16 @@ class _ChipFlowViewState extends State<ChipFlowView>
 
   static bool _selWas(List<int> sorted, int i) => sorted.contains(i);
 
+
+
   /// 布局后按 chip 实际位置计算间隙加号锚点(浮层,不占 Wrap 位——
   /// 加号出现/消失时 chip 一动不动)。结果收敛才 setState,防循环。
   void _scheduleAnchors(int count) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final sel = _sel;
-      if (sel.isEmpty || count == 0 || sel.length >= count) {
+      final gaps = widget.placing ? chipValidGaps(sel, count) : const <int>{};
+      if (gaps.isEmpty) {
         if (_anchors.isNotEmpty) setState(() => _anchors = const []);
         return;
       }
@@ -227,12 +301,7 @@ class _ChipFlowViewState extends State<ChipFlowView>
       }
       final next = <(int, Offset)>[];
       for (var g = 0; g <= rects.length; g++) {
-        // 落点等于原位就没意义:间隙两侧都被选中(搬过去还是那儿),或者
-        // 紧贴选中块的两端。判据 —— 间隙左右各自是不是选中项。
-        final leftSel = g > 0 && sel.contains(g - 1);
-        final rightSel = g < rects.length && sel.contains(g);
-        if (leftSel && rightSel) continue;
-        if (_noOpGap(sel, g, rects.length)) continue;
+        if (!gaps.contains(g)) continue;
         final Offset pos;
         if (g == rects.length) {
           final r = rects.last;
@@ -245,24 +314,6 @@ class _ChipFlowViewState extends State<ChipFlowView>
       }
       if (!_sameAnchors(next)) setState(() => _anchors = next);
     });
-  }
-
-  /// 搬到间隙 [g] 之后顺序完全没变 → 这个 ⊕ 是空操作,别画出来。
-  /// 直接按 moveUnits 的换算跑一遍新序,与原序比对,省得逐种情况讨论。
-  bool _noOpGap(Set<int> sel, int g, int n) {
-    var at = 0;
-    for (var i = 0; i < g && i < n; i++) {
-      if (!sel.contains(i)) at++;
-    }
-    final sorted = sel.toList()..sort();
-    final next = [
-      for (var i = 0; i < n; i++)
-        if (!sel.contains(i)) i,
-    ]..insertAll(at.clamp(0, n - sel.length), sorted);
-    for (var i = 0; i < n; i++) {
-      if (next[i] != i) return false;
-    }
-    return true;
   }
 
   bool _sameAnchors(List<(int, Offset)> next) {
@@ -296,8 +347,9 @@ class _ChipFlowViewState extends State<ChipFlowView>
         _syncPulse(units.any(pendingOf));
         final t = Curves.easeOutCubic.transform(_moveAnim.value);
         return GestureDetector(
-          // 点空白 = 取消选中 + 聚焦输入框。芯片之间的缝隙本来什么也不是,
+          // 没选中时点空白 = 聚焦输入框:芯片之间的缝隙本来什么也不是,
           // 让它接管「我要接着打字」这个最高频的意图。
+          // 选中着东西时它什么也不做 —— 理由见 [_tapBlank]。
           behavior: HitTestBehavior.opaque,
           onTap: _tapBlank,
           child: SingleChildScrollView(
@@ -317,7 +369,17 @@ class _ChipFlowViewState extends State<ChipFlowView>
                         _slide(
                           i,
                           t,
-                          _chipFor(text, units[i], i, sel, pendingOf(units[i])),
+                          _place(
+                            i,
+                            sel,
+                            _chipFor(
+                              text,
+                              units[i],
+                              i,
+                              sel,
+                              pendingOf(units[i]),
+                            ),
+                          ),
                         ),
                       _inputBox(units.isEmpty),
                     ],
@@ -338,8 +400,17 @@ class _ChipFlowViewState extends State<ChipFlowView>
     );
   }
 
+  /// 点空白。**选中着东西时什么都不做** —— 这是有意的。
+  ///
+  /// 插入点 ⊕ 只有 30px,浮在缝隙上;而缝隙以外的一切都是这块空白。原来这里
+  /// 会清空选中,于是「⊕ 点歪几个像素」的代价是**辛苦选的一批全没了**,
+  /// 收益和代价完全不对称 —— 拖动那套点歪最多是落错位置(还有撤销),
+  /// 所以用户宁可要拖动。把代价拉平比换手势更要紧。
+  ///
+  /// 取消选中改走显式入口:面板右上的 ✕、返回键(见 editor_page 的 PopScope)、
+  /// 或者再点一次那几枚芯片。选中态下也不抢焦点:那会弹起键盘挡住底部面板。
   void _tapBlank() {
-    if (_sel.isNotEmpty) widget.onSelectionChanged({});
+    if (_sel.isNotEmpty) return;
     widget.inputFocus.requestFocus();
   }
 
@@ -349,26 +420,47 @@ class _ChipFlowViewState extends State<ChipFlowView>
   Widget _inputBox(bool empty) {
     final scheme = context.scheme;
     final fs = widget.fontSize;
+    const pad = EdgeInsets.symmetric(vertical: 7);
+    final hintStyle = TextStyle(fontSize: fs, color: scheme.outline);
     return SizedBox(
       width: empty ? double.infinity : _kInputWidth,
-      child: TextField(
-        controller: widget.input,
-        focusNode: widget.inputFocus,
-        onChanged: widget.onInputChanged,
-        onSubmitted: (v) {
-          widget.onInputSubmitted(v);
-          widget.inputFocus.requestFocus(); // 落一枚接着打下一枚
-        },
-        textInputAction: TextInputAction.done,
-        style: TextStyle(fontSize: fs, color: scheme.onSurface),
-        cursorColor: scheme.primary,
-        decoration: InputDecoration(
-          isDense: true,
-          border: InputBorder.none,
-          contentPadding: const EdgeInsets.symmetric(vertical: 7),
-          hintText: empty ? '输入标签,可输入中文自动翻译' : '继续添加…',
-          hintStyle: TextStyle(fontSize: fs, color: scheme.outline),
-        ),
+      child: Stack(
+        children: [
+          // 占位提示自己画:框里常驻 [kChipInputPad],TextField 眼里永远非空,
+          // 自带的 hintText 一次都不会出现。跟着 input 重建 —— 打第一个字就得
+          // 让位,而页面不保证每次击键都 setState。
+          AnimatedBuilder(
+            animation: widget.input,
+            builder: (_, _) => chipInputBody(widget.input.text).isEmpty
+                ? Padding(
+                    padding: pad,
+                    child: Text(
+                      empty ? '输入标签,可输入中文自动翻译' : '继续添加…',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: hintStyle,
+                    ),
+                  )
+                : const SizedBox.shrink(),
+          ),
+          TextField(
+            controller: widget.input,
+            focusNode: widget.inputFocus,
+            onChanged: widget.onInputChanged,
+            onSubmitted: (v) {
+              widget.onInputSubmitted(chipInputBody(v));
+              widget.inputFocus.requestFocus(); // 落一枚接着打下一枚
+            },
+            textInputAction: TextInputAction.done,
+            style: TextStyle(fontSize: fs, color: scheme.onSurface),
+            cursorColor: scheme.primary,
+            decoration: const InputDecoration(
+              isDense: true,
+              border: InputBorder.none,
+              contentPadding: pad,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -409,6 +501,13 @@ class _ChipFlowViewState extends State<ChipFlowView>
 
   int _memberCount(FoldRef f) =>
       parseToks(widget.foldBodies[f.name] ?? '').length;
+
+  /// 落位阶段里被选中的那几枚是**搬运物**:淡出读作「已拿起」,好让用户一眼
+  /// 分清「要搬的」和「可以落在哪儿」。点击本身由 [_tapChip] 挡掉。
+  Widget _place(int i, Set<int> sel, Widget chip) =>
+      widget.placing && sel.contains(i)
+      ? Opacity(opacity: .45, child: chip)
+      : chip;
 
   /// FLIP:动画中把第 [i] 颗 chip 从起始位移滑回 0(paint-time,不改布局)。
   Widget _slide(int i, double t, Widget child) {

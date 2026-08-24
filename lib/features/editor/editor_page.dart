@@ -57,7 +57,20 @@ class _EditorPageState extends ConsumerState<EditorPage>
 
   /// 芯片模式的尾部输入框(唯一打字入口)。控制器提在页面上:补全管线要读它。
   final TextEditingController _input = TextEditingController();
+
   final FocusNode _inputFocus = FocusNode();
+
+  /// 输入框的**有效**文本:去掉常驻的零宽占位符(见 [kChipInputPad])。
+  /// 凡是读 _input.text 的地方都走这里 —— 占位符不是用户打的字。
+  String get _inputText => chipInputBody(_input.text);
+
+  /// 上一次的有效文本。用来分辨「空框退格」和「把打了一半的词全选删掉」——
+  /// 两者都让框子变空,但后者不该顺手把标签也删了。
+  String _prevInputBody = '';
+
+  /// 把输入框清成「只剩占位符」的空态。芯片模式下清空一律走这里:
+  /// 真清成空串的话,下一次空框退格就又收不到信号了。
+  void _resetInput() => _setInputBody('');
 
   /// 正/负切换时编辑区的方向滑入(切负面从右进、切正面从左进)。
   late final AnimationController _tabAnim = AnimationController(
@@ -84,6 +97,10 @@ class _EditorPageState extends ConsumerState<EditorPage>
   String? _relatedFor; // _related 归属的词名(防过期回调窜词)
   bool _relatedLoading = false; // 关联标签拉取中(词条栏「关联」显示转圈)
   Set<int> _chipSel = {}; // 芯片模式已选顶层单元下标
+
+  /// 芯片模式的**落位阶段**:芯片从选择开关变成插入靶子(见 ChipFlowView.placing)。
+  /// 选和放分成两个阶段,两类误触才不会互相干扰。
+  bool _chipPlacing = false;
   double _chipMult = 1.0; // 芯片模式批量面板的统一数值权重读数
   String? _charName; // 编辑角色时的名字(顶栏标题);主提示词会话为 null
 
@@ -115,6 +132,8 @@ class _EditorPageState extends ConsumerState<EditorPage>
       },
     );
     _controller.addListener(_onCtrl);
+    // 占位符要从一开始就在:框子真空过一次,那一次的退格就收不到信号。
+    _resetInput();
     // 灌注离线词库全量翻译(否则注音只显示补全零星回填过的词);
     // 灌完刷新注音层/词条栏。幂等,重复进编辑器不重复灌。
     ref.read(localTagDbProvider).warmTagMeta().then((_) {
@@ -541,7 +560,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
   }
 
   /// 补全查询词的来源:芯片模式是尾部输入框的原文,文本模式是光标左侧那截。
-  String _queryWord() => _chipMode ? _input.text.trim() : _currentWord();
+  String _queryWord() => _chipMode ? _inputText.trim() : _currentWord();
 
   /// 补全查询词 = 光标**左侧**的名字部分。在两 tag 间插入时后一个 tag
   /// 会与新输入并成一个 token(`tag1, bl|tag2` → `bltag2`),只取左侧
@@ -610,7 +629,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _focus.unfocus();
     await showModalBottomSheet<void>(
       context: context,
-      // 内容超过默认 9/16 屏高上限,自控高度(弹层内部滚动 + 85% 封顶)
+      // 内容超过默认 9/16 屏高上限,自控高度(弹层内部滚动,封顶见 _maxHeight)
       isScrollControlled: true,
       showDragHandle: false,
       backgroundColor: Colors.transparent,
@@ -711,7 +730,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
     // 芯片模式没有光标可替换:选中的建议一律落在末尾(它本来就是尾部输入框
     // 打出来的),输入框清空接着打下一枚。
     if (_chipMode) {
-      _input.clear();
+      _resetInput();
       _appendTag(_insertTextOf(s, plainSlot: true));
       _inputFocus.requestFocus();
       return;
@@ -778,7 +797,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
       return;
     }
     if (_chipMode) {
-      _input.clear();
+      _resetInput();
       _appendTag(ins);
       _inputFocus.requestFocus();
       return;
@@ -834,7 +853,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
       _chipMult = 1.0;
       _panelTok = null;
       _multiRange = null;
-      _input.clear();
+      _resetInput();
     });
   }
 
@@ -843,6 +862,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
   void _setChipSel(Set<int> next) {
     setState(() {
       _chipSel = next;
+      _chipPlacing = false;
       _chipMult = _sharedMult(parseToks(_controller.text), next);
     });
     _syncChipCursor();
@@ -851,15 +871,27 @@ class _EditorPageState extends ConsumerState<EditorPage>
   // ---- 芯片模式的尾部输入框 ----
 
   /// 打字:逗号/换行即定稿(web commitInput 同款),其余交给补全。
+  ///
+  /// 开头先认一件事:占位符还在不在。它没了 = 用户在**空框**上按了退格
+  /// (框里有字时退格删的是字,占位符在最前面轮不到它)——那一下转成
+  /// 「删掉最后一枚标签」。见 [kChipInputPad]。
   void _onInputChanged(String raw) {
-    final m = RegExp(r'[,，\n]').firstMatch(raw);
+    final body = chipInputBody(raw);
+    final wasEmpty = _prevInputBody.isEmpty;
+    _prevInputBody = body;
+    if (!raw.startsWith(kChipInputPad)) {
+      _setInputBody(body);
+      // 之前本来就是空的才算退格。之前有字(全选删掉、整段替换)只是普通清空。
+      if (body.isEmpty && wasEmpty) {
+        _chipBackspace();
+        return;
+      }
+      // 极少见:输入法整段替换把占位符一起带走了。补回去当普通输入继续。
+    }
+    final m = RegExp(r'[,，\n]').firstMatch(body);
     if (m != null) {
-      final head = raw.substring(0, m.start).trim();
-      final rest = raw.substring(m.end);
-      _input.value = TextEditingValue(
-        text: rest,
-        selection: TextSelection.collapsed(offset: rest.length),
-      );
+      final head = body.substring(0, m.start).trim();
+      _setInputBody(body.substring(m.end));
       if (head.isNotEmpty) {
         _appendTag(head);
         return; // _appendTag 走 _applyText,补全已在那条路上清掉
@@ -868,14 +900,44 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _scheduleQuery();
   }
 
+  /// 写回输入框:占位符恒在最前,光标落在正文末尾。
+  void _setInputBody(String body) {
+    _prevInputBody = body;
+    _input.value = TextEditingValue(
+      text: '$kChipInputPad$body',
+      selection: TextSelection.collapsed(
+        offset: kChipInputPad.length + body.length,
+      ),
+    );
+  }
+
+  /// 空框上按退格 = 删掉最后一枚标签(有选中就删选中的那批)。
+  ///
+  /// 芯片流里没有光标,标签也不是输入框里的字符,退格不会自然地落到它们身上;
+  /// 不接这一下,想清掉一串标签只能一枚枚点选再点删除。
+  ///
+  /// 连着按就连着删,一次一枚 —— 删过头有撤销兜底([_applyText] 每次都进撤销栈)。
+  void _chipBackspace() {
+    if (_chipSel.isNotEmpty) {
+      _chipDelete();
+      return;
+    }
+    final units = topLevelUnits(_controller.text, _foldBodies);
+    if (units.isEmpty) return;
+    final (text, cursor) = deleteUnits(_controller.text, _foldBodies, {
+      units.length - 1,
+    });
+    _applyText(text, cursor);
+  }
+
   /// 回车/「直接添加」:整条落成标签。
   void _commitInput() {
-    final raw = _input.text.trim();
+    final raw = _inputText.trim();
     if (raw.isEmpty) {
       _clearSuggest();
       return;
     }
-    _input.clear();
+    _resetInput();
     _appendTag(raw);
     _inputFocus.requestFocus();
   }
@@ -975,7 +1037,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
   /// 移动;保留分隔/换行排版。搬完清空选中(这一批已经放到位了)。
   void _moveUnits(int to) {
     final next = moveUnits(_controller.text, _foldBodies, _chipSel, to);
-    _setChipSel({});
+    _setChipSel({}); // 顺带退出落位阶段
     _applyText(next, _controller.selection.baseOffset.clamp(0, next.length));
   }
 
@@ -1304,11 +1366,14 @@ class _EditorPageState extends ConsumerState<EditorPage>
         builder: (context) => PopScope(
           // 芯片模式选中着东西时,返回键先退选(形态本身是常驻偏好,不该被
           // 返回键改掉),再按一次才离开编辑器
-          canPop: !(settings.chipMode && _chipSel.isNotEmpty),
+          canPop: !(settings.chipMode && (_chipSel.isNotEmpty || _chipPlacing)),
           onPopInvokedWithResult: (didPop, _) {
             if (didPop) {
               _save();
               _dismissKeyboard(); // 系统返回手势也走这里,不能只挂在返回按钮上
+            } else if (_chipPlacing) {
+              // 先退落位阶段,选中留着 —— 用户多半只是想改一下选哪几枚
+              setState(() => _chipPlacing = false);
             } else if (_chipSel.isNotEmpty) {
               _setChipSel({});
             }
@@ -1342,6 +1407,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
                             inputFocus: _inputFocus,
                             onInputChanged: _onInputChanged,
                             onInputSubmitted: (_) => _commitInput(),
+                            placing: _chipPlacing,
                             translating: _transSvc.isPending,
                             showTrans: settings.showTranslation,
                             fontSize: settings.fontSize,
@@ -1461,6 +1527,13 @@ class _EditorPageState extends ConsumerState<EditorPage>
       onToggleDisabled: onToggleDisabled,
       onDelete: onDelete,
       onClose: onClose,
+      placing: _chipPlacing,
+      // 只有芯片模式有芯片可点;没有有效落点时(比如全选中了,搬到哪儿都
+      // 还是原样)这条路给 null,按钮不出现,免得点进去一个空阶段。
+      onTogglePlacing:
+          _chipMode && chipValidGaps(live, units.length).isNotEmpty
+          ? () => setState(() => _chipPlacing = !_chipPlacing)
+          : null,
     );
   }
 

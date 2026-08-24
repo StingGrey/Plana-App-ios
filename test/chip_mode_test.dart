@@ -7,12 +7,67 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plana_app/features/editor/editor_models.dart';
 import 'package:plana_app/features/editor/editor_settings.dart';
+import 'package:plana_app/features/editor/widgets/chip_flow_view.dart';
 
 /// 按名字取第 n 枚词条(改名用例要拿到精确的 Tok)。
 Tok _tok(String text, String name) =>
     parseToks(text).firstWhere((t) => t.name == name);
 
 void main() {
+  // 空框退格删最后一枚(见 editor_page 的 _chipBackspace)。芯片流没有光标,
+  // 标签也不是输入框里的字符,退格落不到它们身上 —— 这条口径就是那一下的定义。
+  group('退格删末枚', () {
+    int lastIdx(String t) => topLevelUnits(t, const {}).length - 1;
+    String back(String t) =>
+        deleteUnits(t, const {}, {lastIdx(t)}).$1;
+
+    test('逐枚删,前面的原样留着', () {
+      expect(back('a, b, c'), 'a, b');
+      expect(back(back('a, b, c')), 'a');
+      expect(back(back(back('a, b, c'))), '');
+    });
+
+    test('权重记号跟着自己那枚一起走,不留半截', () {
+      expect(parseToks(back('a, {b}, 1.3::c::')).map((t) => t.name), ['a', 'b']);
+      expect(back('a, {b}, 1.3::c::').contains('::'), isFalse);
+    });
+
+    // 换行是用户分的段。删掉段里最后一枚,那个换行要留着 —— 否则下一枚
+    // 输入又被拼回上一段,用户排的版被一次退格抹平(与 appendUnit 同一口径)。
+    test('用户的换行分段活下来', () {
+      expect(back('a, b\nc'), 'a, b\n');
+    });
+  });
+
+  // ⊕ 画在哪儿、以及面板上那颗「移动」能不能点,读的都是这一份判据。
+  // 两处各写各的迟早出现「按钮亮着但一个 ⊕ 都没有」。
+  group('chipValidGaps:哪些落点是有意义的', () {
+    test('单枚:自己两侧那两个间隙是空操作,其余都算', () {
+      // 5 枚里选中第 2 枚(下标 1):间隙 1、2 搬过去还是原位
+      expect(chipValidGaps({1}, 5), {0, 3, 4, 5});
+    });
+
+    test('连续多枚当整块看,块两端同样是空操作', () {
+      expect(chipValidGaps({1, 2}, 5), {0, 4, 5});
+    });
+
+    // 跳选的那批搬到哪儿都会并拢成一块,所以每个间隙都会改变顺序 ——
+    // 一个都不该被判成空操作(这条正是"只按左右相邻是否选中"判不出来的)。
+    test('跳选:每个间隙都有意义(搬过去会并拢)', () {
+      expect(chipValidGaps({0, 2}, 4), {0, 1, 2, 3, 4});
+    });
+
+    test('全选中 / 空选 / 空正文都没得搬', () {
+      expect(chipValidGaps({0, 1}, 2), isEmpty);
+      expect(chipValidGaps(const {}, 5), isEmpty);
+      expect(chipValidGaps({0}, 0), isEmpty);
+    });
+
+    test('只有一枚时搬到哪儿都是原位', () {
+      expect(chipValidGaps({0}, 1), isEmpty);
+    });
+  });
+
   group('appendUnit:尾部输入框的落地口径', () {
     test('空正文直接落词,不带前导逗号', () {
       expect(appendUnit('', '1girl'), '1girl');
@@ -103,6 +158,41 @@ void main() {
         EditorSettings.fromJson(const {'showTranslation': false}).chipMode,
         isFalse,
       );
+    });
+  });
+
+  // 字号与权重步进从「三五个档位」改成了大范围连续调。读回时**夹住**而不是
+  // 回退默认:上下界改动过、或者存进来一个越界值时,把用户调过的偏好整个丢回
+  // 默认比夹一下更讨厌。
+  group('字号 / 权重步进:范围而非档位', () {
+    double fs(Object? v) => EditorSettings.fromJson({'fontSize': v}).fontSize;
+    double ws(Object? v) =>
+        EditorSettings.fromJson({'weightStep': v}).weightStep;
+
+    test('区间内的任意值原样留着(老档位表外的数不再被打回默认)', () {
+      expect(fs(15), 15);
+      expect(fs(23), 23);
+      expect(ws(0.03), 0.03);
+      expect(ws(0.25), 0.25);
+    });
+
+    test('越界夹回上下界', () {
+      expect(fs(4), EditorSettings.fontSizeMin);
+      expect(fs(99), EditorSettings.fontSizeMax);
+      expect(ws(0), EditorSettings.weightStepMin);
+      expect(ws(9), EditorSettings.weightStepMax);
+    });
+
+    test('缺键回默认', () {
+      expect(const EditorSettings().fontSize, 16);
+      expect(const EditorSettings().weightStep, 0.1);
+      expect(EditorSettings.fromJson(const {}).fontSize, 16);
+      expect(EditorSettings.fromJson(const {}).weightStep, 0.1);
+    });
+
+    test('往返不丢', () {
+      final v = const EditorSettings().copyWith(fontSize: 21, weightStep: 0.07);
+      expect(EditorSettings.fromJson(v.toJson()), v);
     });
   });
 }

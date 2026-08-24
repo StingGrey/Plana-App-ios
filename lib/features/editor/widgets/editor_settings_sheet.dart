@@ -4,11 +4,37 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/app_theme.dart';
 import '../editor_settings.dart';
 import '../../../core/util/haptics.dart';
+import 'tag_panel.dart' show RepeatBtn;
 
-/// 编辑器设置弹层:行为开关 + 档位选择,改动即时生效并持久化。
+/// 编辑器设置弹层:行为开关 + 档位选择 + 加减调节,改动即时生效并持久化。
 /// 按模块分组;子项跟随所属功能开关置灰(补全关了实体/逗号无意义)。
 class EditorSettingsSheet extends ConsumerWidget {
   const EditorSettingsSheet({super.key});
+
+  /// 正文之上那一坨固定高度:顶栏 72(返回行 54 + token 进度条 18)
+  /// + 正文区自己的上内边距 8。
+  static const _kChromeH = 80.0;
+
+  /// 弹层上方要露出的正文行数 × 默认行高(字号 16 × 行高 2.0)。
+  static const _kPeek = 2 * 32.0;
+
+  /// 弹层封顶高度:**不顶满**,上面留出顶栏和两行正文。
+  ///
+  /// 字号、注音翻译、权重高亮这几项改的就是「正文长什么样」,把正文遮死了
+  /// 只能关掉看一眼、再开、再调 —— 露两行就能边调边看。
+  ///
+  /// 按绝对高度扣而不是按屏高取百分比:要留的是「顶栏 + 两行字」这个**固定**
+  /// 的量,屏幕越高百分比越不准。两头夹一下防极端屏幕。
+  ///
+  /// ⚠ 状态栏高度**不能**读 `MediaQuery.viewPaddingOf(context)`:
+  /// ModalBottomSheetRoute 内部做过 `removePadding(removeTop: true)`,
+  /// 弹层里读到的顶部安全区恒为 0 —— 少扣一整个状态栏,正文就只剩半行(踩过)。
+  /// 直接问 View 拿原始 insets。
+  static double _maxHeight(BuildContext context) {
+    final h = MediaQuery.sizeOf(context).height;
+    final top = MediaQueryData.fromView(View.of(context)).padding.top;
+    return (h - top - _kChromeH - _kPeek).clamp(h * .5, h * .85);
+  }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -20,9 +46,7 @@ class EditorSettingsSheet extends ConsumerWidget {
       color: scheme.surfaceContainer,
       borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
       child: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxHeight: MediaQuery.sizeOf(context).height * .85,
-        ),
+        constraints: BoxConstraints(maxHeight: _maxHeight(context)),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -90,12 +114,15 @@ class EditorSettingsSheet extends ConsumerWidget {
                       onChanged: (v) =>
                           notifier.patch((c) => c.copyWith(showWeightWash: v)),
                     ),
-                    _ChoiceRow<double>(
+                    _StepperRow(
                       icon: Icons.format_size,
                       title: '编辑器字号',
                       desc: '正文字号,注音与排版同步',
-                      options: const [(14.0, '小'), (16.0, '标准'), (18.0, '大')],
                       value: s.fontSize,
+                      min: EditorSettings.fontSizeMin,
+                      max: EditorSettings.fontSizeMax,
+                      step: EditorSettings.fontSizeStep,
+                      format: (v) => v.toStringAsFixed(0),
                       onChanged: (v) =>
                           notifier.patch((c) => c.copyWith(fontSize: v)),
                     ),
@@ -156,19 +183,15 @@ class EditorSettingsSheet extends ConsumerWidget {
                       onChanged: (v) =>
                           notifier.patch((c) => c.copyWith(compactTagPanel: v)),
                     ),
-                    _ChoiceRow<double>(
+                    _StepperRow(
                       icon: Icons.exposure,
                       title: '权重步进',
                       desc: '数值 +/− 每步的调整量',
-                      options: const [
-                        (0.05, '0.05'),
-                        (0.1, '0.1'),
-                        (0.2, '0.2'),
-                        (0.5, '0.5'),
-                      ],
-                      // 4 段:用默认 48 宽会挤到左侧标题,收到 40 刚好容下「0.05」
-                      optWidth: 40,
                       value: s.weightStep,
+                      min: EditorSettings.weightStepMin,
+                      max: EditorSettings.weightStepMax,
+                      step: EditorSettings.weightStepTick,
+                      format: _fmtStep,
                       enabled: s.enableTagPanel,
                       onChanged: (v) =>
                           notifier.patch((c) => c.copyWith(weightStep: v)),
@@ -298,6 +321,110 @@ class _ChoiceRow<T> extends StatelessWidget {
                 value: value,
                 optWidth: optWidth,
                 onChanged: onChanged,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 权重步进读数:两位小数去掉尾随的零(0.10 → 0.1,0.05 原样)。
+/// 一列读数里只有它拖着个空转的小数位会很扎眼。
+String _fmtStep(double v) {
+  var t = v.toStringAsFixed(2);
+  if (t.contains('.')) {
+    t = t.replaceFirst(RegExp(r'0+$'), '');
+    if (t.endsWith('.')) t = t.substring(0, t.length - 1);
+  }
+  return t;
+}
+
+/// 加减调节行:左边同 [_ChoiceRow] 的图标+标题,右边一组 `− 读数 +`。
+///
+/// 为什么不是档位:字号、权重步进这类偏好没有天然的"三五个正确值" ——
+/// 屏幕尺寸、视力、习惯的加权幅度各不相同,给了三档总有人卡在两档之间。
+/// 按钮支持长按连发([RepeatBtn]),大范围也不用点几十下。
+class _StepperRow extends StatelessWidget {
+  const _StepperRow({
+    required this.icon,
+    required this.title,
+    required this.desc,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.step,
+    required this.format,
+    required this.onChanged,
+    this.enabled = true,
+  });
+
+  final IconData icon;
+  final String title;
+  final String desc;
+  final double value;
+  final double min;
+  final double max;
+  final double step;
+
+  /// 读数怎么写(字号取整、步进去尾零)。
+  final String Function(double) format;
+
+  final bool enabled;
+  final ValueChanged<double> onChanged;
+
+  /// 按整数格数走再落回实数:直接 `value += step` 累加浮点误差,连点几十下
+  /// 就会漂成 0.30000000000000004 这种,存进设置里再读出来更难看。
+  void _bump(int dir) {
+    final ticks = (value / step).round() + dir;
+    final next = (ticks * step).clamp(min, max).toDouble();
+    // 再夹一次到步长网格上,顺便把二进制小数的零头抹掉
+    final snapped = double.parse(next.toStringAsFixed(4));
+    if (snapped == value) return;
+    Haptics.selection();
+    onChanged(snapped);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return AnimatedOpacity(
+      duration: Motion.fast,
+      opacity: enabled ? 1 : .42,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 10, 16, 10),
+        child: Row(
+          children: [
+            Icon(icon, size: 20, color: scheme.primary),
+            const SizedBox(width: 14),
+            Expanded(child: _RowTexts(title: title, desc: desc)),
+            const SizedBox(width: 8),
+            IgnorePointer(
+              ignoring: !enabled,
+              child: Row(
+                children: [
+                  RepeatBtn(
+                    icon: Icons.remove,
+                    size: 32,
+                    enabled: enabled && value > min,
+                    step: () => _bump(-1),
+                  ),
+                  SizedBox(
+                    width: 52,
+                    child: Text(
+                      format(value),
+                      textAlign: TextAlign.center,
+                      style: mono(context, size: 15, weight: FontWeight.w700),
+                    ),
+                  ),
+                  RepeatBtn(
+                    icon: Icons.add,
+                    size: 32,
+                    enabled: enabled && value < max,
+                    step: () => _bump(1),
+                  ),
+                ],
               ),
             ),
           ],

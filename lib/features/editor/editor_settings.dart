@@ -21,11 +21,21 @@ class EditorSettings {
     this.compactTagPanel = false,
   });
 
-  /// 正文字号可选档位。
-  static const fontSizes = [14.0, 16.0, 18.0];
+  /// 正文字号的可调范围与步长。
+  ///
+  /// 原来是「小/标准/大」三档 —— 屏幕尺寸、视力、单双手各不相同,三档太粗。
+  /// 上下界是排版能扛住的范围:再小注音那行糊成一片,再大一行放不下两个词。
+  static const fontSizeMin = 10.0;
+  static const fontSizeMax = 32.0;
+  static const fontSizeStep = 1.0;
 
-  /// 权重数值加减可选步进。
-  static const weightSteps = [0.05, 0.1, 0.2, 0.5];
+  /// 权重步进本身的可调范围与步长(即「每按一下 +/− 改多少」这个量)。
+  ///
+  /// 上界 1.0:一步一整倍已经是「按一下就翻番」,再大没有实用意义;
+  /// 下界 0.01 = 读数的最小分辨率,再细也显示不出来。
+  static const weightStepMin = 0.01;
+  static const weightStepMax = 1.0;
+  static const weightStepTick = 0.01;
 
   /// 异常权重阈值可选档位。
   static const abnormalThresholds = [3.0, 5.0, 10.0];
@@ -48,10 +58,10 @@ class EditorSettings {
   /// 补全结果里是否出现实体建议(画师 / 角色 / OC / 作品),关=只留标签。
   final bool entitySuggest;
 
-  /// 词条栏 +/− 每步的数值调整量(0.05 / 0.1)。
+  /// 词条栏 +/− 每步的数值调整量,见 [weightStepMin] / [weightStepMax]。
   final double weightStep;
 
-  /// 编辑器正文字号(14 / 16 / 18),注音测量层同步。
+  /// 编辑器正文字号,见 [fontSizeMin] / [fontSizeMax];注音测量层同步。
   final double fontSize;
 
   /// 异常权重阈值:词条中段 `N::` 的 N ≥ 此值视为疑似丢逗号(标红警示)。
@@ -95,6 +105,13 @@ class EditorSettings {
     compactTagPanel: compactTagPanel ?? this.compactTagPanel,
   );
 
+  /// 读回的数值夹回合法区间。缺省/NaN 回退默认 —— 越界(改小了上下界、
+  /// 或者脏数据)夹住就好,不必把用户调过的偏好整个丢回默认。
+  static double _range(double? v, double lo, double hi, double fallback) {
+    if (v == null || v.isNaN) return fallback;
+    return v.clamp(lo, hi).toDouble();
+  }
+
   /// 读回的数值不在档位表里(旧版本/脏数据)时回退默认。
   static double _snap(double? v, List<double> allowed, double fallback) {
     if (v == null) return fallback;
@@ -111,8 +128,18 @@ class EditorSettings {
     enableTagPanel: j['enableTagPanel'] as bool? ?? true,
     autoComma: j['autoComma'] as bool? ?? true,
     entitySuggest: j['entitySuggest'] as bool? ?? true,
-    weightStep: _snap((j['weightStep'] as num?)?.toDouble(), weightSteps, 0.1),
-    fontSize: _snap((j['fontSize'] as num?)?.toDouble(), fontSizes, 16),
+    weightStep: _range(
+      (j['weightStep'] as num?)?.toDouble(),
+      weightStepMin,
+      weightStepMax,
+      0.1,
+    ),
+    fontSize: _range(
+      (j['fontSize'] as num?)?.toDouble(),
+      fontSizeMin,
+      fontSizeMax,
+      16,
+    ),
     abnormalThreshold: _snap(
       (j['abnormalThreshold'] as num?)?.toDouble(),
       abnormalThresholds,

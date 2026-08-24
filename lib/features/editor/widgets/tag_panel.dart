@@ -346,7 +346,7 @@ class _TagPanelState extends State<TagPanel> {
                   onTap: () => widget.onWrap(true),
                 ),
                 const Spacer(),
-                _RepeatBtn(
+                RepeatBtn(
                   icon: Icons.remove,
                   enabled: on,
                   step: () => widget.onSetMult(tok.numMult - widget.weightStep),
@@ -366,7 +366,7 @@ class _TagPanelState extends State<TagPanel> {
                     ),
                   ),
                 ),
-                _RepeatBtn(
+                RepeatBtn(
                   icon: Icons.add,
                   enabled: on,
                   step: () => widget.onSetMult(tok.numMult + widget.weightStep),
@@ -610,7 +610,7 @@ class _TagPanelState extends State<TagPanel> {
         fontSize: 12, // 3 × 12 = 36,卡在 38 的键里
       ),
       const SizedBox(width: _kGap),
-      _RepeatBtn(
+      RepeatBtn(
         icon: Icons.remove,
         enabled: on,
         size: _kStepW,
@@ -619,7 +619,7 @@ class _TagPanelState extends State<TagPanel> {
       const SizedBox(width: _kGap),
       readout(),
       const SizedBox(width: _kGap),
-      _RepeatBtn(
+      RepeatBtn(
         icon: Icons.add,
         enabled: on,
         size: _kStepW,
@@ -1119,10 +1119,19 @@ class BatchPanel extends StatelessWidget {
     required this.onToggleDisabled,
     required this.onDelete,
     required this.onClose,
+    this.placing = false,
+    this.onTogglePlacing,
   });
 
   /// 已选单元数(0 = 多选模式里还没点;划词多选恒 ≥2)。
   final int count;
+
+  /// 芯片模式的**落位阶段**开着(见 ChipFlowView.placing)。
+  final bool placing;
+
+  /// 进/出落位阶段。null = 这条路不适用(划词多选没有芯片可点)或者
+  /// 眼下没有能落的位置(比如全选中了,搬到哪儿都还是原样)。
+  final VoidCallback? onTogglePlacing;
 
   /// 面板本地的统一数值权重读数(换一批选中即重置 1.0)。
   final double mult;
@@ -1133,7 +1142,7 @@ class BatchPanel extends StatelessWidget {
   /// 所选里有散标签(折叠单元不能禁用)。
   final bool canDisable;
 
-  /// 选中里还有启用的 → 动作为「全部禁用」;全禁 → 「全部启用」。
+  /// 选中里还有启用的 → 动作为「禁用」;全禁 → 「启用」。作用于整批。
   final bool anyEnabled;
 
   /// 这一批处在更外层权重组里时的组倍率(与 [onSelectGroup] 同进同退)。
@@ -1167,7 +1176,7 @@ class BatchPanel extends StatelessWidget {
     final pal = context.editor;
     final has = count > 0;
     final weight = has && canWeight;
-    // 没得禁用时读数无意义,标签保持「全部禁用」的默认相,不跳字
+    // 没得禁用时读数无意义,标签保持「禁用」的默认相,不跳字
     final off = anyEnabled || !canDisable;
 
     return Material(
@@ -1188,7 +1197,9 @@ class BatchPanel extends StatelessWidget {
                 const SizedBox(width: 7),
                 Expanded(
                   child: Text(
-                    has ? '已选 $count 项' : '点词条可多选',
+                    placing
+                        ? '点击加号移动'
+                        : (has ? '已选 $count 项' : '点词条可多选'),
                     style: context.texts.titleMedium!.copyWith(
                       fontWeight: FontWeight.w700,
                       color: has ? scheme.onSurface : scheme.outline,
@@ -1325,7 +1336,7 @@ class BatchPanel extends StatelessWidget {
                   onTap: () => onWrap(true),
                 ),
                 const Spacer(),
-                _RepeatBtn(
+                RepeatBtn(
                   icon: Icons.remove,
                   enabled: weight,
                   step: () => onStepMult(false),
@@ -1342,7 +1353,7 @@ class BatchPanel extends StatelessWidget {
                     ),
                   ),
                 ),
-                _RepeatBtn(
+                RepeatBtn(
                   icon: Icons.add,
                   enabled: weight,
                   step: () => onStepMult(true),
@@ -1355,6 +1366,19 @@ class BatchPanel extends StatelessWidget {
                 Expanded(
                   child: _action(
                     context,
+                    '移动',
+                    icon: Icons.swap_horiz,
+                    // 亮着 = 落位阶段开着,再点一下退出。没有有效落点时这颗
+                    // 是灰的(判据见 chipValidGaps),免得点进一个空阶段。
+                    selected: placing,
+                    enabled: onTogglePlacing != null,
+                    onTap: onTogglePlacing ?? () {},
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _action(
+                    context,
                     '清除权重',
                     enabled: weight,
                     onTap: onClearWeight,
@@ -1364,7 +1388,7 @@ class BatchPanel extends StatelessWidget {
                 Expanded(
                   child: _action(
                     context,
-                    off ? '全部禁用' : '全部启用',
+                    off ? '禁用' : '启用',
                     icon: off ? Icons.visibility_off : Icons.visibility,
                     enabled: has && canDisable,
                     onTap: onToggleDisabled,
@@ -1392,8 +1416,12 @@ class BatchPanel extends StatelessWidget {
 
 /// 按住持续步进按钮:点=一步;按住≥350ms 后每 90ms 触发一次 [step],
 /// 越按越快(每 5 步周期 −15ms,下限 40ms)。松手或超出按钮范围停止。
-class _RepeatBtn extends StatefulWidget {
-  const _RepeatBtn({
+///
+/// 导出给编辑器设置里的加减行复用 —— 那边的字号/步进是大范围连续调,
+/// 没有连发就得点几十下。
+class RepeatBtn extends StatefulWidget {
+  const RepeatBtn({
+    super.key,
     required this.icon,
     required this.enabled,
     required this.step,
@@ -1408,10 +1436,10 @@ class _RepeatBtn extends StatefulWidget {
   final double size;
 
   @override
-  State<_RepeatBtn> createState() => _RepeatBtnState();
+  State<RepeatBtn> createState() => _RepeatBtnState();
 }
 
-class _RepeatBtnState extends State<_RepeatBtn> {
+class _RepeatBtnState extends State<RepeatBtn> {
   Timer? _hold;
   Timer? _tick;
   int _ticks = 0;
