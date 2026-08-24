@@ -154,7 +154,9 @@ class CharLibrary extends AsyncNotifier<List<CharRefEntry>> {
           final bytes = await ent.readAsBytes();
           final tf = File('${_thumbsDir.path}/$id.png');
           if (!await tf.exists()) {
-            await tf.writeAsBytes(await coverResizePng(bytes, 256, 256));
+            await tf.writeAsBytes(
+              await coverResizePng(bytes, 256, 256, keepAlpha: true),
+            );
           }
           out.add(
             CharRefEntry(
@@ -196,7 +198,7 @@ class CharLibrary extends AsyncNotifier<List<CharRefEntry>> {
     try {
       await thumbOf(
         CharRefEntry(id: id, name: '', fileName: fileName),
-      ).writeAsBytes(await coverResizePng(bytes, 256, 256));
+      ).writeAsBytes(await coverResizePng(bytes, 256, 256, keepAlpha: true));
     } catch (_) {}
 
     final entry = CharRefEntry(

@@ -34,8 +34,15 @@ Future<(int, int)> decodeImageSize(Uint8List bytes) async {
 Future<Uint8List> coverResizePng(
   Uint8List src,
   int targetW,
-  int targetH,
-) async {
+  int targetH, {
+
+  /// true = 不垫黑底,源图的 alpha 原样带过去。
+  ///
+  /// 黑底本来只是 cover 的边缘保险(cover 铺满整块画布,底色看不见)——
+  /// 可它对**透明图**是致命的:透过 alpha 显出来,缩略图变黑方块、图生图底图
+  /// 变黑底。所以凡是要保透明的调用方(缩略图、透明底图)都该传 true。
+  bool keepAlpha = false,
+}) async {
   final codec = await ui.instantiateImageCodec(src);
   final frame = await codec.getNextFrame();
   final img = frame.image;
@@ -52,10 +59,12 @@ Future<Uint8List> coverResizePng(
 
   final recorder = ui.PictureRecorder();
   final canvas = ui.Canvas(recorder, ui.Rect.fromLTWH(0, 0, tw, th));
-  canvas.drawRect(
-    ui.Rect.fromLTWH(0, 0, tw, th),
-    ui.Paint()..color = const ui.Color(0xFF000000),
-  );
+  if (!keepAlpha) {
+    canvas.drawRect(
+      ui.Rect.fromLTWH(0, 0, tw, th),
+      ui.Paint()..color = const ui.Color(0xFF000000),
+    );
+  }
   canvas.drawImageRect(
     img,
     ui.Rect.fromLTWH(0, 0, iw, ih),

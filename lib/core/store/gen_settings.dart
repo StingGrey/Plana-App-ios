@@ -16,6 +16,7 @@ class GenSettings {
     this.retryCount = 3,
     this.genNotify = true,
     this.notifyPrimed = false,
+    this.straightAlpha = true,
   });
 
   final bool retryOn429;
@@ -24,18 +25,25 @@ class GenSettings {
   final bool genNotify;
   final bool notifyPrimed;
 
+  /// 透明图(V5)的 alpha 编码约定:true = 直通 Straight(RGB 是原色,PS/AE
+  /// 默认想要的那种),false = 预乘 Premultiplied(RGB 已乘过 alpha)。
+  /// 官方默认直通,这里跟随。只在模型支持透明时随请求发出。
+  final bool straightAlpha;
+
   GenSettings copyWith({
     bool? retryOn429,
     int? retryDelaySecs,
     int? retryCount,
     bool? genNotify,
     bool? notifyPrimed,
+    bool? straightAlpha,
   }) => GenSettings(
     retryOn429: retryOn429 ?? this.retryOn429,
     retryDelaySecs: retryDelaySecs ?? this.retryDelaySecs,
     retryCount: retryCount ?? this.retryCount,
     genNotify: genNotify ?? this.genNotify,
     notifyPrimed: notifyPrimed ?? this.notifyPrimed,
+    straightAlpha: straightAlpha ?? this.straightAlpha,
   );
 
   static int _intIn(Object? v, int fallback, int min, int max) {
@@ -49,6 +57,9 @@ class GenSettings {
     retryCount: _intIn(j['retryCount'], 3, 1, 99),
     genNotify: j['genNotify'] is bool ? j['genNotify'] as bool : true,
     notifyPrimed: j['notifyPrimed'] == true,
+    straightAlpha: j['straightAlpha'] is bool
+        ? j['straightAlpha'] as bool
+        : true,
   );
 
   Map<String, dynamic> toJson() => {
@@ -57,6 +68,7 @@ class GenSettings {
     'retryCount': retryCount,
     'genNotify': genNotify,
     'notifyPrimed': notifyPrimed,
+    'straightAlpha': straightAlpha,
   };
 
   @override

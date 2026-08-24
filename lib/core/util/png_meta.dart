@@ -1,5 +1,6 @@
 /// PNG 元数据写入端(移植自 web `processImageForSave`):
-/// 清除 = 重编码 + alpha 全 255(LSB 隐写连同 tEXt 一并消失);
+/// 清除 = 重编码 + 抹掉 alpha 最低位(LSB 隐写连同 tEXt 一并消失,
+/// 但透明区照样透明 —— 见 [clearAlphaLsb]);
 /// 覆写 = 清除后按 NAI 官方格式把自定义提示词 gzip 压缩写回 alpha LSB
 /// (stealth_pngcomp;位序与读取端 `_LsbExtractor` 镜像:列优先、字节高位在前)。
 library;
@@ -10,6 +11,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:archive/archive.dart';
+import 'transparency.dart';
 
 Future<(Uint8List, int, int)> _decodeRgba(Uint8List bytes) async {
   final codec = await ui.instantiateImageCodec(bytes);
@@ -33,12 +35,10 @@ Future<Uint8List> encodePngFromRgba(Uint8List rgba, int w, int h) async {
   return data.buffer.asUint8List();
 }
 
-/// 清除元数据:alpha 全 255 重编码。
+/// 清除元数据:抹掉 alpha 最低位的隐写载荷后重编码(见 [clearAlphaLsb])。
 Future<Uint8List> cleanImagePng(Uint8List bytes) async {
   final (rgba, w, h) = await _decodeRgba(bytes);
-  for (var i = 3; i < rgba.length; i += 4) {
-    rgba[i] = 255;
-  }
+  clearAlphaLsb(rgba);
   return encodePngFromRgba(rgba, w, h);
 }
 
@@ -140,9 +140,7 @@ Future<Uint8List> writeCustomMetadataPng(
   String customPrompt,
 ) async {
   final (rgba, w, h) = await _decodeRgba(bytes);
-  for (var i = 3; i < rgba.length; i += 4) {
-    rgba[i] = 255;
-  }
+  clearAlphaLsb(rgba);
 
   final metadata = {
     'Description': customPrompt,

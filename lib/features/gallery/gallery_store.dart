@@ -228,7 +228,7 @@ class GalleryStore {
       try {
         await writeBytesAtomic(
           _thumbFile(r.id),
-          await coverResizePng(bytes, 256, 256),
+          await coverResizePng(bytes, 256, 256, keepAlpha: true),
         );
       } catch (_) {} // 缩略图失败不阻断,读取端退回原图
       if (input != null) {
@@ -410,7 +410,9 @@ class GalleryStore {
       if (j is! Map || j['items'] is! Map) return const {};
       return {
         for (final e in (j['items'] as Map).entries)
-          if (e.key is String && e.value is Map && (e.value as Map)['t'] is String)
+          if (e.key is String &&
+              e.value is Map &&
+              (e.value as Map)['t'] is String)
             e.key as String: (
               model: ((e.value as Map)['m'] as String?) ?? '',
               text: (e.value as Map)['t'] as String,

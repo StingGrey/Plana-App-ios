@@ -36,6 +36,17 @@ class GenSettingsPage extends ConsumerWidget {
                 contentPadding: const EdgeInsets.fromLTRB(16, 2, 10, 2),
               ),
               SwitchListTile(
+                value: s.straightAlpha,
+                onChanged: (v) => patch((x) => x.copyWith(straightAlpha: v)),
+                title: Text(
+                  '透明图直通 Alpha',
+                  style: context.texts.bodyMedium!.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                contentPadding: const EdgeInsets.fromLTRB(16, 2, 10, 2),
+              ),
+              SwitchListTile(
                 value: s.retryOn429,
                 onChanged: (v) => patch((x) => x.copyWith(retryOn429: v)),
                 title: Text(

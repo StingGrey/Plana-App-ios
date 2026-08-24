@@ -346,6 +346,11 @@ class MetadataDetailPage extends StatelessWidget {
       if (m.sampler != null) ('Sampler', m.sampler!),
       if (m.noiseSchedule != null) ('Noise Schedule', m.noiseSchedule!),
       if (m.cfgRescale != null) ('CFG Rescale', m.cfgRescale!),
+      // 透明背景(V5)。只报,不参与导入 —— 触发它的 tag 本来就在提示词里。
+      if (m.transparentBackground != null)
+        ('透明背景', m.transparentBackground! ? '是' : '否'),
+      if (m.straightAlpha != null)
+        ('Alpha', m.straightAlpha! ? '直通 Straight' : '预乘 Premultiplied'),
     ];
   }
 

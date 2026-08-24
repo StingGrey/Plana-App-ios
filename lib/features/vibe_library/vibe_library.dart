@@ -332,7 +332,10 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
       final bytes = base64Decode(img);
       hash = await compute(sha256HexOfBytes, bytes);
       try {
-        await _writeThumb(id, await coverResizePng(bytes, 256, 256));
+        await _writeThumb(
+          id,
+          await coverResizePng(bytes, 256, 256, keepAlpha: true),
+        );
       } catch (_) {}
     } else {
       final t = p.thumbnailDataUrl;
