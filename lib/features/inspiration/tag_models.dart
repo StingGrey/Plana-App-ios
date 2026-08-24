@@ -115,6 +115,7 @@ class TagEntry {
     this.negative = '',
     this.aliases = const [],
     this.tags = const [],
+    this.models = const [],
     this.origin = TagOrigin.local,
     this.publicId,
     this.previews = const [],
@@ -137,6 +138,10 @@ class TagEntry {
 
   /// 用户私有二级标签(筛选用,纯本地,不上公共库)。
   final List<String> tags;
+
+  /// 适用模型 id 列表(仅画风;见 artist_models.dart)。空 = 通用,老数据即此档。
+  /// **不参与出图**,只用于筛选与角标。id 与 web 互通,会随公共库和云备份走。
+  final List<String> models;
   final TagOrigin origin;
 
   /// 对应公共库条目 id(favorited/created 时有,收藏去重依据)。
@@ -158,6 +163,7 @@ class TagEntry {
     String? negative,
     List<String>? aliases,
     List<String>? tags,
+    List<String>? models,
     TagOrigin? origin,
     Object? publicId,
     List<String>? previews,
@@ -188,6 +194,7 @@ class TagEntry {
     'negative': negative,
     if (aliases.isNotEmpty) 'aliases': aliases,
     if (tags.isNotEmpty) 'tags': tags,
+    if (models.isNotEmpty) 'models': models,
     'origin': origin.name,
     if (publicId != null) 'publicId': publicId,
     if (previews.isNotEmpty) 'previews': previews,
@@ -210,6 +217,7 @@ class TagEntry {
       negative: j['negative'] is String ? j['negative'] as String : '',
       aliases: _strList(j['aliases']),
       tags: _strList(j['tags']),
+      models: _strList(j['models']),
       origin: TagOrigin.values.asNameMap()[j['origin']] ?? TagOrigin.local,
       publicId: j['publicId'] as String?,
       // 旧版单字段 previewUrl 迁入列表

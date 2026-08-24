@@ -19,6 +19,7 @@ import '../generate/widgets/common.dart'
     show confirmDialog, hintSnack, sharedAxisRoute;
 import '../shell/shell_state.dart';
 import 'codex/codex_view.dart';
+import 'artist_models.dart';
 import 'public_tags.dart';
 import 'tag_editor_page.dart';
 import 'tag_library.dart';
@@ -74,6 +75,11 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   /// 筛选:null=全部;[_kFavFilter]=收藏;其余为标签名。
   String? _filter;
   static const _kFavFilter = ' fav';
+
+  /// 画风的「适用模型」筛选:null=全部;[kGenericModelFilter]=只看通用;
+  /// 其余是 [ArtistModelGroup] 的 name。与 [_filter] 是两个正交的维度,
+  /// 可以同时生效(「收藏的 + 标了 NAI 5 的」)。
+  String? _modelFilter;
 
   /// 批量操作进行中(禁重入)。
   bool _busy = false;
@@ -154,6 +160,7 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
       _cat = c;
       _search = '';
       _filter = null;
+      _modelFilter = null;
       if (!tagCategoryDef(c).hasPublic) _tab.index = 0;
     });
     // 新分类的列表要等这一帧布好才有 maxScrollExtent,落位排到帧后。
@@ -221,9 +228,18 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
           if (e.tags.contains(filter)) e,
       ];
     }
+    list = _byModel(list);
     _sort(list);
     return list;
   }
+
+  /// 适用模型筛选(只对画风有意义;别的分类 [_modelFilter] 恒 null)。
+  List<TagEntry> _byModel(List<TagEntry> list) => _modelFilter == null
+      ? list
+      : [
+          for (final e in list)
+            if (matchesArtistModelFilter(e.models, _modelFilter)) e,
+        ];
 
   List<TagEntry> _publicList(List<TagEntry> all) {
     final q = _search.trim().toLowerCase();
@@ -231,8 +247,9 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
       for (final e in all)
         if (_matches(e, q)) e,
     ];
-    _sort(list);
-    return list;
+    final out = _byModel(list);
+    _sort(out);
+    return out;
   }
 
   /// 画风按编号自然序(A1<A2<A10);其余最新在前。
@@ -297,9 +314,7 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     }
     await _afterConfirm(
       entries,
-      added < entries.length
-          ? '已加入 $added 个角色(超出 $cap 个截断)'
-          : '已加入 $added 个角色',
+      added < entries.length ? '已加入 $added 个角色(超出 $cap 个截断)' : '已加入 $added 个角色',
     );
   }
 
@@ -368,6 +383,16 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
                   borderSide: BorderSide.none,
                 ),
                 contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                // 「适用模型」筛选挂在搜索框里:它和左边的标签筛选是两个正交维度,
+                // 塞进同一条 chip 行既会让人以为是同一组单选,标签一多还会被挤到
+                // 屏幕外。挂这儿两个 scope 都有,且不多占一行高度。
+                suffixIcon: _cat == TagCategory.artist
+                    ? _modelFilterButton(scheme)
+                    : null,
+                suffixIconConstraints: const BoxConstraints(
+                  minWidth: 0,
+                  maxWidth: 190,
+                ),
               ),
             ),
           ),
@@ -673,6 +698,111 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
         ],
       ),
     );
+  }
+
+  /// 当前模型筛选的显示名;null = 全部。
+  String? get _modelFilterLabel {
+    final f = _modelFilter;
+    if (f == null) return null;
+    if (f == kGenericModelFilter) return kGenericModelLabel;
+    for (final g in ArtistModelGroup.values) {
+      if (g.name == f) return g.filterLabel;
+    }
+    return null;
+  }
+
+  /// 搜索框右侧的「适用模型」筛选:没筛时是个漏斗图标,筛着时变成带 × 的药丸 ——
+  /// 「有没有在筛、筛的哪一档」得一眼看见,否则会出现"我的串怎么少了"。
+  Widget _modelFilterButton(ColorScheme scheme) {
+    final label = _modelFilterLabel;
+    if (label == null) {
+      return IconButton(
+        tooltip: '按适用模型筛选',
+        visualDensity: VisualDensity.compact,
+        icon: Icon(
+          Icons.filter_alt_outlined,
+          size: 20,
+          color: scheme.onSurfaceVariant,
+        ),
+        onPressed: _pickModelFilter,
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.only(right: 6),
+      child: Material(
+        color: scheme.primary,
+        borderRadius: BorderRadius.circular(20),
+        clipBehavior: Clip.antiAlias,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            InkWell(
+              onTap: _pickModelFilter,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(10, 5, 4, 5),
+                child: Text(
+                  label,
+                  style: context.texts.labelMedium!.copyWith(
+                    color: scheme.onPrimary,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ),
+            InkWell(
+              onTap: () => setState(() => _modelFilter = null),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(2, 5, 8, 5),
+                child: Icon(Icons.close, size: 15, color: scheme.onPrimary),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickModelFilter() async {
+    final scheme = context.scheme;
+    // 「全部」用哨兵而不是 null:点外面关掉 sheet 返回的也是 null,
+    // 两者混在一起会变成"随手关掉就把筛选清了"。
+    const all = '__all__';
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 6),
+              child: Text(
+                '按适用模型筛选',
+                style: context.texts.titleSmall!.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            for (final e in <(String, String)>[
+              (all, '全部'),
+              for (final g in ArtistModelGroup.values) (g.name, g.filterLabel),
+              (kGenericModelFilter, '$kGenericModelLabel(没标注的)'),
+            ])
+              ListTile(
+                dense: true,
+                title: Text(e.$2),
+                trailing: (_modelFilter ?? all) == e.$1
+                    ? Icon(Icons.check, size: 18, color: scheme.primary)
+                    : null,
+                onTap: () => Navigator.pop(context, e.$1),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || picked == null) return; // null = 点外面关掉,不改
+    setState(() => _modelFilter = picked == all ? null : picked);
   }
 
   /// 「全部 / 收藏 / 标签…」筛选行(我的 scope;标签=池∪在用)。
@@ -1440,6 +1570,7 @@ class _TagCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
+    final modelGroups = artistModelGroups(entry.models);
     return AnimatedContainer(
       duration: Motion.fast,
       clipBehavior: Clip.antiAlias,
@@ -1492,15 +1623,60 @@ class _TagCard extends StatelessWidget {
                       ],
                     ),
                   ),
-                  child: Text(
-                    entry.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w800,
-                      color: selected ? scheme.primary : Colors.white,
-                    ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // 适用模型角标(按分档归并:标了 V5 Full + Curated 只出一个)。
+                      // 没标注的不画 —— 「通用」是默认档,给每张卡都挂一个反而是噪音。
+                      if (modelGroups.isNotEmpty) ...[
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            for (final g in modelGroups.take(2))
+                              Container(
+                                margin: const EdgeInsets.only(right: 4),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 5,
+                                  vertical: 1,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: .22),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  g.label,
+                                  style: const TextStyle(
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.w700,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ),
+                            if (modelGroups.length > 2)
+                              Text(
+                                '+${modelGroups.length - 2}',
+                                style: const TextStyle(
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.w700,
+                                  color: Colors.white70,
+                                ),
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 3),
+                      ],
+                      Text(
+                        entry.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800,
+                          color: selected ? scheme.primary : Colors.white,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),

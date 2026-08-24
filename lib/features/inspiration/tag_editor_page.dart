@@ -14,6 +14,7 @@ import '../gallery/gallery_state.dart';
 import '../generate/generate_state.dart';
 import '../generate/widgets/common.dart'
     show ExpandBody, confirmDialog, hintSnack;
+import 'artist_models.dart';
 import 'public_tags.dart';
 import 'tag_library.dart';
 import 'tag_models.dart';
@@ -61,6 +62,9 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
   late final _negative = TextEditingController(text: _edit?.negative ?? '');
   late final List<String> _aliases = [...?_edit?.aliases];
   late final Set<String> _tags = {...?_edit?.tags};
+
+  /// 适用模型(仅画风)。空 = 通用 —— 这是默认档,不是"没填完"。
+  late final Set<String> _models = {...?_edit?.models};
 
   late final int _slotCount = !_hasPreview
       ? 0
@@ -164,6 +168,7 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
       negative: _hasNegative ? _negative.text.trim() : (_edit?.negative ?? ''),
       aliases: _def.key == TagCategory.character ? [..._aliases] : const [],
       tags: _tags.toList()..sort(),
+      models: normalizeArtistModels(_models.toList()),
       origin: origin ?? _edit?.origin ?? TagOrigin.local,
       publicId:
           publicId ?? (origin == TagOrigin.local ? null : _edit?.publicId),
@@ -212,7 +217,12 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
     await _run(() async {
       await ref
           .read(tagLibraryProvider.notifier)
-          .upsert(_edit!.copyWith(tags: _tags.toList()..sort()));
+          .upsert(
+            _edit!.copyWith(
+              tags: _tags.toList()..sort(),
+              models: normalizeArtistModels(_models.toList()),
+            ),
+          );
       if (!mounted) return;
       Navigator.pop(context);
       hintSnack(context, '已保存', icon: Icons.check_circle_outline);
@@ -275,6 +285,7 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
           artistString: _positive.text.trim(),
           previewBase64: preview,
           addedBy: session.botUserId,
+          models: normalizeArtistModels(_models.toList()),
         );
         publicId = r.id;
         finalName = r.name;
@@ -328,6 +339,8 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
           id: _edit!.publicId!,
           artistString: _positive.text.trim(),
           previewBase64: preview,
+          // 空列表照发:用户取消掉全部标注 = 改回通用,和「本次不改」不是一回事
+          models: normalizeArtistModels(_models.toList()),
         );
       }
       await ref.read(tagLibraryProvider.notifier).upsert(await _buildEntry());
@@ -835,6 +848,19 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
                           ? '${_slots.where((s) => s.filled).length} 张'
                           : null,
                       body: _previewBody(scheme),
+                    ),
+                  // 只有画风有这一档 —— 角色/场景/其他标模型没有意义
+                  if (widget.cat == TagCategory.artist)
+                    _section(
+                      id: 'models',
+                      title: '适用模型',
+                      filled: _models.isNotEmpty,
+                      collapsedValue: _models.isEmpty
+                          ? kGenericModelLabel
+                          : normalizeArtistModels(
+                              _models.toList(),
+                            ).map(artistModelShort).join(' · '),
+                      body: _modelsBody(scheme),
                     ),
                   _section(
                     id: 'tags',
@@ -1508,6 +1534,89 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
       ],
     ),
   );
+
+  /// 适用模型多选。按分档分组列 —— 十二个模型平铺一屏放不下,
+  /// 而用户心里本来就是「这串是给 V5 调的」这个粒度。
+  Widget _modelsBody(ColorScheme scheme) {
+    final groups = <ArtistModelGroup, List<ArtistModelDef>>{};
+    for (final m in kArtistModels) {
+      (groups[m.group] ??= []).add(m);
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          _models.isEmpty ? '一个都不选 = 通用,在所有模型下都会出现' : '已选 ${_models.length} 个',
+          style: context.texts.labelSmall!.copyWith(color: scheme.outline),
+        ),
+        const SizedBox(height: 10),
+        for (final e in groups.entries) ...[
+          Text(
+            e.key.filterLabel,
+            style: context.texts.labelMedium!.copyWith(
+              color: scheme.onSurfaceVariant,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 7,
+            runSpacing: 7,
+            children: [
+              for (final m in e.value)
+                FilterChip(
+                  label: Text(m.short),
+                  selected: _models.contains(m.id),
+                  showCheckmark: false,
+                  visualDensity: VisualDensity.compact,
+                  shape: const StadiumBorder(),
+                  labelStyle: context.texts.labelMedium!.copyWith(
+                    fontWeight: FontWeight.w600,
+                    color: _models.contains(m.id)
+                        ? scheme.onPrimary
+                        : scheme.onSurfaceVariant,
+                  ),
+                  selectedColor: scheme.primary,
+                  backgroundColor: scheme.surfaceContainerHigh,
+                  side: BorderSide.none,
+                  onSelected: (on) => setState(
+                    () => on ? _models.add(m.id) : _models.remove(m.id),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+        ],
+        // 目录里没有的 id(模型下线 / 来自更新的客户端)也要能看见并取消,
+        // 否则它会一直挂在这条画风上、还没法处理。
+        if (_models.any((id) => findArtistModel(id) == null)) ...[
+          Text(
+            '未知模型(来自其它版本)',
+            style: context.texts.labelMedium!.copyWith(
+              color: scheme.onSurfaceVariant,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 7,
+            runSpacing: 7,
+            children: [
+              for (final id in _models.where((i) => findArtistModel(i) == null))
+                InputChip(
+                  label: Text(id),
+                  visualDensity: VisualDensity.compact,
+                  shape: const StadiumBorder(),
+                  backgroundColor: scheme.surfaceContainerHigh,
+                  side: BorderSide.none,
+                  onDeleted: () => setState(() => _models.remove(id)),
+                ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
 
   Widget _tagsBody(ColorScheme scheme) {
     final known =

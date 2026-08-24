@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
+import 'artist_models.dart';
 import 'tag_models.dart';
 
 /// 公共库列表(角色=OC、画风=画师串),映射为统一 [TagEntry] 供页面渲染。
@@ -44,6 +45,7 @@ final publicTagsProvider = FutureProvider.family<List<TagEntry>, TagCategory>((
             name: a.name,
             positive: a.artistString,
             negative: a.negative,
+            models: normalizeArtistModels(a.models),
             publicId: a.id,
             previews: [if (a.previewUrl != null) a.previewUrl!],
             createdAt: a.createdTime * 1000,
