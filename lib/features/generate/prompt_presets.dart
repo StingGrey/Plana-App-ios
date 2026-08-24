@@ -38,21 +38,30 @@ class PromptPreset {
 
   /// 正面预设拼在提示词**末尾**而不是开头。
   ///
-  /// 官方从 V4 起就把质量词放末尾(负面一律前缀),但老的 heavy/light 在我们这儿
-  /// 一直是前缀 —— 改了会让存量用户出图风格突变,所以只有新增的 V5 档标 true。
+  /// 官方从 V4 起就把质量词放末尾(负面一律前缀)。内置档全部照此,
+  /// 包括 heavy / light —— 它们历史上是前缀,1.0.7 起与官方对齐。
+  ///
+  /// ⚠ 这一改会让**存量用户的出图风格变一点**:同一份提示词,质量词从句首挪到
+  /// 句尾,注意力权重不一样。是有意为之(与官方一致优先),但别当成无副作用的重构。
+  ///
+  /// 自定义预设默认 false —— 用户自己写的档没有"官方位置"这一说。
   final bool suffixPositive;
 
-  PromptPreset copyWith({String? name, String? positive, String? negative}) =>
-      PromptPreset(
-        id: id,
-        name: name ?? this.name,
-        positive: positive ?? this.positive,
-        negative: negative ?? this.negative,
-        isDefault: isDefault,
-        createdAt: createdAt,
-        scope: scope,
-        suffixPositive: suffixPositive,
-      );
+  PromptPreset copyWith({
+    String? name,
+    String? positive,
+    String? negative,
+    bool? suffixPositive,
+  }) => PromptPreset(
+    id: id,
+    name: name ?? this.name,
+    positive: positive ?? this.positive,
+    negative: negative ?? this.negative,
+    isDefault: isDefault,
+    createdAt: createdAt,
+    scope: scope,
+    suffixPositive: suffixPositive ?? this.suffixPositive,
+  );
 
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -81,11 +90,12 @@ class PromptPreset {
 /// 按系列分成两组:legacy 组是 V4.5 及更早的历史文本(**勿动**,存量用户的出图
 /// 风格挂在上面),v5 组逐字对齐官方 Quality Preset + Undesired Content Preset。
 const kDefaultPromptPresets = <PromptPreset>[
-  // ===== V4.5 及更早 =====
+  // ===== V4.5 及更早(文本勿动;位置已与官方对齐成后缀)=====
   PromptPreset(
     id: 'heavy',
     name: 'Heavy (重度)',
     scope: 'legacy',
+    suffixPositive: true,
     positive:
         'best quality, amazing quality, very aesthetic, absurdres,very aesthetic, masterpiece, no text',
     negative:
@@ -96,6 +106,7 @@ const kDefaultPromptPresets = <PromptPreset>[
     id: 'light',
     name: 'Light (轻度)',
     scope: 'legacy',
+    suffixPositive: true,
     positive: 'very aesthetic, masterpiece, no text',
     negative:
         'lowres, artistic error, scan artifacts, worst quality, bad quality, jpeg artifacts, multiple views, very displeasing, too many watermarks, negative space, blank page',
@@ -205,10 +216,14 @@ class PromptPresetsNotifier extends AsyncNotifier<PromptPresetsState> {
     await _write(PromptPresetsState(presets: s.presets, activeId: id));
   }
 
+  /// [suffixPositive] 缺省 false = 正向拼在提示词开头。
+  /// 内置档已与官方对齐成后缀,但自定义档保持前缀作默认:没有这个键的存量预设
+  /// 读出来也是 false,新建时跟着同一个默认才不会出现「同样没设置、行为却不同」。
   Future<void> add({
     required String name,
     String positive = '',
     String negative = '',
+    bool suffixPositive = false,
   }) async {
     final s = await future;
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -218,6 +233,7 @@ class PromptPresetsNotifier extends AsyncNotifier<PromptPresetsState> {
       positive: positive,
       negative: negative,
       createdAt: now,
+      suffixPositive: suffixPositive,
     );
     await _write(
       PromptPresetsState(presets: [...s.presets, p], activeId: s.activeId),
@@ -230,12 +246,18 @@ class PromptPresetsNotifier extends AsyncNotifier<PromptPresetsState> {
     String? name,
     String? positive,
     String? negative,
+    bool? suffixPositive,
   }) async {
     final s = await future;
     final presets = [
       for (final p in s.presets)
         if (p.id == id && !p.isDefault)
-          p.copyWith(name: name, positive: positive, negative: negative)
+          p.copyWith(
+            name: name,
+            positive: positive,
+            negative: negative,
+            suffixPositive: suffixPositive,
+          )
         else
           p,
     ];
@@ -492,9 +514,18 @@ List<String>? _stripTagRun(
   for (final c in candidates) {
     final wantPos = _splitTags(c.preset.positive);
     final wantNeg = _splitTags(c.preset.negative);
+    // 正面**两端都试**,先试这条预设声明的那一端。
+    //
+    // 位置会变:heavy/light 历史上拼在句首,1.0.7 起改成句尾(与官方对齐)。
+    // 只认当前那一端的话,**改版之前出的图、以及 web 端出的图全都认不出来** ——
+    // 而认不出的后果正是这套识别要防的那件事:导回去再生成,质量词被拼第二遍。
+    //
+    // 放宽到两端不会松掉判据:真正把误判挡住的是「正负两边都要剥得掉」,
+    // 而负面一律前缀、从没变过。
     final restPos = wantPos.isEmpty
         ? posTags
-        : _stripTagRun(posTags, wantPos, suffix: c.preset.suffixPositive);
+        : (_stripTagRun(posTags, wantPos, suffix: c.preset.suffixPositive) ??
+              _stripTagRun(posTags, wantPos, suffix: !c.preset.suffixPositive));
     if (restPos == null) continue;
     final restNeg = wantNeg.isEmpty
         ? negTags

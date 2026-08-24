@@ -18,7 +18,7 @@ class PromptPresetManagePage extends ConsumerWidget {
   }) async {
     final r =
         await showModalBottomSheet<
-          ({String name, String positive, String negative})
+          ({String name, String positive, String negative, bool suffix})
         >(
           context: context,
           isScrollControlled: true,
@@ -28,13 +28,19 @@ class PromptPresetManagePage extends ConsumerWidget {
     if (r == null) return; // 取消 / 只读查看
     final n = ref.read(promptPresetsProvider.notifier);
     if (preset == null) {
-      await n.add(name: r.name, positive: r.positive, negative: r.negative);
+      await n.add(
+        name: r.name,
+        positive: r.positive,
+        negative: r.negative,
+        suffixPositive: r.suffix,
+      );
     } else {
       await n.updatePreset(
         preset.id,
         name: r.name,
         positive: r.positive,
         negative: r.negative,
+        suffixPositive: r.suffix,
       );
     }
   }
@@ -273,6 +279,9 @@ class _PresetEditSheetState extends State<_PresetEditSheet> {
     text: widget.preset?.negative ?? '',
   );
 
+  /// 正向拼在末尾。存量自定义预设没这个键 → false(前缀),与改动前一致。
+  late bool _suffix = widget.preset?.suffixPositive ?? false;
+
   bool get _readOnly => widget.preset?.isDefault ?? false;
 
   @override
@@ -281,6 +290,67 @@ class _PresetEditSheetState extends State<_PresetEditSheet> {
     posCtl.dispose();
     negCtl.dispose();
     super.dispose();
+  }
+
+  /// 正向拼在提示词开头还是末尾。
+  ///
+  /// 官方从 V4 起把质量词放末尾,内置档已照此;自定义档由用户自己定 ——
+  /// 有人的档是画风串而不是质量词,那种放开头才对。
+  Widget _placementRow(ColorScheme scheme) {
+    Widget seg(String label, bool sel, VoidCallback onTap) => Expanded(
+      child: InkWell(
+        onTap: _readOnly ? null : onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: AnimatedContainer(
+          duration: Motion.fast,
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          decoration: BoxDecoration(
+            color: sel ? scheme.primary : Colors.transparent,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text(
+            label,
+            textAlign: TextAlign.center,
+            style: context.texts.labelMedium!.copyWith(
+              fontWeight: FontWeight.w700,
+              color: _readOnly
+                  ? scheme.onSurfaceVariant.withValues(alpha: .5)
+                  : sel
+                  ? scheme.onPrimary
+                  : scheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+      ),
+    );
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            '拼接位置',
+            style: context.texts.labelMedium!.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+        SizedBox(
+          width: 152,
+          child: Container(
+            padding: const EdgeInsets.all(2),
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Row(
+              children: [
+                seg('开头', !_suffix, () => setState(() => _suffix = false)),
+                seg('末尾', _suffix, () => setState(() => _suffix = true)),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
   }
 
   Widget _field(
@@ -353,8 +423,11 @@ class _PresetEditSheetState extends State<_PresetEditSheet> {
           const SizedBox(height: 14),
           _field('名称', nameCtl),
           const SizedBox(height: 12),
-          _field('正向前缀', posCtl, multiline: true),
+          _field(_suffix ? '正向后缀' : '正向前缀', posCtl, multiline: true),
+          const SizedBox(height: 8),
+          _placementRow(scheme),
           const SizedBox(height: 12),
+          // 负向没有这个选择:官方一律前缀,我们也从没变过
           _field('负向前缀', negCtl, multiline: true),
           const SizedBox(height: 18),
           Row(
@@ -373,6 +446,7 @@ class _PresetEditSheetState extends State<_PresetEditSheet> {
                       name: name.isEmpty ? '未命名' : name,
                       positive: posCtl.text.trim(),
                       negative: negCtl.text.trim(),
+                      suffix: _suffix,
                     ));
                   },
                   child: const Text('保存'),

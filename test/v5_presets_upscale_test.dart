@@ -74,23 +74,50 @@ void main() {
     });
   });
 
-  // 官方从 V4 起把质量词放**末尾**(UC 一律前缀)。老的 heavy/light 在我们这儿
-  // 一直是前缀,改了会让存量用户出图风格突变 —— 所以只有 V5 档是后缀。
-  group('applyPromptPreset:正面前缀 / 后缀,负面恒前缀', () {
-    test('legacy 档拼前面', () {
-      final r = applyPromptPreset(_p('heavy'), '1girl', 'bad');
-      expect(r.positive.startsWith('best quality'), isTrue);
-      expect(r.positive.endsWith('1girl'), isTrue);
-      expect(r.negative.endsWith('bad'), isTrue);
+  // 官方从 V4 起把质量词放**末尾**,UC 一律前缀。内置档全部照此 ——
+  // heavy/light 历史上是前缀,已与官方对齐成后缀。
+  group('applyPromptPreset:正面恒后缀,负面恒前缀', () {
+    test('内置档的正面都拼在末尾', () {
+      for (final id in ['heavy', 'light', 'v5-standard', 'v5-light']) {
+        final r = applyPromptPreset(_p(id), '1girl', 'bad');
+        expect(r.positive.startsWith('1girl'), isTrue, reason: id);
+        expect(r.positive.endsWith('no text'), isTrue, reason: id);
+      }
     });
 
-    test('V5 档拼后面', () {
-      final r = applyPromptPreset(_p('v5-standard'), '1girl', 'bad');
+    test('负面一律前缀', () {
+      for (final id in ['heavy', 'light', 'v5-standard', 'v5-light']) {
+        final r = applyPromptPreset(_p(id), '1girl', 'bad');
+        expect(r.negative.startsWith('lowres'), isTrue, reason: id);
+        expect(r.negative.endsWith('bad'), isTrue, reason: id);
+      }
+    });
+
+    // 自定义档的位置由用户自己选。缺省(存量预设没这个键)= 前缀,
+    // 与加这个开关之前的行为一致 —— 不能因为内置档改了就把用户的档也挪了。
+    test('自定义档缺省仍是前缀', () {
+      final r = applyPromptPreset(_custom, '1girl', 'bad');
+      expect(r.positive.startsWith('my quality'), isTrue);
+      expect(r.positive.endsWith('1girl'), isTrue);
+    });
+
+    test('自定义档选了末尾就拼末尾', () {
+      final r = applyPromptPreset(
+        _custom.copyWith(suffixPositive: true),
+        '1girl',
+        'bad',
+      );
       expect(r.positive.startsWith('1girl'), isTrue);
-      expect(r.positive.endsWith('no text'), isTrue);
-      // 负面仍然是前缀
-      expect(r.negative.startsWith('lowres'), isTrue);
-      expect(r.negative.endsWith('bad'), isTrue);
+      expect(r.positive.endsWith('my quality'), isTrue);
+    });
+
+    // 这一项要能持久化 —— 存不住的话每次重启都退回前缀
+    test('拼接位置往返不丢', () {
+      final suffix = _custom.copyWith(suffixPositive: true);
+      expect(PromptPreset.fromJson(suffix.toJson()).suffixPositive, isTrue);
+      expect(PromptPreset.fromJson(_custom.toJson()).suffixPositive, isFalse);
+      // 前缀是默认值,不写进 JSON
+      expect(_custom.toJson().containsKey('positivePlacement'), isFalse);
     });
 
     test('任一侧为空不留悬空逗号', () {
@@ -140,13 +167,27 @@ void main() {
       }
     });
 
-    // 这条是位置判据存在的**唯一理由**:两个档的正面文本一模一样。
-    test('4.5 Light 与 V5 Standard 正面文本相同,靠前缀/后缀区分', () {
+    // 4.5 的 Light 和 V5 的 Standard **正面文本一模一样**,位置也一样了 ——
+    // 现在全靠负面区分(两者的负面档不同),所以「正负两边都要剥得掉」这条判据
+    // 不只是防误判,它还是这两档唯一的分辨依据。
+    test('4.5 Light 与 V5 Standard 正面相同,靠负面区分', () {
       expect(_p('light').positive, _p('v5-standard').positive);
+      expect(_p('light').negative == _p('v5-standard').negative, isFalse);
       final l = baked(_p('light'), '1girl', 'bad');
       final v = baked(_p('v5-standard'), '1girl', 'bad');
       expect(detectPromptPreset(_all, l.pos, l.neg)?.preset.id, 'light');
       expect(detectPromptPreset(_all, v.pos, v.neg)?.preset.id, 'v5-standard');
+    });
+
+    // 位置改过:heavy/light 以前拼在句首。只认当前那一端的话,改版之前出的图
+    // 和 web 出的图全都认不出来 —— 而认不出的后果正是这套识别要防的那件事。
+    test('老图(质量词在句首)照样认得出', () {
+      final p = _p('heavy');
+      final oldStyle = '${p.positive}, 1girl, smile';
+      final hit = detectPromptPreset(_all, oldStyle, '${p.negative}, bad');
+      expect(hit?.preset.id, 'heavy');
+      expect(hit?.positive, '1girl, smile');
+      expect(hit?.negative, 'bad');
     });
 
     test('正负两边都得剥得掉 —— 手打一个 masterpiece 不会误判', () {
