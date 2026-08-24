@@ -92,6 +92,10 @@ class ImageMetadata {
     this.noiseSchedule,
     this.cfgRescale,
     this.varietyPlus,
+    this.tagHintQt,
+    this.tagHintUcPreset,
+    this.transparentBackground,
+    this.straightAlpha,
     this.characters = const [],
     this.vibes = const [],
     this.loras = const [],
@@ -117,6 +121,22 @@ class ImageMetadata {
   /// 多样性(Variety+):NAI 写 skip_cfg_above_sigma,数值=开、null=关;
   /// 字段整个缺失(老图)为 null,表示不可知、面板不显示该行。
   final bool? varietyPlus;
+
+  /// 官方的档位提示:`tag_hint_qt`(质量档)/ `tag_hint_uc_preset`(负面档)。
+  /// 导入时用来把预设候选排到队首 —— 只是提示,最终仍以「能不能把预设文本
+  /// 干净剥掉」为准(见 `detectPromptPreset`)。老图/外部图没有这两个字段。
+  final int? tagHintQt;
+  final int? tagHintUcPreset;
+
+  /// 透明背景(V5)。`tag_hint_transparent_background` 记录「这张图是不是带着
+  /// `transparent background` 生成的」,`straight_alpha` 是 alpha 的编码约定
+  /// (true=直通 / false=预乘)。老图和非 V5 图没有这两个字段,为 null。
+  ///
+  /// 导入时**不**拿它去改提示词 —— 那个 tag 本来就在提示词里,剥掉质量词后会
+  /// 原样留下,用户再生成一次照样是透明的。这两个字段只用于展示与排查。
+  final bool? transparentBackground;
+  final bool? straightAlpha;
+
   final List<CharacterMeta> characters;
   final List<VibeMeta> vibes;
   final List<LoraInfo> loras;
@@ -142,6 +162,10 @@ class ImageMetadata {
     noiseSchedule: noiseSchedule,
     cfgRescale: cfgRescale,
     varietyPlus: varietyPlus,
+    tagHintQt: tagHintQt,
+    tagHintUcPreset: tagHintUcPreset,
+    transparentBackground: transparentBackground,
+    straightAlpha: straightAlpha,
     characters: characters,
     vibes: vibes,
     loras: newLoras,
@@ -224,6 +248,25 @@ _PngTextChunks _extractPngTextChunks(Uint8List bytes) {
 }
 
 // ============ NovelAI ============
+
+/// V5 Full 的两个权重指纹(取自 NAI 官方前端白名单)。
+const _v5FullHashes = ['657484a5', '0adf9ab7'];
+
+/// 这串 Source 是不是 V5 Full。
+///
+/// ⚠ **V5 的 Source 串里不写 Full / Curated**,只有一串权重 hash,例如
+/// `NovelAI Diffusion V5 657484A5`。官方的判法是白名单:命中 [_v5FullHashes]
+/// 是 Full,其余 V5 一律 Curated(官方那边 Curated 就是 default 分支,压根没列
+/// hash)。所以对 V5 用 `contains('curated')` **永远不成立** —— 那样写会把
+/// 每一张 V5 图都认成 Full,2026-08-24 之前本仓两处都是这么错的。
+///
+/// 归一化之后的串(「NovelAI V5 Full」)也吃得下:那时 hash 已经没了,只能看字面。
+bool naiSourceIsV5Full(String source) {
+  final s = source.toLowerCase();
+  if (s.contains('curated')) return false;
+  if (s.contains('full')) return true;
+  return _v5FullHashes.any(s.contains);
+}
 
 /// 模型指纹 → 展示名(取自 NAI 官方前端源码)。
 const _naiModelNameMap = <String, String>{
@@ -355,11 +398,22 @@ ImageMetadata? _parseNai(Map<String, dynamic> data) {
       ).firstMatch(rawSource);
       if (m != null) {
         final ver = m.group(1);
-        final curated = RegExp(
-          'curated',
-          caseSensitive: false,
-        ).hasMatch(rawSource);
-        source = 'NovelAI V$ver${curated ? ' Curated' : ''}';
+        if (ver != null && ver.startsWith('5')) {
+          // V5 的档次算得准(白名单,见 naiSourceIsV5Full),Full / Curated 都写出来。
+          // 它的 Source 串里根本没有档次字样,不显式补上的话顶栏只会显示光秃秃
+          // 一个「NovelAI V5」—— 而 V4/V4.5 那边有指纹表,一直是带档次的。
+          final full = naiSourceIsV5Full(rawSource);
+          source = 'NovelAI V$ver ${full ? 'Full' : 'Curated'}';
+        } else {
+          // 其余版本只能靠字面找 curated。**认不出就不写档次** —— 指纹表
+          // (_naiModelNameMap)已经覆盖了官方在用的那批,落到这里的是没见过的
+          // 指纹,硬挂一个 Full 上去是猜的。
+          final curated = RegExp(
+            'curated',
+            caseSensitive: false,
+          ).hasMatch(rawSource);
+          source = 'NovelAI V$ver${curated ? ' Curated' : ''}';
+        }
       } else {
         source = rawSource;
       }
@@ -386,6 +440,14 @@ ImageMetadata? _parseNai(Map<String, dynamic> data) {
       noiseSchedule: _asString(comment['noise_schedule']),
       cfgRescale: _asString(comment['cfg_rescale']),
       // containsKey 区分「字段为 null(关)」和「字段不存在(老图,不可知)」
+      tagHintQt: (comment['tag_hint_qt'] as num?)?.toInt(),
+      tagHintUcPreset: (comment['tag_hint_uc_preset'] as num?)?.toInt(),
+      transparentBackground: comment['tag_hint_transparent_background'] is bool
+          ? comment['tag_hint_transparent_background'] as bool
+          : null,
+      straightAlpha: comment['straight_alpha'] is bool
+          ? comment['straight_alpha'] as bool
+          : null,
       varietyPlus: comment.containsKey('skip_cfg_above_sigma')
           ? comment['skip_cfg_above_sigma'] != null
           : null,
@@ -410,9 +472,7 @@ List<LoraInfo> _extractLoras(String prompt) {
     final parts = m.group(2)!.split(':').map((s) => double.tryParse(s.trim()));
     final w = parts.isNotEmpty ? parts.first : null;
     final c = parts.length > 1 ? parts.elementAt(1) : null;
-    loras.add(
-      LoraInfo(name: m.group(1)!, weight: w ?? 1.0, clipWeight: c),
-    );
+    loras.add(LoraInfo(name: m.group(1)!, weight: w ?? 1.0, clipWeight: c));
   }
   for (final m in RegExp(
     r'<lyco:([^:>]+):([^>]+)>',
@@ -786,25 +846,21 @@ ImageMetadata? _parseComfy(String promptJson, String? workflowJson) {
     final positive = _resolveConditioningText(graph, si['positive']) ?? '';
     final negative = _resolveConditioningText(graph, si['negative']) ?? '';
 
-    final seed = _asNum(
-      _resolveScalar(graph, si['seed'] ?? si['noise_seed']),
-    );
+    final seed = _asNum(_resolveScalar(graph, si['seed'] ?? si['noise_seed']));
     final steps = _asNum(_resolveScalar(graph, si['steps']));
     final cfg = _asNum(_resolveScalar(graph, si['cfg']));
     final samplerName = _resolveScalar(graph, si['sampler_name']);
     final scheduler = _resolveScalar(graph, si['scheduler']);
 
     // 尺寸:沿 latent 链找带 width/height 的节点(EmptyLatentImage / EmptySD3LatentImage…)
-    final latent = _findUpstream(
-      graph,
-      si['latent_image'] ?? si['latent'],
-      (n) {
-        final i = n['inputs'];
-        return i is Map &&
-            _asNum(i['width']) != null &&
-            _asNum(i['height']) != null;
-      },
-    );
+    final latent = _findUpstream(graph, si['latent_image'] ?? si['latent'], (
+      n,
+    ) {
+      final i = n['inputs'];
+      return i is Map &&
+          _asNum(i['width']) != null &&
+          _asNum(i['height']) != null;
+    });
     final latentInputs = latent?.value['inputs'];
     final li = latentInputs is Map ? latentInputs : const {};
     final width = _asNum(_resolveScalar(graph, li['width']))?.toInt() ?? 0;
@@ -818,9 +874,7 @@ ImageMetadata? _parseComfy(String promptJson, String? workflowJson) {
     final loaderInputs = loader?.value['inputs'];
     final di = loaderInputs is Map ? loaderInputs : const {};
     final modelFile = di['ckpt_name'] ?? di['unet_name'];
-    final source = modelFile is String
-        ? _stripModelExt(modelFile)
-        : 'ComfyUI';
+    final source = modelFile is String ? _stripModelExt(modelFile) : 'ComfyUI';
 
     return ImageMetadata(
       source: source,

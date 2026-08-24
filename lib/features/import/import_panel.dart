@@ -16,10 +16,12 @@ import '../../core/util/image_ops.dart';
 import '../../core/util/image_pick.dart';
 import '../../core/util/prompt_convert.dart' show convertSdToNai;
 import '../char_library/char_library.dart';
+import '../generate/auto_text.dart';
 import '../generate/char_position.dart';
 import '../generate/generate_state.dart';
 import '../generate/models.dart';
 import '../generate/nai_request.dart' show naiModelId;
+import '../generate/prompt_presets.dart';
 import '../generate/widgets/common.dart';
 import '../lora/lora_install_queue.dart';
 import '../shell/shell_state.dart';
@@ -48,12 +50,13 @@ bool _samplerSupported(String? id) =>
 bool _noiseSupported(String? n) => n != null && noiseSchedules.contains(n);
 
 /// 来源名 → 本机模型展示名(v3 无对应,返回 null 保持当前不变;对齐 web 移动端)。
-/// v5 两行是预载猜测(官方 source 串格式未公布,按 v4.5 的惯例推);
-/// 猜错也只是落到 null 兜底 —— 保持当前模型,比错误映射安全。
+/// V5 那档不能按字面找 Curated —— 它的 source 串里根本不写档次,判据见
+/// [naiSourceIsV5Full]。
 String? _modelFromSource(String source) {
   final s = source.toLowerCase();
-  if (s.contains('v5 curated')) return 'NAI 5.0 Curated';
-  if (s.contains('v5')) return 'NAI 5.0 Full';
+  if (s.contains('v5')) {
+    return naiSourceIsV5Full(source) ? 'NAI 5.0 Full' : 'NAI 5.0 Curated';
+  }
   if (s.contains('v4.5 curated')) return 'NAI 4.5 Curated';
   if (s.contains('v4.5')) return 'NAI 4.5 Full';
   if (s.contains('v4 curated')) return 'NAI 4.0 Curated';
@@ -123,6 +126,19 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
 
   /// 把 a1111 权重语法转成 NAI 方言。只在「源是 a1111、目标是 NovelAI」时有意义。
   bool _convertPrompt = true;
+
+  /// 识别并剥离提示词预设。
+  ///
+  /// 出图时预设文本是拼进提示词发的,导入若原样填回,当前预设下次生成会**再拼
+  /// 一遍**。勾上就把那段文本剥掉;档位动不动看 [_presetImport]。
+  bool _usePreset = false;
+
+  /// true = 「导入」(顺带把档位切成这张图用的那一档,认不出切「无」);
+  /// false = 「剥离」(只删文本,档位保持用户现在选的)。
+  ///
+  /// **两档都剥文本** —— 留着文本又把档位切过去,下次生成必定重复拼一遍,
+  /// 那个组合没有意义,所以不做成两个独立开关。
+  bool _presetImport = true;
 
   // 角色
   final Set<int> _charChecked = {};
@@ -316,6 +332,45 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   /// 只在「源是 a1111 语法、目标是 NovelAI」时给转换开关,别的情况转了也白转。
   bool get _showConvert => needsPromptConversion(_meta, _targetCategory);
 
+  /// 提示词落地前的统一预处理:需要时把 a1111 权重语法转成 NAI 方言 ——
+  /// 编辑器里存的始终是 NAI 语法,发 Anima 时由服务端翻回 ComfyUI 语法。
+  String _prep(String s) =>
+      _convertPrompt && _showConvert ? convertSdToNai(s) : s;
+
+  /// 正向提示词的预处理,额外剥掉 autoText 自动加的 `teXt:` 块。
+  /// 那段是发送时加在最外层的,不剥的话再导回来,输入框里会挂着一段用户
+  /// 没写过的内容(剥不干净时 stripAutoText 会原样返回,不会误伤手写的)。
+  String _preparedPositive(ImageMetadata m) => stripAutoText(
+    _prep(m.prompt),
+    characters: [
+      for (final c in m.characters)
+        AutoTextChar(
+          prompt: c.prompt,
+          center: c.centerX != null && c.centerY != null
+              ? (x: c.centerX!, y: c.centerY!)
+              : null,
+        ),
+    ],
+    useCoords: m.characters.isNotEmpty,
+  );
+
+  /// 认出这张图用的是哪条预设 —— 面板文案与导入落地共用同一次计算。
+  ///
+  /// **两边的证据都吃**,哪怕用户只勾了一边导入:少一半信息就认不准。
+  ({PromptPreset preset, String positive, String negative})? get _presetMatch {
+    final m = _meta;
+    if (m == null || !m.isNovelAI) return null;
+    final presets = ref.read(promptPresetsProvider).value?.presets;
+    if (presets == null) return null;
+    return detectPromptPreset(
+      presets,
+      _preparedPositive(m),
+      _prep(m.negativePrompt),
+      hintQt: m.tagHintQt,
+      hintUcPreset: m.tagHintUcPreset,
+    );
+  }
+
   /// Anima / Krea 都走服务端 Modal 后端,只有 Bot 授权登录能用;
   /// 切不过去就别给按钮。
   bool get _canSwitchCategory =>
@@ -327,6 +382,14 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     _usePrompt = m.prompt.isNotEmpty;
     _useNegative = m.negativePrompt.isNotEmpty;
     _convertPrompt = needsPromptConversion(m, _targetCategory);
+    // 认出了档位 → 勾(不剥的话当前档下次生成会重复拼一遍);
+    // 没认出但图来自 NovelAI → 也勾:官方图/我们改造前出的图都可能把预设文本
+    //   烤在提示词里、只是我们剥不掉,这时至少要把档位切到「无」;
+    // 其余(SD / 第三方 ComfyUI 图)→ 不勾:那里面本来就没有预设文本,
+    //   切到「无」等于白白丢掉用户当前选的档。
+    _usePreset =
+        m.isNovelAI && (m.prompt.isNotEmpty || m.negativePrompt.isNotEmpty);
+    _presetImport = true;
     _charChecked.clear();
     _vibeChecked.clear();
     _vibeBytes = const [];
@@ -356,7 +419,8 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     // 先把模型切过去:setModel 会套用该档推荐采样参数,必须发生在
     // _initSelections 之前,否则导入的具体数值会被档位默认值盖掉。
     final model = switch (target) {
-      ModelCategory.comfy => animaModelFromSource(m.source) ?? animaModels.first,
+      ModelCategory.comfy =>
+        animaModelFromSource(m.source) ?? animaModels.first,
       ModelCategory.krea => kreaModelFromSource(m.source) ?? kreaModels.first,
       ModelCategory.nai => _modelFromSource(m.source) ?? models.first,
     };
@@ -642,15 +706,40 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     final notifier = ref.read(generateProvider.notifier);
     final msgs = <String>[];
 
-    // 提示词(替换)。需要时先把 a1111 权重语法转成 NAI 方言 ——
-    // 编辑器里存的始终是 NAI 语法,发 Anima 时由服务端翻回 ComfyUI 语法。
-    String prep(String s) =>
-        _convertPrompt && _showConvert ? convertSdToNai(s) : s;
+    // 提示词(替换)。见 _prep / _preparedPositive。
     String? pos, neg;
-    if (_usePrompt && m.prompt.isNotEmpty) pos = prep(m.prompt);
+    if (_usePrompt && m.prompt.isNotEmpty) pos = _preparedPositive(m);
     if (_useNegative && m.negativePrompt.isNotEmpty) {
-      neg = prep(m.negativePrompt);
+      neg = _prep(m.negativePrompt);
     }
+
+    // 提示词预设。**两档都剥文本**(只剥被勾选要导的那一侧);区别只在档位:
+    //  - 剥离:档位保持用户现在选的
+    //  - 导入:切成这张图用的那一档;**认不出一律切「无」** —— 留着当前档,
+    //    万一图里烤着我们剥不掉的预设文本,下次生成就会在它之上再拼一遍。
+    if (_usePreset && (pos != null || neg != null)) {
+      final hit = _presetMatch;
+      if (hit != null) {
+        if (pos != null) pos = hit.positive;
+        if (neg != null) neg = hit.negative;
+      }
+      if (_presetImport) {
+        // 跨系列导入(4.5 图导进 V5)剥的是 4.5 的文本、落的是目标模型的同强度档,
+        // 与「切模型自动映射档位」一致。
+        final presets = ref.read(promptPresetsProvider).value?.presets;
+        final target =
+            (_useModel ? _importModel : null) ??
+            ref.read(generateProvider).params.model;
+        final id = hit == null || presets == null
+            ? 'none'
+            : remapPromptPresetId(hit.preset.id, presets, target);
+        unawaited(ref.read(promptPresetsProvider.notifier).setActive(id));
+        msgs.add(hit == null ? '预设「无」' : '预设 ${hit.preset.name}');
+      } else if (hit != null) {
+        msgs.add('剥掉 ${hit.preset.name}');
+      }
+    }
+
     if (pos != null || neg != null) {
       notifier.setPrompts(positive: pos, negative: neg);
     }
@@ -1030,6 +1119,14 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
         ],
         // 权重语法转换:只在「源是 a1111、目标是 NovelAI」时出现
         if (_showConvert) ...[_convertRow(scheme), const SizedBox(height: 9)],
+        // 提示词预设:识别并剥离。只对 NAI 图有意义 —— 别的来源里本来就没有
+        // 预设文本,切到「无」等于白白丢掉用户当前选的档。
+        if (_inNai &&
+            m.isNovelAI &&
+            (m.prompt.isNotEmpty || m.negativePrompt.isNotEmpty)) ...[
+          _presetRow(scheme),
+          const SizedBox(height: 9),
+        ],
         // 角色
         if (_inNai && m.characters.isNotEmpty) ...[
           _charSection(scheme, m),
@@ -1158,6 +1255,183 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
       ),
     );
   }
+
+  /// 提示词预设的识别 / 剥离开关。
+  /// 副标题直接报识别结果 —— 认不认得出、会切到哪一档,用户看得见也改得动。
+  Widget _presetRow(ColorScheme scheme) {
+    // 预设是异步载入的:watch 一下,载入完成后这一行的识别结果要跟着刷新
+    // (_presetMatch 自己只能 read —— 它同时被导入回调调用,那里 watch 非法)。
+    ref.watch(promptPresetsProvider);
+    final needPrompt = !_usePrompt && !_useNegative;
+    final hit = needPrompt ? null : _presetMatch;
+    final on = _usePreset && !needPrompt;
+    final fg = needPrompt
+        ? scheme.onSurfaceVariant.withValues(alpha: .5)
+        : scheme.onSurface;
+    return Material(
+      color: scheme.surfaceContainer,
+      borderRadius: BorderRadius.circular(16),
+      clipBehavior: Clip.antiAlias,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 10, 13, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.auto_awesome_motion_outlined,
+                  size: 20,
+                  color: needPrompt
+                      ? scheme.onSurfaceVariant.withValues(alpha: .5)
+                      : scheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 11),
+                Expanded(
+                  child: Text(
+                    '提示词预设',
+                    style: context.texts.bodyLarge!.copyWith(
+                      fontWeight: FontWeight.w600,
+                      color: fg,
+                    ),
+                  ),
+                ),
+                // 两档都剥,差别只在档位动不动 —— 所以是二选一而不是第二个开关
+                _presetModeSeg(scheme, enabled: on),
+                const SizedBox(width: 10),
+                InkResponse(
+                  onTap: needPrompt
+                      ? null
+                      : () => setState(() => _usePreset = !_usePreset),
+                  radius: 22,
+                  child: Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: _checkBox(scheme, on),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            if (needPrompt)
+              _presetNote(scheme, '需要先勾选正向或负向提示词')
+            else if (hit != null) ...[
+              // 直接把会被删掉的那段文本摊开 —— 「识别到 Heavy」看不出要删什么词
+              _presetTextBlock(scheme, hit.preset),
+              const SizedBox(height: 6),
+              _presetNote(
+                scheme,
+                _presetImport
+                    ? '以上文本会从提示词里剥掉,档位切成「${hit.preset.name}」。'
+                    : '以上文本会从提示词里剥掉,档位保持你现在选的那一档。',
+              ),
+            ] else
+              _presetNote(
+                scheme,
+                _presetImport
+                    ? '没认出任何内置预设的文本。「导入」会把档位切到「无」——'
+                          '万一图里烤着剥不掉的预设文本,至少不会再拼第二遍。'
+                    : '没认出任何内置预设的文本。「剥离」在这种情况下不会有任何动作。',
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 剥离 / 导入 二选一。
+  Widget _presetModeSeg(ColorScheme scheme, {required bool enabled}) {
+    Widget seg(String label, bool sel, VoidCallback onTap) => InkWell(
+      onTap: enabled ? onTap : null,
+      borderRadius: BorderRadius.circular(8),
+      child: AnimatedContainer(
+        duration: Motion.fast,
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: sel ? scheme.primary : Colors.transparent,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(
+          label,
+          style: context.texts.labelMedium!.copyWith(
+            fontWeight: FontWeight.w700,
+            color: !enabled
+                ? scheme.onSurfaceVariant.withValues(alpha: .4)
+                : sel
+                ? scheme.onPrimary
+                : scheme.onSurfaceVariant,
+          ),
+        ),
+      ),
+    );
+    return Container(
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          seg(
+            '剥离',
+            !_presetImport,
+            () => setState(() => _presetImport = false),
+          ),
+          seg('导入', _presetImport, () => setState(() => _presetImport = true)),
+        ],
+      ),
+    );
+  }
+
+  Widget _presetNote(ColorScheme scheme, String text) => Text(
+    text,
+    style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant),
+  );
+
+  /// 会被剥掉的那段预设文本。正负各夹两行 —— 重度档的负面有二十来个词,
+  /// 整段摊开会把面板顶下去,而用户只需要认出"哦是这一档"。
+  Widget _presetTextBlock(ColorScheme scheme, PromptPreset p) => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+    decoration: BoxDecoration(
+      color: scheme.surfaceContainerHighest,
+      borderRadius: BorderRadius.circular(10),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          p.name,
+          style: context.texts.labelSmall!.copyWith(
+            color: scheme.primary,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 3),
+        Text(
+          p.positive.isEmpty ? '(这一档不加正向文本)' : p.positive,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontSize: 11.5,
+            color: p.positive.isEmpty ? scheme.outline : scheme.onSurface,
+          ),
+        ),
+        if (p.negative.isNotEmpty) ...[
+          const SizedBox(height: 2),
+          Text(
+            'UC: ${p.negative}',
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 11,
+              color: scheme.error.withValues(alpha: .75),
+            ),
+          ),
+        ],
+      ],
+    ),
+  );
 
   /// 自动转换提示词格式开关。
   Widget _convertRow(ColorScheme scheme) {
