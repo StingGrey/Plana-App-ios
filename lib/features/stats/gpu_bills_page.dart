@@ -33,7 +33,9 @@ class GpuBillsPage extends ConsumerWidget {
               const StatsCard(child: Text('账单加载失败,下拉重试')),
             if (b != null && b.ok) ...[
               if (b.isEmpty)
-                const StatsCard(child: _EmptyHint())
+                // 刚结完账正是这个分支:本期空的,但上期账单还得看得见 ——
+                // 不然用户会以为自己的消费记录凭空没了,而那笔钱恰恰是现在要付的。
+                StatsCard(child: _EmptyHint(settled: b.settled))
               else ...[
                 _SumCard(bills: b),
                 if (b.running != null) ...[
@@ -45,6 +47,10 @@ class GpuBillsPage extends ConsumerWidget {
                   _DetailCard(items: b.items),
                 ],
               ],
+              if (b.lastPeriod != null) ...[
+                const SizedBox(height: 10),
+                _LastPeriodCard(last: b.lastPeriod!),
+              ],
             ],
           ],
         ),
@@ -54,14 +60,17 @@ class GpuBillsPage extends ConsumerWidget {
 }
 
 class _EmptyHint extends StatelessWidget {
-  const _EmptyHint();
+  const _EmptyHint({this.settled = false});
+
+  /// 已经结过账:那这个「空」只是**本期**空,不是从来没花过。
+  final bool settled;
 
   @override
   Widget build(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
       Text(
-        '还没有算力消费',
+        settled ? '本期还没有算力消费' : '还没有算力消费',
         style: context.texts.bodyMedium!.copyWith(fontWeight: FontWeight.w600),
       ),
       const SizedBox(height: 4),
@@ -102,7 +111,8 @@ class _SumCard extends StatelessWidget {
               ),
               const SizedBox(width: 6),
               Text(
-                '累计消费',
+                // 结过账就只算这一期。没结过时口径仍是全部历史,照旧说「累计」。
+                b?.settled == true ? '本期消费' : '累计消费',
                 style: context.texts.bodyMedium!.copyWith(
                   fontWeight: FontWeight.w600,
                 ),
@@ -128,6 +138,17 @@ class _SumCard extends StatelessWidget {
             Text(
               fmtYuan(b.totalCost),
               style: mono(context, size: 24, weight: FontWeight.w700),
+            ),
+          // 结算点写出来,不然用户看不出这个数为什么突然变小了
+          if (b != null && b.settled && b.periodLabel.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                b.periodLabel,
+                style: context.texts.labelSmall!.copyWith(
+                  color: scheme.outline,
+                ),
+              ),
             ),
           const SizedBox(height: 12),
           Row(
@@ -240,6 +261,72 @@ class _Part extends StatelessWidget {
   }
 }
 
+/// 上期账单:管理员结算那一刻定死的快照,**这才是真要付的钱**。
+/// 和上面那张「本期消费」是两笔 —— 上期已经收口,本期还在涨。
+class _LastPeriodCard extends StatelessWidget {
+  const _LastPeriodCard({required this.last});
+
+  final GpuLastPeriod last;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    final parts = [
+      if (last.rentalCount > 0)
+        '租卡 ${last.rentalCount} 次 · ${last.rentalHours} 小时 '
+            '${fmtYuan(last.rentalCost)}',
+      if (last.videoCount > 0)
+        '视频 ${last.videoCount} 条 · ${last.videoSeconds} 秒 '
+            '${fmtYuan(last.videoCost)}',
+    ];
+    return StatsCard(
+      padding: const EdgeInsets.fromLTRB(14, 11, 14, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.receipt_outlined,
+                size: 15,
+                color: scheme.onSurfaceVariant,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                '上期账单',
+                style: context.texts.bodyMedium!.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  last.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: context.texts.labelSmall!.copyWith(
+                    color: scheme.outline,
+                  ),
+                ),
+              ),
+              const Spacer(),
+              Text(
+                fmtYuan(last.cost),
+                style: mono(context, size: 17, weight: FontWeight.w700),
+              ),
+            ],
+          ),
+          const SizedBox(height: 3),
+          Text(
+            parts.isEmpty ? '上期没有算力消费' : parts.join(' · '),
+            style: context.texts.labelSmall!.copyWith(color: scheme.outline),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// 还在跑的那台。单独标出来 —— 它的钱还在涨,和已结算的不是一回事。
 /// (合计里已经把它算进去了:用户看的是「到现在为止花了多少」。)
 class _RunningCard extends StatelessWidget {
@@ -343,9 +430,7 @@ class _DetailCard extends StatelessWidget {
           for (final it in items)
             LedgerRow(
               icon: it.isRental ? Icons.developer_board : Icons.movie_outlined,
-              title: it.isRental
-                  ? '租卡 ${it.minutes} 分钟'
-                  : '视频 ${it.seconds} 秒',
+              title: it.isRental ? '租卡 ${it.minutes} 分钟' : '视频 ${it.seconds} 秒',
               sub: [
                 _time(it.time),
                 if (it.isRental)

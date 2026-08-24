@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
+import '../../core/net/nai_client.dart' show NaiUsage;
 
 /// 统计页的数据源。服务端端点(除在线人数)都要 Bot 会话;
 /// 失败/未授权一律回 null,由页面按「—」/未授权提示降级,不弹错。
@@ -118,6 +119,16 @@ final billingSettlementProvider = FutureProvider.autoDispose<BillingReport?>(
 final gpuBillsProvider = FutureProvider.autoDispose<GpuBills?>(
   (ref) => _withSession(ref, (c, sid) => c.rentalBills(sid)),
 );
+
+/// 共享号池的 NAI 官方额度(全平台水位)。**公开端点,不要会话** —— 所以不走
+/// [_withSession];全平台统计页在没授权时本来就整页不可见,不必再挡一道。
+final poolUsageProvider = FutureProvider.autoDispose<NaiUsage?>((ref) async {
+  try {
+    return await ref.watch(backendClientProvider).poolUsage();
+  } catch (_) {
+    return null; // 老服务端没这个端点 → 那块不画
+  }
+});
 
 /// 千分位(App 无 intl 依赖,手搓)。
 String fmtInt(num v) {

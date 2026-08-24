@@ -237,9 +237,12 @@ class _StatsPageState extends ConsumerState<StatsPage> {
     ];
   }
 
-  /// 四格明细:跟随时间范围;选中某柱后整组换成该{日|时段}的读数。
+  /// 指标明细:跟随时间范围;选中某柱后整组换成该{日|时段}的读数。
   /// 不套卡片,裸排在页面底色上,行间用细线分隔,与上面的 hero/柱条一体。
-  /// 两种状态都是 4 格 = 2 行,选中/取消不改变页面高度。
+  ///
+  /// 未选中 6 格 = 3 行(第三行是 V5 两项),选中 4 格 = 2 行 —— 选中态会矮一行:
+  /// 趋势序列只有「张数 / 点数」两个数,拆不出某一柱里 V5 占多少,与其在那儿
+  /// 摆两个跟着**整段范围**走的数(和上面两格不同口径),不如让它空着。
   Widget _tilesGrid(
     BuildContext context,
     List<TrendPoint> series,
@@ -345,6 +348,20 @@ class _StatsPageState extends ConsumerState<StatsPage> {
             value: avg ?? (seriesLoading ? null : '0'),
             loading: seriesLoading,
           ),
+          // V5 两项。张数和点数都要:V5 扣点是 V4.5 的 1.5 倍,只看张数
+          // 看不出真实消耗。没用过 V5 就是两个 0 —— 指标格本来就该摆满。
+          StatTile(
+            icon: Icons.auto_awesome_outlined,
+            label: 'V5 生图',
+            value: st == null ? null : fmtInt(st.v5Calls),
+            loading: stAsync.isLoading,
+          ),
+          StatTile(
+            icon: Icons.toll,
+            label: 'V5 点数',
+            value: st == null ? null : fmtInt(st.v5Points),
+            loading: stAsync.isLoading,
+          ),
         ];
       } else {
         // 与 Bot 同一套四格,仅数据源换成本机账本(口径注明「估算」)
@@ -372,13 +389,25 @@ class _StatsPageState extends ConsumerState<StatsPage> {
             label: today ? '段均生图' : '日均生图',
             value: avg ?? '0',
           ),
+          // 与 Bot 同口径,数据源换成本机账本(见 KeyDayAgg.v5)
+          StatTile(
+            icon: Icons.auto_awesome_outlined,
+            label: 'V5 生图',
+            value: fmtInt(sum.v5),
+          ),
+          StatTile(
+            icon: Icons.toll,
+            label: 'V5 点数',
+            value: fmtInt(sum.v5Pts),
+          ),
         ];
       }
     }
 
     return Column(
       children: [
-        for (var row = 0; row < 2; row++) ...[
+        // 行数按格数来,不写死 —— 加一对指标不该还要回来改这里
+        for (var row = 0; row * 2 < tiles.length; row++) ...[
           Divider(
             height: row == 0 ? 18 : 22,
             thickness: .5,
@@ -530,9 +559,10 @@ class _StatsPageState extends ConsumerState<StatsPage> {
       final est = estAsync.value;
       final settle = ref.watch(billingSettlementProvider).value;
       loading = estAsync.isLoading;
+      // 结算日跟着周期标签走,不写死 —— 那个分界日改过一次(27 → 23)
       sub = est?.me == null
           ? '按月阶梯分摊 · 每日流水'
-          : '本期预估 ¥${fmtInt(est!.me!.totalFee)} · 27 日结算'
+          : '本期预估 ¥${fmtInt(est!.me!.totalFee)} · ${est.cycleDay} 日结算'
                 '${settle?.paymentStatus == 'unpaid' ? ' · 上期待支付' : ''}';
     } else {
       final sum = ref.read(appStoresProvider).ledger.sumRange(_range);
@@ -545,7 +575,7 @@ class _StatsPageState extends ConsumerState<StatsPage> {
       title: _bot ? 'NAI 账单' : '账单',
       subWidget: loading
           ? SkeletonText(
-              sample: '本期预估 ¥000 · 27 日结算',
+              sample: '本期预估 ¥000 · 00 日结算',
               style: context.texts.labelSmall!,
               width: 132,
             )

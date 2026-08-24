@@ -9,11 +9,23 @@ import 'package:flutter/foundation.dart';
 /// NAI 超分按笔记录。点数一律为估算值(与生成按钮的费用预估同一公式,
 /// 免费档为 0);bot 模式的用量由服务端记,这里不落。
 class KeyDayAgg {
-  KeyDayAgg({this.images = 0, this.free = 0, this.pts = 0});
+  KeyDayAgg({
+    this.images = 0,
+    this.free = 0,
+    this.pts = 0,
+    this.v5 = 0,
+    this.v5Pts = 0,
+  });
 
   int images;
   int free;
   int pts;
+
+  /// 其中 V5 的张数与点数。点数要单列 —— V5 扣点是 V4.5 的 1.5 倍,
+  /// 光看张数看不出真实消耗(与服务端 `/api/user/stats` 的 v5_calls/v5_points
+  /// 同一口径)。免费档那些张照样计进 [v5]:它问的是「出了几张 V5」。
+  int v5;
+  int v5Pts;
 }
 
 /// 单笔计费操作。[type]:`vibe` | `upscale`。
@@ -104,6 +116,8 @@ class KeyLedgerStore {
   int totalGenPts = 0;
   int totalVibePts = 0;
   int totalUpsPts = 0;
+  int totalV5 = 0;
+  int totalV5Pts = 0;
 
   int get totalPts => totalGenPts + totalVibePts + totalUpsPts;
 
@@ -135,10 +149,13 @@ class KeyLedgerStore {
         for (final e in rawDays.entries) {
           final v = e.value;
           if (v is List && v.length >= 3) {
+            // 后两项是后加的:老档只有三项,读不到就是 0(那时还没有 V5)
             days[e.key.toString()] = KeyDayAgg(
               images: (v[0] as num?)?.toInt() ?? 0,
               free: (v[1] as num?)?.toInt() ?? 0,
               pts: (v[2] as num?)?.toInt() ?? 0,
+              v5: (v.elementAtOrNull(3) as num?)?.toInt() ?? 0,
+              v5Pts: (v.elementAtOrNull(4) as num?)?.toInt() ?? 0,
             );
           }
         }
@@ -165,6 +182,9 @@ class KeyLedgerStore {
         totalGenPts = (t[2] as num?)?.toInt() ?? 0;
         totalVibePts = (t[3] as num?)?.toInt() ?? 0;
         totalUpsPts = (t[4] as num?)?.toInt() ?? 0;
+        // 同上:老档只有五项
+        totalV5 = (t.elementAtOrNull(5) as num?)?.toInt() ?? 0;
+        totalV5Pts = (t.elementAtOrNull(6) as num?)?.toInt() ?? 0;
       }
       final rawGens = j['gens'];
       if (rawGens is List) {
@@ -210,6 +230,7 @@ class KeyLedgerStore {
     int? steps,
     String? model,
     bool inpaint = false,
+    bool v5 = false,
   }) {
     final t = at ?? DateTime.now();
     final key = dayKey(t);
@@ -236,6 +257,15 @@ class KeyLedgerStore {
     } else {
       d.pts += pts;
       totalGenPts += pts;
+    }
+    if (v5) {
+      d.v5++;
+      totalV5++;
+      // 免费档那张记进张数但不记点数,与上面 pts<=0 那支同一口径
+      if (pts > 0) {
+        d.v5Pts += pts;
+        totalV5Pts += pts;
+      }
     }
     totalImages++;
     _touchHourDay(key);
@@ -277,19 +307,20 @@ class KeyLedgerStore {
   // ── 查询(内存态,时间范围按本地时区) ────────────────
 
   /// [range] ∈ today/week(周一起)/month(1 号起)。
-  ({int images, int free, int genPts, int vibePts, int upsPts}) sumRange(
-    String range, {
-    DateTime? now,
-  }) {
+  ({int images, int free, int genPts, int vibePts, int upsPts, int v5, int v5Pts})
+  sumRange(String range, {DateTime? now}) {
     final from = _rangeStart(range, now ?? DateTime.now());
     final fromKey = dayKey(from);
     final fromMs = from.millisecondsSinceEpoch;
     var images = 0, free = 0, genPts = 0, vibePts = 0, upsPts = 0;
+    var v5 = 0, v5Pts = 0;
     for (final e in days.entries) {
       if (e.key.compareTo(fromKey) < 0) continue;
       images += e.value.images;
       free += e.value.free;
       genPts += e.value.pts;
+      v5 += e.value.v5;
+      v5Pts += e.value.v5Pts;
     }
     for (final o in ops) {
       if (o.ts < fromMs) break; // 新在前,过界即止
@@ -305,6 +336,8 @@ class KeyLedgerStore {
       genPts: genPts,
       vibePts: vibePts,
       upsPts: upsPts,
+      v5: v5,
+      v5Pts: v5Pts,
     );
   }
 
@@ -436,7 +469,13 @@ class KeyLedgerStore {
       'v': 1,
       'days': {
         for (final e in days.entries)
-          e.key: [e.value.images, e.value.free, e.value.pts],
+          e.key: [
+            e.value.images,
+            e.value.free,
+            e.value.pts,
+            e.value.v5,
+            e.value.v5Pts,
+          ],
       },
       'ops': [
         for (final o in ops) [o.ts, o.type, o.pts],
@@ -447,6 +486,8 @@ class KeyLedgerStore {
         totalGenPts,
         totalVibePts,
         totalUpsPts,
+        totalV5,
+        totalV5Pts,
       ],
       'gens': [
         for (final g in gens)

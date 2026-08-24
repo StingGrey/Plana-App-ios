@@ -180,6 +180,48 @@ void main() {
     expect(again.ops.first.type, 'upscale'); // 新在前的持久化顺序
   });
 
+  test('V5 单列:张数含免费档,点数只记真扣的那些', () async {
+    // 免费尺寸的 V5(额度还没见底)→ 计张不计点
+    store.recordGen(pts: 0, at: DateTime(2026, 1, 15, 9), v5: true);
+    // 额度见底后同样尺寸转扣点 / 或超尺寸 → 两个都计
+    store.recordGen(pts: 30, at: DateTime(2026, 1, 15, 10), v5: true);
+    // 4.5 那些不进 V5 两项,但照常进总数
+    store.recordGen(pts: 20, at: DateTime(2026, 1, 15, 11));
+
+    final today = store.sumRange('today', now: now);
+    expect((today.images, today.genPts), (3, 50));
+    expect((today.v5, today.v5Pts), (2, 30));
+    expect((store.totalV5, store.totalV5Pts), (2, 30));
+
+    // 落盘往返:两项跟着 days / totals 一起持久化
+    await store.flush();
+    await store.idle;
+    final again = KeyLedgerStore(root);
+    await again.load();
+    final back = again.sumRange('today', now: now);
+    expect((back.v5, back.v5Pts), (2, 30));
+    expect((again.totalV5, again.totalV5Pts), (2, 30));
+  });
+
+  test('老档没有 V5 两项:读成 0,不炸也不误报', () async {
+    final f = File(
+      '${root.path}${Platform.pathSeparator}stats'
+      '${Platform.pathSeparator}key_ledger.json',
+    );
+    f.parent.createSync(recursive: true);
+    // V5 之前那版的格式:days 三项、totals 五项
+    f.writeAsStringSync(
+      '{"v":1,"days":{"2026-01-15":[4,2,12]},'
+      '"totals":[4,2,12,0,0],"ops":[],"gens":[]}',
+    );
+    final s = KeyLedgerStore(root);
+    await s.load();
+    final today = s.sumRange('today', now: now);
+    expect((today.images, today.genPts), (4, 12));
+    expect((today.v5, today.v5Pts), (0, 0));
+    expect((s.totalV5, s.totalV5Pts), (0, 0));
+  });
+
   test('脏档按空账本降级', () async {
     final f = File(
       '${root.path}${Platform.pathSeparator}stats'

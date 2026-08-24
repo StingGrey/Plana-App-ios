@@ -90,6 +90,24 @@ class DayDetailPage extends ConsumerWidget {
                 ),
               ],
             ),
+            // 两个磁贴报的是**全部**出图与全部点数;V5 与自建后端各自占了多少
+            // 单起一行 —— V5 扣点是 V4.5 的 1.5 倍,张数看不出真实消耗;
+            // anima/krea 那些图确实出了,只是不进 NAI 分摊,不写会被当成漏算。
+            if (d != null && (d.v5Calls > 0 || d.localCalls > 0))
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  [
+                    if (d.v5Calls > 0)
+                      '其中 V5 ${fmtInt(d.v5Calls)} 张 · ${fmtInt(d.v5Points)} 点',
+                    if (d.localCalls > 0)
+                      'anima/krea ${fmtInt(d.localCalls)} 张(不进分摊)',
+                  ].join(' · '),
+                  style: context.texts.labelSmall!.copyWith(
+                    color: context.scheme.outline,
+                  ),
+                ),
+              ),
             if (mode == DayDetailMode.points &&
                 (loading || (d?.breakdown.isNotEmpty ?? false))) ...[
               const CardDivider(),
@@ -204,7 +222,8 @@ class DayDetailPage extends ConsumerWidget {
 
   List<Widget> _breakdownRows(
     BuildContext context,
-    List<({String reason, int points, int count})>? bd,
+    List<({String reason, int points, int count, int v5Points, int v5Count})>?
+    bd,
     bool loading,
   ) {
     if (loading && bd == null) {
@@ -233,7 +252,10 @@ class DayDetailPage extends ConsumerWidget {
               SizedBox(
                 width: 96,
                 child: Text(
-                  '${parseReason(b.reason).type} ×${b.count}',
+                  // 组内标出 V5 占了多少,而不是按模型再拆一组 —— reason 里已经
+                  // 写了尺寸步数,拆开会把同一类消耗切成两行。
+                  '${parseReason(b.reason).type} ×${b.count}'
+                  '${b.v5Count > 0 ? '(V5 ${b.v5Count})' : ''}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: context.texts.labelMedium!.copyWith(
@@ -291,7 +313,9 @@ class DayDetailPage extends ConsumerWidget {
           final p = parseReason(r.reason);
           return LedgerRow(
             icon: p.icon,
-            title: p.type,
+            // V5 标在标题上而不是塞进副行:副行那串是「时间 · 尺寸步数」,
+            // 混进去一眼扫不出来,而这正是解释「同尺寸为什么贵了一半」的那半句。
+            title: r.isV5 ? '${p.type} · V5' : p.type,
             sub: [
               if (r.time != null) _hhmm(r.time!),
               if (p.detail.isNotEmpty) p.detail,

@@ -121,6 +121,11 @@ class _LedgerPageState extends ConsumerState<LedgerPage> {
     if (!loading && r == null) {
       return const StatsCard(child: Text('账单加载失败,退出重进或稍后再试'));
     }
+    // 新计费规则生效之前的周期:那段消费在旧规则下早就结清了,不重复出账。
+    // 必须整块换掉而不是只把金额显示成 ¥0 —— 后者会连着阶梯表一起画出来
+    //(「免费 0 人 / 一阶 0 人 … 总计 ¥0」),看着像「这期大家都没用」。
+    if (!loading && r!.beforeStartFrom) return _beforeStartCard(context, r);
+
     final me = r?.me;
     final myTier = me?.tierName ?? (r?.paymentStatus == 'free' ? '免费' : '');
     // 人少走均摊时只有 免费/均摊 两档
@@ -199,11 +204,13 @@ class _LedgerPageState extends ConsumerState<LedgerPage> {
               const SizedBox(width: 8),
               if (!loading)
                 Text(
-                  _prev ? _payLabel(r!.paymentStatus) : '预估 · 27 日结算',
+                  _prev
+                      ? _payLabel(r!.paymentStatus)
+                      : '预估 · ${r!.cycleDay} 日结算',
                   style: context.texts.labelSmall!.copyWith(
                     color: !_prev
                         ? scheme.outline
-                        : r!.paymentStatus == 'unpaid'
+                        : r.paymentStatus == 'unpaid'
                         ? scheme.error
                         : scheme.tertiary,
                   ),
@@ -217,17 +224,34 @@ class _LedgerPageState extends ConsumerState<LedgerPage> {
               style: context.texts.bodySmall!,
               width: 168,
             )
-          else
+          else ...[
             Text(
               me == null
                   ? '本期无生图记录'
-                  : '生图 ${fmtInt(me.imageCalls)} 张 · '
+                  // 标「NAI」:这个数已经不含 anima/krea,不写清楚会被当成漏算。
+                  // V5 单列 —— 超了容差就是进付费档的原因,不显示完全无从判断。
+                  : 'NAI 生图 ${fmtInt(me.imageCalls)} 张'
+                        '${me.v5Calls > 0 ? '(V5 ${fmtInt(me.v5Calls)})' : ''} · '
                         'Anlas ${fmtInt(me.anlasUsed)}'
                         '${myTier.isEmpty ? '' : ' · $myTier'}',
               style: context.texts.bodySmall!.copyWith(
                 color: scheme.onSurfaceVariant,
               ),
             ),
+            // 自建后端张数:不摆出来的话,用它们出图的人对着自己的记录会以为
+            // 这里少算了 —— 那些图确实存在,只是不进这本账。
+            if ((me?.localCalls ?? 0) > 0)
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Text(
+                  '另有 anima/krea ${fmtInt(me!.localCalls)} 张,'
+                  '按机时实付走算力账单,不进分摊',
+                  style: context.texts.labelSmall!.copyWith(
+                    color: scheme.outline,
+                  ),
+                ),
+              ),
+          ],
           const CardDivider(),
           Row(
             children: [
@@ -244,15 +268,111 @@ class _LedgerPageState extends ConsumerState<LedgerPage> {
                 padding: const EdgeInsets.symmetric(vertical: 5),
                 child: SkeletonBox(width: double.infinity, height: 13),
               )
-          else
+          else ...[
             for (final tier in tiers) _tierRow(context, r!, tier, myTier),
+            // 免费线现在是**两条各算各的**。不写明的话,超了 V5 容差却没超 200
+            // 的人完全看不懂自己为什么在付费档 —— 表格那一格塞不下,放这儿。
+            if ((r?.v5FreeThreshold ?? 0) > 0)
+              Padding(
+                padding: const EdgeInsets.only(top: 6, left: 4),
+                child: Text(
+                  '两条免费线各算各的:V4.5 及更早 ≤${r!.freeThreshold} 张,'
+                  'V5 ≤${r.v5FreeThreshold} 张(防误触,超出即进付费档)',
+                  style: context.texts.labelSmall!.copyWith(
+                    color: scheme.outline,
+                    height: 1.35,
+                  ),
+                ),
+              ),
+          ],
           // 累计(跨周期),放明细页收着
           const CardDivider(),
-          _totalsLine(
-            context,
-            ref.watch(userStatsAllProvider).value?.imageCalls,
-            ref.watch(userStatsAllProvider).value?.pointsSpent,
-            loading: ref.watch(userStatsAllProvider).isLoading,
+          Builder(
+            builder: (context) {
+              final all = ref.watch(userStatsAllProvider);
+              final st = all.value;
+              // V5 那截只在有量时才接上去 —— 没用过 V5 的人摆一个「V5 0 张」
+              // 是纯噪音。张数和点数一起给:V5 扣点是 V4.5 的 1.5 倍,
+              // 光看张数看不出真实消耗。
+              final v5 = st != null && (st.v5Calls > 0 || st.v5Points > 0)
+                  ? ' · V5 ${fmtInt(st.v5Calls)} 张/${fmtInt(st.v5Points)} 点'
+                  : '';
+              return _totalsLine(
+                context,
+                st?.imageCalls,
+                st?.pointsSpent,
+                loading: all.isLoading,
+                extra: v5,
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 生效日之前那一期的空态。除了「不用付」还得说清**为什么**:金额突然为 0
+  /// 而不给理由,用户第一反应是账单坏了。
+  Widget _beforeStartCard(BuildContext context, BillingReport r) {
+    final scheme = context.scheme;
+    return StatsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.receipt_long_outlined,
+                size: 15,
+                color: scheme.onSurfaceVariant,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                '上期账单',
+                style: context.texts.bodyMedium!.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                r.periodLabel,
+                style: context.texts.labelSmall!.copyWith(
+                  color: scheme.outline,
+                ),
+              ),
+              const Spacer(),
+              _PeriodSeg(
+                prev: _prev,
+                onChanged: (v) => setState(() => _prev = v),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Icon(
+                Icons.check_circle_outline,
+                size: 18,
+                color: scheme.tertiary,
+              ),
+              const SizedBox(width: 7),
+              Text(
+                '本期无需支付',
+                style: context.texts.bodyMedium!.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 5),
+          Text(
+            '${r.periodLabel} 早于新计费规则生效日'
+            '${r.billingStartFrom.isEmpty ? '' : ' ${r.billingStartFrom}'},'
+            '不重复出账;新规则从下个结算周期起正常计费。',
+            style: context.texts.bodySmall!.copyWith(
+              color: scheme.onSurfaceVariant,
+              height: 1.4,
+            ),
           ),
         ],
       ),
@@ -327,11 +447,13 @@ class _LedgerPageState extends ConsumerState<LedgerPage> {
   };
 
   /// 累计行(生图 / 消耗),两种模式共用一套版式。
+  /// [extra] 是接在后面的补充段(bot 线用来挂 V5 那截)。
   Widget _totalsLine(
     BuildContext context,
     int? images,
     int? pts, {
     bool loading = false,
+    String extra = '',
   }) {
     final scheme = context.scheme;
     return Row(
@@ -340,21 +462,28 @@ class _LedgerPageState extends ConsumerState<LedgerPage> {
           '累计',
           style: context.texts.labelSmall!.copyWith(color: scheme.outline),
         ),
-        const Spacer(),
-        if (loading && images == null)
-          SkeletonText(
-            sample: '0,000 张 · 00,000 点',
-            style: context.texts.bodySmall!,
-            width: 116,
-          )
-        else
-          Text(
-            '${images == null ? '—' : fmtInt(images)} 张 · '
-            '${pts == null ? '—' : fmtInt(pts)} 点',
-            style: context.texts.bodySmall!.copyWith(
-              color: scheme.onSurfaceVariant,
-            ),
-          ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: loading && images == null
+              ? Align(
+                  alignment: Alignment.centerRight,
+                  child: SkeletonText(
+                    sample: '0,000 张 · 00,000 点',
+                    style: context.texts.bodySmall!,
+                    width: 116,
+                  ),
+                )
+              : Text(
+                  '${images == null ? '—' : fmtInt(images)} 张 · '
+                  '${pts == null ? '—' : fmtInt(pts)} 点$extra',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.right,
+                  style: context.texts.bodySmall!.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+        ),
       ],
     );
   }
@@ -489,7 +618,11 @@ class _LedgerPageState extends ConsumerState<LedgerPage> {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        '免费生成 ${fmtInt(sum.free)} 张未计费',
+                        // V5 那截只在有量时才接上去,没用过的人摆个「V5 0 张」是噪音。
+                        // 张数和点数一起给:V5 扣点是 V4.5 的 1.5 倍,只看张数
+                        // 看不出真实消耗(与 Bot 那边同一口径)。
+                        '免费生成 ${fmtInt(sum.free)} 张未计费'
+                        '${sum.v5 > 0 ? ' · V5 ${fmtInt(sum.v5)} 张/${fmtInt(sum.v5Pts)} 点' : ''}',
                         style: context.texts.bodySmall!.copyWith(
                           color: scheme.onSurfaceVariant,
                         ),
@@ -519,7 +652,15 @@ class _LedgerPageState extends ConsumerState<LedgerPage> {
                         maxPts,
                       ),
                       const CardDivider(),
-                      _totalsLine(context, ledger.totalImages, ledger.totalPts),
+                      _totalsLine(
+                        context,
+                        ledger.totalImages,
+                        ledger.totalPts,
+                        extra: ledger.totalV5 > 0
+                            ? ' · V5 ${fmtInt(ledger.totalV5)} 张/'
+                                  '${fmtInt(ledger.totalV5Pts)} 点'
+                            : '',
+                      ),
                     ],
                   ),
                 ),
