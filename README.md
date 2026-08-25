@@ -130,8 +130,7 @@ NAI 5 载荷契约、Argon2id 派生均由参考向量钉住,改动对不上即�
 
 - **状态与界面** — [flutter_riverpod](https://pub.dev/packages/flutter_riverpod) ·
   [animations](https://pub.dev/packages/animations) ·
-  [material_color_utilities](https://pub.dev/packages/material_color_utilities) ·
-  [cupertino_icons](https://pub.dev/packages/cupertino_icons)
+  [material_color_utilities](https://pub.dev/packages/material_color_utilities)
 - **网络与编解码** — [http](https://pub.dev/packages/http) ·
   [archive](https://pub.dev/packages/archive) ·
   [msgpack_dart](https://pub.dev/packages/msgpack_dart) ·
