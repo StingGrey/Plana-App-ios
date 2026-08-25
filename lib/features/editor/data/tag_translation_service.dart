@@ -5,29 +5,32 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
-import '../../../core/auth/bot_session_store.dart';
 import '../../../core/net/backend_config.dart';
 import 'completion_source.dart';
 import 'suggestions.dart';
 
-/// 注音层的后端翻译通道(仅增强补全模式),对齐 web `translate.ts` 三步:
+/// 注音层的后端翻译通道(仅增强补全模式),对齐 web `translate.ts` 两步:
 /// ① `POST /api/tags/translations/lookup` 共享翻译库(公开,内存镜像,轻)
 /// ② 未命中批量走 `POST /api/translate/en2zh` 服务端 LLM(公开,60/min/IP 限流)
-/// ③ LLM 产出 fire-and-forget `POST /api/tags/translations/submit` 回写共享库
-///    (「登录」= Bearer bot session;无会话跳过)
+///
+/// **原先还有第 ③ 步**:把 LLM 译文 fire-and-forget 回写共享映射库。2026-08-25
+/// 起取消,与 web 同步 —— 那张库攒到 24.2 万条时其中 19.7 万条是 AI 回写的,抽样
+/// 核实 94.6% 的 key 连 danbooru.tsv 都不认识:它们是被当成 tag 提交的**整段提示词
+/// 碎片**。app 这边尤其严重,`_nameMax` 放到 200 就是为了让 Krea 那种整句自然语言
+/// 也能翻译(见下),而那些句子转头就被当成"标签"写进了公共库。
+/// 服务端 `_TAG_TRANS_CLIENT_SOURCES` 现已收紧成只收 `wiki`,`ai` 一律拒收 ——
+/// 也就是说这一步早已是白发的请求。译文照常显示、照常进本地反查缓存,只是不再固化。
 /// 命中回填 [cacheTagMeta](transCacheRev 随之自增)后 notifyListeners,
 /// 编辑器刷新注音层/词条栏。离线补全模式不联网(enabled=false 全程 no-op)。
 class TagTranslationService extends ChangeNotifier {
   TagTranslationService({
     required this.enabled,
     required this.baseUrl,
-    this.sessionId,
     http.Client? client,
   }) : _client = client ?? http.Client();
 
   final bool enabled;
   final String baseUrl;
-  final String? sessionId;
   final http.Client _client;
 
   static const _timeout = Duration(seconds: 20);
@@ -127,17 +130,14 @@ class TagTranslationService extends ChangeNotifier {
             _pending.addAll(missing);
             _arm(const Duration(seconds: 91));
           } else {
-            final entries = <Map<String, String>>[];
             for (var i = 0; i < missing.length; i++) {
               final zh = i < ai.length ? ai[i].trim() : '';
               _asked.add(missing[i]); // LLM 给不出的也不再问
               if (zh.isNotEmpty && zh.toLowerCase() != missing[i]) {
-                cacheTagMeta(missing[i], trans: zh);
-                entries.add({'tag': missing[i], 'zh': zh, 'source': 'ai'});
+                cacheTagMeta(missing[i], trans: zh); // 只进本地反查缓存,不回写公共库
                 gotAny = true;
               }
             }
-            _submit(entries); // ③ 回写共享库,不等结果
           }
         }
       }
@@ -239,23 +239,6 @@ class TagTranslationService extends ChangeNotifier {
     return m == null ? null : tryParse(m.group(0)!);
   }
 
-  /// 回写共享库(fire-and-forget;需登录,无 bot 会话或失败都静默)。
-  void _submit(List<Map<String, String>> entries) {
-    final sid = sessionId;
-    if (entries.isEmpty || sid == null || sid.isEmpty) return;
-    _client
-        .post(
-          Uri.parse('$baseUrl/api/tags/translations/submit'),
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer $sid',
-          },
-          body: jsonEncode({'entries': entries}),
-        )
-        .timeout(_timeout)
-        .then((_) {}, onError: (_) {});
-  }
-
   @override
   void dispose() {
     _timer?.cancel();
@@ -264,15 +247,15 @@ class TagTranslationService extends ChangeNotifier {
   }
 }
 
-/// 按生效来源 + 后端基址 + 会话构造;任一变化即重建(与 tagCompletionProvider 同款)。
+/// 按生效来源 + 后端基址构造;任一变化即重建(与 tagCompletionProvider 同款)。
+/// 不再需要 bot 会话 —— 两个端点都是公开的,回写那一步已取消(见类文档)。
+/// 来源本身就跟着会话走([effectiveCompletionSourceProvider]),登录/登出照样重建。
 final tagTranslationServiceProvider = Provider<TagTranslationService>((ref) {
   final source = ref.watch(effectiveCompletionSourceProvider);
   final base = ref.watch(backendBaseProvider).value ?? '';
-  final sid = ref.watch(botSessionProvider).value?.sessionId;
   final s = TagTranslationService(
     enabled: source == CompletionSource.enhanced,
     baseUrl: base,
-    sessionId: sid,
   );
   ref.onDispose(s.dispose);
   return s;
