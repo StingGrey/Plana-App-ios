@@ -71,7 +71,7 @@ Future<int?> _countIn(Directory d, {String? suffix}) async {
 }
 
 /// 全量扫描。key 清单:gallery / blobs / vibeLib / vibeEnc / charLib /
-/// imgCache / codexCache / tagPrev / lexicon / models / temp。
+/// imgCache / codexCache / tagPrev / models / temp。
 ///
 /// 分类要跟着新目录一起加 —— 漏一个,那块占用就只能沉进 [StorageReport.otherBytes]
 /// 里,用户看着「其他」莫名涨几十 MB 又找不到清理入口(法典缓存单部最大 ~11 MB,
@@ -146,10 +146,6 @@ Future<StorageReport> scanStorage() async {
       bytes: await _sizeOf(sub('tag_previews')),
       count: await _countIn(sub('tag_previews'), suffix: '.jpg'),
     ),
-    StorageCategory(
-      key: 'lexicon',
-      bytes: await _sizeOf(File('${sup.path}/role_tag_mapping.json')),
-    ),
     StorageCategory(key: 'models', bytes: modelBytes, count: modelCount),
     StorageCategory(
       key: 'temp',
@@ -171,6 +167,21 @@ Future<StorageReport> scanStorage() async {
     categories: categories,
     otherBytes: (total - categorized).clamp(0, total),
   );
+}
+
+/// 删除遗留的角色库缓存 `role_tag_mapping.json`(~6.5MB)。
+///
+/// 2026-08-25 角色·作品补全全量改走上游、角色识别下线之后,这个文件再也没人
+/// 读了,但已经装过旧版的机器上它还躺在支持目录里 —— 而且不在任何一个可清理
+/// 分组里,用户自己按不掉。所以随开机维护静默删掉,和选图器缓存清扫同一档:
+/// 纯网络缓存、删了不少任何功能,不需要惊动用户(与 [clearUpscaleModels] 那种
+/// 「让用户自己按一下」的不同 —— 那些是用户当初主动下载的模型)。
+Future<void> clearRetiredRoleLexicon() async {
+  try {
+    final sup = await getApplicationSupportDirectory();
+    final f = File('${sup.path}/role_tag_mapping.json');
+    if (await f.exists()) await f.delete();
+  } catch (_) {}
 }
 
 /// 删除遗留的超分模型文件。本地超分下线后它们已经没有任何用处,删了不会

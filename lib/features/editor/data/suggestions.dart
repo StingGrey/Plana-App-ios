@@ -15,7 +15,6 @@ class Suggestion {
     this.count = 0,
     this.insertText,
     this.natural = false,
-    this.randomPick,
   });
 
   /// 英文标签 / 实体名
@@ -41,10 +40,6 @@ class Suggestion {
   /// 热度(0 = 不显示)
   final int count;
 
-  /// 作品行预抽的随机角色。**不放进 [insertText]**:那样默认插入就变成随机角色,
-  /// 而作品的默认行为是插入作品 tag 本身,随机抽取只归补全面板的骰子按钮。
-  final String? randomPick;
-
   Suggestion copyWith({
     String? text,
     SuggestionKind? kind,
@@ -54,7 +49,6 @@ class Suggestion {
     int? count,
     String? insertText,
     bool? natural,
-    String? randomPick,
   }) => Suggestion(
     text: text ?? this.text,
     kind: kind ?? this.kind,
@@ -64,7 +58,6 @@ class Suggestion {
     count: count ?? this.count,
     insertText: insertText ?? this.insertText,
     natural: natural ?? this.natural,
-    randomPick: randomPick ?? this.randomPick,
   );
 }
 
@@ -148,10 +141,11 @@ class SuggestResult {
       tags.length;
 
   /// 横向态排列:实体(画师/角色/OC/作品)优先,后接标签
+  /// 全部建议,与两个补全界面同序(自有库在前,见 completion_bar)。
   List<Suggestion> get flat => [
     ...artists,
-    ...characters,
     ...ocs,
+    ...characters,
     ...works,
     ...tags,
   ];

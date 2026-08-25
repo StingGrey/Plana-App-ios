@@ -109,10 +109,19 @@ class CompletionBar extends StatelessWidget {
     final scheme = context.scheme;
     if (query.isEmpty) return const SizedBox.shrink();
 
+    // 自有库(画师串 / OC)排在上游结果之前。
+    //
+    // 这一行是**横向滚动**的,手机上一屏就露两三个 —— 谁排在前面谁才算“提示”。
+    // 而角色·作品退役本地库、全量改走上游之后条数明显变多(autocomplete 一次
+    // 12 条、语义搜词 20 条),把 OC 挤出了屏幕:用户打自己 OC 的名字,得往右滑
+    // 过一串 D 站角色才看得到。自有库条数少(各 limit 5)、匹配精确,而且会去打
+    // 那个名字本来就是冲它来的,理应先露面;上游那些是补充。
+    //
+    // 形态 B(展开面板)的分组顺序同理,两边保持一致。
     final entities = [
       ...result.artists,
-      ...result.characters,
       ...result.ocs,
+      ...result.characters,
       ...result.works,
     ];
 

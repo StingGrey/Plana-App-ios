@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../generate/widgets/common.dart' show hintSnack;
+import '../data/completion_source.dart';
 import '../data/suggestions.dart';
 import '../data/tag_completion.dart';
 import '../data/tag_translation_service.dart';
@@ -47,8 +48,11 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
   bool _byHeat = true; // 排序:true=热度 / false=字母
   final Set<SuggestionKind> _collapsed = {}; // 折叠的分节
   String? _wikiOpen; // 当前展开 Wiki 预览的行(按 text 记)
-  final Map<String, WikiPreview?> _wiki = {}; // text → 预览(null=无/失败)
+  // text → 预览。**只存拿到的**:以前连 null 一起存,而 _loadWiki 开头是
+  // containsKey 就 return —— 一次网络失败之后,这次面板里同一个词永远不再重试。
+  final Map<String, WikiPreview> _wiki = {};
   final Set<String> _wikiLoading = {};
+  final Set<String> _dicing = {}; // 正在为哪些作品行抽角色
 
   /// 后端翻译通道。面板拿的是查询快照,译文是之后才到货的 ——
   /// 不自己听一耳朵,展开态就得一直空着(编辑器那边的 setState 隔着路由传不进来)。
@@ -71,15 +75,31 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
     if (mounted) setState(() {});
   }
 
+  /// 两段式:先把英文摘要/别名放出来(0.5~1s),中文摘要后补。
+  /// 服务端那张 upstream 成品表目前是空的,`summaryZh` 几乎每个词都要现拓
+  /// 正文喂模型(实测 2.3~4.4s)—— 原先拿整张卡片等它,点开只能看到一个
+  /// 转四五秒的圈,和坏了没区别。
   Future<void> _loadWiki(String tag) async {
     if (_wiki.containsKey(tag) || _wikiLoading.contains(tag)) return;
     setState(() => _wikiLoading.add(tag));
-    final w = await ref.read(tagCompletionProvider).fetchWiki(tag);
+    final tc = ref.read(tagCompletionProvider);
+    final w = await tc.fetchWiki(tag);
     if (!mounted) return;
     setState(() {
       _wikiLoading.remove(tag);
-      _wiki[tag] = w;
+      if (w != null) _wiki[tag] = w; // 失败不入缓存,再点一次还能重试
     });
+    if (w == null || (w.summaryZh?.isNotEmpty ?? false)) return;
+    final zh = await tc.fetchWikiZh(tag);
+    if (!mounted || zh == null || zh.isEmpty || _wiki[tag] != w) return;
+    setState(
+      () => _wiki[tag] = WikiPreview(
+        title: w.title,
+        summary: w.summary,
+        summaryZh: zh,
+        otherNames: w.otherNames,
+      ),
+    );
   }
 
   List<Suggestion> _sorted(List<Suggestion> xs) {
@@ -119,10 +139,12 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
 
+    // 自有库(画师 / 我的 OC)在前,上游的角色·作品在后 —— 同 completion_bar,
+    // 理由见那里:上游角色条数多,夹在中间会把「我的 OC」顶到要滚很久才看得到。
     final sections = <(SuggestionKind, String, List<Suggestion>)>[
       (SuggestionKind.artist, '画师', widget.result.artists),
-      (SuggestionKind.character, '角色', widget.result.characters),
       (SuggestionKind.oc, '我的 OC', widget.result.ocs),
+      (SuggestionKind.character, '角色', widget.result.characters),
       (SuggestionKind.work, '作品', widget.result.works),
       (SuggestionKind.tag, '标签', widget.result.tags),
     ].where((e) => e.$3.isNotEmpty).toList();
@@ -288,8 +310,11 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
     final isWork = s.kind == SuggestionKind.work;
     // 眼睛 = Danbooru Wiki 预览。画师串是自建条目、OC 是本地条目,
     // Danbooru 上没有对应词条,给了按钮点开也是空,所以这两类不出。
+    // 离线词库没有 wiki 数据(fetchWiki 第一行就 return null),给了按钮也是死的。
     final canWiki =
-        s.kind == SuggestionKind.tag || s.kind == SuggestionKind.character;
+        (s.kind == SuggestionKind.tag || s.kind == SuggestionKind.character) &&
+        ref.watch(effectiveCompletionSourceProvider) ==
+            CompletionSource.enhanced;
     final subtitle = _subtitle(s);
     final count = isWork ? null : formatCount(s.count);
     final open = _wikiOpen == s.text;
@@ -369,16 +394,26 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
   }
 
   /// 作品行:随机抽一个角色插入。**只有这个按钮**做抽取——点行主体和 `+`
-  /// 都是直接插作品 tag 本身。抽取靠把预抽的 [Suggestion.randomPick] 送进
-  /// insertText,让下游按常规插入路径处理。
+  /// 都是直接插作品 tag 本身。本地角色库退役后没有预抽好的角色了,改成点下去
+  /// 现拉(上游按共现度给该作品最常画的角色),所以会先转一下再插;拉不到就
+  /// 退回插作品 tag 本身。
   Widget _diceBtn(Suggestion s) {
     final (icon, color) = suggestionGlyph(context, s.kind);
-    final pick = s.randomPick;
+    final busy = _dicing.contains(s.text);
     return _circleBtn(
       icon: icon,
       fg: color,
-      onTap: () =>
-          widget.onPick(pick == null ? s : s.copyWith(insertText: pick)),
+      busy: busy,
+      onTap: () async {
+        if (busy) return;
+        setState(() => _dicing.add(s.text));
+        final pick = await ref
+            .read(tagCompletionProvider)
+            .randomCharacterOf(s.text);
+        if (!mounted) return;
+        setState(() => _dicing.remove(s.text));
+        widget.onPick(pick == null ? s : s.copyWith(insertText: pick));
+      },
     );
   }
 
@@ -386,6 +421,7 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
     required IconData icon,
     required Color fg,
     required VoidCallback onTap,
+    bool busy = false,
   }) {
     return Material(
       color: Colors.transparent,
@@ -396,7 +432,12 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
         child: SizedBox(
           width: 34,
           height: 34,
-          child: Icon(icon, size: 18, color: fg),
+          child: busy
+              ? Padding(
+                  padding: const EdgeInsets.all(9),
+                  child: CircularProgressIndicator(strokeWidth: 2, color: fg),
+                )
+              : Icon(icon, size: 18, color: fg),
         ),
       ),
     );
@@ -422,24 +463,24 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
 
   Widget _previewCard(Suggestion s) {
     final scheme = context.scheme;
-    final isTag = s.kind == SuggestionKind.tag;
     final loading = _wikiLoading.contains(s.text);
     final wiki = _wiki[s.text];
 
-    // tag 行走后端 wiki(中文摘要优先);其它实体行沿用本地副标题。
+    // 标签行和角色行都走后端 wiki(中文摘要优先)。原先只有 `isTag` 那支用 wiki,
+    // 角色行拿到的词条直接丢掉、改显行里已经写过一遍的副标题 ——
+    // 请求发了、结果不用,点角色行的眼睛必定看不到东西。
     String body;
-    if (isTag) {
-      if (wiki != null && wiki.hasText) {
-        body = (wiki.summaryZh != null && wiki.summaryZh!.isNotEmpty)
-            ? wiki.summaryZh!
-            : (wiki.summary ?? '');
-      } else {
-        body = loading ? '' : '暂无 Wiki 摘要,可前往 Danbooru 查看。';
-      }
+    if (wiki != null && wiki.hasText) {
+      body = (wiki.summaryZh != null && wiki.summaryZh!.isNotEmpty)
+          ? wiki.summaryZh!
+          : (wiki.summary ?? '');
+    } else if (loading) {
+      body = '';
     } else {
       body = _subtitle(s) ?? '';
+      if (body.isEmpty) body = '没拿到 Wiki 摘要,可再点一次或前往 Danbooru 查看。';
     }
-    final other = (isTag && wiki != null) ? wiki.otherNames : const <String>[];
+    final other = wiki?.otherNames ?? const <String>[];
 
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 0, 12, 8),

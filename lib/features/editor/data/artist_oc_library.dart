@@ -5,7 +5,6 @@ import 'package:http/http.dart' as http;
 
 import '../../../core/auth/bot_session_store.dart';
 import '../../../core/net/backend_config.dart';
-import '../../../core/util/prompt_tokens.dart';
 import 'suggestions.dart';
 
 /// 画师串 + OC 库(增强模式,需 Bearer session)。
@@ -145,31 +144,6 @@ class ArtistOcLibrary {
       }
     }
     return (aOut, oOut);
-  }
-
-  /// OC 识别(元数据工具):OC 标签串与提示词词序列的 LCS 占比 ≥ 0.90 视为命中。
-  /// 未授权/离线时返回空,不报错。
-  Future<List<({String zh, String en})>> matchOcsInPrompt(
-    List<String> promptSeq, {
-    int limit = 5,
-  }) async {
-    try {
-      await _ensureLoaded();
-    } catch (_) {
-      return const [];
-    }
-    if (promptSeq.isEmpty) return const [];
-    final out = <({String zh, String en})>[];
-    for (final o in _ocs ?? const <_Oc>[]) {
-      if (o.tagGroup.isEmpty) continue;
-      final ocSeq = tokenizeSeq(o.tagGroup);
-      if (ocSeq.isEmpty) continue;
-      if (lcsRatio(ocSeq, promptSeq) >= 0.90) {
-        out.add((zh: o.name, en: o.en ?? o.name));
-        if (out.length >= limit) break;
-      }
-    }
-    return out;
   }
 }
 

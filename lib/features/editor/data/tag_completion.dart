@@ -1,14 +1,13 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
-import '../../../core/auth/bot_session_store.dart';
 import '../../../core/net/backend_config.dart';
 import 'artist_oc_library.dart';
 import 'completion_source.dart';
 import 'local_tag_db.dart';
-import 'role_library.dart';
 import 'suggestions.dart';
 
 /// Danbooru wiki 预览(增强模式):标题 + 中/英摘要 + 别名。缩略图因 Cloudflare 不取。
@@ -46,7 +45,8 @@ class WikiPreview {
 const _kAiTagsDisabled = true;
 
 /// 标签补全引擎。按生效来源分流:
-///  - `danbooru`:直连 `danbooru.donmai.us/autocomplete.json`,仅英文。
+///  - `danbooru`:**离线**词库 [LocalTagDb](assets/danbooru.tsv),仅英文,不碰网络
+///    (手机直连 danbooru.donmai.us 被 Cloudflare 挡死,早改离线了)。
 ///  - `enhanced`:走后端 `/api/tags/*`——英文过 `/autocomplete` + `/wiki` 补中文;
 ///    中文过 `/tags/search` 语义搜词。
 /// query→result 结果缓存;顺带回填注音/热度缓存([cacheTagMeta]),供词下注音层与词条栏反查。
@@ -55,9 +55,7 @@ class TagCompletion {
     required this.source,
     required this.baseUrl,
     required this.localDb,
-    required this.roleLib,
     required this.artistOcLib,
-    this.sessionId,
     http.Client? client,
   }) : _client = client ?? http.Client();
 
@@ -70,14 +68,14 @@ class TagCompletion {
   /// 离线 Danbooru 标签库(danbooru 来源用)。
   final LocalTagDb localDb;
 
-  /// 角色·作品库 + 画师/OC 库(增强模式合并)。
-  final RoleLibrary roleLib;
+  /// 画师/OC 库(增强模式合并)。角色·作品不再走本地库,见 [_enhanced]。
   final ArtistOcLibrary artistOcLib;
 
-  /// bot 会话(库接口 mine 作用域用;Layer 2 接入)。
-  final String? sessionId;
-
   final http.Client _client;
+
+  /// 作品行的附注。本地库退役后拿不到「N 个角色」这个数了(那是遍历全库现算的),
+  /// 随机角色改成点骰子时按需拉,见 [randomCharacterOf]。
+  static const _kWorkNote = '点骰子随机抽一个角色';
 
   static const _timeout = Duration(seconds: 12);
   static const _limit = 12;
@@ -88,6 +86,8 @@ class TagCompletion {
   final _cache = <String, SuggestResult>{};
   final _aiCache = <String, List<Suggestion>>{};
   final _relatedCache = <String, List<String>>{};
+  final _originChars = <String, List<String>>{}; // 作品 → 该作品下的角色池
+  final _rand = Random();
 
   static void _capped<K, V>(Map<K, V> m, K k, V v) {
     if (m.length > _cacheCap) m.clear();
@@ -168,6 +168,55 @@ class TagCompletion {
     }
   }
 
+  /// 作品行骰子:随机抽一个该作品下的角色。本地角色库退役后没有预抽的角色了
+  /// (那是遍历全库现算的),改成点的时候按需拉 `/api/tags/related` —— 上游按
+  /// 共现度返回该作品最常画的角色,还自带中文名。代价是一次点击一次请求,
+  /// 所以按作品缓存,同一行连点只打一次。对齐 web `pickRandomCharacterFromOrigin`。
+  Future<String?> randomCharacterOf(String work) async {
+    final key = _unders(work).toLowerCase();
+    if (key.isEmpty || source != CompletionSource.enhanced || baseUrl.isEmpty) {
+      return null;
+    }
+    var pool = _originChars[key];
+    if (pool == null) {
+      try {
+        final r = await _retry(
+          () => _client.post(
+            Uri.parse('$baseUrl/api/tags/related'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'tags': [key],
+              'limit': 40,
+              'show_nsfw': true,
+              'categories': ['Character'],
+            }),
+          ),
+        );
+        if (r.statusCode != 200) return null;
+        final j = jsonDecode(utf8.decode(r.bodyBytes));
+        final results = j is Map ? j['results'] : null;
+        final out = <String>[];
+        if (results is List) {
+          for (final e in results) {
+            if (e is! Map) continue;
+            final tag = e['tag'];
+            if (tag is! String || tag.isEmpty) continue;
+            final t = _spaces(tag);
+            out.add(t);
+            final cn = _cnHead((e['cn_name'] as String?)?.trim());
+            if (cn != null) cacheTagMeta(t, trans: cn);
+          }
+        }
+        if (out.isEmpty) return null;
+        _capped(_originChars, key, out);
+        pool = out;
+      } catch (_) {
+        return null;
+      }
+    }
+    return pool[_rand.nextInt(pool.length)];
+  }
+
   // 复用的持久连接偶发被服务端关闭(“Connection closed before full header”)或瞬断,
   // 抛异常就换新连接重试一次。返回码类错误(403/500 等)有响应、不抛异常,不会到这里。
   Future<http.Response> _retry(Future<http.Response> Function() send) async {
@@ -184,19 +233,20 @@ class TagCompletion {
     return SuggestResult(tags: await localDb.search(q, limit: _limit));
   }
 
-  // ---- 后端增强:标签 + 角色作品库 + 画师/OC 库,并行合并 ----
+  // ---- 后端增强:上游标签 + 画师/OC 库,并行合并 ----
+  //
+  // 角色与作品已全量交给上游(2026-08-25 跟 web 同步退役本地 `role_tag_mapping.json`):
+  // 英文走 autocomplete 的 category 3/4,中文走语义搜词的 Copyright/Character。
+  // 本地只剩画师串和 OC 两个自有数据源。
   Future<SuggestResult> _enhanced(String q, bool cjk) async {
     if (baseUrl.isEmpty) return const SuggestResult();
     final tagsF = cjk ? _enhancedChineseTags(q) : _enhancedEnglishTags(q);
-    final roleF = roleLib.search(q);
     final aoF = artistOcLib.search(q);
     final tags = await tagsF;
-    final (chars, works) = await roleF;
     final (artists, ocs) = await aoF;
 
-    // Danbooru autocomplete 本身含角色/作品/画师类 tag,与库实体同名时
-    // 两行重复 → tags 剔除同名(实体行信息更全,保实体);顺手把同名
-    // tag 的热度转移给实体(库条目无热度,补上便于热度排序与显示)。
+    // 上游标签里也有画师类条目,与库实体同名时两行重复 → tags 剔除同名(实体行
+    // 信息更全,保实体);顺手把同名 tag 的热度转给实体(库条目无热度,补上便于排序)。
     String norm(String s) => s.trim().toLowerCase().replaceAll('_', ' ');
     final tagCount = <String, int>{
       for (final t in tags)
@@ -209,10 +259,8 @@ class TagCompletion {
             : s,
     ];
     final entityNames = <String>{
-      for (final s in [...chars, ...works, ...artists, ...ocs]) norm(s.text),
+      for (final s in [...artists, ...ocs]) norm(s.text),
     };
-    // D 站角色类目的 tag 归角色分组,排在**本地角色库之后**:库条目自带中文名
-    // 与出处,命中就能直接用;D 站那些只有英文名,是补充不是主角。
     final kept = [
       for (final t in tags)
         if (!entityNames.contains(norm(t.text))) t,
@@ -220,14 +268,16 @@ class TagCompletion {
     return SuggestResult(
       tags: [
         for (final t in kept)
-          if (t.kind != SuggestionKind.character) t,
+          if (t.kind == SuggestionKind.tag) t,
       ],
       characters: [
-        ...fill(chars),
         for (final t in kept)
           if (t.kind == SuggestionKind.character) t,
       ],
-      works: fill(works),
+      works: [
+        for (final t in kept)
+          if (t.kind == SuggestionKind.work) t,
+      ],
       artists: fill(artists),
       ocs: ocs,
     );
@@ -364,6 +414,23 @@ class TagCompletion {
     return _parseDanbooru(resp.bodyBytes, q);
   }
 
+  /// 上游的 `cn_name` 是逗号串(建库时一起写进去的中文名 + 出处 + 分类词),
+  /// 例如 `五条悟,咒术回战,特级咒术师,五条家`。译名只要第一段 ——
+  /// 原先整串塞进 `Suggestion.trans`,而 [transOf] 优先用它,于是中文搜角色时
+  /// 副标题就是那一长条(只有 [cacheTagMeta] 那一路被 `_firstTrans` 截过)。
+  /// 第一段不含汉字 = 上游没译出来(原样回了英文 tag),当作没有中文名,
+  /// 让 wiki 那一路兜底。对齐 web `cnHead()`。
+  static String? _cnHead(String? cn) {
+    if (cn == null) return null;
+    var cut = cn.length;
+    for (final sep in const [',', '，']) {
+      final i = cn.indexOf(sep);
+      if (i >= 0 && i < cut) cut = i;
+    }
+    final head = cn.substring(0, cut).trim();
+    return (head.isEmpty || !_cjk(head)) ? null : head;
+  }
+
   Future<List<Suggestion>> _backendSearch(String q) async {
     final resp = await _retry(
       () => _client.post(
@@ -375,7 +442,9 @@ class TagCompletion {
           'query': q,
           'limit': 20,
           'show_nsfw': true,
-          'target_categories': ['General', 'Character'],
+          // Copyright(作品/出处)是本地角色库退役后作品行的唯一来源;
+          // limit 不能再小 —— 实测搜「咒术回战」时 jujutsu_kaisen 排在第 9 位后。
+          'target_categories': ['General', 'Character', 'Copyright'],
         }),
       ),
     );
@@ -390,18 +459,26 @@ class TagCompletion {
       if (tag == null || tag.isEmpty) continue;
       final text = _spaces(tag);
       final cnRaw = (r['cn_name'] as String?)?.trim();
-      final cn = (cnRaw != null && cnRaw.isNotEmpty) ? cnRaw : null;
+      final cn = _cnHead(cnRaw);
       final count = (r['count'] as num?)?.toInt() ?? 0;
       cacheTagMeta(text, trans: cn, count: count);
+      // 语义搜索这边的 category 是字符串('Character'/'Copyright'),与 autocomplete
+      // 的数字 4/3 是同一件事,两条路都要认。
+      final kind = switch ((r['category'] as String?)?.trim().toLowerCase()) {
+        'character' => SuggestionKind.character,
+        'copyright' => SuggestionKind.work,
+        _ => SuggestionKind.tag,
+      };
       out.add(
         Suggestion(
           text: text,
-          // 语义搜索这边的 category 是字符串('Character'),与 autocomplete
-          // 的数字 4 是同一件事,两条路都要认。
-          kind: (r['category'] as String?)?.trim().toLowerCase() == 'character'
-              ? SuggestionKind.character
-              : SuggestionKind.tag,
+          kind: kind,
           trans: cn,
+          // 出处(source)留空:cn_name 后面几段**不是**稳定的出处字段,
+          // 而是建库时一起写进去的分类词/关联词 —— hatsune_miku 是
+          // 「初音未来,角色人数,VOCALOID,虚拟歌姬」,第二段拿来当出处会显示
+          // 「角色人数」。D 站角色 tag 本身多带 `_(作品)` 后缀,不猜更稳。
+          note: kind == SuggestionKind.work ? _kWorkNote : null,
           count: count,
         ),
       );
@@ -446,14 +523,18 @@ class TagCompletion {
       if (count != 0 && count < 50) continue; // 冷门标签剔除
       final text = _spaces(value);
       cacheTagMeta(text, count: count);
+      // Danbooru 的 category 是数字:4 = 角色、3 = 作品(copyright)。各自归组 ——
+      // 混在几十条普通标签里根本挑不出来(对齐 web isCharacter/isOrigin)。
+      final kind = switch ((e['category'] as num?)?.toInt()) {
+        4 => SuggestionKind.character,
+        3 => SuggestionKind.work,
+        _ => SuggestionKind.tag,
+      };
       out.add(
         Suggestion(
           text: text,
-          // Danbooru 的 category 是数字,4 = 角色。归到角色分组去,
-          // 混在几十条普通标签里根本挑不出来(对齐 web isCharacter)。
-          kind: (e['category'] as num?)?.toInt() == 4
-              ? SuggestionKind.character
-              : SuggestionKind.tag,
+          kind: kind,
+          note: kind == SuggestionKind.work ? _kWorkNote : null,
           count: count,
         ),
       );
@@ -469,10 +550,14 @@ class TagCompletion {
 
   /// 拉某标签的 Danbooru wiki 预览(仅增强模式;danbooru/离线返回 null)。文本走后端;
   /// 缩略图(cdn.donmai.us)因 Cloudflare 手机加载不了,不取。
+  ///
+  /// **只打 `/wiki-preview` 这一发**——实测 0.5~1s,英文摘要与别名当场就有。
+  /// 中文摘要单独走 [fetchWikiZh]:服务端那张 upstream 成品表(`data/tag_wiki_zh.json`)
+  /// 目前还是空的,绝大多数标签得现抓 wiki 正文喂模型,实测 2.3~4.4s。原先把整张卡片
+  /// 压在这第二发上等,用户点开只看见一个转四五秒的圈,和坏了没区别。
   Future<WikiPreview?> fetchWiki(String tag) async {
-    if (source != CompletionSource.enhanced || baseUrl.isEmpty) return null;
-    final t = tag.trim().toLowerCase().replaceAll(' ', '_');
-    if (t.isEmpty) return null;
+    final t = _wikiTag(tag);
+    if (t == null) return null;
     try {
       final pv = await _retry(
         () => _client.get(
@@ -491,31 +576,44 @@ class TagCompletion {
           if (x is String && x.isNotEmpty) other.add(x);
         }
       }
-      var summaryZh = j['summaryZh'] as String?;
-      if (summaryZh == null || summaryZh.isEmpty) {
-        try {
-          final zh = await _retry(
-            () => _client.get(
-              Uri.parse(
-                '$baseUrl/api/tags/wiki-preview-summary-zh',
-              ).replace(queryParameters: {'tag': t}),
-            ),
-          );
-          if (zh.statusCode == 200) {
-            final zj = jsonDecode(utf8.decode(zh.bodyBytes));
-            if (zj is Map) summaryZh = zj['summaryZh'] as String?;
-          }
-        } catch (_) {}
-      }
       return WikiPreview(
         title: j['title'] as String?,
         summary: j['summary'] as String?,
-        summaryZh: summaryZh,
+        summaryZh: j['summaryZh'] as String?,
         otherNames: other,
       );
     } catch (_) {
       return null;
     }
+  }
+
+  /// 补拉中文摘要(慢路径,见 [fetchWiki])。拿不到 / 空串一律返回 null。
+  Future<String?> fetchWikiZh(String tag) async {
+    final t = _wikiTag(tag);
+    if (t == null) return null;
+    try {
+      final zh = await _retry(
+        () => _client.get(
+          Uri.parse(
+            '$baseUrl/api/tags/wiki-preview-summary-zh',
+          ).replace(queryParameters: {'tag': t}),
+        ),
+      );
+      if (zh.statusCode != 200) return null;
+      final zj = jsonDecode(utf8.decode(zh.bodyBytes));
+      if (zj is Map) {
+        final s = zj['summaryZh'];
+        if (s is String && s.isNotEmpty) return s;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// wiki 两个接口共用的规范化:来源不是增强、没有基址、空串一律 null(不发请求)。
+  String? _wikiTag(String tag) {
+    if (source != CompletionSource.enhanced || baseUrl.isEmpty) return null;
+    final t = tag.trim().toLowerCase().replaceAll(' ', '_');
+    return t.isEmpty ? null : t;
   }
 
   void dispose() => _client.close();
@@ -525,13 +623,12 @@ class TagCompletion {
 final tagCompletionProvider = Provider<TagCompletion>((ref) {
   final source = ref.watch(effectiveCompletionSourceProvider);
   final base = ref.watch(backendBaseProvider).value ?? '';
-  final sid = ref.watch(botSessionProvider).value?.sessionId;
+  // 不需要在这里 watch 会话:补全接口全是公开的,而画师串/OC 那两个私有接口
+  // 由 artistOcLibraryProvider 自己 watch,会话一变它重建、这里跟着重建。
   final tc = TagCompletion(
     source: source,
     baseUrl: base,
-    sessionId: sid,
     localDb: ref.watch(localTagDbProvider),
-    roleLib: ref.watch(roleLibraryProvider),
     artistOcLib: ref.watch(artistOcLibraryProvider),
   );
   ref.onDispose(tc.dispose);

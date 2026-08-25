@@ -10,6 +10,7 @@ import '../net/remote_image.dart';
 import 'blob_store.dart';
 import 'cache_sweep.dart';
 import 'prefs_store.dart';
+import 'storage_stats.dart';
 
 /// 应用级持久化门面:main() 启动时 [open](读工作台存档 + 图库索引),
 /// 经 [appStoresProvider] 注入;各 Notifier 从这里水合初始状态、
@@ -89,6 +90,7 @@ class AppStores {
       await Future<void>.delayed(const Duration(seconds: 6));
       await sweepPickerCache();
       await RemoteImageStore.trim();
+      await clearRetiredRoleLexicon();
       try {
         final live = <String>{
           ...await workspace.liveRefs(),

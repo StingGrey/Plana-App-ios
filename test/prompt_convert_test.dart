@@ -58,16 +58,10 @@ void main() {
     });
   });
 
-  group('分词与匹配', () {
+  group('分词清洗', () {
     test('清洗:权重记号/括号/下划线归一/小写', () {
       expect(cleanPromptToken('1.2::Hatsune_Miku::'), 'hatsune miku');
       expect(cleanPromptToken('{blue   eyes}'), 'blue eyes');
-    });
-
-    test('LCS 占比', () {
-      expect(lcsRatio(['a', 'b', 'c'], ['a', 'x', 'b', 'c']), 1.0);
-      expect(lcsRatio(['a', 'b'], ['b']), 0.5);
-      expect(lcsRatio([], ['a']), 0);
     });
   });
 }

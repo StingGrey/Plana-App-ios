@@ -5,7 +5,6 @@ import 'package:flutter/services.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../generate/widgets/common.dart' show hintSnack, sharedAxisRoute;
-import 'char_recognition.dart';
 import 'image_metadata.dart';
 import 'import_panel.dart';
 
@@ -94,12 +93,6 @@ class MetadataDetailPage extends StatelessWidget {
             const SizedBox(height: 16),
             _charBlock(context, scheme),
           ],
-          CharRecognitionSection(
-            fullPrompt: [
-              meta.prompt,
-              for (final c in meta.characters) c.prompt,
-            ].where((s) => s.isNotEmpty).join(', '),
-          ),
           if (_paramItems.isNotEmpty) ...[
             const SizedBox(height: 16),
             _paramsBlock(context, scheme),
