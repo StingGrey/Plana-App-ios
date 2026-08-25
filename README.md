@@ -77,12 +77,15 @@ NAI 网页端的常规能力 —— 多角色与位置、Vibe Transfer、角色�
 
 ## 构建
 
-要求 Android 7.0(API 24)以上;compileSdk 36(灵动岛进度需要)。
+要求 Dart SDK ^3.12.2(Flutter 3.44 起);Android 7.0(API 24)以上,compileSdk 36(灵动岛进度需要)。
 
 ```bash
 flutter pub get
 flutter build apk --release --target-platform android-arm64
 ```
+
+产物为 `build/app/outputs/apk/release/Plana-<版本>-arm64-v8a.apk`,仅出 arm64-v8a。
+Flutter 另会复制一份 `flutter-apk/app-release.apk`,那是工具链写死的名字 —— **对外分发拿前者**。
 
 签名走 `android/key.properties`(不在仓库内,模板见 `android/key.properties.example`)。
 缺该文件时 release 会回落到 debug 签名 —— 自用没问题,但**与其他密钥签出的包互相装不上**。
@@ -94,7 +97,7 @@ flutter build apk --release --target-platform android-arm64
 flutter analyze && flutter test
 ```
 
-约 8 万行 Dart、60 个测试文件 / 640+ 用例。分词器、Anlas 公式、Vibe 哈希口径、
+约 8 万行 Dart、60 个测试文件 / 660 个用例。分词器、Anlas 公式、Vibe 哈希口径、
 NAI 5 载荷契约、Argon2id 派生均由参考向量钉住,改动对不上即失败。
 
 ## 致谢与出处
