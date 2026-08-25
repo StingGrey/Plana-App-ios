@@ -8,6 +8,9 @@ Uint8List _bytes(int n, {int fill = 7}) =>
     Uint8List.fromList(List.filled(n, fill));
 
 void main() {
+  // clear() 会碰 PaintingBinding(要倒掉内存图缓存),没这行整组直接抛
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   late Directory root;
   late Directory dir;
 
@@ -123,6 +126,62 @@ void main() {
       expect(await RemoteImageStore.validator('https://x/old'), isNull);
       // 留下的那份验证器不受影响
       expect((await RemoteImageStore.validator('https://x/new'))!.etag, '"n"');
+    });
+  });
+
+  // LoRA 预览反复刷新那个 bug 的核心:「验过没有」得和「有没有 ETag」分开记。
+  //
+  // 服务端不给 ETag 时磁盘上根本没有旁文件,validator() 恒为 null。原来拿它
+  // 当「没验过」,于是每次加载都回源 → 必然 200 → 无条件换缓存键 → provider
+  // 相等性变化 → 重建 → 再加载 → 再回源,肉眼看就是图在不停刷新。
+  group('回源新鲜期:与 ETag 无关', () {
+    const url = 'https://x.test/no-etag.png';
+
+    test('标记过就算刚验过,没标记过就该验', () {
+      expect(
+        RemoteImageStore.checkedRecently(url, const Duration(minutes: 1)),
+        isFalse,
+      );
+      RemoteImageStore.markChecked(url);
+      expect(
+        RemoteImageStore.checkedRecently(url, const Duration(minutes: 1)),
+        isTrue,
+      );
+    });
+
+    test('窗口过了就重新该验', () {
+      RemoteImageStore.markChecked(url);
+      expect(RemoteImageStore.checkedRecently(url, Duration.zero), isFalse);
+    });
+
+    test('这个标记不依赖旁文件 —— 没写过 etag 也照样成立', () async {
+      await RemoteImageStore.write(url, _bytes(8), etag: null);
+      expect(await RemoteImageStore.validator(url), isNull); // 确实没有旁文件
+      RemoteImageStore.markChecked(url);
+      expect(
+        RemoteImageStore.checkedRecently(url, const Duration(minutes: 1)),
+        isTrue,
+      );
+    });
+
+    test('各 URL 互不影响', () {
+      RemoteImageStore.markChecked(url);
+      expect(
+        RemoteImageStore.checkedRecently(
+          'https://x.test/other.png',
+          const Duration(minutes: 1),
+        ),
+        isFalse,
+      );
+    });
+
+    test('清空缓存后重新算', () async {
+      RemoteImageStore.markChecked(url);
+      await RemoteImageStore.clear();
+      expect(
+        RemoteImageStore.checkedRecently(url, const Duration(minutes: 1)),
+        isFalse,
+      );
     });
   });
 

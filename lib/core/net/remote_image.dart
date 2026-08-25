@@ -50,6 +50,24 @@ abstract final class RemoteImageStore {
 
   static int versionOf(String url) => _versions[url] ?? 0;
 
+  /// 上次回源验证的时刻(按 URL)。
+  ///
+  /// ⚠ 这个和磁盘上的 ETag 旁文件是**两件事**,必须分开记:旁文件只有服务端
+  /// 真给了 ETag 才有,而「验过没有」对不给 ETag 的服务端同样成立。原来把两者
+  /// 合成一个判断(没旁文件 = 没验过),于是不发 ETag 的图**每次加载都回源**,
+  /// 而回源必然 200 → 换缓存键 → 重建 → 再加载 → 再回源,直接转成死循环。
+  ///
+  /// **不落盘**:落盘要给每个 URL 多一个文件,而这个信息只值一个进程周期 ——
+  /// 冷启动后每张图重验一次本来就是想要的。
+  static final _checkedAt = <String, DateTime>{};
+
+  static bool checkedRecently(String url, Duration within) {
+    final at = _checkedAt[url];
+    return at != null && DateTime.now().difference(at) < within;
+  }
+
+  static void markChecked(String url) => _checkedAt[url] = DateTime.now();
+
   static void _bumpVersion(String url) {
     _versions[url] = versionOf(url) + 1;
     revision.value++;
@@ -182,22 +200,25 @@ abstract final class RemoteImageStore {
   /// 清空(存储管理用)。删掉只是下次要重下,不丢任何用户数据。
   static Future<void> clear() async {
     final d = _dir;
-    if (d == null) return;
     try {
-      if (!await d.exists()) return;
-      await for (final ent in d.list(followLinks: false)) {
-        if (ent is File) {
-          try {
-            await ent.delete();
-          } catch (_) {}
+      if (d != null && await d.exists()) {
+        await for (final ent in d.list(followLinks: false)) {
+          if (ent is File) {
+            try {
+              await ent.delete();
+            } catch (_) {}
+          }
         }
       }
     } catch (_) {}
+    // 内存那几份**无条件**倒掉:磁盘目录还不存在(没缓存过任何图)时,
+    // 版本号和「验过」标记照样可能有本次会话攒下的条目 —— 早退会把它们漏下。
     // 内存层也要一起倒,否则刚清完的图还在屏幕上挂着,数字对不上观感。
     // imageCache.clear() 碰不到已经挂在 widget 上的那些(它们持有 live image),
     // 所以再动一下版本号,让 RemoteImage 重建、重新解析。
     PaintingBinding.instance.imageCache.clear();
     _versions.clear();
+    _checkedAt.clear();
     revision.value++;
   }
 }
@@ -288,18 +309,27 @@ class RemoteImageProvider extends ImageProvider<RemoteImageProvider> {
   /// 回源验证:带 `If-None-Match` 问一次。
   ///
   /// 304 → 内容没变,刷一下新鲜期就完事(响应约 200 字节)。
-  /// 200 → 内容换了,落盘并换掉缓存键,界面上那张图随即刷新。
+  /// 200 → 拿字节和缓存比,**真的不一样才换缓存键**;一样就只记一下验过。
   /// 出错(离线/超时/非预期状态码)→ 什么也不做,继续用缓存。
+  ///
+  /// ⚠ 每一步都得防这条回路:换缓存键 → provider 相等性变化 → Flutter 重新
+  /// resolve → 再走一次 _load → 又发起验证。只要有一步**无条件**换键,就是
+  /// 死循环(不发 ETag 的服务端曾经就踩在这上面,预览图肉眼可见地反复刷新)。
   static Future<void> _revalidate(String url) async {
     if (!_validating.add(url)) return;
     try {
+      // 新鲜期对「验过没有」生效,而不是对「有没有 ETag」生效
+      if (RemoteImageStore.checkedRecently(url, _revalidateAfter)) return;
       final v = await RemoteImageStore.validator(url);
       if (v != null && DateTime.now().difference(v.at) < _revalidateAfter) {
-        return; // 刚验过,不必再问
+        return; // 上个进程刚验过(旁文件的 mtime 跨启动还在)
       }
       final req = http.Request('GET', Uri.parse(url));
       if (v != null) req.headers['If-None-Match'] = v.etag;
       final resp = await _client.send(req).timeout(_revalidateTimeout);
+      // 拿到任何一个完整响应就算验过。放在分支之前:非 200 那条也得记,
+      // 否则一个稳定报 403 的地址会被每次加载重试一遍。
+      RemoteImageStore.markChecked(url);
       if (resp.statusCode == 304) {
         await resp.stream.drain<void>();
         await RemoteImageStore.touchValidator(url);
@@ -311,17 +341,29 @@ class RemoteImageProvider extends ImageProvider<RemoteImageProvider> {
       }
       final bytes = await resp.stream.toBytes();
       if (bytes.isEmpty) return;
+      // 不发 ETag、或者不认 If-None-Match 的服务端每次都回 200,内容却没变。
+      // 无条件当成「换了」既白白重解码一次,也会把上面那条回路踩响。
+      final same = _sameBytes(await RemoteImageStore.read(url), bytes);
       await RemoteImageStore.write(
         url,
         bytes,
         etag: resp.headers['etag'],
-        replaced: true,
+        replaced: !same,
       );
     } catch (_) {
       // 离线照旧看缓存 —— 验证失败绝不该让已经能显示的图变成错误态
     } finally {
       _validating.remove(url);
     }
+  }
+
+  /// 先比长度再逐字节 —— 预览图都是几十 KB,这点开销远小于一次解码。
+  static bool _sameBytes(Uint8List? a, Uint8List b) {
+    if (a == null || a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   static Future<({Uint8List bytes, String? etag})> _download(
