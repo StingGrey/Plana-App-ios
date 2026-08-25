@@ -4,7 +4,7 @@
 
 # Plana App
 
-**NovelAI 移动创作端** —— 第三方 Android 客户端,覆盖提示词编辑、生成、图库与素材管理的完整流程
+**NovelAI 第三方 Android 客户端** —— 可能是最舒适的 AI 绘图移动创作端
 
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/mc5024/Plana-App?label=release)](https://github.com/mc5024/Plana-App/releases)
@@ -13,7 +13,7 @@
 
 </div>
 
-> 第三方客户端,与 NovelAI (Anlatan) **无关联、未获其背书**。图像由 NovelAI 生成,
+> 与 NovelAI (Anlatan) **无关联、未获其背书**。图像由 NovelAI 生成,
 > 账号与生成内容产生的一切责任由使用者承担。
 
 ---
