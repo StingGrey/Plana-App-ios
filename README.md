@@ -87,8 +87,7 @@ NAI 网页端的常规能力 —— 多角色与位置、Vibe Transfer、角色�
 
 QQ 群:**1078261982**
 
-Bug 与功能建议请走 [Issues](https://github.com/mc5024/Plana-App/issues);
-使用问题与日常交流来群里。
+Bug 与功能建议走 [Issues](https://github.com/mc5024/Plana-App/issues)。
 
 ## 构建
 
