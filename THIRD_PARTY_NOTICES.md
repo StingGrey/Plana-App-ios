@@ -17,7 +17,7 @@ Plana 使用了下列第三方组件。相关许可要求在分发时保留版�
 
 | 许可 | 包 |
 |---|---|
-| BSD | `animations` · `crypto` · `flutter_secure_storage` · `gal` · `http` · `path_provider` · `url_launcher` |
+| BSD | `animations` · `crypto` · `flutter_secure_storage` · `gal` · `http` · `path_provider` · `share_plus` · `url_launcher` |
 | MIT | `archive` · `cupertino_icons` · `file_picker` · `flutter_riverpod` · `image` · `msgpack_dart` · `unorm_dart` |
 | Apache-2.0 | `cryptography` · `material_color_utilities` · `photo_manager` · `photo_manager_image_provider` |
 
