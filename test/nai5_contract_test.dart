@@ -38,23 +38,59 @@ void main() {
   // bot 线也换成官方表时 app 只跟了一半 —— 于是「重度」被写进图片元数据时
   // 成了「无」。拆表就是这个 bug 的成因,所以这一组同时钉住「值对」和「两条线一致」。
   group('ucPresetValue:两条线共用官方下标表', () {
-    test('官方档位数组 [heavy, light, furryFocus, humanFocus, none] 的下标', () {
-      expect(ucPresetValue('heavy'), 0);
-      expect(ucPresetValue('light'), 1);
-      expect(ucPresetValue('furryFocus'), 2);
-      expect(ucPresetValue('humanFocus'), 3);
-      expect(ucPresetValue('none'), 4);
+    const v5 = 'nai-diffusion-5-full';
+
+    test('V5 档位数组 [heavy, light, furryFocus, humanFocus, none] 的下标', () {
+      expect(ucPresetValue('heavy', v5), 0);
+      expect(ucPresetValue('light', v5), 1);
+      expect(ucPresetValue('furryFocus', v5), 2);
+      expect(ucPresetValue('humanFocus', v5), 3);
+      expect(ucPresetValue('none', v5), 4);
+    });
+
+    // 下标是**该模型**负面档数组里的位置,而各模型数组长度不同 —— 曾经写死
+    // none=4,对下面这几档全是错的(只污染元数据、不影响出图)。
+    test('none 的下标随模型变:短数组不能按 V5 的 4 发', () {
+      expect(ucPresetValue('none', 'nai-diffusion-5-curated'), 4);
+      expect(ucPresetValue('none', 'nai-diffusion-4-5-full'), 4);
+      expect(ucPresetValue('none', 'nai-diffusion-4-5-curated'), 3);
+      expect(ucPresetValue('none', 'nai-diffusion-4-full'), 2);
+      expect(ucPresetValue('none', 'nai-diffusion-4-curated-preview'), 2);
+      expect(ucPresetValue('none', 'nai-diffusion-3'), 3);
+    });
+
+    test('heavy / light 在所有模型里都是 0 / 1', () {
+      for (final m in [
+        'nai-diffusion-5-full',
+        'nai-diffusion-4-5-curated',
+        'nai-diffusion-4-full',
+        'nai-diffusion-3',
+      ]) {
+        expect(ucPresetValue('heavy', m), 0, reason: m);
+        expect(ucPresetValue('light', m), 1, reason: m);
+      }
+    });
+
+    test('该模型没有的档落回它自己的 none', () {
+      // 4.5Curated 没有 furryFocus,V4 连 humanFocus 都没有
+      expect(ucPresetValue('furryFocus', 'nai-diffusion-4-5-curated'), 3);
+      expect(ucPresetValue('humanFocus', 'nai-diffusion-4-full'), 2);
+    });
+
+    test('重绘换模型时下标跟着换:V5 Curated 重绘回退 4.5 Curated', () {
+      // inpaintModelId('nai-diffusion-5-curated') = 'nai-diffusion-4-5-curated-inpainting'
+      expect(ucPresetValue('none', inpaintModelId('nai-diffusion-5-curated')), 3);
     });
 
     test('v5 档跟随它所用的官方负面档', () {
-      expect(ucPresetValue('v5-standard'), ucPresetValue('heavy'));
-      expect(ucPresetValue('v5-light'), ucPresetValue('light'));
+      expect(ucPresetValue('v5-standard', v5), ucPresetValue('heavy', v5));
+      expect(ucPresetValue('v5-light', v5), ucPresetValue('light', v5));
     });
 
     test('自定义预设落 none —— 负面词是用户自己写的,不该宣称套了官方档', () {
-      expect(kUcPresetNone, 4);
-      expect(ucPresetValue('preset-1755999999'), kUcPresetNone);
-      expect(ucPresetValue(''), kUcPresetNone);
+      expect(ucPresetValue('preset-1755999999', v5), 4);
+      expect(ucPresetValue('', v5), 4);
+      expect(ucPresetValue('preset-1755999999', 'nai-diffusion-4-full'), 2);
     });
 
     test('同一档在直连与 bot 发出的是同一个数', () {

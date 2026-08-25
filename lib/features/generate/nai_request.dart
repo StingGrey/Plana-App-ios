@@ -193,8 +193,9 @@ Map<String, double> _center(String? pos, int index) {
     'sampler': sampler,
     'steps': p.steps,
     'n_samples': 1,
-    // 数值映射对齐 web UC_PRESET_MAP;预设正/负前缀已在 controller 拼进 s
-    'ucPreset': ucPresetValue(presetId),
+    // 下标按**最终要发的**模型算(重绘会换模型,数组长度可能跟着变);
+    // 预设正/负前缀已在 controller 拼进 s
+    'ucPreset': ucPresetValue(presetId, sendModel),
     'qualityToggle': qualityToggle ?? builtinPresetHasPositive(presetId),
     'tag_hint_qt': tagHints.qt,
     'tag_hint_uc_preset': tagHints.ucPreset,

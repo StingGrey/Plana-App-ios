@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'auto_text.dart' show userTextMarker;
 import 'models.dart' show isNai5Model;
 
 /// 提示词预设:生成时拼进正/负提示词,不占用输入框。
@@ -315,20 +316,57 @@ String joinPromptParts(String a, String b) {
   return '$x, $b';
 }
 
+/// 按用户手写的 `text:` 标记把提示词切成 (标记前, 标记及其之后)。没有标记则后半为空。
+///
+/// 为什么要切:`text:` 之后的内容会被模型**画到图上**。后缀质量词若直接拼在整条
+/// 提示词末尾,就落进了 text: 块里 —— `very aesthetic, masterpiece, no text`
+/// 会被当成要写的字画出来。官方那边也是先按这个标记切开、只拼到前半段末尾。
+(String, String) _splitAtTextMarker(String prompt) {
+  final m = userTextMarker.firstMatch(prompt);
+  if (m == null) return (prompt, '');
+  return (prompt.substring(0, m.start), prompt.substring(m.start));
+}
+
+/// 把处理过的前半段与 `text:` 那一段接回去,分隔符**统一规范成 `, `**。
+///
+/// 标记正则会把 `text:` 前面那个分隔符一起吃掉(`, text:` 里吃的是空格,逗号留在
+/// 前半段末尾)。不规范的话,拼接与剥离两侧对分隔符的处理会不一致,导入时用户原本
+/// 的逗号会消失。官方那版是拿匹配到的标记原样接回去,会拼出 `no text text:` 这种
+/// 没有逗号的形态 —— 对模型等价,但往返不逐字。这里规范成逗号形式,两侧对称。
+String _rejoinTextBlock(String merged, String rest) {
+  if (rest.isEmpty) return merged;
+  final tail = rest.replaceFirst(RegExp(r'^[\s,]+'), '');
+  if (merged.isEmpty) return tail;
+  return '$merged, $tail';
+}
+
 /// 把预设拼进提示词。正面按 [PromptPreset.suffixPositive] 决定前/后缀,
 /// 负面一律前缀(同官方)。
+///
+/// 后缀拼在 `text:` **之前** —— 见 [_splitAtTextMarker]。
 ({String positive, String negative}) applyPromptPreset(
   PromptPreset? p,
   String positive,
   String negative,
 ) {
   if (p == null) return (positive: positive, negative: negative);
+  var nextPositive = positive;
+  if (p.positive.isNotEmpty) {
+    if (p.suffixPositive) {
+      final (head, rest) = _splitAtTextMarker(positive);
+      nextPositive = _rejoinTextBlock(
+        // joinPromptParts 只 trim 空白,末尾那个逗号得自己削,否则会拼出 `a,, b`
+        joinPromptParts(head.replaceFirst(RegExp(r'[\s,]+$'), ''), p.positive),
+        rest,
+      );
+    } else {
+      // 前缀在最前面,天然就在 text: 之前,不用切
+      nextPositive = joinPromptParts(p.positive, positive);
+    }
+  }
   return (
-    positive: p.positive.isEmpty
-        ? positive
-        : p.suffixPositive
-        ? joinPromptParts(positive, p.positive)
-        : joinPromptParts(p.positive, positive),
+    positive: nextPositive,
+    // 负面档一律前缀,同样天然在 text: 之前
     negative: p.negative.isEmpty
         ? negative
         : joinPromptParts(p.negative, negative),
@@ -492,7 +530,9 @@ List<String>? _stripTagRun(
   int? hintQt,
   int? hintUcPreset,
 }) {
-  final posTags = _splitTags(positive);
+  // 与 applyPromptPreset 对称:后缀是拼在 `text:` 之前的,剥的时候也只在那一段里剥
+  final (posHead, posTextBlock) = _splitAtTextMarker(positive);
+  final posTags = _splitTags(posHead);
   final negTags = _splitTags(negative);
   final hinted = _presetIdsFromTagHints(hintQt, hintUcPreset);
 
@@ -533,30 +573,66 @@ List<String>? _stripTagRun(
     if (restNeg == null) continue;
     return (
       preset: c.preset,
-      positive: restPos.join(', '),
+      positive: _rejoinTextBlock(restPos.join(', '), posTextBlock),
       negative: restNeg.join(', '),
     );
   }
   return null;
 }
 
-/// 表外档位落到的值(= none 在档位数组里的下标)。
-const kUcPresetNone = 4;
-
-/// ucPreset 数值 = **该模型档位数组的下标**;V4.5/V5 都是
-/// `[heavy, light, furryFocus, humanFocus, none]`。
+/// 各模型的官方**负面档数组**——只留 id 顺序,档位正文 app 自己有。
+/// 线上 `ucPreset` 字段发的就是某档在这个数组里的下标。
 ///
-/// 直连与 bot 两条线共用这一张表(web novelai.ts UC_PRESET_MAP,2026-08-24 起
-/// bot 线也换了过来)。**别再按线拆成两张** —— bot 线历史上那套自造的反向取值
-/// (heavy→4 / none→0)就是这么跑偏的:web 改表时只有一张跟着改,app 这边
-/// 两张都留着,于是「重度」被记成了「无」。
-///
-/// 表外(自定义预设)一律落 none:负面词是用户自己写的,不该再宣称套了官方档。
-/// `v5-*` 是把「正面质量档 + 负面档」并成一条预设后的内置 id,取值跟随其官方负面档。
-int ucPresetValue(String id) => switch (id) {
-  'heavy' || 'v5-standard' => 0,
-  'light' || 'v5-light' => 1,
-  'furryFocus' => 2,
-  'humanFocus' => 3,
-  _ => kUcPresetNone,
+/// ⚠ **每个模型的数组长度都不一样**,不能写死一张表:`none` 在 V5/4.5Full 是 4、
+/// 4.5Curated 是 3、V4 两档是 2、V3 是 3。4.5Curated 没有 furryFocus,V4 两档
+/// 连 humanFocus 都没有。以前这里写死 4,对后四者就是错的(只污染元数据、不影响
+/// 出图,但没理由留着)。2026-08-25 跟 web `officialPresets.ts` 的 OFFICIAL_UC 对齐。
+const _ucTiers = <String, List<String>>{
+  'v5': ['heavy', 'light', 'furryFocus', 'humanFocus', 'none'],
+  'v4.5-full': ['heavy', 'light', 'furryFocus', 'humanFocus', 'none'],
+  'v4.5-curated': ['heavy', 'light', 'humanFocus', 'none'],
+  'v4-full': ['heavy', 'light', 'none'],
+  'v4-curated': ['heavy', 'light', 'none'],
+  'v3': ['heavy', 'light', 'humanFocus', 'none'],
 };
+
+/// **API 模型 id**(`nai-diffusion-*`)→ [_ucTiers] 的键。
+/// 对齐 web `presetKeyForModel`;认不出一律按 v5 处理(与 web 同款兜底)。
+String _ucKeyForModel(String modelId) {
+  final m = modelId.toLowerCase();
+  if (m.startsWith('v5') || m.startsWith('nai-diffusion-5')) return 'v5';
+  if (m.contains('4.5') || m.contains('4-5')) {
+    return m.contains('curated') ? 'v4.5-curated' : 'v4.5-full';
+  }
+  if (m.startsWith('v4') || m.startsWith('nai-diffusion-4')) {
+    return m.contains('curated') ? 'v4-curated' : 'v4-full';
+  }
+  if (m.startsWith('v3') || m.startsWith('nai-diffusion-3')) return 'v3';
+  return 'v5';
+}
+
+/// 预设 id → 它套用的官方负面档名。表外(自定义预设)一律 none:负面词是用户
+/// 自己写的,不该再宣称套了官方档。`v5-*` 是把「正面质量档 + 负面档」并成一条
+/// 预设后的内置 id,取值跟随其官方负面档。
+String _ucTierOf(String presetId) => switch (presetId) {
+  'heavy' || 'v5-standard' => 'heavy',
+  'light' || 'v5-light' => 'light',
+  'furryFocus' => 'furryFocus',
+  'humanFocus' => 'humanFocus',
+  _ => 'none',
+};
+
+/// 线上 `ucPreset` 发的数字 = 该档在 [modelId] 负面档数组里的下标。
+///
+/// 直连与 bot 两条线共用这一个函数。**别再按线拆成两份** —— bot 线历史上那套
+/// 自造的反向取值(heavy→4 / none→0)就是这么跑偏的:web 改表时只有一张跟着改,
+/// app 这边两张都留着,于是「重度」被记成了「无」。
+///
+/// 该模型没有的档(如 4.5Curated 的 furryFocus)落回它的 none 下标,同 web。
+int ucPresetValue(String presetId, String modelId) {
+  final tiers = _ucTiers[_ucKeyForModel(modelId)]!;
+  final i = tiers.indexOf(_ucTierOf(presetId));
+  if (i >= 0) return i;
+  final none = tiers.indexOf('none');
+  return none >= 0 ? none : tiers.length - 1;
+}

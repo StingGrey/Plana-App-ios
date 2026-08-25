@@ -97,8 +97,9 @@ Map<String, dynamic> buildBotParams(
       ),
     },
     if (img2img?.upscaledEnhance == true) 'upscaledEnhance': true,
-    // 与直连同一张官方表:后端对 int 是原样透传的,这里发错就直接写进图片元数据
-    'ucPreset': ucPresetValue(presetId),
+    // 与直连同一个函数:后端对 int 是原样透传的,这里发错就直接写进图片元数据。
+    // 重绘模型由后端换,这里给生成模型即可(同 web bot 线)。
+    'ucPreset': ucPresetValue(presetId, model),
     'normalizeVibeStrength': p.normalizeVibe,
     'model': model, // 后端接受 API 内部名,直接透传
     'characterPrompts': [

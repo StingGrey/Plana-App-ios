@@ -26,7 +26,11 @@ const _placeholderPipe = '\u{103B9}';
 const _placeholderEscape = '\u{12137}';
 
 /// 用户手写的 `text:`(不分大小写);命中就整个不插手。
-final _userTextMarker = RegExp(
+///
+/// 提示词预设拼后缀时也要用它 —— 质量词不能落进 `text:` 块里,所以导出去共用
+/// (见 prompt_presets.dart)。**不分大小写**,所以自动加的 `teXt:` 变体也一并命中,
+/// 预设与 autoText 谁先谁后都不影响。
+final userTextMarker = RegExp(
   r'(?:^|\s|[,.:\[\]{}、。])text:(?!:)',
   caseSensitive: false,
 );
@@ -198,8 +202,8 @@ String applyAutoText(
   bool useCoords = false,
 }) {
   final chosen = _enabled(characters);
-  if (_userTextMarker.hasMatch(prompt) ||
-      chosen.any((c) => _userTextMarker.hasMatch(c.prompt))) {
+  if (userTextMarker.hasMatch(prompt) ||
+      chosen.any((c) => userTextMarker.hasMatch(c.prompt))) {
     return prompt;
   }
   final chunks = splitPromptChunks(prompt);

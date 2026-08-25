@@ -130,6 +130,63 @@ void main() {
     });
   });
 
+  // `text:` 之后的内容会被模型**画到图上**。后缀质量词若拼在整条末尾就落进了
+  // 那个块里,"very aesthetic, masterpiece, no text" 会被当成要写的字画出来 ——
+  // 而且 no text 这种词画出来格外荒唐。所以后缀必须拼在标记**之前**。
+  group('预设与 text: 块', () {
+    test('后缀档拼在 text: 之前,不落进要画的字里', () {
+      final v5 = _p('v5-standard');
+      expect(v5.suffixPositive, isTrue); // 前提:这是后缀档
+      final r = applyPromptPreset(v5, '1girl, text: hello world', 'bad');
+      expect(r.positive, '1girl, ${v5.positive}, text: hello world');
+      expect(r.positive.indexOf(v5.positive), lessThan(r.positive.indexOf('text:')));
+    });
+
+    test('自动加的 teXt: 变体一并覆盖(预设与 autoText 谁先谁后都行)', () {
+      final v5 = _p('v5-standard');
+      final r = applyPromptPreset(v5, '1girl, teXt: "hi"', 'bad');
+      expect(r.positive, '1girl, ${v5.positive}, teXt: "hi"');
+    });
+
+    test('前缀档天然在 text: 之前,不受影响', () {
+      final r = applyPromptPreset(_custom, '1girl, text: hi', 'bad');
+      expect(r.positive, 'my quality, 1girl, text: hi');
+    });
+
+    test('没有 text: 时行为不变', () {
+      final v5 = _p('v5-standard');
+      final r = applyPromptPreset(v5, '1girl, smile', 'bad');
+      expect(r.positive, '1girl, smile, ${v5.positive}');
+    });
+
+    test('text: 在最前面时不留悬空逗号', () {
+      final v5 = _p('v5-standard');
+      final r = applyPromptPreset(v5, 'text: hello', 'bad');
+      expect(r.positive, '${v5.positive}, text: hello');
+    });
+
+    test('带 text: 的往返:剥回去要逐字还原', () {
+      for (final id in ['heavy', 'light', 'v5-standard', 'v5-light']) {
+        const user = '1girl, smile, text: hello world';
+        final baked = applyPromptPreset(_p(id), user, 'bad hands');
+        final hit = detectPromptPreset(_all, baked.positive, baked.negative);
+        expect(hit?.preset.id, id, reason: id);
+        expect(hit?.positive, user, reason: id);
+        expect(hit?.negative, 'bad hands', reason: id);
+      }
+    });
+
+    test('剥离只在 text: 之前那段里进行 —— 块里同名词不会被误剥', () {
+      final v5 = _p('v5-standard');
+      // 用户自己在要画的字里写了跟质量词一样的内容,不该被当成预设剥掉
+      final user = '1girl, text: ${v5.positive}';
+      final baked = applyPromptPreset(v5, user, 'bad');
+      final hit = detectPromptPreset(_all, baked.positive, baked.negative);
+      expect(hit?.preset.id, v5.id);
+      expect(hit?.positive, user);
+    });
+  });
+
   // 这张数字表和发送时那个 ucPreset **不是**一张表,别看串了。
   group('promptPresetTagHints', () {
     test('内置档报它文本实际取自的官方档', () {
