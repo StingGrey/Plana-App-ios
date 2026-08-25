@@ -83,6 +83,13 @@ NAI 网页端的常规能力 —— 多角色与位置、Vibe Transfer、角色�
 | **内置图像编辑** | 接入图像编辑模型,直接在应用内改图,不必导出到其他工具 | 远期 |
 | **ComfyUI 连接器** | 接入自建 ComfyUI 作为出图后端 | 远期 |
 
+## 交流与反馈
+
+QQ 群:**1078261982**
+
+Bug 与功能建议请走 [Issues](https://github.com/mc5024/Plana-App/issues);
+使用问题与日常交流来群里。
+
 ## 构建
 
 要求 Dart SDK ^3.12.2(Flutter 3.44 起);Android 7.0(API 24)以上,compileSdk 36(灵动岛进度需要)。
