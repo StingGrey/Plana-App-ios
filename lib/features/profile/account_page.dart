@@ -212,7 +212,6 @@ class _AccountPageState extends ConsumerState<AccountPage> {
           const SizedBox(height: 12),
           _CompletionCard(
             source: compSource,
-            botLinked: session != null,
             onSelect: (s) =>
                 ref.read(completionSourcePrefProvider.notifier).set(s),
           ),
@@ -535,14 +534,9 @@ class _RouteCard extends StatelessWidget {
 /// 只看**有没有 Bot 会话**——它是纯后端功能,与生成走哪条路无关,
 /// 所以自带 Token 生成的用户只要授权过 Bot,一样能用增强补全。
 class _CompletionCard extends StatelessWidget {
-  const _CompletionCard({
-    required this.source,
-    required this.botLinked,
-    required this.onSelect,
-  });
+  const _CompletionCard({required this.source, required this.onSelect});
 
   final CompletionSource source;
-  final bool botLinked;
   final ValueChanged<CompletionSource> onSelect;
 
   @override
@@ -569,11 +563,12 @@ class _CompletionCard extends StatelessWidget {
               width: double.infinity,
               child: SegmentedButton<CompletionSource>(
                 segments: [
-                  ButtonSegment(
+                  // 不再按 Bot 授权置灰:补全那几个接口都是公开的,
+                  // 无会话只是少了画师串/OC 两组(私有数据,fail-soft 返空)。
+                  const ButtonSegment(
                     value: CompletionSource.enhanced,
-                    label: const Text('增强补全'),
-                    icon: const Icon(Icons.auto_awesome, size: 16),
-                    enabled: botLinked,
+                    label: Text('增强补全'),
+                    icon: Icon(Icons.auto_awesome, size: 16),
                   ),
                   const ButtonSegment(
                     value: CompletionSource.danbooru,
