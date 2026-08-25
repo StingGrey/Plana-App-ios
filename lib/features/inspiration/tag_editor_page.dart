@@ -242,12 +242,39 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
     return null;
   }
 
-  Future<bool> _publishGuidelines() => confirmDialog(
-    context,
-    title: '发布到公共库',
-    message: '· 内容为本人创作/整理,可公开分享\n· 提示词与预览图不含违规内容\n· 发布后所有用户可见、可收藏',
-    confirmLabel: '同意并发布',
-  );
+  /// 发布前提醒。**按类目分文案**,对齐 web `PublishGuidelinesDialog` ——
+  /// 原先是一份「内容为本人创作/提示词不含违规/发布后所有用户可见」的通用话术,
+  /// 三条都对,但没一条告诉用户**这一类**具体该怎么整理,读完还是不知道该改什么。
+  ///
+  /// 措辞跟着 app 自己的类目名走:web 那边叫「画师串」,app 一路叫「画风」,
+  /// 提醒里跟着叫画风,免得弹窗自造一个用户在别处没见过的词。
+  Future<bool> _publishGuidelines() {
+    final isChar = widget.cat == TagCategory.character;
+    final bullets = isChar
+        ? const [
+            '必须是原创角色(OC),请勿上传二创 / 同人角色',
+            '仅保留与角色外貌相关的提示词(服装 / 发型 / 瞳色等),'
+                '请去除场景 / 背景 / 动作等无关内容',
+            '尽量避免明显 R18 / 裸露描写,保持适度',
+          ]
+        : const [
+            '请先自行测试过画风效果,确认品质后再发布',
+            '未经原作者授权请勿搬运他人发布的画风',
+            '剔除与画风无关的 tag(角色 / 动作 / 构图等),仅描述画风',
+          ];
+    final name = _name.text.trim();
+    return confirmDialog(
+      context,
+      title: isChar ? '发布到公共角色库' : '发布到公共画风库',
+      message: [
+        '发布前请阅读以下规范\n',
+        for (final b in bullets) '· $b',
+        if (name.isNotEmpty) '\n即将发布:$name',
+      ].join('\n'),
+      confirmLabel: '我已确认,发布',
+      danger: false, // 发布不毁数据,别用红底吓人
+    );
+  }
 
   /// 创建态「保存并发布」:发布成功后本地落 created 副本(对齐 web)。
   Future<void> _publish() async {
@@ -1740,6 +1767,32 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
             icon: Icons.cloud_sync_outlined,
             label: '保存并同步',
             onPressed: _syncPublic,
+          ),
+        ),
+      ];
+    } else if (_def.hasPublic && origin == TagOrigin.local) {
+      // 本地条目也该有发布的路。以前编辑态只有 created 给两个按钮,本地条目
+      // 只剩一个「保存修改」—— 想把攒好的本地 OC / 画风发出去,只能照着重新
+      // 建一条,原来那条还得手动删。版式与创建态对齐:左保存、右发布。
+      //
+      // 复用 [_publish] 是安全的:它用 `_buildEntry` 建条目,而 `_entryId` 在
+      // 编辑态就是原条目的 id,upsert 是原地把 origin 翻成 created + 补上
+      // publicId,不会多出一条。favorited 不给这个按钮 —— 那是别人的东西,
+      // 要改要发得先「存为本地副本」。
+      children = [
+        Expanded(
+          child: OutlinedButton(
+            onPressed: _busy ? null : _saveLocal,
+            style: _outStyle(),
+            child: const Text('保存修改', maxLines: 1),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: _primaryBtn(
+            icon: Icons.public,
+            label: '保存并发布',
+            onPressed: _publish,
           ),
         ),
       ];
