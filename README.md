@@ -99,13 +99,6 @@ flutter build apk --release --target-platform android-arm64
 ```
 
 产物为 `build/app/outputs/apk/release/Plana-<版本>-arm64-v8a.apk`,仅出 arm64-v8a。
-Flutter 另会复制一份 `flutter-apk/app-release.apk`,那是工具链写死的名字 —— **对外分发拿前者**。
-
-签名走 `android/key.properties`(不在仓库内,模板见 `android/key.properties.example`)。
-缺该文件时 release 会回落到 debug 签名 —— 自用没问题,但**与其他密钥签出的包互相装不上**。
-
-版本号在 `pubspec.yaml` 与 `lib/core/app_info.dart` 两处,由 `test/app_info_test.dart`
-钉住一致;`+N` 是 Android 的 versionCode,只能单调递增。
 
 ```bash
 flutter analyze && flutter test
