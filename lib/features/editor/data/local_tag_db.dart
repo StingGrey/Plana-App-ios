@@ -31,7 +31,8 @@ List<_Entry> _parseTsv(String raw) {
 }
 
 /// 离线 Danbooru 标签库(`assets/danbooru.tsv`,**含中文翻译**,已按热度降序)。
-/// token / 未授权模式的英文补全走这里——**完全离线**,不碰网络,天然绕开 Cloudflare。
+/// 用户在设置里显式选了「离线词库」时的英文补全走这里——**完全离线**,不碰网络,
+/// 天然绕开 Cloudflare。(2026-08-25 前它还是「未授权模式」的兜底,门禁解除后不再是。)
 /// 行格式(tab 分隔):`tag<TAB>post_count<TAB>中文<TAB>alias1,alias2`;
 /// tag 用下划线,app 内展示/插入转空格;中文来自社区词库(ChinaGPT 10w + byzod 精选合并)。
 class LocalTagDb {

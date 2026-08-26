@@ -531,8 +531,8 @@ class _RouteCard extends StatelessWidget {
 }
 
 /// 标签补全来源切换卡:增强(后端)↔ 离线词库。
-/// 只看**有没有 Bot 会话**——它是纯后端功能,与生成走哪条路无关,
-/// 所以自带 Token 生成的用户只要授权过 Bot,一样能用增强补全。
+/// 两档都不需要 Bot 会话——补全那几个接口是公开的(2026-08-25 起解除门禁)。
+/// 无会话时增强档只是少了画师串 / OC 两个分组,它们读的是私有接口。
 class _CompletionCard extends StatelessWidget {
   const _CompletionCard({required this.source, required this.onSelect});
 
