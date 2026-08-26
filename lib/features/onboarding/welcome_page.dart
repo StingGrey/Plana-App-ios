@@ -21,7 +21,14 @@ import '../../core/util/haptics.dart';
 /// 首启欢迎流程:欢迎 → 外观 → 接入 → 通知,共 4 页。
 /// 内容居中,页间横滑,元素错峰浮现;凭据在本页内就地配完,不再跳出去。
 class WelcomePage extends ConsumerStatefulWidget {
-  const WelcomePage({super.key});
+  const WelcomePage({super.key, this.replay = false});
+
+  /// 从关于页「重新查看引导」进来的重看模式。
+  ///
+  /// 首启时这个页面是 gate 的直接子级,走完只需置 `notifyPrimed`,gate 自己会
+  /// 换成主界面 —— 没人 pop 它,也不该 pop。重看是 push 出来的路由,gate 早就
+  /// 停在主界面了,不自己退就卡在完成页。
+  final bool replay;
 
   @override
   ConsumerState<WelcomePage> createState() => _WelcomePageState();
@@ -80,7 +87,7 @@ class _WelcomePageState extends ConsumerState<WelcomePage> {
     _next();
   }
 
-  /// 收尾:兜底接入方式 → 记「引导已过」→ gate 换主界面。
+  /// 收尾:兜底接入方式 → 记「引导已过」→ gate 换主界面(重看模式则自己退)。
   /// 全程没选接入方式的按直连处理,否则 gate 会把人又弹回来。
   void _finish() {
     if (_finishing) return;
@@ -91,6 +98,7 @@ class _WelcomePageState extends ConsumerState<WelcomePage> {
     ref
         .read(genSettingsProvider.notifier)
         .patch((s) => s.copyWith(notifyPrimed: true));
+    if (widget.replay && mounted) Navigator.of(context).pop();
   }
 
   @override
@@ -214,6 +222,7 @@ class _Step extends StatelessWidget {
     required this.title,
     required this.active,
     this.desc,
+    this.descBold,
     this.child,
   });
 
@@ -223,6 +232,41 @@ class _Step extends StatelessWidget {
   /// 是否为当前页;转 true 时重放入场。
   final bool active;
   final String? desc;
+
+  /// [desc] 里要加粗的那一段(必须是 desc 的子串,否则忽略)。
+  /// 只为强调一句话里的关键条件,不值得把 desc 整个换成 InlineSpan ——
+  /// 四个调用点里三个是纯文本。
+  final String? descBold;
+
+  /// desc 正文;[descBold] 命中就把那一段加粗,其余照常。
+  Widget _descText(BuildContext context, ColorScheme scheme) {
+    final base = context.texts.bodyMedium!.copyWith(
+      color: scheme.onSurfaceVariant,
+    );
+    final text = desc!;
+    final bold = descBold;
+    if (bold != null && bold.isNotEmpty) {
+      final at = text.indexOf(bold);
+      if (at >= 0) {
+        return Text.rich(
+          TextSpan(
+            children: [
+              TextSpan(text: text.substring(0, at)),
+              TextSpan(
+                text: bold,
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+              TextSpan(text: text.substring(at + bold.length)),
+            ],
+          ),
+          textAlign: TextAlign.center,
+          style: base,
+        );
+      }
+    }
+    return Text(text, textAlign: TextAlign.center, style: base);
+  }
+
   final Widget? child;
 
   @override
@@ -271,13 +315,7 @@ class _Step extends StatelessWidget {
               _Rise(
                 active: active,
                 delayMs: 160,
-                child: Text(
-                  desc!,
-                  textAlign: TextAlign.center,
-                  style: context.texts.bodyMedium!.copyWith(
-                    color: scheme.onSurfaceVariant,
-                  ),
-                ),
+                child: _descText(context, scheme),
               ),
             ],
             if (child != null) ...[
@@ -720,6 +758,17 @@ class _AccessStepState extends ConsumerState<_AccessStep>
             expand: _botExpand,
             onSelect: () =>
                 ref.read(authModeProvider.notifier).set(AuthMode.bot),
+            // 选了 Bot 就必须授权才放行(见 mustAuth),而授权是邀请制 ——
+            // 不写清楚的话,拿不到邀请的人会卡在这一页不知道该往哪走,
+            // 所以连出路一起说了。与上面那张卡的提示同一档字号/颜色。
+            child: hasBot
+                ? null
+                : Text(
+                    '需先完成 Bot 授权,当前仅为邀请制;没有邀请请先用直连 Token',
+                    style: context.texts.labelSmall!.copyWith(
+                      color: scheme.outline,
+                    ),
+                  ),
           ),
         ],
       ),
@@ -827,18 +876,20 @@ class _AccessCard extends StatelessWidget {
   }
 }
 
-// ── 4 Bot 授权(与生成方式解耦:选 Key 的人也能授权拿增强功能) ────────────────
+// ── 4 扩展功能(与生成方式解耦:选 Key 的人也能授权拿这些) ────────────────
 
 class _BotStep extends ConsumerWidget {
   const _BotStep({required this.active});
 
   final bool active;
 
-  /// 授权后解锁的东西。只列「没会话就真的用不了」的:
-  /// 翻译、统计这类离线本来就有,不算解锁项。
+  /// 授权后开放的扩展功能。只列「没会话就真的用不了」的:翻译、统计这类
+  /// 离线本来就有,不算。
+  ///
+  /// 增强标签补全**已不在此列** —— 它用到的后端接口都是公开的,2026-08-25 起
+  /// 解除了 Bot 授权门禁,对所有人默认开启。留在这儿就是虚报门槛。
   static const _perks = <(IconData, String)>[
     (Icons.model_training, '额外模型:Anima · Krea 2'),
-    (Icons.auto_awesome, '增强标签补全'),
     (Icons.travel_explore, '公共库:Vibe · 画师串 · 角色 OC'),
     (Icons.cloud_upload_outlined, '云备份:Vibe 库与标签库跨设备同步'),
     (Icons.image_search, '图片反推标签(WD Tagger)'),
@@ -853,12 +904,14 @@ class _BotStep extends ConsumerWidget {
     return _Step(
       active: active,
       icon: Icons.smart_toy_outlined,
-      title: 'Bot 授权',
+      title: '扩展功能',
       desc: needForGen
           ? '你选了用 Bot 账户生成,需要先授权'
           : hasBot
           ? ''
-          : '授权后解锁这些功能',
+          : '以下扩展功能需通过 Bot 授权后开放,当前仅为邀请制;'
+                '不授权不影响扩展功能以外的任何功能',
+      descBold: '当前仅为邀请制',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [

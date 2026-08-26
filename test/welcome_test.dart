@@ -59,7 +59,7 @@ void main() {
     );
     await tester.tap(find.text('暂时跳过'));
     await tester.pumpAndSettle();
-    expect(find.text('Bot 授权'), findsOneWidget);
+    expect(find.text('扩展功能'), findsOneWidget);
 
     // 未授权(且生成走直连)时主按钮是「跳过」而不是「下一步」
     expect(find.widgetWithText(FilledButton, '跳过'), findsOneWidget);
