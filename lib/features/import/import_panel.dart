@@ -371,6 +371,13 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     );
   }
 
+  /// 这张图认出预设了没有。**在这里 watch**:预设是异步载入的,载入完成前
+  /// [_presetMatch] 恒为 null —— 不 watch 的话「认出来了」这一行永远不会出现。
+  bool get _presetRecognized {
+    ref.watch(promptPresetsProvider);
+    return _presetMatch != null;
+  }
+
   /// Anima / Krea 都走服务端 Modal 后端,只有 Bot 授权登录能用;
   /// 切不过去就别给按钮。
   bool get _canSwitchCategory =>
@@ -382,11 +389,9 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     _usePrompt = m.prompt.isNotEmpty;
     _useNegative = m.negativePrompt.isNotEmpty;
     _convertPrompt = needsPromptConversion(m, _targetCategory);
-    // 认出了档位 → 勾(不剥的话当前档下次生成会重复拼一遍);
-    // 没认出但图来自 NovelAI → 也勾:官方图/我们改造前出的图都可能把预设文本
-    //   烤在提示词里、只是我们剥不掉,这时至少要把档位切到「无」;
-    // 其余(SD / 第三方 ComfyUI 图)→ 不勾:那里面本来就没有预设文本,
-    //   切到「无」等于白白丢掉用户当前选的档。
+    // NAI 图默认勾上:认出档位时不剥的话,当前档下次生成会把那段文本重复拼
+    // 一遍。认不出时这个开关不产生任何动作(见导入落地那段),整张卡也不显示,
+    // 所以勾着无害。其余来源(SD / 第三方 ComfyUI)不勾。
     _usePreset =
         m.isNovelAI && (m.prompt.isNotEmpty || m.negativePrompt.isNotEmpty);
     _presetImport = true;
@@ -715,28 +720,40 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
 
     // 提示词预设。**两档都剥文本**(只剥被勾选要导的那一侧);区别只在档位:
     //  - 剥离:档位保持用户现在选的
-    //  - 导入:切成这张图用的那一档;**认不出一律切「无」** —— 留着当前档,
-    //    万一图里烤着我们剥不掉的预设文本,下次生成就会在它之上再拼一遍。
+    //  - 导入:切成这张图用的那一档
+    //
+    // **认不出就什么都不做** —— 没有文本可剥,也不动用户当前的档位。
+    // 原先认不出会一律切到「无」,理由是"万一图里烤着剥不掉的预设文本,留着当前
+    // 档下次生成就会在它之上再拼一遍"。但那是拿一个**猜测**去改用户明确选过的
+    // 设置:绝大多数认不出的图根本没有预设文本(手写提示词、别处导来的),代价是
+    // 每导一张这样的图,用户的质量档就被悄悄清掉一次。宁可漏防也不误伤。
     if (_usePreset && (pos != null || neg != null)) {
       final hit = _presetMatch;
-      if (hit != null) {
+      if (hit == null) {
+        // 认不出:不剥、不改档位、也不报消息
+      } else {
         if (pos != null) pos = hit.positive;
         if (neg != null) neg = hit.negative;
-      }
-      if (_presetImport) {
-        // 跨系列导入(4.5 图导进 V5)剥的是 4.5 的文本、落的是目标模型的同强度档,
-        // 与「切模型自动映射档位」一致。
-        final presets = ref.read(promptPresetsProvider).value?.presets;
-        final target =
-            (_useModel ? _importModel : null) ??
-            ref.read(generateProvider).params.model;
-        final id = hit == null || presets == null
-            ? 'none'
-            : remapPromptPresetId(hit.preset.id, presets, target);
-        unawaited(ref.read(promptPresetsProvider.notifier).setActive(id));
-        msgs.add(hit == null ? '预设「无」' : '预设 ${hit.preset.name}');
-      } else if (hit != null) {
-        msgs.add('剥掉 ${hit.preset.name}');
+        if (_presetImport) {
+          // 跨系列导入(4.5 图导进 V5)剥的是 4.5 的文本、落的是目标模型的同强度
+          // 档,与「切模型自动映射档位」一致。
+          final presets = ref.read(promptPresetsProvider).value?.presets;
+          if (presets != null) {
+            final target =
+                (_useModel ? _importModel : null) ??
+                ref.read(generateProvider).params.model;
+            unawaited(
+              ref
+                  .read(promptPresetsProvider.notifier)
+                  .setActive(
+                    remapPromptPresetId(hit.preset.id, presets, target),
+                  ),
+            );
+          }
+          msgs.add('预设 ${hit.preset.name}');
+        } else {
+          msgs.add('剥掉 ${hit.preset.name}');
+        }
       }
     }
 
@@ -1121,9 +1138,14 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
         if (_showConvert) ...[_convertRow(scheme), const SizedBox(height: 9)],
         // 提示词预设:识别并剥离。只对 NAI 图有意义 —— 别的来源里本来就没有
         // 预设文本,切到「无」等于白白丢掉用户当前选的档。
+        //
+        // **没认出来就整条不显示**:那种情况下这张卡除了一句「没认出任何内置
+        // 预设的文本」之外没有可看的内容,而绝大多数图都落在这一档,常驻着只是
+        // 把真正要读的几行(模型/角色/Vibe)往下挤。
         if (_inNai &&
             m.isNovelAI &&
-            (m.prompt.isNotEmpty || m.negativePrompt.isNotEmpty)) ...[
+            (m.prompt.isNotEmpty || m.negativePrompt.isNotEmpty) &&
+            _presetRecognized) ...[
           _presetRow(scheme),
           const SizedBox(height: 9),
         ],
@@ -1324,14 +1346,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
                     ? '以上文本会从提示词里剥掉,档位切成「${hit.preset.name}」。'
                     : '以上文本会从提示词里剥掉,档位保持你现在选的那一档。',
               ),
-            ] else
-              _presetNote(
-                scheme,
-                _presetImport
-                    ? '没认出任何内置预设的文本。「导入」会把档位切到「无」——'
-                          '万一图里烤着剥不掉的预设文本,至少不会再拼第二遍。'
-                    : '没认出任何内置预设的文本。「剥离」在这种情况下不会有任何动作。',
-              ),
+            ],
           ],
         ),
       ),
