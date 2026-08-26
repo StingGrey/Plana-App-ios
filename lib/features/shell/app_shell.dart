@@ -110,6 +110,10 @@ class _AppShellState extends ConsumerState<AppShell> {
       if (!_pc.hasClients) return;
       final current = _pc.page?.round() ?? _pc.initialPage;
       if (current != next) {
+        // 切页先收焦点。PageView 是保活的,离开时焦点还留在原页的输入框上
+        // (灵感页搜索框最容易中招),之后**在任何一页**切页都会把软键盘重新
+        // 顶出来一下。放在动画开始前,不是切完再收 —— 否则过渡里照样闪一下。
+        FocusManager.instance.primaryFocus?.unfocus();
         _pc.animateToPage(
           next,
           duration: Motion.medium,
