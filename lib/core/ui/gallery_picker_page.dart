@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show MethodCall;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:photo_manager_image_provider/photo_manager_image_provider.dart';
@@ -81,24 +84,58 @@ class _GalleryPickerPageState extends ConsumerState<GalleryPickerPage>
   final _sel = <AssetEntity>[];
   final _selIds = <String>{};
 
+  /// 媒体库变更通知的合并窗口。一次保存往往连发好几条(插入 + 缩略图 + 扫描),
+  /// 逐条重拉既浪费也会让列表抖。
+  Timer? _reloadDebounce;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // 系统媒体库变了就自动重拉。没有这个的话,别的 app(或本 app 自己保存作品)
+    // 新增的图在选择器里看不见 —— 页面每次都是新建的,但 photo_manager 那边
+    // 不主动通知就没人去问,只能重启才刷新。
+    PhotoManager.addChangeCallback(_onLibraryChanged);
+    PhotoManager.startChangeNotify();
     _init();
   }
 
   @override
   void dispose() {
+    _reloadDebounce?.cancel();
+    PhotoManager.stopChangeNotify();
+    PhotoManager.removeChangeCallback(_onLibraryChanged);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
-  /// 从系统设置/部分照片授权面板回来时重查权限与列表。
+  void _onLibraryChanged(MethodCall _) {
+    _reloadDebounce?.cancel();
+    _reloadDebounce = Timer(const Duration(milliseconds: 400), _reload);
+  }
+
+  /// 重拉当前相册。**补回原有批数**:直接重来只剩两批,用户要是已经翻下去了,
+  /// 列表骤然变短会把滚动位置甩到底。
+  Future<void> _reload() async {
+    if (!mounted || _perm?.hasAccess != true) return;
+    final pages = _page;
+    await _openInitialAlbum(keepId: _album?.id);
+    while (mounted && _page < pages && !_exhausted) {
+      final before = _page;
+      await _loadMore();
+      if (_page == before) break; // 没推进就别空转
+    }
+  }
+
+  /// 回到前台:没权限的重查权限(可能刚在系统设置里改过),有权限的重拉列表 ——
+  /// 后台期间新增的图,变更通知未必送得到。
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && _perm?.hasAccess != true) {
+    if (state != AppLifecycleState.resumed) return;
+    if (_perm?.hasAccess != true) {
       _init();
+    } else {
+      _reload();
     }
   }
 
@@ -269,9 +306,7 @@ class _GalleryPickerPageState extends ConsumerState<GalleryPickerPage>
     );
     if (picked == null || picked.id == _album?.id) return;
     // 只在用户**主动选**时记(不记回落的默认相册)——记的是「选择过的」。
-    await ref
-        .read(prefsStoreProvider)
-        .write(key: _kAlbumKey, value: picked.id);
+    await ref.read(prefsStoreProvider).write(key: _kAlbumKey, value: picked.id);
     if (!mounted) return;
     await _selectAlbum(picked);
   }
