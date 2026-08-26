@@ -15,22 +15,15 @@
 
 ---
 
-<!--
-  截图位 —— 把图片放进 screenshots/,文件名对上下面这张表,
-  然后删掉包住本段的那两行注释标记,截图区即生效。
-  竖屏截图建议统一 1080×2400 或等比。
-
 ## 截图
 
 | 创作页 | 提示词编辑器 | 图库 |
 |:---:|:---:|:---:|
-| <img src="screenshots/generate.png" width="240" alt="创作页"> | <img src="screenshots/editor.png" width="240" alt="提示词编辑器"> | <img src="screenshots/gallery.png" width="240" alt="图库"> |
+| <img src="screenshots/generate.jpg" width="250" alt="创作页"> | <img src="screenshots/editor.jpg" width="250" alt="提示词编辑器"> | <img src="screenshots/gallery.jpg" width="250" alt="图库"> |
 
-| 局部重绘 | 灵感库 | 法典图鉴 |
+| 法典图鉴 | 参数导入 | 用量统计 |
 |:---:|:---:|:---:|
-| <img src="screenshots/inpaint.png" width="240" alt="局部重绘"> | <img src="screenshots/inspiration.png" width="240" alt="灵感库"> | <img src="screenshots/codex.png" width="240" alt="法典图鉴"> |
-
--->
+| <img src="screenshots/codex.jpg" width="250" alt="法典图鉴"> | <img src="screenshots/import.jpg" width="250" alt="参数导入"> | <img src="screenshots/stats.jpg" width="250" alt="用量统计"> |
 
 ## 亮点
 
