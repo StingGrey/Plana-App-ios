@@ -15,16 +15,6 @@
 
 ---
 
-## 截图
-
-| 创作页 | 提示词编辑器 | 图库 |
-|:---:|:---:|:---:|
-| <img src="screenshots/generate.jpg" width="250" alt="创作页"> | <img src="screenshots/editor.jpg" width="250" alt="提示词编辑器"> | <img src="screenshots/gallery.jpg" width="250" alt="图库"> |
-
-| 法典图鉴 | 参数导入 | 用量统计 |
-|:---:|:---:|:---:|
-| <img src="screenshots/codex.jpg" width="250" alt="法典图鉴"> | <img src="screenshots/import.jpg" width="250" alt="参数导入"> | <img src="screenshots/stats.jpg" width="250" alt="用量统计"> |
-
 ## 亮点
 
 - **提示词编辑器** 专为移动端设计的独占全屏编辑页,底部自动弹出补全候选;正文支持文本与芯片两种显示形态,
@@ -56,6 +46,16 @@
 
 NAI 网页端的常规能力 —— 多角色与位置、Vibe Transfer、角色参考、图生图、局部重绘与扩图、
 放大、分辨率与费用预估、token 读数 —— 均已完整支持。
+
+## 截图
+
+| 创作页 | 提示词编辑器 | 图库 |
+|:---:|:---:|:---:|
+| <img src="screenshots/generate.jpg" width="250" alt="创作页"> | <img src="screenshots/editor.jpg" width="250" alt="提示词编辑器"> | <img src="screenshots/gallery.jpg" width="250" alt="图库"> |
+
+| 法典图鉴 | 参数导入 | 用量统计 |
+|:---:|:---:|:---:|
+| <img src="screenshots/codex.jpg" width="250" alt="法典图鉴"> | <img src="screenshots/import.jpg" width="250" alt="参数导入"> | <img src="screenshots/stats.jpg" width="250" alt="用量统计"> |
 
 ## 使用方式
 
