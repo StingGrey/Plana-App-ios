@@ -3,7 +3,9 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:flutter/gestures.dart' show HitTestResult;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderMetaData;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gal/gal.dart';
 import 'package:path_provider/path_provider.dart';
@@ -343,6 +345,73 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
   void _toggle(String id) {
     setState(() => _picked.contains(id) ? _picked.remove(id) : _picked.add(id));
   }
+
+  // ---- 滑动选择 ----
+  //
+  // 只认**横向**起手。竖向留给滚动 —— 多选态下照样要能翻到别的日期去,
+  // 抢了竖向就等于把列表钉死。横向一旦被判定为拖选,后续 update 无论往哪个
+  // 方向走都还归这个手势,所以斜着扫、扫完往下带都能连着选。
+  //
+  // 加/减看**起手那一格**的当前状态取反(对齐系统相册):从没选中的格子起手是
+  // 整片选上,从已选中的起手是整片取消。
+  bool? _dragAdding;
+  final _dragSeen = <String>{};
+
+  /// 屏幕坐标 → 该点下面那张缩略图的 id。靠命中路径里的 [MetaData]
+  /// (见网格 itemBuilder)反查,不自己按几何算 —— 网格是按日期分成多个
+  /// sliver 的,中间还夹着日期头,几何换算既绕又容易在改版式后悄悄失准。
+  String? _idAt(Offset globalPos) {
+    final hit = HitTestResult();
+    WidgetsBinding.instance.hitTestInView(
+      hit,
+      globalPos,
+      View.of(context).viewId,
+    );
+    for (final e in hit.path) {
+      final t = e.target;
+      if (t is RenderMetaData) {
+        final m = t.metaData;
+        if (m is String) return m;
+      }
+    }
+    return null;
+  }
+
+  void _dragSelectStart(DragStartDetails d) {
+    final id = _idAt(d.globalPosition);
+    if (id == null) return;
+    final adding = !_picked.contains(id);
+    _dragAdding = adding;
+    _dragSeen
+      ..clear()
+      ..add(id);
+    setState(() => adding ? _picked.add(id) : _picked.remove(id));
+  }
+
+  void _dragSelectUpdate(DragUpdateDetails d) {
+    final adding = _dragAdding;
+    if (adding == null) return;
+    final id = _idAt(d.globalPosition);
+    // _dragSeen 去重:手指在一格里抖动会连发好几次 update,不去重就反复开关。
+    if (id == null || !_dragSeen.add(id)) return;
+    setState(() => adding ? _picked.add(id) : _picked.remove(id));
+  }
+
+  void _dragSelectEnd() {
+    _dragAdding = null;
+    _dragSeen.clear();
+  }
+
+  /// 给网格套上拖选手势。非多选态传 null 处理器 —— 手势识别器不参与竞技场,
+  /// 横滑照常落到下层(将来要加横滑手势也不会被这层截胡)。
+  Widget _dragSelectLayer({required Widget child}) => GestureDetector(
+    behavior: HitTestBehavior.translucent,
+    onHorizontalDragStart: _selecting ? _dragSelectStart : null,
+    onHorizontalDragUpdate: _selecting ? _dragSelectUpdate : null,
+    onHorizontalDragEnd: _selecting ? (_) => _dragSelectEnd() : null,
+    onHorizontalDragCancel: _selecting ? _dragSelectEnd : null,
+    child: child,
+  );
 
   void _toggleAll(List<ResultImage> results) {
     setState(() {
@@ -821,73 +890,83 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
               ),
             ),
             Expanded(
-              child: filtered.isEmpty
-                  ? Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            filtering ? Icons.search_off : Icons.image_outlined,
-                            size: 40,
-                            color: scheme.outline,
-                          ),
-                          const SizedBox(height: 10),
-                          Text(
-                            filtering ? '没有符合条件的作品' : '图库是空的',
-                            style: context.texts.bodyMedium!.copyWith(
-                              color: scheme.onSurfaceVariant,
+              child: _dragSelectLayer(
+                child: filtered.isEmpty
+                    ? Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              filtering
+                                  ? Icons.search_off
+                                  : Icons.image_outlined,
+                              size: 40,
+                              color: scheme.outline,
                             ),
-                          ),
+                            const SizedBox(height: 10),
+                            Text(
+                              filtering ? '没有符合条件的作品' : '图库是空的',
+                              style: context.texts.bodyMedium!.copyWith(
+                                color: scheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    : CustomScrollView(
+                        slivers: [
+                          for (final e in byDay.entries) ...[
+                            SliverToBoxAdapter(
+                              child: _dayHeader(scheme, e.key, e.value, now),
+                            ),
+                            // 缩略图本体还各带 5(描边 2.5 + 让位 2.5)的内缩,
+                            // 所以图与图之间实际留白 = 这里的 spacing + 10。
+                            // 收到 6 之后是 16,省下的宽度全给图。
+                            SliverPadding(
+                              padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+                              sliver: SliverGrid(
+                                gridDelegate:
+                                    const SliverGridDelegateWithFixedCrossAxisCount(
+                                      crossAxisCount: 3,
+                                      mainAxisSpacing: 6,
+                                      crossAxisSpacing: 6,
+                                    ),
+                                delegate: SliverChildBuilderDelegate((_, i) {
+                                  final r = e.value[i];
+                                  // 拖选靠命中路径反查这个 id,见 _idAt
+                                  return MetaData(
+                                    metaData: r.id,
+                                    child: _GridThumb(
+                                      result: r,
+                                      selected:
+                                          !_selecting &&
+                                          r.id == state.selectedId,
+                                      picked:
+                                          _selecting && _picked.contains(r.id),
+                                      selecting: _selecting,
+                                      onTap: () {
+                                        if (_selecting) {
+                                          _toggle(r.id);
+                                        } else {
+                                          ref
+                                              .read(galleryProvider.notifier)
+                                              .select(r.id);
+                                          Navigator.of(context).pop();
+                                        }
+                                      },
+                                      onLongPress: _selecting
+                                          ? null
+                                          : (from) => _thumbMenu(r.id, from),
+                                    ),
+                                  );
+                                }, childCount: e.value.length),
+                              ),
+                            ),
+                          ],
+                          const SliverToBoxAdapter(child: SizedBox(height: 10)),
                         ],
                       ),
-                    )
-                  : CustomScrollView(
-                      slivers: [
-                        for (final e in byDay.entries) ...[
-                          SliverToBoxAdapter(
-                            child: _dayHeader(scheme, e.key, e.value, now),
-                          ),
-                          // 缩略图本体还各带 5(描边 2.5 + 让位 2.5)的内缩,
-                          // 所以图与图之间实际留白 = 这里的 spacing + 10。
-                          // 收到 6 之后是 16,省下的宽度全给图。
-                          SliverPadding(
-                            padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
-                            sliver: SliverGrid(
-                              gridDelegate:
-                                  const SliverGridDelegateWithFixedCrossAxisCount(
-                                    crossAxisCount: 3,
-                                    mainAxisSpacing: 6,
-                                    crossAxisSpacing: 6,
-                                  ),
-                              delegate: SliverChildBuilderDelegate((_, i) {
-                                final r = e.value[i];
-                                return _GridThumb(
-                                  result: r,
-                                  selected:
-                                      !_selecting && r.id == state.selectedId,
-                                  picked: _selecting && _picked.contains(r.id),
-                                  selecting: _selecting,
-                                  onTap: () {
-                                    if (_selecting) {
-                                      _toggle(r.id);
-                                    } else {
-                                      ref
-                                          .read(galleryProvider.notifier)
-                                          .select(r.id);
-                                      Navigator.of(context).pop();
-                                    }
-                                  },
-                                  onLongPress: _selecting
-                                      ? null
-                                      : (from) => _thumbMenu(r.id, from),
-                                );
-                              }, childCount: e.value.length),
-                            ),
-                          ),
-                        ],
-                        const SliverToBoxAdapter(child: SizedBox(height: 10)),
-                      ],
-                    ),
+              ),
             ),
             // 多选操作栏:进出多选随高度动画滑入滑出
             AnimatedSize(
@@ -1271,12 +1350,21 @@ class _LiftedThumb extends ConsumerWidget {
                   fit: StackFit.expand,
                   children: [
                     // 原图读盘期间先垫着已经在内存里的缩略图 ——
-                    // 长按到抬起之间不该有一格空白
-                    ResultThumb(
-                      result: result,
-                      width: rect.width,
-                      height: rect.height,
-                      radius: 14,
+                    // 长按到抬起之间不该有一格空白。
+                    //
+                    // 原图到位后必须**让它消失**,不能一直垫着:不透明图看不出
+                    // 区别(全被盖住),半透明图会从透明区把这张拉伸的缩略图透
+                    // 出来,看着就是背景多了一张模糊的放大图。用淡出而不是
+                    // 直接撤掉 —— 与上面那层的淡入同步,慢路径才不会闪一下空白。
+                    AnimatedOpacity(
+                      opacity: full == null ? 1 : 0,
+                      duration: const Duration(milliseconds: 180),
+                      child: ResultThumb(
+                        result: result,
+                        width: rect.width,
+                        height: rect.height,
+                        radius: 14,
+                      ),
                     ),
                     // 慢路径(warm 没赶上)才会走到这个切换:淡入而不是
                     // 直接盖上去,免得眼睁睁看着一张糊的跳成清的
