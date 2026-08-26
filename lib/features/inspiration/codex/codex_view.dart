@@ -31,9 +31,13 @@ class _CodexViewState extends ConsumerState<CodexView> {
   bool _introScheduled = false; // 首次说明弹窗本会话是否已排期(防重复弹)
   final _scroll = ScrollController();
 
+  /// 搜索框要能被程序清空(换法典时),所以不能是裸 TextField。
+  final _searchCtrl = TextEditingController();
+
   @override
   void dispose() {
     _debounce?.cancel();
+    _searchCtrl.dispose();
     _scroll.dispose();
     super.dispose();
   }
@@ -65,9 +69,24 @@ class _CodexViewState extends ConsumerState<CodexView> {
 
   @override
   Widget build(BuildContext context) {
-    // 换法典后重置分类筛选。选择器已挪到外层顶栏,靠 provider 联动重置。
+    // 换法典后重置分类筛选**与搜索**。选择器已挪到外层顶栏,靠 provider 联动重置。
+    //
+    // 搜索原来是漏掉的:关键词跨法典留着,新法典多半一条都匹配不上,于是切过去
+    // 只看到「没有匹配的词条」—— 而搜索框在上面还原样显示着旧关键词,没人会想到
+    // 是它在过滤。三样一起清:输入框文本、过滤用的 _search、以及**防抖里压着的
+    // 那次**(不取消的话它会在切换后才落地,把刚清掉的关键词又写回去)。
     ref.listen(selectedCodexProvider, (_, _) {
-      if (mounted) setState(() => _catPath = const []);
+      if (!mounted) return;
+      _debounce?.cancel();
+      _searchCtrl.clear();
+      // 滚动位置也得归零。它没有分法典记账(不同于标签库的 ScrollMemory),
+      // 不重置就直接带到新法典上 —— 旧法典翻到几百条的位置,切到一本短的会被
+      // 钳到列表末尾,看着像打开就在底部。
+      if (_scroll.hasClients) _scroll.jumpTo(0);
+      setState(() {
+        _catPath = const [];
+        _search = '';
+      });
     });
     final indexAsync = ref.watch(codexIndexProvider);
     return indexAsync.when(
@@ -175,6 +194,7 @@ class _CodexViewState extends ConsumerState<CodexView> {
     return Padding(
       padding: const EdgeInsets.fromLTRB(_edge, 8, _edge, 0),
       child: TextField(
+        controller: _searchCtrl,
         onChanged: _onSearch,
         decoration: InputDecoration(
           isDense: true,
