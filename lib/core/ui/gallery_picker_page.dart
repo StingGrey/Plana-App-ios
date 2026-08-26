@@ -92,18 +92,26 @@ class _GalleryPickerPageState extends ConsumerState<GalleryPickerPage>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    // 系统媒体库变了就自动重拉。没有这个的话,别的 app(或本 app 自己保存作品)
-    // 新增的图在选择器里看不见 —— 页面每次都是新建的,但 photo_manager 那边
-    // 不主动通知就没人去问,只能重启才刷新。
     PhotoManager.addChangeCallback(_onLibraryChanged);
-    PhotoManager.startChangeNotify();
     _init();
+  }
+
+  /// 开启系统媒体库变更通知。**必须等权限到手再开** —— 插件的 ContentObserver
+  /// 在 onChange 里要反查 MediaStore 才能判断是新增还是修改,没有读权限那一步
+  /// 查不动。原先跟 addChangeCallback 一起放在 initState,而权限是 _init() 里
+  /// 异步申请的,那段窗口里发生的变更等于白丢。
+  bool _notifyOn = false;
+
+  void _ensureChangeNotify() {
+    if (_notifyOn) return;
+    _notifyOn = true;
+    PhotoManager.startChangeNotify();
   }
 
   @override
   void dispose() {
     _reloadDebounce?.cancel();
-    PhotoManager.stopChangeNotify();
+    if (_notifyOn) PhotoManager.stopChangeNotify();
     PhotoManager.removeChangeCallback(_onLibraryChanged);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
@@ -150,6 +158,7 @@ class _GalleryPickerPageState extends ConsumerState<GalleryPickerPage>
     );
     if (!mounted) return;
     setState(() => _perm = ps);
+    if (ps.hasAccess) _ensureChangeNotify();
     // 用同步的 get(内存态):多一个 await 就要多一道 mounted 检查,不值当。
     // 相册没了(被删/权限收窄)时取不到,_openInitialAlbum 自己回落全部图片。
     if (ps.hasAccess) {
@@ -380,24 +389,32 @@ class _GalleryPickerPageState extends ConsumerState<GalleryPickerPage>
                                 ),
                               )
                             : const _SkeletonGrid())
-                      : NotificationListener<ScrollNotification>(
-                          onNotification: (n) {
-                            if (n.metrics.pixels >
-                                n.metrics.maxScrollExtent - 900) {
-                              _loadMore();
-                            }
-                            return false;
-                          },
-                          child: GridView.builder(
-                            padding: const EdgeInsets.all(2),
-                            gridDelegate:
-                                const SliverGridDelegateWithFixedCrossAxisCount(
-                                  crossAxisCount: 3,
-                                  mainAxisSpacing: 2,
-                                  crossAxisSpacing: 2,
-                                ),
-                            itemCount: _assets.length,
-                            itemBuilder: (context, i) => _cell(_assets[i]),
+                      // 下拉刷新是**兜底**:自动刷新依赖系统的 MediaStore 变更
+                      // 广播,部分定制系统会限制或延迟投递,那时手动这一下是唯一
+                      // 不依赖广播的路。
+                      : RefreshIndicator(
+                          onRefresh: _reload,
+                          child: NotificationListener<ScrollNotification>(
+                            onNotification: (n) {
+                              if (n.metrics.pixels >
+                                  n.metrics.maxScrollExtent - 900) {
+                                _loadMore();
+                              }
+                              return false;
+                            },
+                            child: GridView.builder(
+                              // 内容不满一屏时也要能下拉
+                              physics: const AlwaysScrollableScrollPhysics(),
+                              padding: const EdgeInsets.all(2),
+                              gridDelegate:
+                                  const SliverGridDelegateWithFixedCrossAxisCount(
+                                    crossAxisCount: 3,
+                                    mainAxisSpacing: 2,
+                                    crossAxisSpacing: 2,
+                                  ),
+                              itemCount: _assets.length,
+                              itemBuilder: (context, i) => _cell(_assets[i]),
+                            ),
                           ),
                         ),
                 ),
