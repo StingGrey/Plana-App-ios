@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/app_info.dart';
 import '../../core/theme/app_theme.dart';
-import '../generate/widgets/common.dart' show hintSnack;
+import '../generate/widgets/common.dart' show hintSnack, sharedAxisRoute;
+import '../onboarding/welcome_page.dart';
 import '../update/update_sheet.dart' show UpdateRow;
 import 'widgets/settings_ui.dart';
 
@@ -98,10 +100,50 @@ class AboutPage extends StatelessWidget {
                 value: 'quicktagcloud.com',
                 onTap: () => _open(context, kCodexSourceUrl),
               ),
-              const SettingsRow(
+              // 报的是**出处**,不是当前用的哪一档 —— 档位是设置项该管的事,
+              // 关于页只交代东西从哪来。
+              SettingsRow(
                 icon: Icons.sell_outlined,
-                title: '标签补全',
-                value: 'Danbooru 离线库',
+                title: '离线补全词库',
+                value: 'Auto-NovelAI-Refactor',
+                onTap: () => _open(context, kOfflineTagSourceUrl),
+              ),
+              SettingsRow(
+                icon: Icons.translate_outlined,
+                title: '中文搜词与译名',
+                value: 'DanbooruSearchOnline',
+                onTap: () => _open(context, kDanbooruSearchUrl),
+              ),
+              SettingsRow(
+                icon: Icons.auto_awesome_outlined,
+                title: '图像生成',
+                value: 'novelai.net',
+                onTap: () => _open(context, kNovelAiUrl),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          const SettingsLabel('交流'),
+          SettingsCard(
+            children: [
+              SettingsRow(
+                icon: Icons.forum_outlined,
+                title: 'QQ 交流群',
+                value: kQqGroupId,
+                onTap: () => _copyQqGroup(context),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          const SettingsLabel('引导'),
+          SettingsCard(
+            children: [
+              SettingsRow(
+                icon: Icons.flag_outlined,
+                title: '重新查看引导',
+                onTap: () => Navigator.of(
+                  context,
+                ).push(sharedAxisRoute(const WelcomePage(replay: true))),
               ),
             ],
           ),
@@ -154,6 +196,15 @@ class AboutPage extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  /// 复制群号。**不跳转** —— 短链会先弹浏览器再跳回 QQ,scheme 又得赌机型与
+  /// QQ 版本;复制到剪贴板自己去搜,反而是唯一不会落空的那条。
+  Future<void> _copyQqGroup(BuildContext context) async {
+    await Clipboard.setData(const ClipboardData(text: kQqGroupId));
+    if (context.mounted) {
+      hintSnack(context, '已复制群号 $kQqGroupId', icon: Icons.copy);
+    }
   }
 
   Future<void> _open(BuildContext context, String url) async {

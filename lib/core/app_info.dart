@@ -17,6 +17,25 @@ bool get kIsPrerelease => kAppVersion.contains('-');
 /// 法典图鉴的数据来源。
 const kCodexSourceUrl = 'https://novelai.quicktagcloud.com/';
 
+/// 增强补全的中文搜词与译名来源。后端 `/api/tags/search` 是它的代理,
+/// 中文名与一句话简介也出自它的建库产物(tags_enhanced.csv)。
+const kDanbooruSearchUrl =
+    'https://github.com/SuzumiyaAkizuki/DanbooruSearchOnline';
+
+/// 离线补全词库(`assets/danbooru.tsv`,随包分发)的来源:标签表、热度与绝大部分
+/// 中文译名取自其 `danbooru_e621_merged_with_zh.csv`。上游同为 GPL-3.0,再分发
+/// 合规 —— 详见 THIRD_PARTY_NOTICES.md。
+const kOfflineTagSourceUrl =
+    'https://github.com/zhulinyv/Auto-NovelAI-Refactor';
+
+/// NovelAI 官网。本应用是第三方客户端,出图能力全部来自它。
+const kNovelAiUrl = 'https://novelai.net/';
+
+/// QQ 交流群号。关于页那一行点了就是复制它 —— 不做跳转:
+/// 一键加群短链会先弹一下浏览器再跳回 QQ,唤起 scheme 又得赌机型与 QQ 版本,
+/// 两种都不如「复制群号,自己去搜」来得稳。
+const kQqGroupId = '1078261982';
+
 /// GitHub 仓库(`owner/repo`),「检查更新」据此查 Releases,关于页据此显示源码入口。
 ///
 /// **开源发布后把仓库名填在这里 —— 只此一处。** 留空时检查更新显示「暂无更新信息」、
