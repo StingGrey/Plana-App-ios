@@ -184,9 +184,7 @@ class AboutPage extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 8),
             child: Text(
               '$kAppName 是第三方客户端,与 NovelAI 官方无关联。'
-              '图像由 NovelAI 生成,账号与生成内容产生的一切责任由使用者承担。'
-              '法典、标签与模型的版权归各自作者所有,本应用仅作索引与调用 —— '
-              '本地超分模型不随应用分发,首次使用时由你的设备直接从 Upscayl 官方仓库下载。',
+              '图像由 NovelAI 生成,账号与生成内容产生的一切责任由使用者承担。',
               style: context.texts.labelSmall!.copyWith(
                 color: scheme.outline,
                 height: 1.6,
