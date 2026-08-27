@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -60,12 +58,12 @@ class _PlanaAppState extends ConsumerState<PlanaApp> {
   void initState() {
     super.initState();
     _dropBridge = DropImportBridge();
-    unawaited(_dropBridge.attach(_openDroppedImage));
+    _dropBridge.attach(_openDroppedImage);
   }
 
   @override
   void dispose() {
-    unawaited(_dropBridge.detach());
+    _dropBridge.detach();
     super.dispose();
   }
 

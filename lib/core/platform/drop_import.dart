@@ -1,5 +1,3 @@
-import 'dart:typed_data';
-
 import 'package:flutter/services.dart';
 
 const dropImportChannelName = 'plana/drop_import';
@@ -28,18 +26,18 @@ DroppedImage? parseDroppedImage(Object? arguments) {
 
 class DropImportBridge {
   DropImportBridge({
-    MethodChannel channel = const MethodChannel(dropImportChannelName),
-  }) : _channel = channel;
+    this._channel = const MethodChannel(dropImportChannelName),
+  });
 
   final MethodChannel _channel;
 
-  Future<void> attach(Future<void> Function(DroppedImage image) onImage) {
-    return _channel.setMethodCallHandler((call) async {
+  void attach(Future<void> Function(DroppedImage image) onImage) {
+    _channel.setMethodCallHandler((call) async {
       if (call.method != 'importImage') return;
       final image = parseDroppedImage(call.arguments);
       if (image != null) await onImage(image);
     });
   }
 
-  Future<void> detach() => _channel.setMethodCallHandler(null);
+  void detach() => _channel.setMethodCallHandler(null);
 }
