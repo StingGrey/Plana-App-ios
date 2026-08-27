@@ -5,8 +5,15 @@ on:
   push:
     branches:
       - main
+    # 代码、依赖或 iOS 工程变化时自动产出 unsigned IPA。
     paths:
       - '.github/workflows/build-ios-unsigned.yml'
+      - 'lib/**'
+      - 'test/**'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - 'tool/**'
+      - 'ios/**'
 
 permissions:
   contents: read
