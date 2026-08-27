@@ -4,6 +4,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plana_app/core/platform/drop_import.dart';
 
 void main() {
+  test('拖放状态通道解析悬停与读取状态', () {
+    expect(parseDropImportState('hover'), DropImportState.hover);
+    expect(parseDropImportState('loading'), DropImportState.loading);
+    expect(parseDropImportState('unknown'), DropImportState.idle);
+  });
+
   test('拖入图片通道保留原始字节和文件名', () {
     final bytes = Uint8List.fromList([137, 80, 78, 71]);
     final image = parseDroppedImage({

@@ -2,6 +2,14 @@ import 'package:flutter/services.dart';
 
 const dropImportChannelName = 'plana/drop_import';
 
+enum DropImportState { idle, hover, loading }
+
+DropImportState parseDropImportState(Object? value) => switch (value) {
+  'hover' => DropImportState.hover,
+  'loading' => DropImportState.loading,
+  _ => DropImportState.idle,
+};
+
 /// 从 iPad 外部拖入的原始图片。字节不经过 UIImage 重编码,可保留 PNG 元数据。
 class DroppedImage {
   const DroppedImage({required this.bytes, required this.fileName});
@@ -31,11 +39,20 @@ class DropImportBridge {
 
   final MethodChannel _channel;
 
-  void attach(Future<void> Function(DroppedImage image) onImage) {
+  void attach(
+    Future<void> Function(DroppedImage image) onImage, {
+    void Function(DropImportState state)? onStateChanged,
+  }) {
     _channel.setMethodCallHandler((call) async {
-      if (call.method != 'importImage') return;
-      final image = parseDroppedImage(call.arguments);
-      if (image != null) await onImage(image);
+      switch (call.method) {
+        case 'dropState':
+          onStateChanged?.call(parseDropImportState(call.arguments));
+          return;
+        case 'importImage':
+          final image = parseDroppedImage(call.arguments);
+          if (image != null) await onImage(image);
+          return;
+      }
     });
   }
 

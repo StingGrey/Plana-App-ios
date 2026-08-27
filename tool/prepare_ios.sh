@@ -30,11 +30,13 @@ fi
 # Flutter 工程不入库,每次生成后注入 Plana 的 AppDelegate。这里负责 iPad
 # 外部图片拖放,并把原始字节交给 Dart 侧现有导入面板。
 APP_DELEGATE_TEMPLATE="$ROOT/tool/ios/AppDelegate.swift"
-if [[ ! -f "$APP_DELEGATE_TEMPLATE" ]]; then
-  echo "错误：找不到 iOS AppDelegate 模板。" >&2
+SCENE_DELEGATE_TEMPLATE="$ROOT/tool/ios/SceneDelegate.swift"
+if [[ ! -f "$APP_DELEGATE_TEMPLATE" || ! -f "$SCENE_DELEGATE_TEMPLATE" ]]; then
+  echo "错误：找不到 iOS 生命周期模板。" >&2
   exit 1
 fi
 cp "$APP_DELEGATE_TEMPLATE" ios/Runner/AppDelegate.swift
+cp "$SCENE_DELEGATE_TEMPLATE" ios/Runner/SceneDelegate.swift
 
 PLIST="ios/Runner/Info.plist"
 PB="/usr/libexec/PlistBuddy"

@@ -53,12 +53,13 @@ class _PlanaAppState extends ConsumerState<PlanaApp> {
   final _navigatorKey = GlobalKey<NavigatorState>();
   late final DropImportBridge _dropBridge;
   bool _dropPanelOpen = false;
+  DropImportState _dropState = DropImportState.idle;
 
   @override
   void initState() {
     super.initState();
     _dropBridge = DropImportBridge();
-    _dropBridge.attach(_openDroppedImage);
+    _dropBridge.attach(_openDroppedImage, onStateChanged: _setDropState);
   }
 
   @override
@@ -68,6 +69,7 @@ class _PlanaAppState extends ConsumerState<PlanaApp> {
   }
 
   Future<void> _openDroppedImage(DroppedImage image) async {
+    _setDropState(DropImportState.idle);
     if (_dropPanelOpen || !mounted) return;
     var navigator = _navigatorKey.currentState;
     if (navigator == null) {
@@ -93,6 +95,10 @@ class _PlanaAppState extends ConsumerState<PlanaApp> {
     }
   }
 
+  void _setDropState(DropImportState state) {
+    if (mounted && state != _dropState) setState(() => _dropState = state);
+  }
+
   @override
   Widget build(BuildContext context) {
     final ts = ref.watch(themeSettingsProvider);
@@ -106,6 +112,67 @@ class _PlanaAppState extends ConsumerState<PlanaApp> {
       darkTheme: AppTheme.dark(ts.seed.color),
       themeMode: ts.mode,
       home: const _AuthGate(),
+      builder: (context, child) => Stack(
+        fit: StackFit.expand,
+        children: [
+          child ?? const SizedBox.shrink(),
+          if (_dropState != DropImportState.idle)
+            _DropImportOverlay(state: _dropState),
+        ],
+      ),
+    );
+  }
+}
+
+class _DropImportOverlay extends StatelessWidget {
+  const _DropImportOverlay({required this.state});
+
+  final DropImportState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final loading = state == DropImportState.loading;
+    return IgnorePointer(
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: scheme.scrim.withValues(alpha: .18),
+          border: Border.all(color: scheme.primary, width: 3),
+        ),
+        child: Center(
+          child: Material(
+            color: scheme.surface,
+            elevation: 4,
+            borderRadius: BorderRadius.circular(8),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 13),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (loading)
+                    SizedBox.square(
+                      dimension: 22,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.5,
+                        color: scheme.primary,
+                      ),
+                    )
+                  else
+                    Icon(
+                      Icons.add_photo_alternate_outlined,
+                      color: scheme.primary,
+                    ),
+                  const SizedBox(width: 10),
+                  Text(
+                    loading ? '正在读取图片…' : '松开以导入图片',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
