@@ -10,8 +10,9 @@ import '../models.dart' show tokenLimitOf;
 import '../prompt_presets.dart';
 import 'common.dart';
 
-/// 提示词卡:头部 token 进度条 + 展开后完整显示正/负向提示词。
-/// 头部右侧为「清空正向」、正/负提示词下划线转空格(均可撤销)与展开/收起。
+/// 提示词卡:正/负面提示词各自拥有独立的展开/收起状态。
+/// 卡片头部同时显示正面 token 进度,并提供清空正向与正/负提示词下划线转空格
+/// (均可撤销)。
 class PromptCard extends ConsumerStatefulWidget {
   const PromptCard({super.key});
 
@@ -20,7 +21,8 @@ class PromptCard extends ConsumerStatefulWidget {
 }
 
 class _PromptCardState extends ConsumerState<PromptCard> {
-  bool _expanded = true;
+  bool _positiveExpanded = true;
+  bool _negativeExpanded = true;
 
   @override
   Widget build(BuildContext context) {
@@ -136,15 +138,16 @@ class _PromptCardState extends ConsumerState<PromptCard> {
                 ),
                 const SizedBox(width: 6),
                 Tooltip(
-                  message: _expanded ? '收起提示词' : '展开提示词',
+                  message: _positiveExpanded ? '收起正面提示词' : '展开正面提示词',
                   child: InkResponse(
-                    key: const ValueKey('prompt_expand_button'),
+                    key: const ValueKey('positive_expand_button'),
                     radius: 22,
-                    onTap: () => setState(() => _expanded = !_expanded),
+                    onTap: () =>
+                        setState(() => _positiveExpanded = !_positiveExpanded),
                     child: SizedBox.square(
                       dimension: 36,
                       child: AnimatedRotation(
-                        turns: _expanded ? .5 : 0,
+                        turns: _positiveExpanded ? .5 : 0,
                         duration: Motion.medium,
                         curve: Motion.emphasized,
                         child: Icon(
@@ -160,7 +163,7 @@ class _PromptCardState extends ConsumerState<PromptCard> {
             ),
           ),
           ExpandBody(
-            expanded: _expanded,
+            expanded: _positiveExpanded,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
@@ -197,41 +200,83 @@ class _PromptCardState extends ConsumerState<PromptCard> {
                     ),
                   ),
                 ),
-                // 负面:展开后同样完整显示,右侧保留独立 token 计数。
-                InkWell(
-                  onTap: () => _openEditor(context, positive: false),
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(15, 6, 15, 14),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Icon(Icons.block, size: 17, color: scheme.error),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            state.negativePrompt.isEmpty
-                                ? '点击编辑负面提示词…'
-                                : state.negativePrompt,
-                            style: context.texts.bodyMedium!.copyWith(
-                              height: 1.5,
-                              color: scheme.error,
-                            ),
-                          ),
+              ],
+            ),
+          ),
+          // 负面标题与正面展开体同级,收起正面时仍可独立操作。
+          Padding(
+            padding: const EdgeInsets.fromLTRB(15, 6, 9, 0),
+            child: Row(
+              children: [
+                Icon(Icons.block, size: 17, color: scheme.error),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(8),
+                    onTap: () => _openEditor(context, positive: false),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Text(
+                        '负面提示词',
+                        style: context.texts.bodyMedium!.copyWith(
+                          color: scheme.error,
+                          fontWeight: FontWeight.w600,
                         ),
-                        const SizedBox(width: 8),
-                        Text(
-                          '$negTokens',
-                          style: mono(
-                            context,
-                            size: 12,
-                            weight: FontWeight.w500,
-                          ).copyWith(color: scheme.outline),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  '$negTokens',
+                  style: mono(
+                    context,
+                    size: 12,
+                    weight: FontWeight.w500,
+                  ).copyWith(color: scheme.outline),
+                ),
+                const SizedBox(width: 2),
+                Tooltip(
+                  message: _negativeExpanded ? '收起负面提示词' : '展开负面提示词',
+                  child: InkResponse(
+                    key: const ValueKey('negative_expand_button'),
+                    radius: 20,
+                    onTap: () =>
+                        setState(() => _negativeExpanded = !_negativeExpanded),
+                    child: SizedBox.square(
+                      dimension: 36,
+                      child: AnimatedRotation(
+                        turns: _negativeExpanded ? .5 : 0,
+                        duration: Motion.medium,
+                        curve: Motion.emphasized,
+                        child: Icon(
+                          Icons.expand_more,
+                          size: 21,
+                          color: scheme.outline,
                         ),
-                      ],
+                      ),
                     ),
                   ),
                 ),
               ],
+            ),
+          ),
+          ExpandBody(
+            expanded: _negativeExpanded,
+            child: InkWell(
+              onTap: () => _openEditor(context, positive: false),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(15, 2, 15, 14),
+                child: Text(
+                  state.negativePrompt.isEmpty
+                      ? '点击编辑负面提示词…'
+                      : state.negativePrompt,
+                  style: context.texts.bodyMedium!.copyWith(
+                    height: 1.5,
+                    color: scheme.error,
+                  ),
+                ),
+              ),
             ),
           ),
         ],
