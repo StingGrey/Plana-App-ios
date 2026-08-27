@@ -304,7 +304,8 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
   Future<void> _importImages() async {
     final picked = await pickImagesOrFiles(context);
     if (picked.isEmpty || !mounted) return;
-    // 图库里改走「从文件选」的,一律按文件分流(vibe 文件也放行)
+    // 从系统 Files 选的,一律按文件分流(vibe 文件也放行);照片选择器返回的
+    // 则直接按参考图入库。
     if (picked.files.isNotEmpty) return _ingest(picked.files);
     setState(() => _busy = true);
     var n = 0;

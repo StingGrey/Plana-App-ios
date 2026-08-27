@@ -13,8 +13,8 @@ import 'selection_bar.dart';
 
 /// 上次选过的相册 id,存 `settings.json`。
 ///
-/// 全应用只有这一个选择器(导入图片 / 图生图 / Vibe / 角色参考…… 都走它),
-/// 所以记在这里 = 所有入口共享:在哪个相册挑过,下次从哪个相册开始。
+/// Android 的图片选择入口(导入图片 / 图生图 / Vibe / 角色参考…… 都走它),
+/// 所以记在这里 = Android 各入口共享:在哪个相册挑过,下次从哪个相册开始。
 ///
 /// 不进 [PrefsStore.migrateKeys] —— 那份名单是给「原本存在 secure storage、
 /// 需要搬家」的老设置项用的,新键从来没在那儿待过,登记只会白读一次。
@@ -32,8 +32,8 @@ class GalleryPickOutcome {
   final bool useFileBrowser;
 }
 
-/// 应用内图库选择器:photo_manager 直读系统媒体库,全部相册/全部图片可达。
-/// 系统照片选择器只放行固定几个分类且不看 app 权限,只能自建绕开。
+/// Android 应用内图库选择器:photo_manager 直读系统媒体库,全部相册/全部图片
+/// 可达。iOS 入口改走系统 PHPicker,不会创建此页面。
 class GalleryPickerPage extends ConsumerStatefulWidget {
   const GalleryPickerPage({super.key, required this.multiple});
 

@@ -74,7 +74,7 @@ Provisioning Profile。若以后要上传 TestFlight，应另外建立签名工�
 ## 首轮真机检查
 
 - Token 与账号密码登录后重启仍能从 Keychain 读取；
-- 选择单图、多图与“部分照片”权限；
+- 选择单图、多图，以及从系统 Files 导入文件；
 - 保存 PNG/JPG、批量保存和自定义相册；
 - 导入/导出 `.naiv4vibe`、bundle 与 JSON；
 - 直连生成、Bot 生成、取消、队列及有限循环；

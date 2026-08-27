@@ -36,7 +36,7 @@ class _VibeCardState extends ConsumerState<VibeCard> {
   Future<void> _onAdd() async {
     final picked = await pickImagesOrFiles(context);
     if (picked.isEmpty || !mounted) return;
-    // 图库里改走「从文件选」的:不限扩展名,vibe 文件也可能在里面
+    // 从系统 Files 选的:不限扩展名,vibe 文件也可能在里面
     if (picked.files.isNotEmpty) return _addFiles(picked.files);
     await _addImages(picked.images);
   }
