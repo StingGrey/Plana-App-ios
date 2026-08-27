@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gal/gal.dart';
 
 import '../../core/theme/app_theme.dart';
+import '../../core/util/gallery_save.dart';
 import '../../core/util/image_pick.dart';
 import '../../core/util/png_meta.dart';
 import '../generate/widgets/common.dart' show hintSnack, sharedAxisRoute;
@@ -98,7 +99,11 @@ class _MetadataToolViewState extends ConsumerState<MetadataToolView> {
                 _customPrompt.text.trim(),
               );
         final suffix = _mode == _BatchMode.clean ? '_clean' : '_custom';
-        await Gal.putImageBytes(out, name: '${sel[i].baseName}$suffix');
+        await saveImageBytesToGallery(
+          out,
+          name: '${sel[i].baseName}$suffix',
+          extension: 'png',
+        );
         saved++;
       } catch (_) {
         failed++;

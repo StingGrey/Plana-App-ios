@@ -14,31 +14,6 @@ Tok _tok(String text, String name) =>
     parseToks(text).firstWhere((t) => t.name == name);
 
 void main() {
-  // 空框退格删最后一枚(见 editor_page 的 _chipBackspace)。芯片流没有光标,
-  // 标签也不是输入框里的字符,退格落不到它们身上 —— 这条口径就是那一下的定义。
-  group('退格删末枚', () {
-    int lastIdx(String t) => topLevelUnits(t, const {}).length - 1;
-    String back(String t) =>
-        deleteUnits(t, const {}, {lastIdx(t)}).$1;
-
-    test('逐枚删,前面的原样留着', () {
-      expect(back('a, b, c'), 'a, b');
-      expect(back(back('a, b, c')), 'a');
-      expect(back(back(back('a, b, c'))), '');
-    });
-
-    test('权重记号跟着自己那枚一起走,不留半截', () {
-      expect(parseToks(back('a, {b}, 1.3::c::')).map((t) => t.name), ['a', 'b']);
-      expect(back('a, {b}, 1.3::c::').contains('::'), isFalse);
-    });
-
-    // 换行是用户分的段。删掉段里最后一枚,那个换行要留着 —— 否则下一枚
-    // 输入又被拼回上一段,用户排的版被一次退格抹平(与 appendUnit 同一口径)。
-    test('用户的换行分段活下来', () {
-      expect(back('a, b\nc'), 'a, b\n');
-    });
-  });
-
   // ⊕ 画在哪儿、以及面板上那颗「移动」能不能点,读的都是这一份判据。
   // 两处各写各的迟早出现「按钮亮着但一个 ⊕ 都没有」。
   group('chipValidGaps:哪些落点是有意义的', () {

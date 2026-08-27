@@ -14,6 +14,7 @@ import 'package:share_plus/share_plus.dart';
 import '../../../core/store/app_stores.dart';
 import '../../../core/store/cache_sweep.dart' show kShareCacheDir;
 import '../../../core/theme/app_theme.dart';
+import '../../../core/util/gallery_save.dart';
 import '../../generate/widgets/common.dart'
     show ExpandBody, hintSnack, sharedAxisRoute;
 import '../../import/import_panel.dart';
@@ -464,7 +465,12 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
           failed++;
         } else {
           final out = await processForSave(bytes, settings);
-          await Gal.putImageBytes(out, name: 'plana_${r.seed}', album: album);
+          await saveImageBytesToGallery(
+            out,
+            name: 'plana_${r.seed}',
+            extension: settings.format == SaveFormat.jpg ? 'jpg' : 'png',
+            album: album,
+          );
           saved++;
         }
       } catch (_) {

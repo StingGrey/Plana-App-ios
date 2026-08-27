@@ -8,6 +8,7 @@ import 'package:gal/gal.dart';
 import '../../../core/store/storage_stats.dart' show fmtBytes;
 import '../../../core/theme/app_theme.dart';
 import '../../../core/ui/param_input.dart';
+import '../../../core/util/gallery_save.dart';
 import '../../generate/widgets/common.dart' show hintSnack;
 import '../save_pipeline.dart';
 import '../save_settings.dart';
@@ -91,8 +92,13 @@ class _SaveSheetState extends ConsumerState<_SaveSheet> {
         if (mounted) hintSnack(context, '未获相册权限', icon: Icons.error_outline);
         return;
       }
-      final out = await processForSave(widget.bytes, _current);
-      await Gal.putImageBytes(out, name: 'plana_${widget.seed}');
+      final settings = _current;
+      final out = await processForSave(widget.bytes, settings);
+      await saveImageBytesToGallery(
+        out,
+        name: 'plana_${widget.seed}',
+        extension: settings.format == SaveFormat.jpg ? 'jpg' : 'png',
+      );
       if (!mounted) return;
       hintSnack(
         context,

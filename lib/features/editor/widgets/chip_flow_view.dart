@@ -10,24 +10,6 @@ import '../../../core/util/haptics.dart';
 /// 又不至于自己独占一行把芯片流顶开。
 const double _kInputWidth = 168;
 
-/// 尾部输入框里常驻的**零宽占位符**。
-///
-/// 为什么要塞一个看不见的字符:Android 上输入框真空时,输入法的退格走的是
-/// `deleteSurroundingText`,删无可删就什么都不发 —— app 这头收不到任何信号,
-/// 「空框退格删掉上一枚标签」这个芯片输入的常规操作根本接不上。走键盘事件
-/// 那条路也不保准:各家输入法对 KEYCODE_DEL 的转发口径不一,中文输入法尤其。
-///
-/// 框里永远留一个零宽空格,退格就**必定**产生一次真实删除;占位符被删掉即
-/// 「在空框上按了退格」(见 editor_page 的 `_onInputChanged`)。零宽空格不占
-/// 宽度、不参与断行,光标看着就贴在框首。
-///
-/// 代价是这个框对 TextField 而言永远非空,自带的 hintText 不会出现 ——
-/// 占位提示改由本视图自己画(见 [_inputBox])。
-const String kChipInputPad = '\u200b';
-
-/// 去掉占位符后的**有效**文本。页面与本视图共用一处,免得两边各写各的。
-String chipInputBody(String raw) => raw.replaceAll(kChipInputPad, '');
-
 /// 把选中的这批搬到间隙 [g] 之后顺序完全没变 → 这个落点是空操作。
 /// 直接按 moveUnits 的换算跑一遍新序,与原序比对,省得逐种情况讨论。
 bool _noOpGap(Set<int> sel, int g, int n) {
@@ -421,46 +403,26 @@ class _ChipFlowViewState extends State<ChipFlowView>
     final scheme = context.scheme;
     final fs = widget.fontSize;
     const pad = EdgeInsets.symmetric(vertical: 7);
-    final hintStyle = TextStyle(fontSize: fs, color: scheme.outline);
     return SizedBox(
       width: empty ? double.infinity : _kInputWidth,
-      child: Stack(
-        children: [
-          // 占位提示自己画:框里常驻 [kChipInputPad],TextField 眼里永远非空,
-          // 自带的 hintText 一次都不会出现。跟着 input 重建 —— 打第一个字就得
-          // 让位,而页面不保证每次击键都 setState。
-          AnimatedBuilder(
-            animation: widget.input,
-            builder: (_, _) => chipInputBody(widget.input.text).isEmpty
-                ? Padding(
-                    padding: pad,
-                    child: Text(
-                      empty ? '输入标签,可输入中文自动翻译' : '继续添加…',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: hintStyle,
-                    ),
-                  )
-                : const SizedBox.shrink(),
-          ),
-          TextField(
-            controller: widget.input,
-            focusNode: widget.inputFocus,
-            onChanged: widget.onInputChanged,
-            onSubmitted: (v) {
-              widget.onInputSubmitted(chipInputBody(v));
-              widget.inputFocus.requestFocus(); // 落一枚接着打下一枚
-            },
-            textInputAction: TextInputAction.done,
-            style: TextStyle(fontSize: fs, color: scheme.onSurface),
-            cursorColor: scheme.primary,
-            decoration: const InputDecoration(
-              isDense: true,
-              border: InputBorder.none,
-              contentPadding: pad,
-            ),
-          ),
-        ],
+      child: TextField(
+        controller: widget.input,
+        focusNode: widget.inputFocus,
+        onChanged: widget.onInputChanged,
+        onSubmitted: (v) {
+          widget.onInputSubmitted(v);
+          widget.inputFocus.requestFocus(); // 落一枚接着打下一枚
+        },
+        textInputAction: TextInputAction.done,
+        style: TextStyle(fontSize: fs, color: scheme.onSurface),
+        cursorColor: scheme.primary,
+        decoration: InputDecoration(
+          isDense: true,
+          border: InputBorder.none,
+          contentPadding: pad,
+          hintText: empty ? '输入标签,可输入中文自动翻译' : '继续添加…',
+          hintStyle: TextStyle(fontSize: fs, color: scheme.outline),
+        ),
       ),
     );
   }

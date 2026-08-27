@@ -60,16 +60,9 @@ class _EditorPageState extends ConsumerState<EditorPage>
 
   final FocusNode _inputFocus = FocusNode();
 
-  /// 输入框的**有效**文本:去掉常驻的零宽占位符(见 [kChipInputPad])。
-  /// 凡是读 _input.text 的地方都走这里 —— 占位符不是用户打的字。
-  String get _inputText => chipInputBody(_input.text);
+  String get _inputText => _input.text;
 
-  /// 上一次的有效文本。用来分辨「空框退格」和「把打了一半的词全选删掉」——
-  /// 两者都让框子变空,但后者不该顺手把标签也删了。
-  String _prevInputBody = '';
-
-  /// 把输入框清成「只剩占位符」的空态。芯片模式下清空一律走这里:
-  /// 真清成空串的话,下一次空框退格就又收不到信号了。
+  /// 把芯片模式的尾部输入框清空。
   void _resetInput() => _setInputBody('');
 
   /// 正/负切换时编辑区的方向滑入(切负面从右进、切正面从左进)。
@@ -132,7 +125,6 @@ class _EditorPageState extends ConsumerState<EditorPage>
       },
     );
     _controller.addListener(_onCtrl);
-    // 占位符要从一开始就在:框子真空过一次,那一次的退格就收不到信号。
     _resetInput();
     // 灌注离线词库全量翻译(否则注音只显示补全零星回填过的词);
     // 灌完刷新注音层/词条栏。幂等,重复进编辑器不重复灌。
@@ -871,23 +863,9 @@ class _EditorPageState extends ConsumerState<EditorPage>
   // ---- 芯片模式的尾部输入框 ----
 
   /// 打字:逗号/换行即定稿(web commitInput 同款),其余交给补全。
-  ///
-  /// 开头先认一件事:占位符还在不在。它没了 = 用户在**空框**上按了退格
-  /// (框里有字时退格删的是字,占位符在最前面轮不到它)——那一下转成
-  /// 「删掉最后一枚标签」。见 [kChipInputPad]。
+  /// 空输入框上的退格不做额外处理;删除整枚标签只走显式删除操作。
   void _onInputChanged(String raw) {
-    final body = chipInputBody(raw);
-    final wasEmpty = _prevInputBody.isEmpty;
-    _prevInputBody = body;
-    if (!raw.startsWith(kChipInputPad)) {
-      _setInputBody(body);
-      // 之前本来就是空的才算退格。之前有字(全选删掉、整段替换)只是普通清空。
-      if (body.isEmpty && wasEmpty) {
-        _chipBackspace();
-        return;
-      }
-      // 极少见:输入法整段替换把占位符一起带走了。补回去当普通输入继续。
-    }
+    final body = raw;
     final m = RegExp(r'[,，\n]').firstMatch(body);
     if (m != null) {
       final head = body.substring(0, m.start).trim();
@@ -900,34 +878,12 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _scheduleQuery();
   }
 
-  /// 写回输入框:占位符恒在最前,光标落在正文末尾。
+  /// 写回输入框,光标落在正文末尾。
   void _setInputBody(String body) {
-    _prevInputBody = body;
     _input.value = TextEditingValue(
-      text: '$kChipInputPad$body',
-      selection: TextSelection.collapsed(
-        offset: kChipInputPad.length + body.length,
-      ),
+      text: body,
+      selection: TextSelection.collapsed(offset: body.length),
     );
-  }
-
-  /// 空框上按退格 = 删掉最后一枚标签(有选中就删选中的那批)。
-  ///
-  /// 芯片流里没有光标,标签也不是输入框里的字符,退格不会自然地落到它们身上;
-  /// 不接这一下,想清掉一串标签只能一枚枚点选再点删除。
-  ///
-  /// 连着按就连着删,一次一枚 —— 删过头有撤销兜底([_applyText] 每次都进撤销栈)。
-  void _chipBackspace() {
-    if (_chipSel.isNotEmpty) {
-      _chipDelete();
-      return;
-    }
-    final units = topLevelUnits(_controller.text, _foldBodies);
-    if (units.isEmpty) return;
-    final (text, cursor) = deleteUnits(_controller.text, _foldBodies, {
-      units.length - 1,
-    });
-    _applyText(text, cursor);
   }
 
   /// 回车/「直接添加」:整条落成标签。

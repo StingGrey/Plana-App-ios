@@ -17,6 +17,7 @@ import '../../import/import_panel.dart';
 import '../../inpaint/inpaint_overlay.dart';
 import '../../../core/net/anlas_provider.dart';
 import '../../../core/store/app_stores.dart';
+import '../../../core/util/gallery_save.dart';
 import '../../../core/util/haptics.dart';
 import '../../../core/util/image_ops.dart';
 import '../gallery_state.dart';
@@ -610,7 +611,11 @@ class _ActionRail extends ConsumerWidget {
       }
       final settings = await ref.read(saveSettingsProvider.future);
       final out = await processForSave(bytes, settings);
-      await Gal.putImageBytes(out, name: 'plana_${result.seed}');
+      await saveImageBytesToGallery(
+        out,
+        name: 'plana_${result.seed}',
+        extension: settings.format == SaveFormat.jpg ? 'jpg' : 'png',
+      );
       if (context.mounted) {
         hintSnack(context, '已保存到相册', icon: Icons.check_circle_outline);
       }
