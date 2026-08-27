@@ -340,7 +340,7 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
                 child: Column(
                   children: [
                     Expanded(child: canvas),
-                    if (showChrome && selected != null)
+                    if (showChrome)
                       TabletResultToolbar(result: selected),
                   ],
                 ),
