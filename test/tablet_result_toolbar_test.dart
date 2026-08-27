@@ -31,7 +31,7 @@ void main() {
     expect(find.text('重绘'), findsOneWidget);
     expect(find.text('放大'), findsOneWidget);
     expect(find.text('保存'), findsOneWidget);
-    expect(find.text('导入'), findsOneWidget);
+    expect(find.text('混淆'), findsOneWidget);
     expect(find.text('重新生成'), findsOneWidget);
 
     final toolbar = tester.getRect(
