@@ -10,6 +10,7 @@ import '../../core/auth/token_probe.dart';
 import '../../core/auth/token_store.dart';
 import '../../core/live_progress/live_progress.dart';
 import '../../core/net/nai_client.dart';
+import '../../core/platform/platform_support.dart';
 import '../../core/store/gen_settings.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/theme_settings.dart';
@@ -35,7 +36,8 @@ class WelcomePage extends ConsumerStatefulWidget {
 }
 
 class _WelcomePageState extends ConsumerState<WelcomePage> {
-  static const _pageCount = 6;
+  bool get _hasNotifyStep => supportsGenerationProgressNotifications;
+  int get _pageCount => _hasNotifyStep ? 6 : 5;
 
   final _pager = PageController();
   int _index = 0;
@@ -97,7 +99,13 @@ class _WelcomePageState extends ConsumerState<WelcomePage> {
     }
     ref
         .read(genSettingsProvider.notifier)
-        .patch((s) => s.copyWith(notifyPrimed: true));
+        .patch(
+          (s) => s.copyWith(
+            notifyPrimed: true,
+            // iOS 首版没有原生进度通知，避免后台仍反复走空通道。
+            genNotify: _hasNotifyStep ? s.genNotify : false,
+          ),
+        );
     if (widget.replay && mounted) Navigator.of(context).pop();
   }
 
@@ -118,7 +126,8 @@ class _WelcomePageState extends ConsumerState<WelcomePage> {
     final botPage = _index == 3 && !hasBot;
     final mustAuth = botPage && mode == AuthMode.bot;
     final skipBot = botPage && !mustAuth;
-    final notifyPage = _index == 4;
+    final notifyPage = _hasNotifyStep && _index == 4;
+    final doneIndex = _hasNotifyStep ? 5 : 4;
 
     return Scaffold(
       body: SafeArea(
@@ -133,8 +142,9 @@ class _WelcomePageState extends ConsumerState<WelcomePage> {
                   _page(1, (a) => _AppearanceStep(active: a)),
                   _page(2, (a) => _AccessStep(active: a)),
                   _page(3, (a) => _BotStep(active: a)),
-                  _page(4, (a) => _NotifyStep(active: a)),
-                  _page(5, (a) => _DoneStep(active: a)),
+                  if (_hasNotifyStep)
+                    _page(4, (a) => _NotifyStep(active: a)),
+                  _page(doneIndex, (a) => _DoneStep(active: a)),
                 ],
               ),
             ),

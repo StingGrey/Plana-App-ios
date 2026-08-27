@@ -7,6 +7,7 @@ import '../../core/auth/bot_session_store.dart';
 import '../../core/auth/nai_credential_login.dart';
 import '../../core/auth/token_store.dart';
 import '../../core/net/backend_config.dart';
+import '../../core/platform/platform_support.dart';
 import '../../core/store/app_stores.dart';
 import '../../core/store/prefs_store.dart';
 import '../../core/theme/app_theme.dart';
@@ -67,6 +68,7 @@ class _AppShellState extends ConsumerState<AppShell> {
   /// 存下来并在 dispose 取消** —— 裸 `Future.delayed` 在页面提前销毁后照样会醒,
   /// 属于真实泄漏(widget 冒烟测试会直接报 pending timer)。
   void _scheduleAutoCheck() {
+    if (!supportsGithubReleaseUpdate) return;
     final prefs = ref.read(prefsStoreProvider);
     if (!shouldAutoCheck(prefs)) return;
     _updateTimer = Timer(

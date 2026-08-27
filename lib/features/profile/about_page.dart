@@ -3,6 +3,7 @@ import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/app_info.dart';
+import '../../core/platform/platform_support.dart';
 import '../../core/theme/app_theme.dart';
 import '../generate/widgets/common.dart' show hintSnack, sharedAxisRoute;
 import '../onboarding/welcome_page.dart';
@@ -89,7 +90,18 @@ class AboutPage extends StatelessWidget {
             ),
           ),
           const SettingsLabel('版本'),
-          const SettingsCard(children: [UpdateRow()]),
+          SettingsCard(
+            children: [
+              if (isIOSPlatform)
+                const SettingsRow(
+                  icon: Icons.system_update_alt,
+                  title: 'iOS 更新',
+                  value: '由 Xcode / TestFlight 管理',
+                )
+              else
+                const UpdateRow(),
+            ],
+          ),
           const SizedBox(height: 16),
           const SettingsLabel('数据与资源'),
           SettingsCard(

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -25,6 +26,9 @@ class _TokenMode extends AuthModeNotifier {
 }
 
 void main() {
+  setUp(() => debugDefaultTargetPlatformOverride = TargetPlatform.android);
+  tearDown(() => debugDefaultTargetPlatformOverride = null);
+
   Widget app({required AuthModeNotifier Function() mode}) => ProviderScope(
     overrides: [
       appStoresProvider.overrideWithValue(AppStores.ephemeral()),

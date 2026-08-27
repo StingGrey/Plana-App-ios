@@ -87,7 +87,8 @@ dev_dependencies:
 # 该图标不跟随壁纸取色,已知并接受。
 flutter_launcher_icons:
   android: true
-  ios: false
+  ios: true
+  remove_alpha_ios: true
   image_path: "icons/app_icon.png"
   adaptive_icon_background: "#FBC14A"
   adaptive_icon_foreground: "icons/app_icon.png"

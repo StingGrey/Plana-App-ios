@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/net/anlas_provider.dart';
+import '../../../core/platform/platform_support.dart';
 import '../../../core/theme/app_theme.dart';
 import '../cost.dart';
 import '../gen_modules.dart';
@@ -64,6 +65,9 @@ class _Setup extends ConsumerWidget {
         : n > 0
         ? '$cost/张 · 共 ${cost * n + vibeFee} Anlas'
         : '$cost Anlas/张${vibeFee > 0 ? ' + 编码 $vibeFee' : ''}';
+    final endlessBackgroundWarning = supportsBackgroundGeneration
+        ? '退到后台也会继续。'
+        : '${isIOSPlatform ? 'iOS 上' : '当前平台'}请保持应用在前台。';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -76,8 +80,11 @@ class _Setup extends ConsumerWidget {
         ),
         const SizedBox(height: 6),
         Text(
-          '按当前参数一张接一张地出图,种子留空就每张随机。'
-          '中途出错会自动停下,也可以退到后台,进度在通知栏继续。',
+          supportsBackgroundGeneration
+              ? '按当前参数一张接一张地出图,种子留空就每张随机。'
+                    '中途出错会自动停下,也可以退到后台,进度在通知栏继续。'
+              : '按当前参数一张接一张地出图,种子留空就每张随机。'
+                    '生成期间请保持应用在前台,切换到其他应用可能暂停连接。',
           style: context.texts.bodySmall!.copyWith(
             color: scheme.onSurfaceVariant,
           ),
@@ -131,8 +138,7 @@ class _Setup extends ConsumerWidget {
           onPressed: gen.busy
               ? null
               : () async {
-                  // 无限 + 收费档:没有张数上限就没有花费上限,且退到后台仍会继续,
-                  // 所以开跑前确认一次。免费档或有限张数不打扰。
+                  // 无限 + 收费档没有花费上限，所以开跑前确认一次。
                   if (n == 0 && (cost > 0 || vibeFee > 0)) {
                     final ok = await confirmDialog(
                       context,
@@ -140,7 +146,9 @@ class _Setup extends ConsumerWidget {
                       message:
                           '当前参数每张约 $cost Anlas'
                           '${vibeFee > 0 ? '(另首张含 $vibeFee 点 Vibe 编码费)' : ''}'
-                          ',张数为无限——不点停止就会一直生成,退到后台也会继续。确定开始?',
+                          ',张数为无限——不点停止就会一直生成。'
+                          '$endlessBackgroundWarning'
+                          '确定开始?',
                       confirmLabel: '开始',
                     );
                     if (!ok || !context.mounted) return;

@@ -4,11 +4,12 @@
 
 # Plana App
 
-**NovelAI 第三方 Android 客户端** —— 可能是最舒适的 AI 绘图移动创作端
+**NovelAI 第三方移动客户端** —— 可能是最舒适的 AI 绘图移动创作端
 
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/mc5024/Plana-App?label=release)](https://github.com/mc5024/Plana-App/releases)
 [![Android](https://img.shields.io/badge/Android-7.0%2B-3ddc84?logo=android&logoColor=white)](#构建)
+[![iOS](https://img.shields.io/badge/iOS-13%2B-beta-000000?logo=apple&logoColor=white)](IOS_PORT.md)
 [![Flutter](https://img.shields.io/badge/built%20with-Flutter-02569B?logo=flutter&logoColor=white)](https://flutter.dev)
 
 </div>
@@ -22,7 +23,9 @@
 
 - **标签补全与翻译** 支持中英文搜词与搜角色,候选附 Danbooru 摘要与别名,标签自动翻译
 
-- **后台生成** 退至后台继续出图不中断,进度常驻通知栏,并适配灵动岛与状态栏胶囊(Android 16)
+- **后台生成(Android)** 退至后台继续出图不中断,进度常驻通知栏,并适配灵动岛与状态栏胶囊(Android 16)
+
+- **iOS 前台版** 核心生成、图库、素材库与导入导出均可用;首版生成时需保持应用在前台
 
 - **队列与循环** 多组标签可连续入队依次生成;循环出图可指定张数或不限,随时暂停
 
@@ -71,7 +74,7 @@ NAI 网页端的常规能力 —— 多角色与位置、Vibe Transfer、角色�
 | 计划 | 说明 | 阶段 |
 |---|---|---|
 | **多 Token 管理** | 同时保存多把 Token 并随时切换,免去反复粘贴与重新登录 | 计划中 |
-| **多平台适配** | iOS 计划中;其他平台尚未规划 | 计划中 |
+| **多平台适配** | iOS 前台版已适配;后台任务与 ActivityKit 为第二阶段 | 进行中 |
 | **内置 AI 助手** | 应用内对话式协助:撰写与改写提示词、解释参数取值 | 远期 |
 | **内置图像编辑** | 接入图像编辑模型,直接在应用内改图,不必导出到其他工具 | 远期 |
 | **ComfyUI 连接器** | 接入自建 ComfyUI 作为出图后端 | 远期 |
@@ -84,7 +87,11 @@ Bug 与功能建议走 [Issues](https://github.com/mc5024/Plana-App/issues)。
 
 ## 构建
 
-要求 Dart SDK ^3.12.2(Flutter 3.44 起);Android 7.0(API 24)以上,compileSdk 36(灵动岛进度需要)。
+要求 Dart SDK ^3.12.2(Flutter 3.44 起)。
+
+### Android
+
+Android 7.0(API 24)以上,compileSdk 36(灵动岛进度需要)。
 
 ```bash
 flutter pub get
@@ -92,6 +99,26 @@ flutter build apk --release --target-platform android-arm64
 ```
 
 产物为 `build/app/outputs/apk/release/Plana-<版本>-arm64-v8a.apk`,仅出 arm64-v8a。
+
+### iOS
+
+iOS 13 以上。需要 macOS、Xcode 与 CocoaPods;首次在项目根目录执行:
+
+```bash
+chmod +x tool/prepare_ios.sh
+./tool/prepare_ios.sh
+```
+
+随后打开 `ios/Runner.xcworkspace`,在 Signing & Capabilities 选择自己的开发者 Team
+即可真机运行。照片与局域网权限、App Icon、最低系统版本和无签名编译检查均由脚本配置。
+
+当前 iOS 首版不承诺切到后台后维持流式生成,详情见 [IOS_PORT.md](IOS_PORT.md)。
+
+没有 Mac 时，可在 GitHub 仓库的 **Actions** 页面手动运行
+`Build unsigned iOS IPA`，下载构建产物后用 Sideloadly / AltStore 重签安装。
+工作流配置见 `.github/workflows/build-ios-unsigned.yml`。
+
+### 测试
 
 ```bash
 flutter analyze && flutter test

@@ -19,7 +19,7 @@ class PickedImage {
 
 /// 选单张图片,取消返回 null。
 ///
-/// Android:应用内图库选择器(直读媒体库,全部相册可达;系统照片选择器
+/// Android / iOS:应用内图库选择器(直读媒体库,全部相册可达;系统照片选择器
 /// 只放行固定分类且不看 app 权限,故不用),右上角可改走系统文件浏览器
 /// 兜底(媒体库没收录的图也能选)。桌面端:原生文件对话框。
 Future<PickedImage?> pickImageFile(BuildContext context) async {
@@ -56,7 +56,7 @@ class PickedSources {
 /// 文件那支不预读字节:整包 vibe 可能上百 MB(图是 base64),`withData` 会把
 /// 整批堆进内存;交调用方按 `file_read.dart` 流式读。
 Future<PickedSources> pickImagesOrFiles(BuildContext context) async {
-  if (Platform.isAndroid) {
+  if (Platform.isAndroid || Platform.isIOS) {
     final out = await _gallery(context, multiple: true);
     if (out == null) return const PickedSources.none();
     if (!out.useFileBrowser) return PickedSources.images(await _readAssets(out));
@@ -69,14 +69,14 @@ Future<PickedSources> pickImagesOrFiles(BuildContext context) async {
   return PickedSources.files(res?.files ?? const []);
 }
 
-// 文件对话框的扩展名过滤(桌面端与 Android 兜底共用)。
+// 文件对话框的扩展名过滤(桌面端与移动端兜底共用)。
 const _imageExts = ['png', 'jpg', 'jpeg', 'webp', 'gif'];
 
 Future<List<PickedImage>> _pick(
   BuildContext context, {
   required bool multiple,
 }) async {
-  if (Platform.isAndroid) {
+  if (Platform.isAndroid || Platform.isIOS) {
     final out = await _gallery(context, multiple: multiple);
     if (out == null) return const [];
     if (!out.useFileBrowser) return _readAssets(out);

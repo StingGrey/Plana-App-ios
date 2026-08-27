@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/platform/platform_support.dart';
 import '../../core/store/gen_settings.dart';
 import '../../core/theme/app_theme.dart';
 import '../gallery/save_settings.dart';
@@ -24,17 +25,30 @@ class GenSettingsPage extends ConsumerWidget {
         children: [
           SettingsCard(
             children: [
-              SwitchListTile(
-                value: s.genNotify,
-                onChanged: (v) => patch((x) => x.copyWith(genNotify: v)),
-                title: Text(
-                  '生成通知',
-                  style: context.texts.bodyMedium!.copyWith(
-                    fontWeight: FontWeight.w600,
+              if (supportsGenerationProgressNotifications)
+                SwitchListTile(
+                  value: s.genNotify,
+                  onChanged: (v) => patch((x) => x.copyWith(genNotify: v)),
+                  title: Text(
+                    '生成通知',
+                    style: context.texts.bodyMedium!.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
+                  contentPadding: const EdgeInsets.fromLTRB(16, 2, 10, 2),
+                )
+              else if (isIOSPlatform)
+                ListTile(
+                  leading: const Icon(Icons.phone_iphone_outlined),
+                  title: Text(
+                    '生成期间请保持应用在前台',
+                    style: context.texts.bodyMedium!.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  subtitle: const Text('iOS 首版切换到其他应用后，系统可能暂停生成连接。'),
+                  contentPadding: const EdgeInsets.fromLTRB(16, 4, 12, 4),
                 ),
-                contentPadding: const EdgeInsets.fromLTRB(16, 2, 10, 2),
-              ),
               SwitchListTile(
                 value: s.straightAlpha,
                 onChanged: (v) => patch((x) => x.copyWith(straightAlpha: v)),
