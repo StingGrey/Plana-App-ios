@@ -75,7 +75,6 @@ class _EditorPageState extends ConsumerState<EditorPage>
   Timer? _debounce;
   bool _muting = false;
   String _prevText = '';
-  TextSelection _prevSel = const TextSelection.collapsed(offset: -1);
   String? _syncedText;
   String _query = '';
   SuggestResult _result = const SuggestResult();
@@ -273,7 +272,6 @@ class _EditorPageState extends ConsumerState<EditorPage>
       );
       _syncedText = next.activeText;
       _prevText = next.activeText;
-      _prevSel = _controller.selection;
       _muting = false;
       _reroute();
       _feedTranslation(next.activeText); // 载入/切 tab 的既有文本也问翻译
@@ -286,8 +284,6 @@ class _EditorPageState extends ConsumerState<EditorPage>
 
   void _onCtrl() {
     if (_muting) return;
-    final prevSel = _prevSel;
-    _prevSel = _controller.selection;
     final text = _controller.text;
     if (text != _prevText) {
       if (_guardFoldEdit(text)) return; // 折叠被啃 → 改判为整只删,已自行落地
@@ -297,10 +293,10 @@ class _EditorPageState extends ConsumerState<EditorPage>
       _routeTyping(); // 打字一律走补全
       _feedTranslation(text);
     } else {
-      // 双击/长按选词 → 扩到整枚词条;改完选区会再进一次监听走 _routeCursor
-      if (_captureTagSelection(prevSel)) return;
       if (_snapCaretOutOfFold()) return;
-      _routeCursor(); // 纯移光标 → 右邻判定
+      // 原生选区原样保留。不能把单词选区自动扩成整枚提示词:iOS 输入法在
+      // 连续退格/撤销自动修正时也会短暂产生选区,扩张后下一次退格会整词删除。
+      _routeCursor();
     }
   }
 
@@ -338,8 +334,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
       if (off <= r.start || off >= r.end) continue;
       _muting = true;
       final to = (off - r.start) < (r.end - off) ? r.start : r.end;
-      _prevSel = TextSelection.collapsed(offset: to);
-      _controller.selection = _prevSel;
+      _controller.selection = TextSelection.collapsed(offset: to);
       _muting = false;
       _routeCursor();
       return true;
@@ -363,26 +358,6 @@ class _EditorPageState extends ConsumerState<EditorPage>
       }
     }
     return false;
-  }
-
-  /// 双击/长按选词的 tag 捕获(web handleDoubleClick 同款):
-  /// 从折叠光标一步变出的、落在单一词条内的子选区,扩成整枚词条
-  /// (含权重语法,即 [segStart, segEnd))。已有选区上继续拖手柄
-  /// (prev 已展开)不干预,用户仍可自由精调。
-  bool _captureTagSelection(TextSelection prev) {
-    final sel = _controller.selection;
-    if (!sel.isValid || sel.isCollapsed) return false;
-    if (prev.isValid && !prev.isCollapsed) return false;
-    final text = _controller.text;
-    final toks = parseToks(text);
-    final i = tokIndexAt(text, sel.start, toks);
-    if (i < 0) return false;
-    final t = toks[i];
-    if (sel.end > t.segEnd) return false; // 跨词条(交给多选/自由选区)
-    if (sel.start == t.segStart && sel.end == t.segEnd) return false; // 已整枚
-    _prevSel = TextSelection(baseOffset: t.segStart, extentOffset: t.segEnd);
-    _controller.selection = _prevSel;
-    return true;
   }
 
   /// 打字:补全当前词,隐藏词条栏/批量面板
@@ -475,8 +450,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
       final at = u.isFold ? u.start : u.tok!.nameStart;
       if (_controller.selection.baseOffset != at) {
         _muting = true;
-        _prevSel = TextSelection.collapsed(offset: at);
-        _controller.selection = _prevSel;
+        _controller.selection = TextSelection.collapsed(offset: at);
         _muting = false;
       }
       if (!u.isFold && _settings.enableTagPanel) tok = u.tok;
@@ -668,7 +642,6 @@ class _EditorPageState extends ConsumerState<EditorPage>
     );
     _prevText = newText;
     _syncedText = newText;
-    _prevSel = _controller.selection;
     _muting = false;
     _notifier.editActive(newText, structural: true);
     _feedTranslation(newText); // 同 _applyText:_muting 压掉了 _onCtrl,得自己喂
@@ -685,7 +658,6 @@ class _EditorPageState extends ConsumerState<EditorPage>
     );
     _prevText = text;
     _syncedText = text;
-    _prevSel = _controller.selection;
     _muting = false;
     _notifier.editActive(text, structural: structural);
     // 打字走 _onCtrl 会喂翻译,这条路径 _muting 压掉了 _onCtrl,必须自己喂 ——
@@ -911,7 +883,6 @@ class _EditorPageState extends ConsumerState<EditorPage>
       );
       _prevText = next;
       _syncedText = next;
-      _prevSel = _controller.selection;
       _muting = false;
       _notifier.editActive(next, structural: true);
       _feedTranslation(next); // _muting 压掉了 _onCtrl,得自己喂
@@ -1099,7 +1070,6 @@ class _EditorPageState extends ConsumerState<EditorPage>
     );
     _prevText = newText;
     _syncedText = newText;
-    _prevSel = _controller.selection;
     _muting = false;
     _notifier.editActive(newText, structural: true);
     // 批量操作只改权重/禁用,理论上不带进新名字;仍统一喂一次,让「压了
