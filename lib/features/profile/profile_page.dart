@@ -7,6 +7,7 @@ import '../generate/preset_manage_page.dart';
 import '../generate/widgets/common.dart' show sharedAxisRoute;
 import '../migrate/web_backup_page.dart';
 import '../stats/stats_page.dart';
+import '../tools/image_scramble_page.dart';
 import '../tools/tools_page.dart';
 import 'about_page.dart';
 import 'account_page.dart';
@@ -100,6 +101,13 @@ class ProfilePage extends ConsumerWidget {
                   title: '工具箱',
                   subtitle: '权重转换 · 图片元数据',
                   onTap: () => push(const ToolsPage()),
+                ),
+                const SizedBox(height: 10),
+                _EntryCard(
+                  icon: Icons.shuffle_rounded,
+                  title: '图片混淆',
+                  subtitle: 'Gilbert 曲线混淆与解混淆',
+                  onTap: () => push(const ImageScramblePage()),
                 ),
                 const SizedBox(height: 10),
                 _EntryCard(

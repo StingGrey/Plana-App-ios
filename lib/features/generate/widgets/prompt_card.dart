@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/util/nai_tokenizer.dart';
+import '../../../core/util/prompt_convert.dart';
 import '../../editor/editor_page.dart';
 import '../generate_state.dart';
 import '../models.dart' show tokenLimitOf;
@@ -10,7 +11,7 @@ import '../prompt_presets.dart';
 import 'common.dart';
 
 /// 提示词卡:头部 token 进度条 + 正文段落预览 + 负面单行(带 +N 溢出与独立计数)。
-/// 头部右侧为「清空正向」(可撤销)与展开/收起。
+/// 头部右侧为「清空正向」、正/负提示词下划线转空格(均可撤销)与展开/收起。
 class PromptCard extends ConsumerStatefulWidget {
   const PromptCard({super.key});
 
@@ -101,6 +102,35 @@ class _PromptCardState extends ConsumerState<PromptCard> {
                       icon: Icons.delete_sweep_outlined,
                       actionLabel: '撤销',
                       onAction: () => notifier.setPrompts(positive: old),
+                    );
+                  },
+                ),
+                const SizedBox(width: 6),
+                RoundIconBtn(
+                  Icons.space_bar_outlined,
+                  tooltip: '下划线替换为空格',
+                  color: scheme.onSurfaceVariant,
+                  onTap: () {
+                    final oldPositive = state.prompt;
+                    final oldNegative = state.negativePrompt;
+                    final positive = replacePromptUnderscores(oldPositive);
+                    final negative = replacePromptUnderscores(oldNegative);
+                    if (positive == oldPositive && negative == oldNegative) {
+                      return;
+                    }
+                    final count =
+                        '_'.allMatches(oldPositive).length +
+                        '_'.allMatches(oldNegative).length;
+                    notifier.setPrompts(positive: positive, negative: negative);
+                    hintSnack(
+                      context,
+                      '已将 $count 个下划线替换为空格',
+                      icon: Icons.space_bar_outlined,
+                      actionLabel: '撤销',
+                      onAction: () => notifier.setPrompts(
+                        positive: oldPositive,
+                        negative: oldNegative,
+                      ),
                     );
                   },
                 ),

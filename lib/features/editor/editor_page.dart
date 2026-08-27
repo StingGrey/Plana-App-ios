@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/store/app_stores.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/editor_theme.dart';
+import '../../core/util/prompt_convert.dart';
 import '../generate/generate_state.dart';
 import '../generate/widgets/common.dart' show hintSnack;
 import 'data/local_tag_db.dart';
@@ -577,10 +578,8 @@ class _EditorPageState extends ConsumerState<EditorPage>
             _pick(s);
           },
           onInsert: _chipMode
-              ? (s) => _appendTag(
-                  _insertTextOf(s, plainSlot: true),
-                  quiet: true,
-                )
+              ? (s) =>
+                    _appendTag(_insertTextOf(s, plainSlot: true), quiet: true)
               : _insertAppend,
           onCollapse: () => Navigator.of(ctx).pop(),
         ),
@@ -1244,6 +1243,49 @@ class _EditorPageState extends ConsumerState<EditorPage>
     );
   }
 
+  /// 将当前正/负提示词中的下划线转换为空格。
+  ///
+  /// 折叠占位符是编辑器内部的引用,其中的名字不能被改写,否则无法再从
+  /// `foldBodies` 找回折叠体。因此只转换正文,保留占位符本身不动。
+  void _replaceUnderscores() {
+    final text = _controller.text;
+    final refs = parseFoldRefs(text, _foldBodies);
+    final out = StringBuffer();
+    var at = 0;
+    var count = 0;
+    for (final ref in refs) {
+      final before = text.substring(at, ref.start);
+      count += '_'.allMatches(before).length;
+      out.write(replacePromptUnderscores(before));
+      out.write(text.substring(ref.start, ref.end));
+      at = ref.end;
+    }
+    final tail = text.substring(at);
+    count += '_'.allMatches(tail).length;
+    out.write(replacePromptUnderscores(tail));
+    final replaced = out.toString();
+    if (replaced == text) {
+      hintSnack(context, '当前提示词没有下划线', icon: Icons.space_bar_outlined);
+      return;
+    }
+    _applyText(
+      replaced,
+      _controller.selection.baseOffset.clamp(0, replaced.length),
+    );
+    hintSnack(
+      context,
+      '已将 $count 个下划线替换为空格',
+      icon: Icons.space_bar_outlined,
+      actionLabel: '撤销',
+      onAction: _notifier.undo,
+    );
+    if (_chipMode) {
+      _syncChipCursor();
+    } else {
+      _focus.requestFocus();
+    }
+  }
+
   /// 关闭词条栏(下次移光标进词内会再出现)
   void _closePanel() {
     if (_panelTok == null) return;
@@ -1317,6 +1359,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
                       Navigator.of(context).maybePop();
                     },
                     onSettings: _openSettings,
+                    onReplaceUnderscores: _replaceUnderscores,
                   ),
                   Expanded(
                     // 两种正文形态。切正/负时编辑区随方向轻滑 + 淡入
@@ -1456,8 +1499,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
       placing: _chipPlacing,
       // 只有芯片模式有芯片可点;没有有效落点时(比如全选中了,搬到哪儿都
       // 还是原样)这条路给 null,按钮不出现,免得点进去一个空阶段。
-      onTogglePlacing:
-          _chipMode && chipValidGaps(live, units.length).isNotEmpty
+      onTogglePlacing: _chipMode && chipValidGaps(live, units.length).isNotEmpty
           ? () => setState(() => _chipPlacing = !_chipPlacing)
           : null,
     );

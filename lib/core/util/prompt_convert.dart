@@ -4,6 +4,12 @@
 /// `[..]` 原样、字面括号转义。数字按 JS Number 字符串语义输出(整数去 .0)。
 library;
 
+/// 将提示词中的下划线转换为空格。
+///
+/// Danbooru 标签常用下划线连接单词，而编辑器内部统一使用空格显示；
+/// 这个转换保留所有其它字符与排版，只替换 `_` 本身。
+String replacePromptUnderscores(String text) => text.replaceAll('_', ' ');
+
 /// 去除 `<lora:…>` 标签并清理残留逗号(SD→NAI 前置清洗,与 web 同款)。
 String stripLoraTags(String input) {
   return input

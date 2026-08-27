@@ -59,6 +59,14 @@ void main() {
   });
 
   group('分词清洗', () {
+    test('一键将下划线替换为空格', () {
+      expect(
+        replacePromptUnderscores('Hatsune_Miku, blue_eyes'),
+        'Hatsune Miku, blue eyes',
+      );
+      expect(replacePromptUnderscores('already spaces'), 'already spaces');
+    });
+
     test('清洗:权重记号/括号/下划线归一/小写', () {
       expect(cleanPromptToken('1.2::Hatsune_Miku::'), 'hatsune miku');
       expect(cleanPromptToken('{blue   eyes}'), 'blue eyes');

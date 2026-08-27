@@ -12,9 +12,9 @@ import '../generation_controller.dart';
 import '../loop_controller.dart';
 import '../models.dart' show GenParams, kBatchMax, stepsRangeOf;
 import '../vibe_encoder.dart';
-import '../../import/import_panel.dart';
+import '../../tools/image_scramble_page.dart';
 import 'advanced_sheet.dart';
-import 'common.dart' show hintSnack;
+import 'common.dart' show hintSnack, sharedAxisRoute;
 import 'loop_sheet.dart';
 import 'resolution_sheet.dart';
 
@@ -57,7 +57,8 @@ class FloatingPillNotifier extends Notifier<FloatingPillState> {
 
   void close() => state = const FloatingPillState();
 
-  void drag(double v) => state = FloatingPillState(which: state.which, draft: v);
+  void drag(double v) =>
+      state = FloatingPillState(which: state.which, draft: v);
 
   /// 松手 / 提交:留着开合状态,只把草稿清掉。
   void endDrag() => state = FloatingPillState(which: state.which);
@@ -157,9 +158,10 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
             const SizedBox(height: 8),
             Row(
               children: [
-                // 导入图片:选相册图 → 解析元数据/用作参考的全屏导入面板
+                // 图片混淆:原来的导入入口与页面另一侧导入功能重复,这里改为
+                // 直达独立的 PNGPKG 兼容混淆 / 解混淆工具。
                 Tooltip(
-                  message: '导入图片',
+                  message: '图片混淆',
                   child: AnimatedContainer(
                     duration: Motion.fast,
                     width: 52,
@@ -176,10 +178,12 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
                       borderRadius: BorderRadius.circular(15),
                       clipBehavior: Clip.antiAlias,
                       child: InkWell(
-                        onTap: () => openImportPanel(context),
+                        onTap: () => Navigator.of(
+                          context,
+                        ).push(sharedAxisRoute(const ImageScramblePage())),
                         child: Center(
                           child: Icon(
-                            Icons.add_photo_alternate_outlined,
+                            Icons.shuffle_rounded,
                             size: 22,
                             color: scheme.primary,
                           ),

@@ -9,6 +9,7 @@ import 'core/store/gen_settings.dart';
 import 'core/theme/app_theme.dart';
 import 'core/theme/theme_settings.dart';
 import 'core/util/haptics.dart';
+import 'core/util/image_scramble.dart' show registerPngPkgLicense;
 import 'features/generate/widgets/common.dart' show sharedAxisRoute;
 import 'features/import/import_panel.dart';
 import 'features/onboarding/welcome_page.dart';
@@ -16,6 +17,7 @@ import 'features/shell/app_shell.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  registerPngPkgLicense();
   // 启动装载持久化状态(工作台存档 + 图库索引 + 设置;失败按首启空档降级)。
   // 外观预读(首帧不闪色)现在直接取内存态 —— 设置已随 AppStores 一次读全,
   // 不再需要第二笔 I/O,也不必再解一次 Keystore。

@@ -8,18 +8,20 @@ import '../../generate/models.dart' show tokenLimitOf;
 import '../../generate/prompt_presets.dart';
 import '../editor_state.dart';
 
-/// 编辑器顶栏(精简):返回(=保存并退出)+ token 读数 + 设置 + 满宽进度条。
+/// 编辑器顶栏(精简):返回(=保存并退出)+ token 读数 + 文本整理 + 设置 + 满宽进度条。
 /// 正/负 tab、撤销、纯文本切换都下放到底栏。整栏固定不滚。
 class EditorTopBar extends ConsumerWidget {
   const EditorTopBar({
     super.key,
     required this.onBack,
     required this.onSettings,
+    this.onReplaceUnderscores,
     this.charName,
   });
 
   final VoidCallback onBack;
   final VoidCallback onSettings;
+  final VoidCallback? onReplaceUnderscores;
 
   /// 编辑角色时的角色名(标题);主提示词会话为 null,标题位留空。
   final String? charName;
@@ -103,6 +105,11 @@ class EditorTopBar extends ConsumerWidget {
                 ).copyWith(color: scheme.outline),
               ),
               const SizedBox(width: 2),
+              IconButton(
+                onPressed: onReplaceUnderscores,
+                icon: const Icon(Icons.space_bar_outlined, size: 22),
+                tooltip: '下划线替换为空格',
+              ),
               IconButton(
                 onPressed: onSettings,
                 icon: const Icon(Icons.settings_outlined, size: 22),
