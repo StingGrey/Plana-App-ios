@@ -1,0 +1,183 @@
+/// 图库检索索引:id → (模型, 归一化提示词文本)。模型筛选与 tag 搜索的
+/// 数据源 —— 参数快照散在 `inputs/*.json`,筛选时逐张现读太重,这里维护
+/// 一份轻量可查的内存镜像,旁挂 `search.json` 持久化。
+///
+/// 该索引**可重建**:文件坏了/缺了,回填会重扫快照补齐 —— 容错语义与
+/// index.json(最不能坏)完全不同,所以坚决不并进 index.json。
+/// 抽取只碰快照里的明文字段,不走 decodeGenerateState(那要解参考图 blob)。
+library;
+
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../core/store/app_stores.dart';
+import '../generate/models.dart' show GenerateState;
+import 'gallery_store.dart';
+
+/// 一条检索元数据;text 已按 [normalizeSearchText] 归一。
+typedef GallerySearchMeta = ({String model, String text});
+
+final _reWeightMark = RegExp(r'-?\d+(?:\.\d+)?::');
+final _reBrackets = RegExp(r'[\[\]{}]');
+final _reSpaces = RegExp(r'\s+');
+
+/// 搜索归一化(索引与查询词必须同一口径):小写、剥权重记号与括号、
+/// 下划线归空格、全角逗号归半角、压空白。保留 `:`(artist:wlop 要搜得到)。
+String normalizeSearchText(String s) => s
+    .toLowerCase()
+    .replaceAll(_reWeightMark, '')
+    .replaceAll('::', '')
+    .replaceAll(_reBrackets, '')
+    .replaceAll('_', ' ')
+    .replaceAll('，', ',')
+    .replaceAll(_reSpaces, ' ')
+    .trim();
+
+/// 查询串 → 词表(逗号/空白切分,AND 语义)。
+List<String> searchTerms(String query) => [
+  for (final t in normalizeSearchText(query).split(RegExp(r'[,\s]+')))
+    if (t.isNotEmpty) t,
+];
+
+bool searchMatch(String normalizedText, List<String> terms) =>
+    terms.every(normalizedText.contains);
+
+/// 检索文本的取材口径:正向 + 全部角色正向(含禁用的 —— 它们承载过
+/// 构图意图,搜得到比搜不到有用;负向不进 —— 人人都有 lowres/bad hands,
+/// 搜什么都命中,纯噪音)。
+String _joinedText(String prompt, Iterable<String> charPositives) =>
+    normalizeSearchText(
+      [
+        prompt,
+        ...charPositives,
+      ].where((t) => t.trim().isNotEmpty).join(', '),
+    );
+
+/// 内存里的输入快照 → 元数据(addResult 同帧,input 一定在)。
+GallerySearchMeta metaOfInput(GenerateState s) => (
+  model: s.params.model,
+  text: _joinedText(s.prompt, [for (final c in s.characters) c.positive]),
+);
+
+/// 快照原始 JSON(`inputs/<id>.json` 的 `{v, refs, state}`)→ 元数据。
+/// 字段名钉在 state_codec 的编码形状上;认不出返回 null。
+GallerySearchMeta? metaOfSnapshotJson(Map<String, dynamic> j) {
+  final st = j['state'];
+  if (st is! Map) return null;
+  final params = st['params'];
+  return (
+    model: params is Map && params['model'] is String
+        ? params['model'] as String
+        : '',
+    text: _joinedText(st['prompt'] is String ? st['prompt'] as String : '', [
+      if (st['characters'] is List)
+        for (final c in st['characters'] as List)
+          if (c is Map && c['positive'] is String) c['positive'] as String,
+    ]),
+  );
+}
+
+class GallerySearchState {
+  const GallerySearchState({
+    this.byId = const {},
+    this.building = false,
+    this.done = 0,
+    this.total = 0,
+  });
+
+  final Map<String, GallerySearchMeta> byId;
+
+  /// 老图回填进行中(展开页筛选栏显示进度;结果随回填逐步变全)。
+  final bool building;
+  final int done;
+  final int total;
+
+  GallerySearchState copyWith({
+    Map<String, GallerySearchMeta>? byId,
+    bool? building,
+    int? done,
+    int? total,
+  }) => GallerySearchState(
+    byId: byId ?? this.byId,
+    building: building ?? this.building,
+    done: done ?? this.done,
+    total: total ?? this.total,
+  );
+}
+
+final gallerySearchProvider =
+    NotifierProvider<GallerySearchNotifier, GallerySearchState>(
+      GallerySearchNotifier.new,
+    );
+
+class GallerySearchNotifier extends Notifier<GallerySearchState> {
+  GalleryStore get _store => ref.read(appStoresProvider).gallery;
+
+  @override
+  GallerySearchState build() {
+    Future.microtask(_init); // build 里不做 IO
+    return const GallerySearchState();
+  }
+
+  Future<void> _init() async {
+    final loaded = await _store.readSearchIndex();
+    // 已 put 的新图优先(_init 前生成的),盘上旧值不回退它
+    state = state.copyWith(byId: {...loaded, ...state.byId});
+    await _backfill();
+  }
+
+  /// 老图回填:盘上有快照但索引缺的,逐张轻量抽取;顺带清掉快照已不在的
+  /// 陈条(崩溃残留)。逐文件 await 让路 UI,每 25 张刷一次进度。
+  Future<void> _backfill() async {
+    final ids = await _store.listInputIds();
+    final live = ids.toSet();
+    final missing = [
+      for (final id in ids)
+        if (!state.byId.containsKey(id)) id,
+    ];
+    final hasStale = state.byId.keys.any((id) => !live.contains(id));
+    if (missing.isEmpty && !hasStale) return;
+
+    if (missing.isNotEmpty) {
+      state = state.copyWith(building: true, done: 0, total: missing.length);
+    }
+    final add = <String, GallerySearchMeta>{};
+    var done = 0;
+    for (final id in missing) {
+      final raw = await _store.readInputRaw(id);
+      final m = raw == null ? null : metaOfSnapshotJson(raw);
+      if (m != null) add[id] = m;
+      done++;
+      if (done % 25 == 0) {
+        state = state.copyWith(byId: {...state.byId, ...add}, done: done);
+      }
+    }
+    final next = {...state.byId, ...add}
+      ..removeWhere((id, _) => !live.contains(id));
+    state = GallerySearchState(byId: next);
+    _persist();
+  }
+
+  /// 新结果入索引(addResult 同帧调,input 在内存,零 IO)。
+  void put(String id, GenerateState input) {
+    state = state.copyWith(byId: {...state.byId, id: metaOfInput(input)});
+    _persist();
+  }
+
+  /// 删除/裁剪联动。
+  void removeAll(Iterable<String> ids) {
+    final drop = ids.toSet();
+    if (!state.byId.keys.any(drop.contains)) return;
+    state = state.copyWith(
+      byId: {...state.byId}..removeWhere((id, _) => drop.contains(id)),
+    );
+    _persist();
+  }
+
+  void clear() {
+    if (state.byId.isEmpty) return;
+    state = state.copyWith(byId: const {});
+    _persist();
+  }
+
+  void _persist() => _store.writeSearchIndex(state.byId);
+}

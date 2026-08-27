@@ -1,0 +1,468 @@
+import 'dart:typed_data';
+
+import '../../core/store/blob_store.dart';
+import 'models.dart';
+
+/// GenerateState ⇄ JSON。图片字节不进 JSON——写入 [BlobStore] 后只存
+/// 内容哈希引用;[EncodedState.refs] 汇总本快照引用的全部 blob,
+/// 落盘方把它写进信封顶层,启动期 GC 只扫信封不解析业务字段。
+class EncodedState {
+  const EncodedState(this.json, this.refs);
+
+  final Map<String, dynamic> json;
+  final Set<String> refs;
+}
+
+T? _enumByName<T extends Enum>(List<T> values, Object? name) {
+  if (name is! String) return null;
+  for (final v in values) {
+    if (v.name == name) return v;
+  }
+  return null;
+}
+
+Future<EncodedState> encodeGenerateState(
+  GenerateState s,
+  BlobStore blobs,
+) async {
+  final refs = <String>{};
+
+  Future<String?> putImg(Uint8List? bytes, {String? known}) async {
+    if (bytes == null) return null;
+    final h = await blobs.put(bytes, known: known);
+    refs.add(h);
+    return h;
+  }
+
+  final vibes = <Map<String, dynamic>>[];
+  for (final v in s.vibes) {
+    vibes.add({
+      'id': v.id,
+      'name': v.name,
+      'enabled': v.enabled,
+      'strength': v.strength,
+      'infoExtracted': v.infoExtracted,
+      'image': await putImg(v.image, known: v.imageHash),
+      if (v.encodedByModel != null) 'encodedByModel': v.encodedByModel,
+      if (v.sourceId != null) 'sourceId': v.sourceId,
+    });
+  }
+
+  final charRefs = <Map<String, dynamic>>[];
+  for (final r in s.charRefs) {
+    charRefs.add({
+      'id': r.id,
+      'name': r.name,
+      'enabled': r.enabled,
+      'mode': r.mode.name,
+      'strength': r.strength,
+      'infoExtracted': r.infoExtracted,
+      'image': await putImg(r.image, known: r.imageHash),
+    });
+  }
+
+  final kreaStyleRefs = <Map<String, dynamic>>[];
+  for (final r in s.kreaStyleRefs) {
+    final hash = await putImg(r.image, known: r.imageHash);
+    if (hash == null) continue; // 无图的条目无法参与生成
+    kreaStyleRefs.add({
+      'id': r.id,
+      'name': r.name,
+      'enabled': r.enabled,
+      'image': hash,
+    });
+  }
+
+  final i2i = s.img2img;
+  final inpaint = s.inpaint;
+  final paste = inpaint?.paste;
+  final p = s.params;
+
+  final json = <String, dynamic>{
+    'prompt': s.prompt,
+    'negativePrompt': s.negativePrompt,
+    // 编辑器原文草稿:与定稿无差别时为空,空就不写(绝大多数存档不带这两键)
+    if (s.promptRaw.isNotEmpty) 'promptRaw': s.promptRaw,
+    if (s.negativePromptRaw.isNotEmpty)
+      'negativePromptRaw': s.negativePromptRaw,
+    'characters': [
+      for (final c in s.characters)
+        {
+          'id': c.id,
+          'name': c.name,
+          'positive': c.positive,
+          'negative': c.negative,
+          if (c.positiveRaw.isNotEmpty) 'positiveRaw': c.positiveRaw,
+          if (c.negativeRaw.isNotEmpty) 'negativeRaw': c.negativeRaw,
+          'enabled': c.enabled,
+          if (c.position != null) 'position': c.position,
+          'activeTab': c.activeTab.name,
+        },
+    ],
+    'vibes': vibes,
+    'charRefs': charRefs,
+    // LoRA 无图片字节(previewUrl 是远端直链),整条直接进 JSON
+    // 下载中的占位条不入存档:安装队列在内存里,重启就没了,存回来只会是一条
+    // 永远停在「排队中」、还悄悄不参与生成的僵尸条目。
+    if (s.loras.any((l) => l.pending == null))
+      'loras': [
+        for (final l in s.loras)
+          if (l.pending == null)
+            {
+              'name': l.name,
+              'displayName': l.displayName,
+              'weight': l.weight,
+              'enabled': l.enabled,
+              if (l.clipWeight != null) 'clipWeight': l.clipWeight,
+              if (l.hasTe != null) 'hasTe': l.hasTe,
+              'triggerWords': l.triggerWords,
+              if (l.previewUrl.isNotEmpty) 'previewUrl': l.previewUrl,
+              'type': l.type,
+            },
+      ],
+    if (kreaStyleRefs.isNotEmpty) 'kreaStyleRefs': kreaStyleRefs,
+    // 强度无条件写(不跟着图走):同一份 codec 也在存创作页工作区,只在有图时
+    // 存的话,把参考图清空再重启,调好的强度就没了。
+    'kreaStyleRefWeight': s.kreaStyleRefWeight,
+    if (i2i != null)
+      'img2img': {
+        'strength': i2i.strength,
+        'noise': i2i.noise,
+        'image': await putImg(i2i.image),
+      },
+    'params': {
+      'model': p.model,
+      'width': p.width,
+      'height': p.height,
+      'steps': p.steps,
+      'cfg': p.cfg,
+      'varietyPlus': p.varietyPlus,
+      'sampler': p.sampler,
+      'noiseSchedule': p.noiseSchedule,
+      'seed': p.seed,
+      'cfgRescale': p.cfgRescale,
+      'normalizeVibe': p.normalizeVibe,
+      'loop': p.loop.name,
+      'animaSteps': p.animaSteps,
+      'animaCfg': p.animaCfg,
+      'animaSampler': p.animaSampler,
+      'animaScheduler': p.animaScheduler,
+      'kreaSteps': p.kreaSteps,
+      'kreaCfg': p.kreaCfg,
+      'kreaSampler': p.kreaSampler,
+      'kreaScheduler': p.kreaScheduler,
+      'batchCount': p.batchCount,
+      // 整块常驻(不只在 enabled 时写):同一份 codec 也在存创作页工作区,
+      // 只存开着的那份,用户关掉开关重启后调好的倍率/强度就没了。
+      'hires': {
+        'enabled': p.hires.enabled,
+        'scale': p.hires.scale,
+        'denoise': p.hires.denoise,
+        'steps': p.hires.steps,
+        'useModel': p.hires.useModel,
+        'model': p.hires.model.name,
+      },
+    },
+    'anlas': s.anlas,
+    'openPanels': [for (final pn in s.openPanels) pn.name],
+    if (inpaint != null)
+      'inpaint': {
+        'image': await putImg(inpaint.image),
+        'mask': await putImg(inpaint.mask),
+        'strength': inpaint.strength,
+        if (paste != null)
+          'paste': {
+            'original': await putImg(paste.original),
+            'sendX': paste.sendX,
+            'sendY': paste.sendY,
+            'tightX': paste.tightX,
+            'tightY': paste.tightY,
+            'tightW': paste.tightW,
+            'tightH': paste.tightH,
+            'outW': paste.outW,
+            'outH': paste.outH,
+          },
+      },
+  };
+  return EncodedState(json, refs);
+}
+
+/// 反序列化。blob 缺失(被清/损坏)时按条目降级:vibe 留编码丢图、
+/// CR 整条跳过、img2img/重绘任务置空——恢复出的状态始终可用。
+Future<GenerateState> decodeGenerateState(
+  Map<String, dynamic> j,
+  BlobStore blobs,
+) async {
+  Future<Uint8List?> img(Object? hash) async =>
+      hash is String && hash.isNotEmpty ? blobs.get(hash) : null;
+
+  final characters = <CharacterPrompt>[];
+  if (j['characters'] is List) {
+    for (final e in j['characters'] as List) {
+      if (e is! Map) continue;
+      final id = e['id'];
+      if (id is! String) continue;
+      characters.add(
+        CharacterPrompt(
+          id: id,
+          name: e['name'] is String ? e['name'] as String : '角色',
+          positive: e['positive'] is String ? e['positive'] as String : '',
+          negative: e['negative'] is String ? e['negative'] as String : '',
+          positiveRaw: e['positiveRaw'] is String
+              ? e['positiveRaw'] as String
+              : '',
+          negativeRaw: e['negativeRaw'] is String
+              ? e['negativeRaw'] as String
+              : '',
+          enabled: e['enabled'] != false,
+          position: e['position'] as String?,
+          activeTab:
+              _enumByName(CharTab.values, e['activeTab']) ?? CharTab.positive,
+        ),
+      );
+    }
+  }
+
+  final vibes = <VibeItem>[];
+  if (j['vibes'] is List) {
+    for (final e in j['vibes'] as List) {
+      if (e is! Map) continue;
+      final id = e['id'];
+      if (id is! String) continue;
+      final hash = e['image'] as String?;
+      final bytes = await img(hash);
+      final enc = e['encodedByModel'] is Map
+          ? (e['encodedByModel'] as Map).map(
+              (k, v) => MapEntry(k.toString(), v.toString()),
+            )
+          : null;
+      if (bytes == null && (enc == null || enc.isEmpty)) continue; // 不可生成
+      vibes.add(
+        VibeItem(
+          id: id,
+          name: e['name'] is String ? e['name'] as String : '',
+          enabled: e['enabled'] != false,
+          strength: (e['strength'] as num?)?.toDouble() ?? 0.6,
+          infoExtracted: (e['infoExtracted'] as num?)?.toDouble() ?? 1.0,
+          image: bytes,
+          imageHash: bytes != null ? hash : null,
+          encodedByModel: enc,
+          sourceId: e['sourceId'] as String?,
+        ),
+      );
+    }
+  }
+
+  final charRefs = <CharRefItem>[];
+  if (j['charRefs'] is List) {
+    for (final e in j['charRefs'] as List) {
+      if (e is! Map) continue;
+      final id = e['id'];
+      if (id is! String) continue;
+      final hash = e['image'] as String?;
+      final bytes = await img(hash);
+      if (bytes == null) continue; // 无图的 CR 无法参与生成
+      charRefs.add(
+        CharRefItem(
+          id: id,
+          name: e['name'] is String ? e['name'] as String : '',
+          enabled: e['enabled'] != false,
+          mode: _enumByName(CharRefMode.values, e['mode']) ?? CharRefMode.both,
+          strength: (e['strength'] as num?)?.toDouble() ?? 1.0,
+          infoExtracted: (e['infoExtracted'] as num?)?.toDouble() ?? 1.0,
+          image: bytes,
+          imageHash: hash,
+        ),
+      );
+    }
+  }
+
+  final kreaStyleRefs = <KreaStyleRefItem>[];
+  if (j['kreaStyleRefs'] is List) {
+    for (final e in j['kreaStyleRefs'] as List) {
+      if (e is! Map) continue;
+      final id = e['id'];
+      if (id is! String) continue;
+      final hash = e['image'] as String?;
+      final bytes = await img(hash);
+      if (bytes == null) continue; // 无图的风格参考无法参与生成
+      kreaStyleRefs.add(
+        KreaStyleRefItem(
+          id: id,
+          name: e['name'] is String ? e['name'] as String : '',
+          enabled: e['enabled'] != false,
+          image: bytes,
+          imageHash: hash,
+        ),
+      );
+    }
+  }
+
+  final loras = <ActiveLora>[];
+  if (j['loras'] is List) {
+    for (final e in j['loras'] as List) {
+      if (e is! Map) continue;
+      final name = e['name'];
+      if (name is! String || name.isEmpty) continue;
+      loras.add(
+        ActiveLora(
+          name: name,
+          displayName: e['displayName'] is String
+              ? e['displayName'] as String
+              : name,
+          weight: (e['weight'] as num?)?.toDouble() ?? 0.8,
+          enabled: e['enabled'] != false,
+          clipWeight: (e['clipWeight'] as num?)
+              ?.toDouble(), // 缺省 null=跟随 weight
+          hasTe: e['hasTe'] is bool ? e['hasTe'] as bool : null,
+          triggerWords: e['triggerWords'] is List
+              ? [
+                  for (final t in e['triggerWords'] as List)
+                    if (t is String && t.isNotEmpty) t,
+                ]
+              : const [],
+          previewUrl: e['previewUrl'] is String
+              ? e['previewUrl'] as String
+              : '',
+          type: e['type'] is String ? e['type'] as String : 'concept',
+        ),
+      );
+    }
+  }
+
+  Img2ImgConfig? img2img;
+  if (j['img2img'] is Map) {
+    final e = j['img2img'] as Map;
+    final bytes = await img(e['image']);
+    if (bytes != null) {
+      img2img = Img2ImgConfig(
+        strength: (e['strength'] as num?)?.toDouble() ?? 0.7,
+        noise: (e['noise'] as num?)?.toDouble() ?? 0.0,
+        image: bytes,
+      );
+    }
+  }
+
+  var params = const GenParams();
+  if (j['params'] is Map) {
+    final e = j['params'] as Map;
+    var hires = params.hires;
+    if (e['hires'] is Map) {
+      final he = e['hires'] as Map;
+      hires = HiresConfig(
+        enabled: he['enabled'] == true,
+        scale: (he['scale'] as num?)?.toDouble() ?? hires.scale,
+        denoise: (he['denoise'] as num?)?.toDouble() ?? hires.denoise,
+        steps: (he['steps'] as num?)?.toInt() ?? hires.steps,
+        // 老存档没这键 → 默认「先超分后重绘」(与新建时一致)
+        useModel: he['useModel'] != false,
+        model: _enumByName(HiresUpscaler.values, he['model']) ?? hires.model,
+      );
+    }
+    params = GenParams(
+      model: e['model'] is String ? e['model'] as String : params.model,
+      width: (e['width'] as num?)?.toInt() ?? params.width,
+      height: (e['height'] as num?)?.toInt() ?? params.height,
+      steps: (e['steps'] as num?)?.toInt() ?? params.steps,
+      cfg: (e['cfg'] as num?)?.toDouble() ?? params.cfg,
+      varietyPlus: e['varietyPlus'] == true,
+      sampler: e['sampler'] is String ? e['sampler'] as String : params.sampler,
+      noiseSchedule: e['noiseSchedule'] is String
+          ? e['noiseSchedule'] as String
+          : params.noiseSchedule,
+      seed: e['seed'] is String ? e['seed'] as String : '',
+      cfgRescale: (e['cfgRescale'] as num?)?.toDouble() ?? 0.0,
+      // 老存档没这个键 → 默认开(与此前恒开的行为一致)
+      normalizeVibe: e['normalizeVibe'] != false,
+      loop: _enumByName(LoopCount.values, e['loop']) ?? LoopCount.x8,
+      animaSteps: (e['animaSteps'] as num?)?.toInt() ?? params.animaSteps,
+      animaCfg: (e['animaCfg'] as num?)?.toDouble() ?? params.animaCfg,
+      animaSampler: e['animaSampler'] is String
+          ? e['animaSampler'] as String
+          : params.animaSampler,
+      animaScheduler: e['animaScheduler'] is String
+          ? e['animaScheduler'] as String
+          : params.animaScheduler,
+      kreaSteps: (e['kreaSteps'] as num?)?.toInt() ?? params.kreaSteps,
+      kreaCfg: (e['kreaCfg'] as num?)?.toDouble() ?? params.kreaCfg,
+      // 2026-08-10 开放采样器之前存下的记录没有这两键,回落到默认的官方配方
+      kreaSampler: e['kreaSampler'] is String
+          ? e['kreaSampler'] as String
+          : params.kreaSampler,
+      kreaScheduler: e['kreaScheduler'] is String
+          ? e['kreaScheduler'] as String
+          : params.kreaScheduler,
+      // 老记录没这键 → 1 张(与此前恒为单张的行为一致)。夹一遍范围:
+      // 服务端上限降下来的话,存档里那个 4 不该把新的限制绕过去。
+      batchCount:
+          ((e['batchCount'] as num?)?.toInt() ?? params.batchCount).clamp(
+            1,
+            kBatchMax,
+          ),
+      hires: hires,
+    );
+  }
+
+  InpaintJob? inpaint;
+  if (j['inpaint'] is Map) {
+    final e = j['inpaint'] as Map;
+    final image = await img(e['image']);
+    final mask = await img(e['mask']);
+    if (image != null && mask != null) {
+      InpaintPaste? paste;
+      if (e['paste'] is Map) {
+        final pe = e['paste'] as Map;
+        final original = await img(pe['original']);
+        if (original != null) {
+          paste = InpaintPaste(
+            original: original,
+            sendX: (pe['sendX'] as num?)?.toInt() ?? 0,
+            sendY: (pe['sendY'] as num?)?.toInt() ?? 0,
+            tightX: (pe['tightX'] as num?)?.toInt() ?? 0,
+            tightY: (pe['tightY'] as num?)?.toInt() ?? 0,
+            tightW: (pe['tightW'] as num?)?.toInt() ?? 0,
+            tightH: (pe['tightH'] as num?)?.toInt() ?? 0,
+            outW: (pe['outW'] as num?)?.toInt() ?? 0,
+            outH: (pe['outH'] as num?)?.toInt() ?? 0,
+          );
+        }
+      }
+      inpaint = InpaintJob(
+        image: image,
+        mask: mask,
+        strength: (e['strength'] as num?)?.toDouble() ?? 0.7,
+        paste: paste,
+      );
+    }
+  }
+
+  final openPanels = <Panel>{};
+  if (j['openPanels'] is List) {
+    for (final n in j['openPanels'] as List) {
+      final p = _enumByName(Panel.values, n);
+      if (p != null) openPanels.add(p);
+    }
+  }
+
+  return GenerateState(
+    prompt: j['prompt'] is String ? j['prompt'] as String : '',
+    negativePrompt: j['negativePrompt'] is String
+        ? j['negativePrompt'] as String
+        : '',
+    promptRaw: j['promptRaw'] is String ? j['promptRaw'] as String : '',
+    negativePromptRaw: j['negativePromptRaw'] is String
+        ? j['negativePromptRaw'] as String
+        : '',
+    characters: characters,
+    vibes: vibes,
+    charRefs: charRefs,
+    img2img: img2img,
+    params: params,
+    anlas: (j['anlas'] as num?)?.toInt() ?? 0,
+    openPanels: openPanels,
+    loras: loras,
+    kreaStyleRefs: kreaStyleRefs,
+    kreaStyleRefWeight: (j['kreaStyleRefWeight'] as num?)?.toDouble() ?? 1.0,
+    inpaint: inpaint,
+  );
+}

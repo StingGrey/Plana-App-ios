@@ -1,0 +1,79 @@
+name: Build unsigned iOS IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-unsigned-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LANG: en_US.UTF-8
+  LC_ALL: en_US.UTF-8
+
+jobs:
+  build:
+    name: Flutter iOS (unsigned)
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.0'
+          channel: stable
+          cache: true
+
+      - name: Show toolchain versions
+        run: |
+          flutter --version
+          xcodebuild -version
+          if command -v pod >/dev/null 2>&1; then pod --version; fi
+
+      - name: Ensure CocoaPods is available
+        run: command -v pod >/dev/null 2>&1 || brew install cocoapods
+
+      - name: Prepare iOS project
+        run: |
+          chmod +x tool/prepare_ios.sh
+          ./tool/prepare_ios.sh --skip-build
+
+      - name: Analyze Dart code
+        run: flutter analyze
+
+      - name: Run tests
+        run: flutter test
+
+      - name: Build unsigned release app
+        run: flutter build ios --release --no-codesign
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP='build/ios/iphoneos/Runner.app'
+          test -d "$APP"
+          rm -rf Payload Plana-App-unsigned.ipa
+          mkdir -p Payload
+          cp -R "$APP" Payload/Runner.app
+          ditto -c -k --sequesterRsrc --keepParent Payload Plana-App-unsigned.ipa
+          unzip -tq Plana-App-unsigned.ipa
+          shasum -a 256 Plana-App-unsigned.ipa | tee Plana-App-unsigned.sha256
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Plana-App-iOS-unsigned
+          path: |
+            Plana-App-unsigned.ipa
+            Plana-App-unsigned.sha256
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
