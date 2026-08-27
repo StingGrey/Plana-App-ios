@@ -269,30 +269,87 @@ class _AppShellState extends ConsumerState<AppShell> {
 
 /// 平板首页工作台:设置、结果画布、历史记录同时可见。生成设置继续复用手机端
 /// 的完整组件,因此模型切换、模块排序、吸底生成按钮和持久化状态完全同源。
-class _TabletWorkspace extends StatelessWidget {
+class _TabletWorkspace extends ConsumerStatefulWidget {
   const _TabletWorkspace();
+
+  @override
+  ConsumerState<_TabletWorkspace> createState() => _TabletWorkspaceState();
+}
+
+class _TabletWorkspaceState extends ConsumerState<_TabletWorkspace> {
+  static const _prefsKey = 'tablet_settings_width';
+  double? _settingsWidth;
+  double _dragWidth = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _settingsWidth = double.tryParse(
+      ref.read(prefsStoreProvider).get(_prefsKey) ?? '',
+    );
+  }
+
+  void _saveWidth() {
+    final width = _settingsWidth;
+    if (width == null) return;
+    ref
+        .read(prefsStoreProvider)
+        .write(key: _prefsKey, value: width.toStringAsFixed(1));
+  }
 
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     return LayoutBuilder(
       builder: (context, constraints) {
-        final settingsWidth = (constraints.maxWidth * .31)
+        final defaultWidth = (constraints.maxWidth * .31)
             .clamp(340.0, 420.0)
+            .toDouble();
+        const minWidth = 300.0;
+        final maxWidth = (constraints.maxWidth - 500)
+            .clamp(minWidth, 560.0)
+            .toDouble();
+        final settingsWidth = (_settingsWidth ?? defaultWidth)
+            .clamp(minWidth, maxWidth)
             .toDouble();
         return Row(
           children: [
             SizedBox(
+              key: const ValueKey('tablet-settings-panel'),
               width: settingsWidth,
               child: ColoredBox(
                 color: scheme.surface,
                 child: const GeneratePage(),
               ),
             ),
-            VerticalDivider(
-              width: 1,
-              thickness: 1,
-              color: scheme.outlineVariant,
+            MouseRegion(
+              cursor: SystemMouseCursors.resizeColumn,
+              child: GestureDetector(
+                key: const ValueKey('tablet-settings-resizer'),
+                behavior: HitTestBehavior.opaque,
+                onHorizontalDragStart: (_) => _dragWidth = settingsWidth,
+                onHorizontalDragUpdate: (details) {
+                  _dragWidth = (_dragWidth + details.delta.dx)
+                      .clamp(minWidth, maxWidth)
+                      .toDouble();
+                  setState(() => _settingsWidth = _dragWidth);
+                },
+                onHorizontalDragEnd: (_) => _saveWidth(),
+                onHorizontalDragCancel: _saveWidth,
+                child: SizedBox(
+                  width: 12,
+                  child: Center(
+                    child: Container(
+                      width: 3,
+                      height: 42,
+                      decoration: BoxDecoration(
+                        color: scheme.outlineVariant,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             ),
             const Expanded(child: GalleryPage(tabletMode: true)),
           ],

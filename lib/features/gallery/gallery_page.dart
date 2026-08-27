@@ -272,18 +272,19 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
             width: gen.width,
             height: gen.height,
           ),
-        // 结果操作层:非生成态淡入,生成时淡出
-        AnimatedOpacity(
-          duration: Motion.medium,
-          curve: Motion.standard,
-          opacity: showChrome ? 1 : 0,
-          child: IgnorePointer(
-            ignoring: !showChrome,
-            child: selected != null
-                ? ResultChrome(result: selected)
-                : const SizedBox.shrink(),
+        // 手机操作轨叠在画布上;横屏平板改在画布下方独占一行,不遮图。
+        if (!widget.tabletMode)
+          AnimatedOpacity(
+            duration: Motion.medium,
+            curve: Motion.standard,
+            opacity: showChrome ? 1 : 0,
+            child: IgnorePointer(
+              ignoring: !showChrome,
+              child: selected != null
+                  ? ResultChrome(result: selected)
+                  : const SizedBox.shrink(),
+            ),
           ),
-        ),
         // 进度胶囊:渐显+上滑进 / 渐隐+下滑出
         Positioned(
           left: 0,
@@ -335,7 +336,15 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
     final galleryLayout = widget.tabletMode
         ? Row(
             children: [
-              Expanded(child: canvas),
+              Expanded(
+                child: Column(
+                  children: [
+                    Expanded(child: canvas),
+                    if (showChrome && selected != null)
+                      TabletResultToolbar(result: selected),
+                  ],
+                ),
+              ),
               _TabletHistoryRail(
                 collapsed: _historyCollapsed,
                 results: state.results,
@@ -674,6 +683,7 @@ class _TabletHistoryItem extends StatelessWidget {
                 height: height,
                 radius: 10,
                 fit: BoxFit.contain,
+                useOriginal: true,
               ),
               Positioned(
                 left: 7,

@@ -78,6 +78,18 @@ void main() {
     expect(find.text('还没有作品'), findsWidgets);
     expect(find.text('历史记录  0'), findsOneWidget);
 
+    final settingsPanel = find.byKey(const ValueKey('tablet-settings-panel'));
+    final initialSettingsWidth = tester.getSize(settingsPanel).width;
+    await tester.drag(
+      find.byKey(const ValueKey('tablet-settings-resizer')),
+      const Offset(80, 0),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      tester.getSize(settingsPanel).width,
+      greaterThan(initialSettingsWidth),
+    );
+
     await tester.tap(find.byTooltip('收起历史记录'));
     await tester.pumpAndSettle();
     expect(find.byTooltip('展开历史记录'), findsOneWidget);

@@ -100,7 +100,7 @@ class GalleryImageLayer extends StatelessWidget {
   }
 }
 
-/// 结果操作层:右侧竖排操作轨 + 左下 seed 芯片(叠在大图上)。
+/// 手机结果操作层:右侧竖排操作轨 + 左下 seed 芯片(叠在大图上)。
 class ResultChrome extends StatelessWidget {
   const ResultChrome({super.key, required this.result});
 
@@ -113,6 +113,37 @@ class ResultChrome extends StatelessWidget {
         Positioned(right: 12, bottom: 16, child: _ActionRail(result: result)),
         Positioned(left: 12, bottom: 16, child: _SeedChip(seed: result.seed)),
       ],
+    );
+  }
+}
+
+/// 横屏平板的结果工具栏。作为画布下方的独立布局区域使用,不覆盖图片。
+class TabletResultToolbar extends StatelessWidget {
+  const TabletResultToolbar({super.key, required this.result});
+
+  final ResultImage result;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return Container(
+      key: const ValueKey('tablet-result-toolbar'),
+      constraints: const BoxConstraints(minHeight: 82),
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
+      decoration: BoxDecoration(
+        color: scheme.surface,
+        border: Border(top: BorderSide(color: scheme.outlineVariant)),
+      ),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            _SeedChip(seed: result.seed),
+            const SizedBox(width: 16),
+            _ActionRail(result: result, horizontal: true),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -237,47 +268,66 @@ class ProgressPill extends StatelessWidget {
 }
 
 class _ActionRail extends ConsumerWidget {
-  const _ActionRail({required this.result});
+  const _ActionRail({required this.result, this.horizontal = false});
 
   final ResultImage result;
+  final bool horizontal;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final buttons = <Widget>[
+      _RailButton(
+        label: '重绘',
+        icon: Icons.brush,
+        compact: horizontal,
+        onTap: () => _inpaint(context, ref),
+      ),
+      _RailButton(
+        label: '放大',
+        icon: Icons.open_in_full,
+        compact: horizontal,
+        onTap: () => _upscale(context, ref),
+      ),
+      _RailButton(
+        label: '保存',
+        icon: Icons.download,
+        compact: horizontal,
+        onTap: () => _download(context, ref),
+        onLongPress: () => _openSaveSheet(context, ref),
+      ),
+      _RailButton(
+        label: '导入',
+        icon: Icons.input,
+        compact: horizontal,
+        onTap: () => _import(context, ref),
+      ),
+      _RailButton(
+        label: '重新生成',
+        icon: Icons.refresh,
+        primary: true,
+        compact: horizontal,
+        onTap: () => _regenerate(context, ref),
+      ),
+    ];
+    if (horizontal) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (var i = 0; i < buttons.length; i++) ...[
+            if (i > 0) const SizedBox(width: 8),
+            buttons[i],
+          ],
+        ],
+      );
+    }
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.end,
       children: [
-        _RailButton(
-          label: '重绘',
-          icon: Icons.brush,
-          onTap: () => _inpaint(context, ref),
-        ),
-        const SizedBox(height: 10),
-        _RailButton(
-          label: '放大',
-          icon: Icons.open_in_full,
-          onTap: () => _upscale(context, ref),
-        ),
-        const SizedBox(height: 10),
-        _RailButton(
-          label: '保存',
-          icon: Icons.download,
-          onTap: () => _download(context, ref),
-          onLongPress: () => _openSaveSheet(context, ref),
-        ),
-        const SizedBox(height: 10),
-        _RailButton(
-          label: '导入',
-          icon: Icons.input,
-          onTap: () => _import(context, ref),
-        ),
-        const SizedBox(height: 10),
-        _RailButton(
-          label: '重新生成',
-          icon: Icons.refresh,
-          primary: true,
-          onTap: () => _regenerate(context, ref),
-        ),
+        for (var i = 0; i < buttons.length; i++) ...[
+          if (i > 0) const SizedBox(height: 10),
+          buttons[i],
+        ],
       ],
     );
   }
@@ -600,6 +650,7 @@ class _RailButton extends StatelessWidget {
     required this.onTap,
     this.onLongPress,
     this.primary = false,
+    this.compact = false,
   });
 
   final String label;
@@ -607,11 +658,12 @@ class _RailButton extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback? onLongPress;
   final bool primary;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    final double d = primary ? 58 : 48;
+    final double d = compact ? 48 : (primary ? 58 : 48);
     final Color circleColor = primary
         ? scheme.primary
         : scheme.surfaceContainerHighest;
@@ -632,7 +684,11 @@ class _RailButton extends StatelessWidget {
             child: SizedBox(
               width: d,
               height: d,
-              child: Icon(icon, size: primary ? 27 : 22, color: iconColor),
+              child: Icon(
+                icon,
+                size: compact ? 22 : (primary ? 27 : 22),
+                color: iconColor,
+              ),
             ),
           ),
         ),
