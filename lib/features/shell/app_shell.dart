@@ -189,6 +189,7 @@ class _AppShellState extends ConsumerState<AppShell> {
     if (tabletMode) {
       return Scaffold(
         body: SafeArea(
+          bottom: false,
           child: Row(
             children: [
               NavigationRail(

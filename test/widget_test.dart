@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plana_app/core/auth/auth_mode.dart';
 import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/core/store/gen_settings.dart';
+import 'package:plana_app/features/generate/models.dart';
 import 'package:plana_app/features/generate/widgets/prompt_card.dart';
 import 'package:plana_app/main.dart';
 
@@ -21,6 +22,36 @@ class _PrimedSettings extends GenSettingsNotifier {
 }
 
 void main() {
+  testWidgets('提示词卡展开后完整显示正向和负向文本', (tester) async {
+    final stores = AppStores.ephemeral();
+    const positive =
+        'first prompt line, second prompt line, final positive tag';
+    const negative = 'lowres, bad anatomy, text, watermark, final negative tag';
+    stores.workspace.initial = GenerateState.initial().copyWith(
+      prompt: positive,
+      negativePrompt: negative,
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appStoresProvider.overrideWithValue(stores)],
+        child: const MaterialApp(
+          home: Scaffold(body: SingleChildScrollView(child: PromptCard())),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final positiveText = tester.widget<Text>(find.text(positive));
+    final negativeText = tester.widget<Text>(find.text(negative));
+    expect(positiveText.maxLines, isNull);
+    expect(positiveText.overflow, isNull);
+    expect(negativeText.maxLines, isNull);
+    expect(negativeText.overflow, isNull);
+
+    await tester.pump(const Duration(milliseconds: 900));
+  });
+
   testWidgets('创作页冒烟:核心区块可见', (WidgetTester tester) async {
     await tester.pumpWidget(
       ProviderScope(

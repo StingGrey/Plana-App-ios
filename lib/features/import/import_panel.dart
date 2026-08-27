@@ -14,6 +14,7 @@ import '../../core/net/remote_image.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/util/image_ops.dart';
 import '../../core/util/image_pick.dart';
+import '../../core/util/image_scramble.dart';
 import '../../core/util/prompt_convert.dart' show convertSdToNai;
 import '../char_library/char_library.dart';
 import '../generate/auto_text.dart';
@@ -115,6 +116,9 @@ class ImportImagePanel extends ConsumerStatefulWidget {
 class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   bool _loading = true;
   ImageMetadata? _meta;
+  late Uint8List _imageBytes;
+  bool _descrambling = false;
+  bool _descrambled = false;
 
   /// 导入目标的模型类别(= 当前出图模型的类别,面板内可切换)。
   /// null 表示还没读到(build 时按当前模型补上)。
@@ -173,7 +177,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
 
   /// 图片体积文案(顶卡与详情页共用)。
   String get _sizeText {
-    final b = widget.bytes.length;
+    final b = _imageBytes.length;
     if (b >= 1024 * 1024) return '${(b / (1024 * 1024)).toStringAsFixed(2)} MB';
     if (b >= 1024) return '${(b / 1024).toStringAsFixed(1)} KB';
     return '$b B';
@@ -182,11 +186,12 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   @override
   void initState() {
     super.initState();
+    _imageBytes = widget.bytes;
     _parse();
   }
 
   Future<void> _parse() async {
-    final m = await extractImageMetadata(widget.bytes);
+    final m = await extractImageMetadata(_imageBytes);
     if (!mounted) return;
     setState(() {
       _meta = m;
@@ -195,6 +200,63 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
       if (m != null) _initSelections(m);
     });
     if (m != null && m.loras.isNotEmpty) unawaited(_resolveLoras(m));
+  }
+
+  /// 使用 PNGPKG 默认的黄金分割偏移(62%)直接解混淆,并在当前页重新解析。
+  Future<void> _descramble() async {
+    if (_descrambling || _descrambled) return;
+    setState(() => _descrambling = true);
+    try {
+      final (width, height) = await decodeImageSize(_imageBytes);
+      final restored = await transformPngPkgImage(
+        _imageBytes,
+        offset: pngPkgOffsetForPercent(width * height, 62),
+        decrypt: true,
+      );
+      final meta = await extractImageMetadata(restored);
+      if (!mounted) return;
+      setState(() {
+        _imageBytes = restored;
+        _meta = meta;
+        _descrambled = true;
+        _reverseTags = null;
+        _expandedRows.clear();
+        _resetSelections();
+        if (meta != null) _initSelections(meta);
+      });
+      if (meta != null && meta.loras.isNotEmpty) {
+        unawaited(_resolveLoras(meta));
+      }
+      hintSnack(context, '已按默认 62% 偏移解混淆', icon: Icons.lock_open_outlined);
+    } catch (_) {
+      if (mounted) {
+        hintSnack(context, '解混淆失败', icon: Icons.error_outline);
+      }
+    } finally {
+      if (mounted) setState(() => _descrambling = false);
+    }
+  }
+
+  void _resetSelections() {
+    _usePrompt = false;
+    _useNegative = false;
+    _usePreset = false;
+    _charChecked.clear();
+    _vibeChecked.clear();
+    _vibeBytes = const [];
+    _loraChecked.clear();
+    _loraHits = const [];
+    _loraResolveRevision++;
+    _resolvingLoras = false;
+    _useModel = false;
+    _useRes = false;
+    _useSteps = false;
+    _useCfg = false;
+    _useCfgRescale = false;
+    _useVariety = false;
+    _useSampler = false;
+    _useScheduler = false;
+    _useSeed = false;
   }
 
   // ---- LoRA 认领(元数据 → 本地库 / Civitai / 找不到) ----
@@ -206,6 +268,9 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   /// LoRA 区展开态(与 Vibe/生成设置同款折叠)。
   bool _loraExpanded = true;
 
+  /// 解混淆后旧图片的认领请求可能仍在路上；版本号用于丢弃过期回包。
+  int _loraResolveRevision = 0;
+
   /// 完全覆盖(换成这一份)/ 额外添加(并进已挂的)。语义同角色、Vibe。
   bool _loraAppend = false;
 
@@ -213,6 +278,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   final _loraChecked = <int>{};
 
   Future<void> _resolveLoras(ImageMetadata m) async {
+    final revision = ++_loraResolveRevision;
     setState(() {
       _resolvingLoras = true;
       _loraHits = List.filled(m.loras.length, null);
@@ -232,7 +298,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
                 ),
             ],
           );
-      if (!mounted) return;
+      if (!mounted || revision != _loraResolveRevision) return;
       setState(() {
         _loraHits = [
           for (var i = 0; i < m.loras.length; i++)
@@ -252,7 +318,9 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     } catch (_) {
       // 认领失败不影响其它导入项,LoRA 区退回纯展示
     } finally {
-      if (mounted) setState(() => _resolvingLoras = false);
+      if (mounted && revision == _loraResolveRevision) {
+        setState(() => _resolvingLoras = false);
+      }
     }
   }
 
@@ -901,7 +969,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
 
   // ---- 用作 ----
   Future<void> _useAsImg2img() async {
-    final bytes = widget.bytes;
+    final bytes = _imageBytes;
     final (rw, rh) = await decodeImageSize(bytes);
     if (!mounted) return;
     final res = img2imgResolution(rw, rh);
@@ -917,7 +985,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   }
 
   Future<void> _useAsVibe() async {
-    final bytes = widget.bytes;
+    final bytes = _imageBytes;
     final hash = await compute(_sha256Hex, bytes);
     if (!mounted) return;
     try {
@@ -937,7 +1005,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   }
 
   Future<void> _useAsCharRef() async {
-    final bytes = widget.bytes;
+    final bytes = _imageBytes;
     final hash = await compute(_sha256Hex, bytes);
     if (!mounted) return;
     try {
@@ -960,7 +1028,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   Future<void> _reverse() async {
     final tags = await showDialog<String>(
       context: context,
-      builder: (_) => _ReverseDialog(bytes: widget.bytes),
+      builder: (_) => _ReverseDialog(bytes: _imageBytes),
     );
     if (tags == null || tags.isEmpty || !mounted) return;
     setState(() {
@@ -999,6 +1067,23 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
         ),
         title: Text(_reverseTags != null ? 'AI 反推结果' : '导入图片'),
         centerTitle: true,
+        actions: _reverseTags != null
+            ? null
+            : [
+                TextButton.icon(
+                  onPressed: _loading || _descrambling || _descrambled
+                      ? null
+                      : _descramble,
+                  icon: _descrambling
+                      ? const SizedBox.square(
+                          dimension: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.lock_open_outlined, size: 18),
+                  label: Text(_descrambled ? '已解混淆' : '解混淆'),
+                ),
+                const SizedBox(width: 4),
+              ],
       ),
       body: body,
       // 无元数据时四个「用作」按钮已移到正文居中,底栏留空,避免大片空档 + 吊底。
@@ -1712,7 +1797,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
           ClipRRect(
             borderRadius: BorderRadius.circular(11),
             child: Image.memory(
-              widget.bytes,
+              _imageBytes,
               width: 56,
               height: 70,
               fit: BoxFit.cover,
@@ -1778,7 +1863,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
                   sharedAxisRoute(
                     MetadataDetailPage(
                       meta: m,
-                      bytes: widget.bytes,
+                      bytes: _imageBytes,
                       fileName: widget.fileName,
                     ),
                   ),

@@ -10,7 +10,7 @@ import '../models.dart' show tokenLimitOf;
 import '../prompt_presets.dart';
 import 'common.dart';
 
-/// 提示词卡:头部 token 进度条 + 正文段落预览 + 负面单行(带 +N 溢出与独立计数)。
+/// 提示词卡:头部 token 进度条 + 展开后完整显示正/负向提示词。
 /// 头部右侧为「清空正向」、正/负提示词下划线转空格(均可撤销)与展开/收起。
 class PromptCard extends ConsumerStatefulWidget {
   const PromptCard({super.key});
@@ -181,15 +181,13 @@ class _PromptCardState extends ConsumerState<PromptCard> {
                     ),
                   ),
                 ),
-                // 正面:段落预览
+                // 正面:展开后按内容完整撑高。
                 InkWell(
                   onTap: () => _openEditor(context, positive: true),
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(15, 12, 15, 10),
                     child: Text(
                       state.prompt.isEmpty ? '点击编辑正面提示词…' : state.prompt,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
                       style: context.texts.bodyLarge!.copyWith(
                         height: 1.5,
                         color: state.prompt.isEmpty
@@ -199,21 +197,23 @@ class _PromptCardState extends ConsumerState<PromptCard> {
                     ),
                   ),
                 ),
-                // 负面:块标 + 单行(+N)+ 独立计数
+                // 负面:展开后同样完整显示,右侧保留独立 token 计数。
                 InkWell(
                   onTap: () => _openEditor(context, positive: false),
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(15, 6, 15, 14),
                     child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Icon(Icons.block, size: 17, color: scheme.error),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            _negPreview(state.negativePrompt),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                            state.negativePrompt.isEmpty
+                                ? '点击编辑负面提示词…'
+                                : state.negativePrompt,
                             style: context.texts.bodyMedium!.copyWith(
+                              height: 1.5,
                               color: scheme.error,
                             ),
                           ),
@@ -237,19 +237,6 @@ class _PromptCardState extends ConsumerState<PromptCard> {
         ],
       ),
     );
-  }
-
-  /// 负面预览:前 3 个 tag + "+N" 溢出提示
-  static String _negPreview(String neg) {
-    final tags = neg
-        .split(',')
-        .map((e) => e.trim())
-        .where((e) => e.isNotEmpty)
-        .toList();
-    if (tags.isEmpty) return '点击编辑负面提示词…';
-    final shown = tags.take(3).join(', ');
-    final extra = tags.length - 3;
-    return extra > 0 ? '$shown +$extra' : shown;
   }
 
   void _openEditor(BuildContext context, {required bool positive}) {
