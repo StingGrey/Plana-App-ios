@@ -40,14 +40,32 @@ class _AppShellState extends ConsumerState<AppShell> {
     initialPage: ref.read(shellIndexProvider),
   );
 
-  static const _pages = [
+  static const _phonePages = [
     GeneratePage(),
     GalleryPage(),
     InspirationPage(),
     ProfilePage(),
   ];
 
+  static const _tabletPages = [
+    _TabletWorkspace(),
+    GalleryPage(tabletMode: true),
+    InspirationPage(),
+    ProfilePage(),
+  ];
+
   Timer? _updateTimer;
+  bool? _reportedTabletMode;
+
+  void _reportTabletMode(bool value) {
+    if (_reportedTabletMode == value) return;
+    _reportedTabletMode = value;
+    // provider 不能在 widget build 中同步改;首帧后登记即可,用户产生生成操作
+    // 前它已经就绪。旋转屏幕时同样只延后一帧。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) ref.read(tabletWorkspaceProvider.notifier).set(value);
+    });
+  }
 
   @override
   void initState() {
@@ -106,6 +124,15 @@ class _AppShellState extends ConsumerState<AppShell> {
   @override
   Widget build(BuildContext context) {
     final index = ref.watch(shellIndexProvider);
+    final size = MediaQuery.sizeOf(context);
+    // 只在真正的横屏平板启用三栏。竖屏平板继续走手机布局,否则左设置 +
+    // 中画布 + 右历史会同时被压成三条窄缝。
+    final tabletMode =
+        size.shortestSide >= 600 &&
+        size.width >= 1000 &&
+        size.width > size.height;
+    _reportTabletMode(tabletMode);
+    final pages = tabletMode ? _tabletPages : _phonePages;
 
     // 索引变化(导航点按 / 生成后跳图库)→ 滑到对应页。
     ref.listen<int>(shellIndexProvider, (prev, next) {
@@ -151,17 +178,62 @@ class _AppShellState extends ConsumerState<AppShell> {
       ref.read(genNoticeProvider.notifier).clear();
     });
 
-    return Scaffold(
-      body: SafeArea(
-        bottom: false,
-        child: PageView(
-          controller: _pc,
-          // 只让程序 animateToPage 驱动;用户横滑一律不吃
-          physics: const NeverScrollableScrollPhysics(),
-          onPageChanged: (i) => ref.read(shellIndexProvider.notifier).select(i),
-          children: _pages,
+    final pageView = PageView(
+      controller: _pc,
+      // 只让程序 animateToPage 驱动;用户横滑一律不吃
+      physics: const NeverScrollableScrollPhysics(),
+      onPageChanged: (i) => ref.read(shellIndexProvider.notifier).select(i),
+      children: pages,
+    );
+
+    if (tabletMode) {
+      return Scaffold(
+        body: SafeArea(
+          child: Row(
+            children: [
+              NavigationRail(
+                selectedIndex: index,
+                labelType: NavigationRailLabelType.all,
+                groupAlignment: -.75,
+                onDestinationSelected: (i) =>
+                    ref.read(shellIndexProvider.notifier).select(i),
+                destinations: const [
+                  NavigationRailDestination(
+                    icon: Icon(Icons.draw_outlined),
+                    selectedIcon: Icon(Icons.draw),
+                    label: Text('创作'),
+                  ),
+                  NavigationRailDestination(
+                    icon: Icon(Icons.photo_library_outlined),
+                    selectedIcon: Icon(Icons.photo_library),
+                    label: Text('图库'),
+                  ),
+                  NavigationRailDestination(
+                    icon: Icon(Icons.lightbulb_outline),
+                    selectedIcon: Icon(Icons.lightbulb),
+                    label: Text('灵感'),
+                  ),
+                  NavigationRailDestination(
+                    icon: Icon(Icons.person_outline),
+                    selectedIcon: Icon(Icons.person),
+                    label: Text('我的'),
+                  ),
+                ],
+              ),
+              VerticalDivider(
+                width: 1,
+                thickness: 1,
+                color: context.scheme.outlineVariant,
+              ),
+              Expanded(child: pageView),
+            ],
+          ),
         ),
-      ),
+      );
+    }
+
+    return Scaffold(
+      body: SafeArea(bottom: false, child: pageView),
       bottomNavigationBar: NavigationBar(
         selectedIndex: index,
         // 重绘编辑中也允许点按切页(图库页 keep-alive,回来面板还在);
@@ -191,6 +263,41 @@ class _AppShellState extends ConsumerState<AppShell> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// 平板首页工作台:设置、结果画布、历史记录同时可见。生成设置继续复用手机端
+/// 的完整组件,因此模型切换、模块排序、吸底生成按钮和持久化状态完全同源。
+class _TabletWorkspace extends StatelessWidget {
+  const _TabletWorkspace();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final settingsWidth = (constraints.maxWidth * .31)
+            .clamp(340.0, 420.0)
+            .toDouble();
+        return Row(
+          children: [
+            SizedBox(
+              width: settingsWidth,
+              child: ColoredBox(
+                color: scheme.surface,
+                child: const GeneratePage(),
+              ),
+            ),
+            VerticalDivider(
+              width: 1,
+              thickness: 1,
+              color: scheme.outlineVariant,
+            ),
+            const Expanded(child: GalleryPage(tabletMode: true)),
+          ],
+        );
+      },
     );
   }
 }

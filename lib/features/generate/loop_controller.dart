@@ -51,8 +51,10 @@ class LoopNotifier extends Notifier<LoopStatus> {
     if (state.active || ref.read(genQueueProvider).active) return;
     final total = ref.read(generateProvider).params.loop.count; // 开跑时锁档位
     state = LoopStatus(active: true, total: total);
-    // 只在开跑时切一次图库;之后每张不再强拉(generate 里按 _inLoop 跳过)
-    ref.read(shellIndexProvider.notifier).select(kTabGallery);
+    // 手机只在开跑时切一次图库;平板首页已经常驻画布,留在三栏工作台。
+    if (!ref.read(tabletWorkspaceProvider)) {
+      ref.read(shellIndexProvider.notifier).select(kTabGallery);
+    }
 
     final gen = ref.read(generationProvider.notifier);
     var dispatched = 0; // 已投出的张数(含在跑的)

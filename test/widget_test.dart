@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -38,6 +39,37 @@ void main() {
     expect(find.text('创作'), findsOneWidget);
 
     // 放行工作台持久化的 800ms 防抖 Timer,避免拆树时报 pending timer
+    await tester.pump(const Duration(milliseconds: 900));
+  });
+
+  testWidgets('横屏平板:左设置 + 中图库 + 导航轨同时可见', (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(1366, 1024);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          appStoresProvider.overrideWithValue(AppStores.ephemeral()),
+          authModeProvider.overrideWith(_TokenMode.new),
+          genSettingsProvider.overrideWith(_PrimedSettings.new),
+        ],
+        child: const PlanaApp(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(NavigationRail), findsOneWidget);
+    expect(find.byType(NavigationBar), findsNothing);
+    expect(find.text('提示词'), findsOneWidget);
+    expect(find.text('还没有作品'), findsWidgets);
+    expect(find.text('历史记录  0'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('收起历史记录'));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('展开历史记录'), findsOneWidget);
+
     await tester.pump(const Duration(milliseconds: 900));
   });
 }

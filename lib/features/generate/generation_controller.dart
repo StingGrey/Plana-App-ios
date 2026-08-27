@@ -441,7 +441,7 @@ class GenerationNotifier extends Notifier<GenPool> {
     // 每点一次都强拉一次等于把人按在图库页上 —— 想连投几条再回创作页改参数
     // 都做不到。池子空了之后的下一条重新算作头一条,又会切一次。
     // 循环/队列续张同样不强拉(循环开始时已切过一次,期间允许自由切页,真机反馈)。
-    if (firstOfBatch && !_inFlow) {
+    if (firstOfBatch && !_inFlow && !ref.read(tabletWorkspaceProvider)) {
       ref.read(shellIndexProvider.notifier).select(kTabGallery);
     }
 

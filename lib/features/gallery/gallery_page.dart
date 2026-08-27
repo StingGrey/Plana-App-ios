@@ -12,6 +12,7 @@ import 'gallery_state.dart';
 import 'models.dart';
 import 'widgets/film_strip.dart';
 import 'widgets/result_canvas.dart';
+import 'widgets/result_thumb.dart';
 
 /// 图库页:上方结果画布(大图 + 操作轨 + seed)、下方历史胶片条。
 /// 生成链路产出的结果落在这里查看与二次操作。
@@ -21,7 +22,10 @@ import 'widgets/result_canvas.dart';
 /// 图跟手走、松手吸附 —— 以前那套「raw pointer 认快滑 + 自己放一段推移动画」的
 /// 假翻页已删。shell 的 tab 横滑同时关掉了,横向手势这一层现在归画布独占。
 class GalleryPage extends ConsumerStatefulWidget {
-  const GalleryPage({super.key});
+  const GalleryPage({super.key, this.tabletMode = false});
+
+  /// 横屏平板工作台:历史记录放到右侧可收起栏,把竖向空间完整留给画布。
+  final bool tabletMode;
 
   @override
   ConsumerState<GalleryPage> createState() => _GalleryPageState();
@@ -50,6 +54,7 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
     with AutomaticKeepAliveClientMixin {
   bool _keep = false;
   bool _hintChecked = false;
+  bool _historyCollapsed = false;
 
   /// 最近一次成功显示的原图字节。切到尚未读盘的老图时先继续画它,
   /// 避免空窗期露占位;新图解码完由 gaplessPlayback 无缝换掉。
@@ -163,7 +168,21 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
     _maybeHint(!state.isEmpty);
 
     if (!gen.busy && state.isEmpty && inpaint == null) {
-      return const _EmptyGallery();
+      if (!widget.tabletMode) return const _EmptyGallery();
+      return Row(
+        children: [
+          const Expanded(child: _EmptyGallery()),
+          _TabletHistoryRail(
+            collapsed: _historyCollapsed,
+            results: const <ResultImage>[],
+            selectedId: null,
+            onToggle: () =>
+                setState(() => _historyCollapsed = !_historyCollapsed),
+            onSelect: (_) {},
+            onDelete: (_) {},
+          ),
+        ],
+      );
     }
 
     // 画布跟随哪条任务由任务池说了算(GenPool.selectedId):
@@ -216,124 +235,140 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
     // 缩放态把翻页物理整个撤掉,横向拖动让回 InteractiveViewer 做平移。
     final zoomed = ref.watch(galleryZoomedProvider);
 
+    final canvas = Stack(
+      fit: StackFit.expand,
+      children: [
+        // 分页画布:一页一张结果,图跟手走、松手吸附。
+        // 未缩放时横向拖动归 PageView(触摸 slop 18 先于
+        // InteractiveViewer 的 pan slop 36 判定成立,竞技场稳赢);
+        // 缩放后 physics 撤成 NeverScrollable,Scrollable 干脆不装
+        // 拖动识别器,横向拖动整个让回去做平移。
+        NotificationListener<ScrollNotification>(
+          onNotification: _onScroll,
+          child: PageView.builder(
+            controller: _pv,
+            physics: zoomed ? const NeverScrollableScrollPhysics() : null,
+            itemCount: results.length,
+            onPageChanged: _onPageChanged,
+            itemBuilder: (_, i) => _ResultPage(result: results[i]),
+          ),
+        ),
+        // 顶图层:跳页空窗 / 老图还没读上来时顶住,不露空画框
+        if (bridge != null)
+          IgnorePointer(
+            child: GalleryImageLayer(
+              bytes: bridge,
+              width: selected?.width ?? 0,
+              height: selected?.height ?? 0,
+            ),
+          ),
+        // 生成视角:预览层盖住分页画布。预览没有邻居语义,不参与翻页;
+        // 它自带 opaque 命中行为,底下的 PageView 拿不到指针,不会误翻。
+        // 撤层那一帧,page 0 画的是同一份终帧字节(入库与预览同引用,
+        // ImageCache 直接命中),所以「生成中 → 出图」照旧不闪。
+        if (showGen)
+          _ZoomableImage(
+            bytes: gen.preview ?? selBytes ?? _lastShown,
+            width: gen.width,
+            height: gen.height,
+          ),
+        // 结果操作层:非生成态淡入,生成时淡出
+        AnimatedOpacity(
+          duration: Motion.medium,
+          curve: Motion.standard,
+          opacity: showChrome ? 1 : 0,
+          child: IgnorePointer(
+            ignoring: !showChrome,
+            child: selected != null
+                ? ResultChrome(result: selected)
+                : const SizedBox.shrink(),
+          ),
+        ),
+        // 进度胶囊:渐显+上滑进 / 渐隐+下滑出
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 22,
+          child: Center(
+            child: AnimatedSwitcher(
+              duration: Motion.medium,
+              switchInCurve: Motion.emphasized,
+              switchOutCurve: Motion.standard,
+              transitionBuilder: (child, anim) => FadeTransition(
+                opacity: anim,
+                child: SlideTransition(
+                  position: Tween<Offset>(
+                    begin: const Offset(0, 0.5),
+                    end: Offset.zero,
+                  ).animate(anim),
+                  child: child,
+                ),
+              ),
+              // 切看历史图时胶囊让位(进度看占位卡),不挡图
+              child: showGen
+                  ? ProgressPill(
+                      key: const ValueKey('pill'),
+                      status: gen,
+                      // 取消**跟随的这一条**,不动循环/队列 ——
+                      // 那是「停这一条」,不是「别再续了」(后者在
+                      // 创作页那颗生成按钮内部的停止区)。
+                      onCancel: () {
+                        final id = pool.selectedId;
+                        if (id != null) {
+                          ref.read(generationProvider.notifier).cancelJob(id);
+                        }
+                      },
+                    )
+                  : const SizedBox.shrink(key: ValueKey('nopill')),
+            ),
+          ),
+        ),
+      ],
+    );
+
+    void selectResult(String id) {
+      // 生成中点历史图 = 解除跟随(任务继续);平时就是普通选图
+      ref.read(generationProvider.notifier).select(null);
+      ref.read(galleryProvider.notifier).select(id);
+    }
+
+    final galleryLayout = widget.tabletMode
+        ? Row(
+            children: [
+              Expanded(child: canvas),
+              _TabletHistoryRail(
+                collapsed: _historyCollapsed,
+                results: state.results,
+                selectedId: state.selectedId,
+                onToggle: () =>
+                    setState(() => _historyCollapsed = !_historyCollapsed),
+                onSelect: selectResult,
+                onDelete: (id) =>
+                    ref.read(galleryProvider.notifier).deleteResults([id]),
+              ),
+            ],
+          )
+        : Column(
+            children: [
+              Expanded(child: canvas),
+              FilmStrip(
+                results: state.results,
+                selectedId: state.selectedId,
+                onSelect: selectResult,
+                onDelete: (id) =>
+                    ref.read(galleryProvider.notifier).deleteResults([id]),
+                jobs: pool.newestFirst,
+                selectedJobId: pool.selectedId,
+                onSelectJob: (id) =>
+                    ref.read(generationProvider.notifier).select(id),
+              ),
+            ],
+          );
+
     return Stack(
       fit: StackFit.expand,
       children: [
-        Column(
-          children: [
-            Expanded(
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  // 分页画布:一页一张结果,图跟手走、松手吸附。
-                  // 未缩放时横向拖动归 PageView(触摸 slop 18 先于
-                  // InteractiveViewer 的 pan slop 36 判定成立,竞技场稳赢);
-                  // 缩放后 physics 撤成 NeverScrollable,Scrollable 干脆不装
-                  // 拖动识别器,横向拖动整个让回去做平移。
-                  NotificationListener<ScrollNotification>(
-                    onNotification: _onScroll,
-                    child: PageView.builder(
-                      controller: _pv,
-                      physics: zoomed
-                          ? const NeverScrollableScrollPhysics()
-                          : null,
-                      itemCount: results.length,
-                      onPageChanged: _onPageChanged,
-                      itemBuilder: (_, i) => _ResultPage(result: results[i]),
-                    ),
-                  ),
-                  // 顶图层:跳页空窗 / 老图还没读上来时顶住,不露空画框
-                  if (bridge != null)
-                    IgnorePointer(
-                      child: GalleryImageLayer(
-                        bytes: bridge,
-                        width: selected?.width ?? 0,
-                        height: selected?.height ?? 0,
-                      ),
-                    ),
-                  // 生成视角:预览层盖住分页画布。预览没有邻居语义,不参与翻页;
-                  // 它自带 opaque 命中行为,底下的 PageView 拿不到指针,不会误翻。
-                  // 撤层那一帧,page 0 画的是同一份终帧字节(入库与预览同引用,
-                  // ImageCache 直接命中),所以「生成中 → 出图」照旧不闪。
-                  if (showGen)
-                    _ZoomableImage(
-                      bytes: gen.preview ?? selBytes ?? _lastShown,
-                      width: gen.width,
-                      height: gen.height,
-                    ),
-                  // 结果操作层:非生成态淡入,生成时淡出
-                  AnimatedOpacity(
-                    duration: Motion.medium,
-                    curve: Motion.standard,
-                    opacity: showChrome ? 1 : 0,
-                    child: IgnorePointer(
-                      ignoring: !showChrome,
-                      child: selected != null
-                          ? ResultChrome(result: selected)
-                          : const SizedBox.shrink(),
-                    ),
-                  ),
-                  // 进度胶囊:渐显+上滑进 / 渐隐+下滑出
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    bottom: 22,
-                    child: Center(
-                      child: AnimatedSwitcher(
-                        duration: Motion.medium,
-                        switchInCurve: Motion.emphasized,
-                        switchOutCurve: Motion.standard,
-                        transitionBuilder: (child, anim) => FadeTransition(
-                          opacity: anim,
-                          child: SlideTransition(
-                            position: Tween<Offset>(
-                              begin: const Offset(0, 0.5),
-                              end: Offset.zero,
-                            ).animate(anim),
-                            child: child,
-                          ),
-                        ),
-                        // 切看历史图时胶囊让位(进度看占位卡),不挡图
-                        child: showGen
-                            ? ProgressPill(
-                                key: const ValueKey('pill'),
-                                status: gen,
-                                // 取消**跟随的这一条**,不动循环/队列 ——
-                                // 那是「停这一条」,不是「别再续了」(后者在
-                                // 创作页那颗生成按钮内部的停止区)。
-                                onCancel: () {
-                                  final id = pool.selectedId;
-                                  if (id != null) {
-                                    ref
-                                        .read(generationProvider.notifier)
-                                        .cancelJob(id);
-                                  }
-                                },
-                              )
-                            : const SizedBox.shrink(key: ValueKey('nopill')),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            FilmStrip(
-              results: state.results,
-              selectedId: state.selectedId,
-              onSelect: (id) {
-                // 生成中点历史图 = 解除跟随(任务继续);平时就是普通选图
-                ref.read(generationProvider.notifier).select(null);
-                ref.read(galleryProvider.notifier).select(id);
-              },
-              onDelete: (id) =>
-                  ref.read(galleryProvider.notifier).deleteResults([id]),
-              jobs: pool.newestFirst,
-              selectedJobId: pool.selectedId,
-              onSelectJob: (id) =>
-                  ref.read(generationProvider.notifier).select(id),
-            ),
-          ],
-        ),
+        galleryLayout,
         // 重绘编辑面板:原地切入覆盖(出入场动画由 overlay 自己编排,
         // 收起动画结束后 session 置空、此层卸载)
         if (inpaint != null)
@@ -486,6 +521,221 @@ class _EmptyGallery extends StatelessWidget {
             style: context.texts.bodySmall!.copyWith(color: scheme.outline),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// 横屏平板的右侧历史栏。展开时是竖向缩略图时间线;收起后只留一条 52dp
+/// 的把手,画布会通过 Row/Expanded 自动吃回腾出的宽度。
+class _TabletHistoryRail extends StatelessWidget {
+  const _TabletHistoryRail({
+    required this.collapsed,
+    required this.results,
+    required this.selectedId,
+    required this.onToggle,
+    required this.onSelect,
+    required this.onDelete,
+  });
+
+  final bool collapsed;
+  final List<ResultImage> results;
+  final String? selectedId;
+  final VoidCallback onToggle;
+  final ValueChanged<String> onSelect;
+  final ValueChanged<String> onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return AnimatedContainer(
+      key: const ValueKey('tablet-history-rail'),
+      duration: Motion.medium,
+      curve: Motion.emphasized,
+      width: collapsed ? 52 : 184,
+      decoration: BoxDecoration(
+        color: scheme.surface,
+        border: Border(left: BorderSide(color: scheme.outlineVariant)),
+      ),
+      clipBehavior: Clip.hardEdge,
+      child: collapsed
+          ? Column(
+              children: [
+                const SizedBox(height: 4),
+                IconButton(
+                  tooltip: '展开历史记录',
+                  onPressed: onToggle,
+                  icon: const Icon(Icons.chevron_left),
+                ),
+                const SizedBox(height: 8),
+                RotatedBox(
+                  quarterTurns: 1,
+                  child: Text(
+                    '历史记录  ${results.length}',
+                    maxLines: 1,
+                    style: context.texts.labelLarge!.copyWith(
+                      color: scheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            )
+          : Column(
+              children: [
+                SizedBox(
+                  height: 52,
+                  child: Row(
+                    children: [
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          '历史记录  ${results.length}',
+                          maxLines: 1,
+                          style: context.texts.titleSmall!.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: '收起历史记录',
+                        onPressed: onToggle,
+                        icon: const Icon(Icons.chevron_right),
+                      ),
+                      const SizedBox(width: 2),
+                    ],
+                  ),
+                ),
+                Divider(height: 1, color: scheme.outlineVariant),
+                Expanded(
+                  child: ListView.separated(
+                    padding: const EdgeInsets.fromLTRB(10, 10, 10, 16),
+                    itemCount: results.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 10),
+                    itemBuilder: (context, i) {
+                      final result = results[i];
+                      return _TabletHistoryItem(
+                        result: result,
+                        selected: result.id == selectedId,
+                        onTap: () => onSelect(result.id),
+                        onDelete: () => onDelete(result.id),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+    );
+  }
+}
+
+class _TabletHistoryItem extends StatelessWidget {
+  const _TabletHistoryItem({
+    required this.result,
+    required this.selected,
+    required this.onTap,
+    required this.onDelete,
+  });
+
+  final ResultImage result;
+  final bool selected;
+  final VoidCallback onTap;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    const width = 158.0;
+    final height = (width / result.aspect).clamp(88.0, 218.0);
+    return AnimatedContainer(
+      duration: Motion.fast,
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: selected
+            ? scheme.primaryContainer.withValues(alpha: .45)
+            : Colors.transparent,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: selected ? scheme.primary : Colors.transparent,
+          width: 1.5,
+        ),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(11),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: Stack(
+            children: [
+              ResultThumb(
+                result: result,
+                width: width,
+                height: height,
+                radius: 10,
+              ),
+              Positioned(
+                left: 7,
+                bottom: 7,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: .58),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    '${result.seed}',
+                    maxLines: 1,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+              Positioned(
+                top: 2,
+                right: 2,
+                child: PopupMenuButton<String>(
+                  tooltip: '历史记录操作',
+                  padding: EdgeInsets.zero,
+                  icon: Container(
+                    width: 30,
+                    height: 30,
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: .48),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.more_horiz,
+                      size: 18,
+                      color: Colors.white,
+                    ),
+                  ),
+                  onSelected: (v) {
+                    if (v == 'delete') onDelete();
+                  },
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(
+                      value: 'delete',
+                      child: Row(
+                        children: [
+                          Icon(Icons.delete_outline, size: 19),
+                          SizedBox(width: 10),
+                          Text('删除'),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

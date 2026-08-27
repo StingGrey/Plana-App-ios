@@ -18,8 +18,22 @@ Future<void> showAdvancedSheet(BuildContext context) {
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
-    builder: (context) =>
-        const FractionallySizedBox(heightFactor: .86, child: _AdvancedSheet()),
+    builder: (context) {
+      // ModalBottomSheet 不会替内部固定高度内容自动避开软键盘。种子在列表
+      // 最末段,键盘弹出后恰好会被压在下面。把 inset 放在高度系数外层:
+      // 键盘出现时先扣掉可用高度,再按剩余空间取 86%,面板会整体上移并缩短,
+      // ListView 也因此得到真实的可滚动视口。
+      final keyboard = MediaQuery.viewInsetsOf(context).bottom;
+      return AnimatedPadding(
+        duration: Motion.fast,
+        curve: Motion.standard,
+        padding: EdgeInsets.only(bottom: keyboard),
+        child: const FractionallySizedBox(
+          heightFactor: .86,
+          child: _AdvancedSheet(),
+        ),
+      );
+    },
   );
 }
 
@@ -433,6 +447,9 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                       controller: seedCtrl,
                       enabled: !randomSeed,
                       keyboardType: TextInputType.number,
+                      // 让 EditableText 请求滚动时给固定底栏留出余量。只靠默认
+                      // 20px 会把输入框滚到确认栏背后,虽然没被键盘挡却仍看不全。
+                      scrollPadding: const EdgeInsets.only(bottom: 104),
                       style: mono(context, size: 13),
                       decoration: InputDecoration(
                         labelText: '种子 Seed',

@@ -658,13 +658,13 @@ class _RailButton extends StatelessWidget {
   }
 }
 
-class _SeedChip extends StatelessWidget {
+class _SeedChip extends ConsumerWidget {
   const _SeedChip({required this.seed});
 
   final int seed;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final scheme = context.scheme;
     return Material(
       color: scheme.surfaceContainerHighest,
@@ -674,9 +674,14 @@ class _SeedChip extends StatelessWidget {
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: () async {
+          // 图库种子不再只是复制:同步到创作参数后,高级设置「修正」区打开
+          // 就会直接进入固定种子态,无需在两页之间手抄。
+          ref
+              .read(generateProvider.notifier)
+              .applyImportedSettings(seed: '$seed');
           await Clipboard.setData(ClipboardData(text: '$seed'));
           if (!context.mounted) return;
-          hintSnack(context, '已复制种子 $seed', icon: Icons.check);
+          hintSnack(context, '已同步种子 $seed 到高级设置', icon: Icons.check);
         },
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),

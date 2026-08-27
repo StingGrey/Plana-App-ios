@@ -1075,6 +1075,30 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   /// 卡片 = 预览图比例:cover 下整图完整铺满、不裁切。
   double get _cardAspect => _def.previewAspect;
 
+  /// 灵感卡片按可用宽度扩列。手机仍是两列;横屏平板约 200–230dp 一列,
+  /// 大屏最多六列,避免原先两张预览各占半屏。
+  int _columnCount(double width) => (width / 220).floor().clamp(2, 6);
+
+  /// web 备份/后端将来若带预览尺寸,瀑布流按真实比例排;旧数据没有尺寸时
+  /// 回退到分类推荐比例。这里宽松兼容几种常见字段,不改变备份协议。
+  double _entryAspect(TagEntry e) {
+    num? number(Object? value) => value is num ? value : num.tryParse('$value');
+
+    final w = number(
+      e.extra['previewWidth'] ?? e.extra['imageWidth'] ?? e.extra['width'],
+    );
+    final h = number(
+      e.extra['previewHeight'] ?? e.extra['imageHeight'] ?? e.extra['height'],
+    );
+    if (w != null && h != null && w > 0 && h > 0) {
+      return (w / h).clamp(.5, 2.0).toDouble();
+    }
+    final aspect = number(e.extra['previewAspect'] ?? e.extra['aspectRatio']);
+    return aspect != null && aspect > 0
+        ? aspect.clamp(.5, 2.0).toDouble()
+        : _cardAspect;
+  }
+
   Widget _grid(List<_Group> groups, ScrollController ctrl, bool isPublic) {
     // 有 publicId 的条目(收藏/我发布的)一律用当前公共库的 http 预览:
     // 随当前后端地址,不受备份剥离本机预览、也不受端口变化影响。
@@ -1095,39 +1119,41 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
           ),
           SliverPadding(
             padding: const EdgeInsets.fromLTRB(_kEdge, 8, _kEdge, 16),
-            sliver: SliverGrid(
-              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                mainAxisSpacing: _gap,
-                crossAxisSpacing: _gap,
-                childAspectRatio: _cardAspect,
+            sliver: SliverLayoutBuilder(
+              builder: (context, constraints) => SliverGrid(
+                gridDelegate: _MasonryGridDelegate(
+                  crossAxisCount: _columnCount(constraints.crossAxisExtent),
+                  mainAxisSpacing: _gap,
+                  crossAxisSpacing: _gap,
+                  aspects: [for (final e in g.items) _entryAspect(e)],
+                ),
+                delegate: SliverChildBuilderDelegate((context, i) {
+                  final e = g.items[i];
+                  final preview =
+                      (e.publicId != null ? pubPreview[e.publicId] : null) ??
+                      e.previewUrl;
+                  return _TagCard(
+                    key: ValueKey(e.id),
+                    entry: e,
+                    previewUrl: preview,
+                    selected: _sel.contains(e.id),
+                    isPublic: isPublic,
+                    collected:
+                        isPublic &&
+                        ref
+                            .read(tagLibraryProvider.notifier)
+                            .isCollected(
+                              _cat,
+                              publicId: e.publicId,
+                              name: e.name,
+                            ),
+                    onTap: () => _toggle(e),
+                    onLongPress: () => showTagDetailSheet(context, e),
+                    onCollect: isPublic ? () => _collect(e) : null,
+                    onMenu: isPublic ? null : (v) => _cardMenu(v, e),
+                  );
+                }, childCount: g.items.length),
               ),
-              delegate: SliverChildBuilderDelegate((context, i) {
-                final e = g.items[i];
-                final preview =
-                    (e.publicId != null ? pubPreview[e.publicId] : null) ??
-                    e.previewUrl;
-                return _TagCard(
-                  key: ValueKey(e.id),
-                  entry: e,
-                  previewUrl: preview,
-                  selected: _sel.contains(e.id),
-                  isPublic: isPublic,
-                  collected:
-                      isPublic &&
-                      ref
-                          .read(tagLibraryProvider.notifier)
-                          .isCollected(
-                            _cat,
-                            publicId: e.publicId,
-                            name: e.name,
-                          ),
-                  onTap: () => _toggle(e),
-                  onLongPress: () => showTagDetailSheet(context, e),
-                  onCollect: isPublic ? () => _collect(e) : null,
-                  onMenu: isPublic ? null : (v) => _cardMenu(v, e),
-                );
-              }, childCount: g.items.length),
             ),
           ),
         ],
@@ -1166,19 +1192,29 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   void _jumpToLetter(List<_Group> groups, ScrollController ctrl, String l) {
     if (!ctrl.hasClients) return;
     final w = context.size?.width ?? 400;
-    final itemW = (w - _kEdge * 2 - _gap) / 2;
-    final rowExtent = itemW / _cardAspect + _gap;
-    // 逐组累加(组头 + 该组行高),命中组内再按行偏移
+    final gridWidth = (w - _kEdge * 2).clamp(1.0, double.infinity);
+    final columns = _columnCount(gridWidth);
+    // 逐组累加(组头 + 该组瀑布流高度),命中组内直接取布局算出的纵坐标。
+    // 不能再用旧版固定两列的 `i ~/ 2`:平板扩列后会跳到完全错误的位置。
     var offset = 0.0;
     for (final g in groups) {
       final i = g.items.indexWhere((e) => letterOfName(e.name) == l);
-      final rows = (g.items.length + 1) ~/ 2;
+      final layout = _MasonryGridLayout(
+        crossAxisExtent: gridWidth,
+        reverseCrossAxis: false,
+        crossAxisCount: columns,
+        aspects: [for (final e in g.items) _entryAspect(e)],
+        mainAxisSpacing: _gap,
+        crossAxisSpacing: _gap,
+      );
       if (i >= 0) {
-        offset += 2 + _headerH + 8 + (i ~/ 2) * rowExtent;
+        offset +=
+            2 + _headerH + 8 + layout.getGeometryForChildIndex(i).scrollOffset;
         ctrl.jumpTo(offset.clamp(0.0, ctrl.position.maxScrollExtent));
         return;
       }
-      offset += 2 + _headerH + 8 + rows * rowExtent + 16;
+      offset +=
+          2 + _headerH + 8 + layout.computeMaxScrollOffset(g.items.length) + 16;
     }
   }
 
@@ -1471,6 +1507,122 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
 
 // ---- 卡片 ----
 
+/// 无第三方依赖的瀑布流 Sliver 布局。每张卡按自己的宽高比得到高度,下一张
+/// 总是落在当前最短列;滚动协议仍是标准 SliverGrid,懒构建与回收不变。
+class _MasonryGridDelegate extends SliverGridDelegate {
+  const _MasonryGridDelegate({
+    required this.crossAxisCount,
+    required this.aspects,
+    this.mainAxisSpacing = 0,
+    this.crossAxisSpacing = 0,
+  });
+
+  final int crossAxisCount;
+  final List<double> aspects;
+  final double mainAxisSpacing;
+  final double crossAxisSpacing;
+
+  @override
+  SliverGridLayout getLayout(SliverConstraints constraints) =>
+      _MasonryGridLayout(
+        crossAxisExtent: constraints.crossAxisExtent,
+        reverseCrossAxis: axisDirectionIsReversed(
+          constraints.crossAxisDirection,
+        ),
+        crossAxisCount: crossAxisCount,
+        aspects: aspects,
+        mainAxisSpacing: mainAxisSpacing,
+        crossAxisSpacing: crossAxisSpacing,
+      );
+
+  @override
+  bool shouldRelayout(covariant _MasonryGridDelegate oldDelegate) {
+    if (crossAxisCount != oldDelegate.crossAxisCount ||
+        mainAxisSpacing != oldDelegate.mainAxisSpacing ||
+        crossAxisSpacing != oldDelegate.crossAxisSpacing ||
+        aspects.length != oldDelegate.aspects.length) {
+      return true;
+    }
+    for (var i = 0; i < aspects.length; i++) {
+      if (aspects[i] != oldDelegate.aspects[i]) return true;
+    }
+    return false;
+  }
+}
+
+class _MasonryGridLayout extends SliverGridLayout {
+  _MasonryGridLayout({
+    required double crossAxisExtent,
+    required bool reverseCrossAxis,
+    required int crossAxisCount,
+    required List<double> aspects,
+    required double mainAxisSpacing,
+    required double crossAxisSpacing,
+  }) {
+    final columns = crossAxisCount < 1 ? 1 : crossAxisCount;
+    final tileWidth =
+        (crossAxisExtent - crossAxisSpacing * (columns - 1)) / columns;
+    final ends = List<double>.filled(columns, 0);
+    for (var i = 0; i < aspects.length; i++) {
+      var column = 0;
+      for (var c = 1; c < columns; c++) {
+        if (ends[c] < ends[column]) column = c;
+      }
+      final start = ends[column];
+      final aspect = aspects[i].isFinite && aspects[i] > 0 ? aspects[i] : 1;
+      final height = tileWidth / aspect;
+      final rawCross = column * (tileWidth + crossAxisSpacing);
+      _geometry.add(
+        SliverGridGeometry(
+          scrollOffset: start,
+          crossAxisOffset: reverseCrossAxis
+              ? crossAxisExtent - rawCross - tileWidth
+              : rawCross,
+          mainAxisExtent: height,
+          crossAxisExtent: tileWidth,
+        ),
+      );
+      ends[column] = start + height + mainAxisSpacing;
+    }
+    _maxScrollOffset = ends.isEmpty
+        ? 0
+        : ends.reduce((a, b) => a > b ? a : b) - mainAxisSpacing;
+  }
+
+  final List<SliverGridGeometry> _geometry = [];
+  late final double _maxScrollOffset;
+
+  @override
+  SliverGridGeometry getGeometryForChildIndex(int index) => _geometry[index];
+
+  @override
+  int getMinChildIndexForScrollOffset(double scrollOffset) {
+    if (_geometry.isEmpty) return 0;
+    for (var i = 0; i < _geometry.length; i++) {
+      final g = _geometry[i];
+      if (g.scrollOffset + g.mainAxisExtent >= scrollOffset) return i;
+    }
+    return _geometry.length - 1;
+  }
+
+  @override
+  int getMaxChildIndexForScrollOffset(double scrollOffset) {
+    if (_geometry.isEmpty) return 0;
+    var last = 0;
+    for (var i = 0; i < _geometry.length; i++) {
+      if (_geometry[i].scrollOffset > scrollOffset) break;
+      last = i;
+    }
+    return last;
+  }
+
+  @override
+  double computeMaxScrollOffset(int childCount) {
+    if (childCount <= 0 || _geometry.isEmpty) return 0;
+    return _maxScrollOffset.clamp(0.0, double.infinity).toDouble();
+  }
+}
+
 /// 公共库加载态:骨架网格(卡片形状 + 呼吸微光),比干等一个转圈更有"内容在来"。
 class _SkeletonGrid extends StatefulWidget {
   const _SkeletonGrid({required this.aspect});
@@ -1497,28 +1649,36 @@ class _SkeletonGridState extends State<_SkeletonGrid>
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    return GridView.count(
-      crossAxisCount: 2,
-      padding: const EdgeInsets.fromLTRB(_kEdge, 42, _kEdge, 16),
-      mainAxisSpacing: _gap,
-      crossAxisSpacing: _gap,
-      childAspectRatio: widget.aspect,
-      physics: const NeverScrollableScrollPhysics(),
-      children: [
-        for (var i = 0; i < 6; i++)
-          FadeTransition(
-            opacity: Tween(
-              begin: .35,
-              end: .7,
-            ).animate(CurvedAnimation(parent: _c, curve: Curves.easeInOut)),
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: scheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(16),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final columns = (constraints.maxWidth / 220).floor().clamp(2, 6);
+        final count = columns * 3;
+        return GridView.custom(
+          gridDelegate: _MasonryGridDelegate(
+            crossAxisCount: columns,
+            mainAxisSpacing: _gap,
+            crossAxisSpacing: _gap,
+            aspects: [for (var i = 0; i < count; i++) widget.aspect],
+          ),
+          padding: const EdgeInsets.fromLTRB(_kEdge, 42, _kEdge, 16),
+          physics: const NeverScrollableScrollPhysics(),
+          childrenDelegate: SliverChildBuilderDelegate(
+            (context, i) => FadeTransition(
+              opacity: Tween(
+                begin: .35,
+                end: .7,
+              ).animate(CurvedAnimation(parent: _c, curve: Curves.easeInOut)),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: scheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(16),
+                ),
               ),
             ),
+            childCount: count,
           ),
-      ],
+        );
+      },
     );
   }
 }
