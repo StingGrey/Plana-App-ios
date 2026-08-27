@@ -12,9 +12,9 @@ import '../generation_controller.dart';
 import '../loop_controller.dart';
 import '../models.dart' show GenParams, kBatchMax, stepsRangeOf;
 import '../vibe_encoder.dart';
-import '../../tools/image_scramble_page.dart';
+import '../../import/import_panel.dart';
 import 'advanced_sheet.dart';
-import 'common.dart' show hintSnack, sharedAxisRoute;
+import 'common.dart' show hintSnack;
 import 'loop_sheet.dart';
 import 'resolution_sheet.dart';
 
@@ -158,10 +158,9 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
             const SizedBox(height: 8),
             Row(
               children: [
-                // 图片混淆:原来的导入入口与页面另一侧导入功能重复,这里改为
-                // 直达独立的 PNGPKG 兼容混淆 / 解混淆工具。
+                // 导入图片:选相册图 → 解析元数据/用作参考的全屏导入面板
                 Tooltip(
-                  message: '图片混淆',
+                  message: '导入图片',
                   child: AnimatedContainer(
                     duration: Motion.fast,
                     width: 52,
@@ -178,12 +177,10 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
                       borderRadius: BorderRadius.circular(15),
                       clipBehavior: Clip.antiAlias,
                       child: InkWell(
-                        onTap: () => Navigator.of(
-                          context,
-                        ).push(sharedAxisRoute(const ImageScramblePage())),
+                        onTap: () => openImportPanel(context),
                         child: Center(
                           child: Icon(
-                            Icons.shuffle_rounded,
+                            Icons.add_photo_alternate_outlined,
                             size: 22,
                             color: scheme.primary,
                           ),

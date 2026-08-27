@@ -11,15 +11,14 @@ import '../../generate/gen_modules.dart' show retargetModel;
 import '../../generate/generation_controller.dart';
 import '../../generate/models.dart';
 import '../../generate/cost.dart' show estimateInpaintCost;
-import '../../generate/widgets/common.dart'
-    show ParamSlider, hintSnack, sharedAxisRoute;
-import '../../import/import_panel.dart';
+import '../../generate/widgets/common.dart' show ParamSlider, hintSnack;
 import '../../inpaint/inpaint_overlay.dart';
 import '../../../core/net/anlas_provider.dart';
 import '../../../core/store/app_stores.dart';
 import '../../../core/util/gallery_save.dart';
 import '../../../core/util/haptics.dart';
 import '../../../core/util/image_ops.dart';
+import '../../../core/util/image_scramble.dart';
 import '../gallery_state.dart';
 import '../models.dart';
 import '../save_pipeline.dart';
@@ -308,10 +307,10 @@ class _ActionRail extends ConsumerWidget {
         onLongPress: () => _openSaveSheet(context, ref),
       ),
       _RailButton(
-        label: '导入',
-        icon: Icons.input,
+        label: '混淆',
+        icon: Icons.shuffle_rounded,
         compact: horizontal,
-        onTap: () => _import(context, ref),
+        onTap: () => _scramble(context, ref),
       ),
       _RailButton(
         label: '重新生成',
@@ -576,25 +575,42 @@ class _ActionRail extends ConsumerWidget {
     );
   }
 
-  /// 导入:当前图送进导入面板(解析内嵌元数据 / 用作参考),与创作页入口同一面板。
-  Future<void> _import(BuildContext context, WidgetRef ref) async {
+  /// 混淆:直接对当前生成结果做 PNGPKG 兼容的黄金分割像素置换,
+  /// 产出一张新的图库结果,原图保留在历史中。
+  Future<void> _scramble(BuildContext context, WidgetRef ref) async {
     final bytes = await _bytesOf(ref);
     if (!context.mounted) return;
     if (bytes == null) {
       hintSnack(context, '图片尚未就绪', icon: Icons.hourglass_empty);
       return;
     }
-    unawaited(
-      Navigator.of(context).push(
-        sharedAxisRoute(
-          ImportImagePanel(
-            bytes: bytes,
-            fileName: 'plana_${result.seed}.png',
-            displayName: 'plana_${result.seed}',
-          ),
-        ),
-      ),
-    );
+    final offset = pngPkgOffsetForPercent(result.width * result.height, 62);
+    try {
+      final output = await transformPngPkgImage(
+        bytes,
+        offset: offset,
+        decrypt: false,
+      );
+      if (!context.mounted) return;
+      final input = await _inputOf(ref);
+      if (!context.mounted) return;
+      ref.read(galleryProvider.notifier).addResult(
+        bytes: output,
+        width: result.width,
+        height: result.height,
+        seed: result.seed,
+        input: input,
+      );
+      hintSnack(
+        context,
+        '图片已混淆 · 黄金分割偏移 $offset',
+        icon: Icons.shuffle_rounded,
+      );
+    } catch (_) {
+      if (context.mounted) {
+        hintSnack(context, '图片混淆失败', icon: Icons.error_outline);
+      }
+    }
   }
 
   /// 点按保存:按默认保存设置处理后存相册(gal;Android 10+ 免权限走 MediaStore)。
