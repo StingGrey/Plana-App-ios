@@ -59,20 +59,36 @@ class SectionCard extends StatelessWidget {
             const SizedBox(height: 38),
             Icon(icon, size: 20, color: scheme.onSurfaceVariant),
             const SizedBox(width: 9),
-            Text(
-              title,
-              style: context.texts.bodyLarge!.copyWith(
-                fontWeight: FontWeight.w600,
-                color: titleColor,
-              ),
-            ),
-            if (badge != null) ...[const SizedBox(width: 8), badge!],
-            const SizedBox(width: 8),
+            // 标题、徽章与内联信息共用动作按钮之外的剩余宽度。平板左栏
+            // 约 340dp 时,把标题当非 flex 子项会让固定动作键把整行顶出界;
+            // 标题允许省略后,右侧操作仍保持完整点击区。
             Expanded(
               child: Row(
-                mainAxisAlignment: MainAxisAlignment.end,
                 children: [
-                  for (final w in inline) ...[w, const SizedBox(width: 6)],
+                  Flexible(
+                    child: Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: context.texts.bodyLarge!.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: titleColor,
+                      ),
+                    ),
+                  ),
+                  if (badge != null) ...[const SizedBox(width: 8), badge!],
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        for (final w in inline) ...[
+                          w,
+                          const SizedBox(width: 6),
+                        ],
+                      ],
+                    ),
+                  ),
                 ],
               ),
             ),
