@@ -135,18 +135,25 @@ class TabletResultToolbar extends StatelessWidget {
         color: scheme.surface,
         border: Border(top: BorderSide(color: scheme.outlineVariant)),
       ),
-      child: Center(
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: Row(
-            key: const ValueKey('tablet-result-toolbar-content'),
-            children: [
-              _SeedChip(seed: result.seed),
-              const SizedBox(width: 16),
-              _ActionRail(result: result, horizontal: true),
-            ],
+      child: Row(
+        key: const ValueKey('tablet-result-toolbar-content'),
+        children: [
+          KeyedSubtree(
+            key: const ValueKey('tablet-result-toolbar-seed'),
+            child: _SeedChip(seed: result.seed),
           ),
-        ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              reverse: true,
+              child: KeyedSubtree(
+                key: const ValueKey('tablet-result-toolbar-actions'),
+                child: _ActionRail(result: result, horizontal: true),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

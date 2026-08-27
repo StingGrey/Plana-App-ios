@@ -34,13 +34,18 @@ void main() {
     expect(find.text('导入'), findsOneWidget);
     expect(find.text('重新生成'), findsOneWidget);
 
-    final toolbar = tester.getCenter(
+    final toolbar = tester.getRect(
       find.byKey(const ValueKey('tablet-result-toolbar')),
     );
-    final content = tester.getCenter(
-      find.byKey(const ValueKey('tablet-result-toolbar-content')),
+    final seed = tester.getRect(
+      find.byKey(const ValueKey('tablet-result-toolbar-seed')),
     );
-    expect((toolbar.dx - content.dx).abs(), lessThan(1));
+    final actions = tester.getRect(
+      find.byKey(const ValueKey('tablet-result-toolbar-actions')),
+    );
+    expect(seed.left, closeTo(toolbar.left + 12, 1));
+    expect(actions.right, closeTo(toolbar.right - 12, 1));
+    expect(seed.right, lessThan(actions.left));
 
     final redraw = tester.getCenter(find.text('重绘'));
     final regenerate = tester.getCenter(find.text('重新生成'));
