@@ -10,6 +10,7 @@ import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
 import '../../core/net/remote_image.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/ui/responsive_grid.dart';
 import '../../core/ui/scroll_memory.dart';
 import '../../core/ui/selection_bar.dart';
 import '../editor/editor_models.dart' show draftOf, outputOf, pickEditorText;
@@ -1078,7 +1079,7 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
 
   /// 灵感卡片按可用宽度扩列。手机仍是两列;横屏平板约 200–230dp 一列,
   /// 大屏最多六列,避免原先两张预览各占半屏。
-  int _columnCount(double width) => (width / 220).floor().clamp(2, 6);
+  int _columnCount(double width) => responsiveImageColumns(width);
 
   /// web 备份/后端将来若带预览尺寸,瀑布流按真实比例排;旧数据没有尺寸时
   /// 回退到分类推荐比例。这里宽松兼容几种常见字段,不改变备份协议。
@@ -1652,7 +1653,7 @@ class _SkeletonGridState extends State<_SkeletonGrid>
     final scheme = context.scheme;
     return LayoutBuilder(
       builder: (context, constraints) {
-        final columns = (constraints.maxWidth / 220).floor().clamp(2, 6);
+        final columns = responsiveImageColumns(constraints.maxWidth);
         final count = columns * 3;
         return GridView.custom(
           gridDelegate: _MasonryGridDelegate(

@@ -14,12 +14,14 @@ class ResultThumb extends ConsumerWidget {
     required this.width,
     required this.height,
     this.radius = 10,
+    this.fit = BoxFit.cover,
   });
 
   final ResultImage result;
   final double width;
   final double height;
   final double radius;
+  final BoxFit fit;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -32,7 +34,7 @@ class ResultThumb extends ConsumerWidget {
           bytes,
           width: width,
           height: height,
-          fit: BoxFit.cover,
+          fit: fit,
           gaplessPlayback: true,
         ),
       );

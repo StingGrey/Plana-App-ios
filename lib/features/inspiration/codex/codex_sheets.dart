@@ -10,6 +10,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/net/remote_image.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../../core/ui/responsive_grid.dart';
 import '../../editor/editor_models.dart' show draftOf, outputOf, pickEditorText;
 import '../../generate/generate_state.dart';
 import '../../generate/models.dart'
@@ -1674,52 +1675,55 @@ class _FavoritesSheet extends ConsumerWidget {
             Flexible(
               child: favs.isEmpty
                   ? _empty(context)
-                  : GridView.builder(
-                      padding: const EdgeInsets.fromLTRB(14, 2, 14, 18),
-                      gridDelegate:
-                          const SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: 2,
-                            mainAxisSpacing: 10,
-                            crossAxisSpacing: 10,
-                            // 收藏夹走等比网格,不做瀑布流:这里是「翻自己存的
-                            // 那几条」,整齐比错落好扫
-                            childAspectRatio: 0.78,
+                  : LayoutBuilder(
+                      builder: (context, constraints) => GridView.builder(
+                        padding: const EdgeInsets.fromLTRB(14, 2, 14, 18),
+                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: responsiveImageColumns(
+                            constraints.maxWidth,
                           ),
-                      itemCount: favs.length,
-                      itemBuilder: (context, i) {
-                        final f = favs[i];
-                        final meta = _metaOf(index, f.codexId);
-                        return Stack(
-                          children: [
-                            Positioned.fill(
-                              child: CodexCard(
-                                codex: meta,
-                                entry: f.entry,
-                                media: media,
-                                fixedAspect: 0.78,
-                                // 收藏跨法典,左右翻页会拿 A 的 meta 去解 B 的
-                                // 图 —— 这里只开单条,不组批
-                                onTap: () => showCodexDetailSheet(
-                                  context,
-                                  meta,
-                                  media,
-                                  entries: [f.entry],
-                                  index: 0,
+                          mainAxisSpacing: 10,
+                          crossAxisSpacing: 10,
+                          // 收藏夹走等比网格,不做瀑布流:这里是「翻自己存的
+                          // 那几条」,整齐比错落好扫
+                          childAspectRatio: 0.78,
+                        ),
+                        itemCount: favs.length,
+                        itemBuilder: (context, i) {
+                          final f = favs[i];
+                          final meta = _metaOf(index, f.codexId);
+                          return Stack(
+                            children: [
+                              Positioned.fill(
+                                child: CodexCard(
+                                  codex: meta,
+                                  entry: f.entry,
+                                  media: media,
+                                  fixedAspect: 0.78,
+                                  // 收藏跨法典,左右翻页会拿 A 的 meta 去解 B 的
+                                  // 图 —— 这里只开单条,不组批
+                                  onTap: () => showCodexDetailSheet(
+                                    context,
+                                    meta,
+                                    media,
+                                    entries: [f.entry],
+                                    index: 0,
+                                  ),
                                 ),
                               ),
-                            ),
-                            Positioned(
-                              right: 4,
-                              top: 4,
-                              child: _UnfavDot(
-                                onTap: () => ref
-                                    .read(codexFavoritesProvider.notifier)
-                                    .remove(f.key),
+                              Positioned(
+                                right: 4,
+                                top: 4,
+                                child: _UnfavDot(
+                                  onTap: () => ref
+                                      .read(codexFavoritesProvider.notifier)
+                                      .remove(f.key),
+                                ),
                               ),
-                            ),
-                          ],
-                        );
-                      },
+                            ],
+                          );
+                        },
+                      ),
                     ),
             ),
           ],

@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../../core/ui/responsive_grid.dart';
 import '../../generate/widgets/common.dart' show hintSnack;
 import 'codex_card.dart';
 import 'codex_favorites.dart';
@@ -388,35 +389,33 @@ class _CodexViewState extends ConsumerState<CodexView> {
   }
 
   Widget _grid(CodexMeta meta, CodexMedia media, List<CodexEntry> entries) {
-    final w = MediaQuery.sizeOf(context).width;
-    final colW = (w - _edge * 2 - _gap) / 2;
-    final (left, right) = _splitColumns(entries, colW);
-    return CustomScrollView(
-      controller: _scroll,
-      physics: const AlwaysScrollableScrollPhysics(),
-      slivers: [
-        SliverCrossAxisGroup(
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final count = responsiveImageColumns(constraints.maxWidth);
+        final colW =
+            (constraints.maxWidth - _edge * 2 - _gap * (count - 1)) / count;
+        final columns = _splitColumns(entries, colW, count);
+        return CustomScrollView(
+          controller: _scroll,
+          physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
-            _column(
-              meta,
-              media,
-              entries,
-              left,
-              leftPad: _edge,
-              rightPad: _gap / 2,
+            SliverCrossAxisGroup(
+              slivers: [
+                for (var i = 0; i < count; i++)
+                  _column(
+                    meta,
+                    media,
+                    entries,
+                    columns[i],
+                    leftPad: i == 0 ? _edge : _gap / 2,
+                    rightPad: i == count - 1 ? _edge : _gap / 2,
+                  ),
+              ],
             ),
-            _column(
-              meta,
-              media,
-              entries,
-              right,
-              leftPad: _gap / 2,
-              rightPad: _edge,
-            ),
+            const SliverToBoxAdapter(child: SizedBox(height: 20)),
           ],
-        ),
-        const SliverToBoxAdapter(child: SizedBox(height: 20)),
-      ],
+        );
+      },
     );
   }
 
@@ -459,24 +458,24 @@ class _CodexViewState extends ConsumerState<CodexView> {
     );
   }
 
-  /// 双列瀑布流:按估算高度贪心塞进较矮的一列(用 aspect + 标题条估高)。
-  (List<CodexEntry>, List<CodexEntry>) _splitColumns(
+  /// 响应式瀑布流:按估算高度贪心塞进当前最矮列。
+  List<List<CodexEntry>> _splitColumns(
     List<CodexEntry> items,
     double colW,
+    int count,
   ) {
-    final left = <CodexEntry>[], right = <CodexEntry>[];
-    var lh = 0.0, rh = 0.0;
+    final columns = [for (var i = 0; i < count; i++) <CodexEntry>[]];
+    final heights = List<double>.filled(count, 0);
     for (final e in items) {
       final h = colW / (e.aspect <= 0 ? 0.75 : e.aspect) + 40;
-      if (lh <= rh) {
-        left.add(e);
-        lh += h;
-      } else {
-        right.add(e);
-        rh += h;
+      var shortest = 0;
+      for (var i = 1; i < count; i++) {
+        if (heights[i] < heights[shortest]) shortest = i;
       }
+      columns[shortest].add(e);
+      heights[shortest] += h;
     }
-    return (left, right);
+    return columns;
   }
 
   Widget _error(String text, VoidCallback onRetry) {

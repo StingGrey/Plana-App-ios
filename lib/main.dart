@@ -1,15 +1,20 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/app_info.dart';
 import 'core/auth/auth_mode.dart';
+import 'core/platform/drop_import.dart';
 import 'core/store/app_stores.dart';
 import 'core/store/gen_settings.dart';
 import 'core/theme/app_theme.dart';
 import 'core/theme/theme_settings.dart';
+import 'core/util/haptics.dart';
+import 'features/generate/widgets/common.dart' show sharedAxisRoute;
+import 'features/import/import_panel.dart';
 import 'features/onboarding/welcome_page.dart';
 import 'features/shell/app_shell.dart';
-import 'core/util/haptics.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -39,15 +44,64 @@ Future<void> main() async {
   stores.postBootMaintenance(); // 选图器缓存清扫 + blob GC(延迟后台跑)
 }
 
-class PlanaApp extends ConsumerWidget {
+class PlanaApp extends ConsumerStatefulWidget {
   const PlanaApp({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<PlanaApp> createState() => _PlanaAppState();
+}
+
+class _PlanaAppState extends ConsumerState<PlanaApp> {
+  final _navigatorKey = GlobalKey<NavigatorState>();
+  late final DropImportBridge _dropBridge;
+  bool _dropPanelOpen = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _dropBridge = DropImportBridge();
+    unawaited(_dropBridge.attach(_openDroppedImage));
+  }
+
+  @override
+  void dispose() {
+    unawaited(_dropBridge.detach());
+    super.dispose();
+  }
+
+  Future<void> _openDroppedImage(DroppedImage image) async {
+    if (_dropPanelOpen || !mounted) return;
+    var navigator = _navigatorKey.currentState;
+    if (navigator == null) {
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted) return;
+      navigator = _navigatorKey.currentState;
+    }
+    if (navigator == null) return;
+
+    _dropPanelOpen = true;
+    try {
+      await navigator.push<void>(
+        sharedAxisRoute(
+          ImportImagePanel(
+            bytes: image.bytes,
+            fileName: image.fileName,
+            displayName: image.displayName,
+          ),
+        ),
+      );
+    } finally {
+      _dropPanelOpen = false;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final ts = ref.watch(themeSettingsProvider);
     // 触感开关同步到全局出口:调用点在手势/绘制层,拿不到 ref,只能这样递。
     Haptics.enabled = ts.haptics;
     return MaterialApp(
+      navigatorKey: _navigatorKey,
       title: kAppName,
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light(ts.seed.color),

@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plana_app/core/auth/auth_mode.dart';
 import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/core/store/gen_settings.dart';
+import 'package:plana_app/features/generate/widgets/prompt_card.dart';
 import 'package:plana_app/main.dart';
 
 /// 测试环境无 Keystore,固定「已选直连」跳过引导页,直接冒烟创作页。
@@ -37,6 +38,17 @@ void main() {
     expect(find.text('角色'), findsOneWidget);
     expect(find.text('生成'), findsWidgets);
     expect(find.text('创作'), findsOneWidget);
+
+    final promptCard = find.byType(PromptCard);
+    final expandedHeight = tester.getSize(promptCard).height;
+    expect(find.text('点击编辑正面提示词…'), findsOneWidget);
+    await tester.tap(find.byTooltip('收起提示词'));
+    await tester.pumpAndSettle();
+    expect(tester.getSize(promptCard).height, lessThan(expandedHeight));
+    expect(find.byTooltip('展开提示词'), findsOneWidget);
+    await tester.tap(find.byTooltip('展开提示词'));
+    await tester.pumpAndSettle();
+    expect(tester.getSize(promptCard).height, expandedHeight);
 
     // 放行工作台持久化的 800ms 防抖 Timer,避免拆树时报 pending timer
     await tester.pump(const Duration(milliseconds: 900));

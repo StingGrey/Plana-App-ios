@@ -673,6 +673,7 @@ class _TabletHistoryItem extends StatelessWidget {
                 width: width,
                 height: height,
                 radius: 10,
+                fit: BoxFit.contain,
               ),
               Positioned(
                 left: 7,
