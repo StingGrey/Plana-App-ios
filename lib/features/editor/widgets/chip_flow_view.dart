@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/editor_theme.dart';
 import '../editor_models.dart';
+import '../prompt_blacklist.dart';
 import 'rich_tag_controller.dart';
 import '../../../core/util/haptics.dart';
 
@@ -90,6 +91,7 @@ class ChipFlowView extends StatefulWidget {
     this.showTrans = true,
     this.fontSize = 16,
     this.abnormalThreshold = 10,
+    this.promptBlacklist = const [],
   });
 
   final RichTagController controller;
@@ -138,13 +140,15 @@ class ChipFlowView extends StatefulWidget {
   /// 异常权重阈值(编辑器设置)。
   final double abnormalThreshold;
 
+  /// 非空时，命中的散标签以错误色标出。折叠占位符不参与匹配。
+  final List<String> promptBlacklist;
+
   @override
   State<ChipFlowView> createState() => _ChipFlowViewState();
 }
 
 class _ChipFlowViewState extends State<ChipFlowView>
     with TickerProviderStateMixin {
-
   final GlobalKey _stackKey = GlobalKey();
   final List<GlobalKey> _chipKeys = [];
   List<(int, Offset)> _anchors = const []; // (gap, 加号中心) 内容坐标
@@ -258,8 +262,6 @@ class _ChipFlowViewState extends State<ChipFlowView>
 
   static bool _selWas(List<int> sorted, int i) => sorted.contains(i);
 
-
-
   /// 布局后按 chip 实际位置计算间隙加号锚点(浮层,不占 Wrap 位——
   /// 加号出现/消失时 chip 一动不动)。结果收敛才 setState,防循环。
   void _scheduleAnchors(int count) {
@@ -309,7 +311,7 @@ class _ChipFlowViewState extends State<ChipFlowView>
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: Listenable.merge([widget.controller, _moveAnim]),
+      animation: Listenable.merge([widget.controller, widget.input, _moveAnim]),
       builder: (context, _) {
         final text = widget.controller.text;
         final units = topLevelUnits(text, widget.foldBodies);
@@ -402,6 +404,10 @@ class _ChipFlowViewState extends State<ChipFlowView>
   Widget _inputBox(bool empty) {
     final scheme = context.scheme;
     final fs = widget.fontSize;
+    final blacklisted = blacklistedPromptToks(
+      widget.input.text,
+      widget.promptBlacklist,
+    ).isNotEmpty;
     const pad = EdgeInsets.symmetric(vertical: 7);
     return SizedBox(
       width: empty ? double.infinity : _kInputWidth,
@@ -414,7 +420,10 @@ class _ChipFlowViewState extends State<ChipFlowView>
           widget.inputFocus.requestFocus(); // 落一枚接着打下一枚
         },
         textInputAction: TextInputAction.done,
-        style: TextStyle(fontSize: fs, color: scheme.onSurface),
+        style: TextStyle(
+          fontSize: fs,
+          color: blacklisted ? scheme.error : scheme.onSurface,
+        ),
         cursorColor: scheme.primary,
         decoration: InputDecoration(
           isDense: true,
@@ -448,6 +457,7 @@ class _ChipFlowViewState extends State<ChipFlowView>
     return _TagChip(
       key: _chipKeys[i],
       tok: tok,
+      blacklisted: isPromptTagBlacklisted(tok.name, widget.promptBlacklist),
       abnormal:
           abnormalWeightOf(text, tok, threshold: widget.abnormalThreshold) !=
           null,
@@ -573,6 +583,7 @@ class _TagChip extends StatelessWidget {
     required this.onTap,
     this.abnormal = false,
     this.sd = false,
+    this.blacklisted = false,
   });
 
   final Tok tok;
@@ -596,6 +607,9 @@ class _TagChip extends StatelessWidget {
   /// SD 权重语法 `(tag:1.2)`:tertiary 底提示可转换。
   final bool sd;
 
+  /// 黑名单命中优先于禁用/权重/异常色，保证扫一眼就能看到。
+  final bool blacklisted;
+
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
@@ -610,7 +624,13 @@ class _TagChip extends StatelessWidget {
     // 异常权重红底红框优先(web abnormalWeight 同款)。
     var chipBg = scheme.surfaceContainerHigh;
     var chipBorder = scheme.outlineVariant;
-    if (tok.disabled) {
+    if (blacklisted) {
+      chipBg = Color.alphaBlend(
+        scheme.error.withValues(alpha: .16),
+        scheme.surfaceContainerHigh,
+      );
+      chipBorder = scheme.error.withValues(alpha: .8);
+    } else if (tok.disabled) {
       // 禁用要一眼看得出来。原先只是「正常 chip + 灰字 + 一道细划线」,
       // 底和边框和旁边的普通 chip 一模一样,扫过去根本分不出来(实测反馈)。
       // 改成往下沉一档的底 + 淡到几乎没有的边:整颗 chip 从这一片里退出去。
@@ -643,11 +663,19 @@ class _TagChip extends StatelessWidget {
       );
     }
     return Material(
-      color: selected ? scheme.primaryContainer : chipBg,
+      color: blacklisted
+          ? chipBg
+          : selected
+          ? scheme.primaryContainer
+          : chipBg,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(9),
         side: BorderSide(
-          color: selected ? scheme.primary : chipBorder,
+          color: blacklisted
+              ? chipBorder
+              : selected
+              ? scheme.primary
+              : chipBorder,
           width: selected ? 1.6 : 1,
         ),
       ),
@@ -672,11 +700,17 @@ class _TagChip extends StatelessWidget {
                       style: TextStyle(
                         fontSize: fontSize,
                         fontWeight: FontWeight.w600,
-                        color: tok.disabled ? scheme.outline : scheme.onSurface,
+                        color: blacklisted
+                            ? scheme.error
+                            : tok.disabled
+                            ? scheme.outline
+                            : scheme.onSurface,
                         decoration: tok.disabled
                             ? TextDecoration.lineThrough
                             : null,
-                        decorationColor: scheme.outline,
+                        decorationColor: blacklisted
+                            ? scheme.error
+                            : scheme.outline,
                         decorationThickness: 2,
                       ),
                     ),
@@ -689,7 +723,9 @@ class _TagChip extends StatelessWidget {
                       style: TextStyle(
                         fontSize: fontSize - _kTransDrop,
                         fontWeight: FontWeight.w700,
-                        color: tok.disabled
+                        color: blacklisted
+                            ? scheme.error
+                            : tok.disabled
                             ? scheme.outline
                             : scheme.onSurface,
                       ),
@@ -716,7 +752,9 @@ class _TagChip extends StatelessWidget {
                             style: TextStyle(
                               fontSize: fontSize - _kTransDrop,
                               height: _kTransLine,
-                              color: scheme.onSurfaceVariant,
+                              color: blacklisted
+                                  ? scheme.error.withValues(alpha: .78)
+                                  : scheme.onSurfaceVariant,
                             ),
                           )
                         : translating

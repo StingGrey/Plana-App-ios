@@ -11,6 +11,51 @@ import '../editor_state.dart';
 /// 药丸会跟着长,滑块纹丝不动,差距越拉越大。两边都钉死才不会各长各的。
 const double _kBarH = 38;
 
+/// 标红模式的待处理提示。删除仍由页面按完整 tag 执行，
+/// 这里只呈现命中数和明确的一键操作。
+class PromptBlacklistBar extends StatelessWidget {
+  const PromptBlacklistBar({
+    super.key,
+    required this.count,
+    required this.onDeleteAll,
+  });
+
+  final int count;
+  final VoidCallback onDeleteAll;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return Material(
+      color: scheme.errorContainer,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 12, 8),
+        child: Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, size: 20, color: scheme.error),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                '发现 $count 个黑名单标签',
+                style: context.texts.bodyMedium!.copyWith(
+                  color: scheme.onErrorContainer,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            TextButton.icon(
+              onPressed: onDeleteAll,
+              icon: const Icon(Icons.delete_sweep_outlined, size: 19),
+              label: const Text('全部删除'),
+              style: TextButton.styleFrom(foregroundColor: scheme.error),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 /// 编辑器底栏:正/负 tab(左)+ 显示形态切换 + 撤销(右)。
 /// 从顶栏下放到拇指易达的底部,吸在补全栏 / 键盘之上。
 class EditorBottomBar extends ConsumerWidget {

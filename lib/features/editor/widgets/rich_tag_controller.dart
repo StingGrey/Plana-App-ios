@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/editor_theme.dart';
 import '../editor_models.dart';
+import '../prompt_blacklist.dart';
 
 /// 富文本域基准样式。行高留高(2.0)给下方翻译预留空间。
 /// letterSpacing 必须显式钉 0:TextField 会把主题 titleMedium(M3 带
@@ -107,6 +108,10 @@ class RichTagController extends TextEditingController {
   /// 只用于判定哪些 `<#x>` 是真占位符(挂了号才染色/热区),不参与布局。
   Map<String, String> foldBodies = const {};
 
+  /// 标红模式下的黑名单规则。只改显示，不改控制器文本。
+  List<String> promptBlacklist = const [];
+  bool highlightPromptBlacklist = false;
+
   /// 文本没变但外部数据到了(翻译缓存灌注完成)时手动触发重建/重绘。
   void refresh() => notifyListeners();
 
@@ -123,6 +128,16 @@ class RichTagController extends TextEditingController {
     final spans = <WeightSpan>[];
     final toks = parseToks(t, weightSpans: spans);
     final refs = parseFoldRefs(t, foldBodies);
+    final blacklistedRanges = !highlightPromptBlacklist
+        ? const <(int, int)>{}
+        : {
+            for (final tok in blacklistedPromptToks(
+              t,
+              promptBlacklist,
+              foldBodies: foldBodies,
+            ))
+              (tok.segStart, tok.segEnd),
+          };
     final spacing = showTrans
         ? tagExtraSpacing(t, MediaQuery.textScalerOf(context), base: base)
         : const <int, double>{};
@@ -215,8 +230,20 @@ class RichTagController extends TextEditingController {
         // 禁用要**一眼看得出来**。原先只降到 onSurfaceVariant,那个色和正常
         // 正文差得太少,加一道细划线基本看不出区别(实测反馈)。改成 outline
         // (最暗的那档前景色),配合加粗的划线和底下那层灰色带,三样一起说。
-        final tc = tok.disabled ? scheme.outline : scheme.onSurface;
-        c = marker ? tc.withValues(alpha: tok.disabled ? .3 : .45) : tc;
+        final blacklisted = blacklistedRanges.contains((
+          tok.segStart,
+          tok.segEnd,
+        ));
+        final tc = blacklisted
+            ? scheme.error
+            : tok.disabled
+            ? scheme.outline
+            : scheme.onSurface;
+        c = marker
+            ? tc.withValues(
+                alpha: blacklisted ? .55 : (tok.disabled ? .3 : .45),
+              )
+            : tc;
         strike = tok.disabled;
       }
       final sp = spacing[k];

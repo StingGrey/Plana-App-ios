@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../editor_settings.dart';
+import '../prompt_blacklist.dart';
 import '../../../core/util/haptics.dart';
 import 'tag_panel.dart' show RepeatBtn;
 
@@ -196,6 +197,35 @@ class EditorSettingsSheet extends ConsumerWidget {
                       onChanged: (v) =>
                           notifier.patch((c) => c.copyWith(weightStep: v)),
                     ),
+                    _sectionLabel(context, '过滤'),
+                    _ChoiceRow<PromptBlacklistMode>(
+                      icon: Icons.rule_rounded,
+                      title: '黑名单处理',
+                      desc: s.promptBlacklistMode == PromptBlacklistMode.remove
+                          ? '命中后立即删除完整标签'
+                          : '保留并标红，可在编辑器中一键删除',
+                      options: const [
+                        (PromptBlacklistMode.remove, '自动删'),
+                        (PromptBlacklistMode.highlight, '标红'),
+                      ],
+                      optWidth: 58,
+                      value: s.promptBlacklistMode,
+                      onChanged: (v) => notifier.patch(
+                        (c) => c.copyWith(promptBlacklistMode: v),
+                      ),
+                    ),
+                    _ActionRow(
+                      icon: Icons.block_outlined,
+                      title: '提示词黑名单',
+                      desc: s.promptBlacklist.isEmpty
+                          ? '未设置；支持完整标签与 /.../ 正则'
+                          : '已设置 ${s.promptBlacklist.length} 条规则；空格与下划线等价',
+                      onTap: () => _editPromptBlacklist(
+                        context,
+                        notifier,
+                        s.promptBlacklist,
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -214,6 +244,105 @@ class EditorSettingsSheet extends ConsumerWidget {
         style: context.texts.labelSmall!.copyWith(
           color: context.scheme.primary,
           fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _editPromptBlacklist(
+    BuildContext context,
+    EditorSettingsNotifier notifier,
+    List<String> current,
+  ) async {
+    final controller = TextEditingController(
+      text: promptBlacklistText(current),
+    );
+    final raw = await showDialog<String>(
+      context: context,
+      useRootNavigator: true,
+      builder: (ctx) => AlertDialog(
+        title: const Text('提示词黑名单'),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                '每行一条，也可用逗号分隔。普通词按完整标签匹配，'
+                '忽略大小写，空格与下划线视为相同。/penis/ '
+                '这种写法为正则；正则命中子串后仍处理逗号之间的整枚标签。',
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                autofocus: true,
+                minLines: 5,
+                maxLines: 9,
+                keyboardType: TextInputType.multiline,
+                textInputAction: TextInputAction.newline,
+                decoration: const InputDecoration(
+                  hintText: '例如：\nhuge penis\n/penis/\nwatermark',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(controller.text),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (raw == null) return;
+    await notifier.patch(
+      (settings) =>
+          settings.copyWith(promptBlacklist: parsePromptBlacklistText(raw)),
+    );
+  }
+}
+
+/// 无开关的设置入口:点整行进入编辑页/对话框。
+class _ActionRow extends StatelessWidget {
+  const _ActionRow({
+    required this.icon,
+    required this.title,
+    required this.desc,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String desc;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: () {
+        Haptics.selection();
+        onTap();
+      },
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 10, 14, 10),
+        child: Row(
+          children: [
+            Icon(icon, size: 20, color: context.scheme.primary),
+            const SizedBox(width: 14),
+            Expanded(
+              child: _RowTexts(title: title, desc: desc),
+            ),
+            const SizedBox(width: 8),
+            Icon(Icons.chevron_right, color: context.scheme.outline),
+          ],
         ),
       ),
     );
@@ -398,7 +527,9 @@ class _StepperRow extends StatelessWidget {
           children: [
             Icon(icon, size: 20, color: scheme.primary),
             const SizedBox(width: 14),
-            Expanded(child: _RowTexts(title: title, desc: desc)),
+            Expanded(
+              child: _RowTexts(title: title, desc: desc),
+            ),
             const SizedBox(width: 8),
             IgnorePointer(
               ignoring: !enabled,

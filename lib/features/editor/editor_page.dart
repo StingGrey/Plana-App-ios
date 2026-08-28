@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -17,6 +18,7 @@ import 'data/tag_translation_service.dart';
 import 'editor_models.dart';
 import 'editor_settings.dart';
 import 'editor_state.dart';
+import 'prompt_blacklist.dart';
 import 'widgets/annotated_field.dart';
 import 'widgets/chip_flow_view.dart';
 import 'widgets/completion_bar.dart';
@@ -58,6 +60,10 @@ class _EditorPageState extends ConsumerState<EditorPage>
 
   /// 芯片模式的尾部输入框(唯一打字入口)。控制器提在页面上:补全管线要读它。
   final TextEditingController _input = TextEditingController();
+
+  /// 芯片尾部输入框的上一版正文,用于区分逐字输入与整段粘贴。逐字时等逗号/
+  /// 换行提交后再过滤,整段粘贴则连末尾最后一枚也立即过滤。
+  String _prevInput = '';
 
   final FocusNode _inputFocus = FocusNode();
 
@@ -111,6 +117,13 @@ class _EditorPageState extends ConsumerState<EditorPage>
   /// 编辑器行为开关(设置弹层里改,即时生效);载入前用默认值(全开)。
   EditorSettings get _settings =>
       ref.read(editorSettingsProvider).value ?? const EditorSettings();
+
+  /// 只有“自动删”模式会改写输入；标红模式的规则仅用于呈现与
+  /// 用户主动触发的“全部删除”。
+  List<String> get _autoRemoveBlacklist =>
+      _settings.promptBlacklistMode == PromptBlacklistMode.remove
+      ? _settings.promptBlacklist
+      : const [];
 
   @override
   void initState() {
@@ -288,6 +301,31 @@ class _EditorPageState extends ConsumerState<EditorPage>
     final text = _controller.text;
     if (text != _prevText) {
       if (_guardFoldEdit(text)) return; // 折叠被啃 → 改判为整只删,已自行落地
+      final filtered = filterPromptBlacklist(
+        text,
+        _autoRemoveBlacklist,
+        cursor: _controller.selection.baseOffset,
+        // 一次插入多个字符视为粘贴/候选词落地:末尾未带逗号也要立即过滤。
+        // 单字符逐打则只处理已有分隔符的完整 tag,避免 `girl` 黑名单让
+        // 用户永远打不出 `girl on top`。
+        completedOnly: _insertedLength(_prevText, text) <= 1,
+        foldBodies: _foldBodies,
+      );
+      if (filtered.changed) {
+        _muting = true;
+        _controller.value = TextEditingValue(
+          text: filtered.text,
+          selection: TextSelection.collapsed(offset: filtered.cursor),
+        );
+        _prevText = filtered.text;
+        _syncedText = filtered.text;
+        _muting = false;
+        _notifier.editActive(filtered.text);
+        _routeTyping();
+        _feedTranslation(filtered.text);
+        _showBlacklistRemoval(filtered.removedCount);
+        return;
+      }
       _prevText = text;
       _syncedText = text;
       _notifier.editActive(text);
@@ -299,6 +337,57 @@ class _EditorPageState extends ConsumerState<EditorPage>
       // 连续退格/撤销自动修正时也会短暂产生选区,扩张后下一次退格会整词删除。
       _routeCursor();
     }
+  }
+
+  /// 取一次编辑真正插入的新字符数。不能只看总长度差:选中一长段后粘贴同样
+  /// 长的内容时总长度不变,但显然仍是一次整段粘贴。
+  int _insertedLength(String before, String after) {
+    var prefix = 0;
+    final shortest = before.length < after.length
+        ? before.length
+        : after.length;
+    while (prefix < shortest && before[prefix] == after[prefix]) {
+      prefix++;
+    }
+    var suffix = 0;
+    while (suffix < before.length - prefix &&
+        suffix < after.length - prefix &&
+        before[before.length - 1 - suffix] ==
+            after[after.length - 1 - suffix]) {
+      suffix++;
+    }
+    return after.length - prefix - suffix;
+  }
+
+  void _showBlacklistRemoval(int count) {
+    if (count <= 0) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      hintSnack(context, '已自动移除 $count 个黑名单标签', icon: Icons.block_outlined);
+    });
+  }
+
+  void _deleteAllBlacklisted() {
+    final blacklist = _settings.promptBlacklist;
+    final filtered = filterPromptBlacklist(
+      _controller.text,
+      blacklist,
+      cursor: _controller.selection.baseOffset,
+      foldBodies: _foldBodies,
+    );
+    final inputFiltered = filterPromptBlacklist(
+      _inputText,
+      blacklist,
+      cursor: _inputText.length,
+    );
+    final count = filtered.removedCount + inputFiltered.removedCount;
+    if (count == 0) return;
+
+    if (_chipMode && filtered.changed) _setChipSel({});
+    if (filtered.changed) _applyText(filtered.text, filtered.cursor);
+    if (inputFiltered.changed) _setInputBody(inputFiltered.text);
+    Haptics.medium();
+    hintSnack(context, '已删除 $count 个黑名单标签', icon: Icons.delete_sweep_outlined);
   }
 
   // ---- 折叠在正文里的交互 ----
@@ -516,6 +605,19 @@ class _EditorPageState extends ConsumerState<EditorPage>
       var res = await ref.read(tagCompletionProvider).query(word);
       // 实体建议关闭:只留标签行(引擎缓存不区分设置,出口过滤)
       if (!_settings.entitySuggest) res = SuggestResult(tags: res.tags);
+      final blacklist = _autoRemoveBlacklist;
+      if (blacklist.isNotEmpty) {
+        res = SuggestResult(
+          characters: res.characters,
+          ocs: res.ocs,
+          works: res.works,
+          artists: res.artists,
+          tags: [
+            for (final tag in res.tags)
+              if (!isPromptTagBlacklisted(tag.text, blacklist)) tag,
+          ],
+        );
+      }
       // 被后续输入/移光标取代,或光标已移出该词 → 丢弃这次结果
       if (!mounted || gen != _queryGen || _queryWord() != word) return;
       setState(() {
@@ -632,8 +734,15 @@ class _EditorPageState extends ConsumerState<EditorPage>
     );
     // 追加到词条之后,落点天然干净
     final ins = _insertTextOf(s, plainSlot: true);
-    final newText = '${text.substring(0, at)}, $ins${text.substring(at)}';
-    final cursor = at + 2 + ins.length;
+    final inserted = '${text.substring(0, at)}, $ins${text.substring(at)}';
+    final filtered = filterPromptBlacklist(
+      inserted,
+      _autoRemoveBlacklist,
+      cursor: at + 2 + ins.length,
+      foldBodies: _foldBodies,
+    );
+    final newText = filtered.text;
+    final cursor = filtered.cursor;
     _muting = true;
     _controller.value = TextEditingValue(
       text: newText,
@@ -645,11 +754,20 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _notifier.editActive(newText, structural: true);
     _feedTranslation(newText); // 同 _applyText:_muting 压掉了 _onCtrl,得自己喂
     Haptics.selection();
+    if (filtered.changed) _showBlacklistRemoval(filtered.removedCount);
     // _query / _result 原样保留,弹层列表不跳
   }
 
   /// 程序化改文本(补全/权重/删除),同步撤销与路由
   void _applyText(String text, int cursor, {bool structural = true}) {
+    final filtered = filterPromptBlacklist(
+      text,
+      _autoRemoveBlacklist,
+      cursor: cursor,
+      foldBodies: _foldBodies,
+    );
+    text = filtered.text;
+    cursor = filtered.cursor;
     _muting = true;
     _controller.value = TextEditingValue(
       text: text,
@@ -666,6 +784,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
     // request() 内部按「已问过/已有译文」去重,重复调很便宜。
     _feedTranslation(text);
     _reroute();
+    if (filtered.changed) _showBlacklistRemoval(filtered.removedCount);
   }
 
   // ---- 补全:替换光标所在词的名字(保留其权重语法)----
@@ -836,7 +955,19 @@ class _EditorPageState extends ConsumerState<EditorPage>
   /// 打字:逗号/换行即定稿(web commitInput 同款),其余交给补全。
   /// 空输入框上的退格不做额外处理;删除整枚标签只走显式删除操作。
   void _onInputChanged(String raw) {
-    final body = raw;
+    final filtered = filterPromptBlacklist(
+      raw,
+      _autoRemoveBlacklist,
+      cursor: raw.length,
+      completedOnly: _insertedLength(_prevInput, raw) <= 1,
+    );
+    var body = filtered.text;
+    if (filtered.changed) {
+      _setInputBody(body);
+      _showBlacklistRemoval(filtered.removedCount);
+    } else {
+      _prevInput = raw;
+    }
     final m = RegExp(r'[,，\n]').firstMatch(body);
     if (m != null) {
       final head = body.substring(0, m.start).trim();
@@ -851,6 +982,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
 
   /// 写回输入框,光标落在正文末尾。
   void _setInputBody(String body) {
+    _prevInput = body;
     _input.value = TextEditingValue(
       text: body,
       selection: TextSelection.collapsed(offset: body.length),
@@ -872,7 +1004,13 @@ class _EditorPageState extends ConsumerState<EditorPage>
   /// 末尾追加一枚标签。[quiet] = 不重算 dock(补全弹层里连续插入时用:
   /// 列表得冻在原地,不能因为插了一枚就整块塌下去)。
   void _appendTag(String tag, {bool quiet = false}) {
-    final next = appendUnit(_controller.text, tag);
+    final filtered = filterPromptBlacklist(
+      tag,
+      _autoRemoveBlacklist,
+      foldBodies: _foldBodies,
+    );
+    if (filtered.changed) _showBlacklistRemoval(filtered.removedCount);
+    final next = appendUnit(_controller.text, filtered.text);
     if (next == _controller.text) return;
     if (quiet) {
       _muting = true;
@@ -1318,11 +1456,49 @@ class _EditorPageState extends ConsumerState<EditorPage>
         if (p.entitySuggest != next.entitySuggest && _query.isNotEmpty) {
           _scheduleQuery();
         }
+        final blacklistChanged = !listEquals(
+          p.promptBlacklist,
+          next.promptBlacklist,
+        );
+        final blacklistModeChanged =
+            p.promptBlacklistMode != next.promptBlacklistMode;
+        if (blacklistChanged || blacklistModeChanged) {
+          _controller.promptBlacklist = next.promptBlacklist;
+          _controller.highlightPromptBlacklist =
+              next.promptBlacklistMode == PromptBlacklistMode.highlight;
+          _refreshAnnotations();
+          if (next.promptBlacklistMode == PromptBlacklistMode.remove) {
+            final filtered = filterPromptBlacklist(
+              _controller.text,
+              next.promptBlacklist,
+              cursor: _controller.selection.baseOffset,
+              foldBodies: _foldBodies,
+            );
+            var removed = filtered.removedCount;
+            if (filtered.changed) {
+              _applyText(filtered.text, filtered.cursor);
+            }
+            final inputFiltered = filterPromptBlacklist(
+              _inputText,
+              next.promptBlacklist,
+              cursor: _inputText.length,
+            );
+            if (inputFiltered.changed) {
+              _setInputBody(inputFiltered.text);
+              removed += inputFiltered.removedCount;
+            }
+            _showBlacklistRemoval(removed);
+          }
+          if (_query.isNotEmpty) _scheduleQuery();
+        }
       },
     );
     final settings =
         ref.watch(editorSettingsProvider).value ?? const EditorSettings();
     _controller.showTrans = settings.showTranslation;
+    _controller.promptBlacklist = settings.promptBlacklist;
+    _controller.highlightPromptBlacklist =
+        settings.promptBlacklistMode == PromptBlacklistMode.highlight;
     // 折叠表灌进控制器(着色/热区/药丸判占位符用);registerFold/load 改表
     // 即触发本 build 重灌 + 重绘。
     final foldBodies = ref.watch(editorProvider.select((s) => s.foldBodies));
@@ -1381,6 +1557,11 @@ class _EditorPageState extends ConsumerState<EditorPage>
                             showTrans: settings.showTranslation,
                             fontSize: settings.fontSize,
                             abnormalThreshold: settings.abnormalThreshold,
+                            promptBlacklist:
+                                settings.promptBlacklistMode ==
+                                    PromptBlacklistMode.highlight
+                                ? settings.promptBlacklist
+                                : const [],
                           )
                         : ClipRect(
                             child: SlideTransition(
@@ -1427,6 +1608,34 @@ class _EditorPageState extends ConsumerState<EditorPage>
                     ),
                     child: _dock(),
                   ),
+                  if (settings.promptBlacklistMode ==
+                      PromptBlacklistMode.highlight)
+                    AnimatedBuilder(
+                      animation: Listenable.merge([_controller, _input]),
+                      builder: (context, _) {
+                        final count =
+                            blacklistedPromptToks(
+                              _controller.text,
+                              settings.promptBlacklist,
+                              foldBodies: foldBodies,
+                            ).length +
+                            blacklistedPromptToks(
+                              _inputText,
+                              settings.promptBlacklist,
+                            ).length;
+                        return AnimatedSwitcher(
+                          duration: Motion.fast,
+                          reverseDuration: Motion.quick,
+                          child: count == 0
+                              ? const SizedBox.shrink()
+                              : PromptBlacklistBar(
+                                  key: const ValueKey('prompt-blacklist-bar'),
+                                  count: count,
+                                  onDeleteAll: _deleteAllBlacklisted,
+                                ),
+                        );
+                      },
+                    ),
                   EditorBottomBar(
                     onToggleMode: _toggleChipMode,
                     chipMode: settings.chipMode,

@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/store/app_stores.dart';
 import '../../core/store/prefs_store.dart';
+import 'prompt_blacklist.dart';
 
 /// 编辑器行为开关(持久化),默认全开。
 class EditorSettings {
@@ -19,6 +20,8 @@ class EditorSettings {
     this.abnormalThreshold = 10,
     this.chipMode = false,
     this.compactTagPanel = false,
+    this.promptBlacklist = const [],
+    this.promptBlacklistMode = PromptBlacklistMode.remove,
   });
 
   /// 正文字号的可调范围与步长。
@@ -79,6 +82,13 @@ class EditorSettings {
   /// 的问题,所以记在设置里而不是每次重选。
   final bool compactTagPanel;
 
+  /// 用户不想要的提示词规则。普通规则按完整 tag 匹配,`/.../` 为正则;
+  /// 保存时普通规则按 [normalizePromptBlacklistTag] 规范化。
+  final List<String> promptBlacklist;
+
+  /// 命中黑名单时立即删除,或保留并标红供用户检查。
+  final PromptBlacklistMode promptBlacklistMode;
+
   EditorSettings copyWith({
     bool? showTranslation,
     bool? showWeightWash,
@@ -91,6 +101,8 @@ class EditorSettings {
     double? abnormalThreshold,
     bool? chipMode,
     bool? compactTagPanel,
+    List<String>? promptBlacklist,
+    PromptBlacklistMode? promptBlacklistMode,
   }) => EditorSettings(
     showTranslation: showTranslation ?? this.showTranslation,
     showWeightWash: showWeightWash ?? this.showWeightWash,
@@ -103,6 +115,10 @@ class EditorSettings {
     abnormalThreshold: abnormalThreshold ?? this.abnormalThreshold,
     chipMode: chipMode ?? this.chipMode,
     compactTagPanel: compactTagPanel ?? this.compactTagPanel,
+    promptBlacklist: promptBlacklist == null
+        ? this.promptBlacklist
+        : canonicalPromptBlacklist(promptBlacklist),
+    promptBlacklistMode: promptBlacklistMode ?? this.promptBlacklistMode,
   );
 
   /// 读回的数值夹回合法区间。缺省/NaN 回退默认 —— 越界(改小了上下界、
@@ -147,6 +163,17 @@ class EditorSettings {
     ),
     chipMode: j['chipMode'] as bool? ?? false,
     compactTagPanel: j['compactTagPanel'] as bool? ?? false,
+    promptBlacklist: switch (j['promptBlacklist']) {
+      final List<dynamic> values => canonicalPromptBlacklist(
+        values.whereType<String>(),
+      ),
+      final String text => parsePromptBlacklistText(text),
+      _ => const [],
+    },
+    promptBlacklistMode: switch (j['promptBlacklistMode']) {
+      'highlight' => PromptBlacklistMode.highlight,
+      _ => PromptBlacklistMode.remove,
+    },
   );
 
   Map<String, dynamic> toJson() => {
@@ -161,6 +188,8 @@ class EditorSettings {
     'abnormalThreshold': abnormalThreshold,
     'chipMode': chipMode,
     'compactTagPanel': compactTagPanel,
+    'promptBlacklist': promptBlacklist,
+    'promptBlacklistMode': promptBlacklistMode.name,
   };
 
   @override
@@ -176,7 +205,9 @@ class EditorSettings {
       other.fontSize == fontSize &&
       other.abnormalThreshold == abnormalThreshold &&
       other.chipMode == chipMode &&
-      other.compactTagPanel == compactTagPanel;
+      other.compactTagPanel == compactTagPanel &&
+      _sameStrings(other.promptBlacklist, promptBlacklist) &&
+      other.promptBlacklistMode == promptBlacklistMode;
 
   @override
   int get hashCode => Object.hash(
@@ -191,7 +222,18 @@ class EditorSettings {
     abnormalThreshold,
     chipMode,
     compactTagPanel,
+    Object.hashAll(promptBlacklist),
+    promptBlacklistMode,
   );
+}
+
+bool _sameStrings(List<String> a, List<String> b) {
+  if (identical(a, b)) return true;
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
 }
 
 const _key = 'editor_settings';
