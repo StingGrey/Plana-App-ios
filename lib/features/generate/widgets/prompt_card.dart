@@ -22,7 +22,7 @@ class PromptCard extends ConsumerStatefulWidget {
 
 class _PromptCardState extends ConsumerState<PromptCard> {
   bool _positiveExpanded = true;
-  bool _negativeExpanded = true;
+  bool _negativeExpanded = false;
 
   @override
   Widget build(BuildContext context) {

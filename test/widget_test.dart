@@ -50,31 +50,33 @@ void main() {
     expect(negativeText.overflow, isNull);
 
     final promptCard = find.byType(PromptCard);
-    final expandedHeight = tester.getSize(promptCard).height;
+    final positiveOnlyHeight = tester.getSize(promptCard).height;
+    expect(find.byTooltip('收起正面提示词'), findsOneWidget);
+    expect(find.byTooltip('展开负面提示词'), findsOneWidget);
 
     await tester.tap(find.byTooltip('收起正面提示词'));
     await tester.pumpAndSettle();
-    final positiveCollapsedHeight = tester.getSize(promptCard).height;
-    expect(positiveCollapsedHeight, lessThan(expandedHeight));
-    expect(find.byTooltip('展开正面提示词'), findsOneWidget);
-    expect(find.byTooltip('收起负面提示词'), findsOneWidget);
-
-    await tester.tap(find.byTooltip('收起负面提示词'));
-    await tester.pumpAndSettle();
     final bothCollapsedHeight = tester.getSize(promptCard).height;
-    expect(bothCollapsedHeight, lessThan(positiveCollapsedHeight));
+    expect(bothCollapsedHeight, lessThan(positiveOnlyHeight));
     expect(find.byTooltip('展开正面提示词'), findsOneWidget);
-    expect(find.byTooltip('展开负面提示词'), findsOneWidget);
-
-    await tester.tap(find.byTooltip('展开正面提示词'));
-    await tester.pumpAndSettle();
-    expect(tester.getSize(promptCard).height, greaterThan(bothCollapsedHeight));
-    expect(find.byTooltip('收起正面提示词'), findsOneWidget);
     expect(find.byTooltip('展开负面提示词'), findsOneWidget);
 
     await tester.tap(find.byTooltip('展开负面提示词'));
     await tester.pumpAndSettle();
-    expect(tester.getSize(promptCard).height, expandedHeight);
+    final negativeOnlyHeight = tester.getSize(promptCard).height;
+    expect(negativeOnlyHeight, greaterThan(bothCollapsedHeight));
+    expect(find.byTooltip('展开正面提示词'), findsOneWidget);
+    expect(find.byTooltip('收起负面提示词'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('展开正面提示词'));
+    await tester.pumpAndSettle();
+    expect(tester.getSize(promptCard).height, greaterThan(negativeOnlyHeight));
+    expect(find.byTooltip('收起正面提示词'), findsOneWidget);
+    expect(find.byTooltip('收起负面提示词'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('收起负面提示词'));
+    await tester.pumpAndSettle();
+    expect(tester.getSize(promptCard).height, positiveOnlyHeight);
 
     await tester.pump(const Duration(milliseconds: 900));
   });
@@ -100,11 +102,12 @@ void main() {
     final promptCard = find.byType(PromptCard);
     final expandedHeight = tester.getSize(promptCard).height;
     expect(find.text('点击编辑正面提示词…'), findsOneWidget);
+    expect(find.byTooltip('展开负面提示词'), findsOneWidget);
     await tester.tap(find.byTooltip('收起正面提示词'));
     await tester.pumpAndSettle();
     expect(tester.getSize(promptCard).height, lessThan(expandedHeight));
     expect(find.byTooltip('展开正面提示词'), findsOneWidget);
-    expect(find.byTooltip('收起负面提示词'), findsOneWidget);
+    expect(find.byTooltip('展开负面提示词'), findsOneWidget);
     await tester.tap(find.byTooltip('展开正面提示词'));
     await tester.pumpAndSettle();
     expect(tester.getSize(promptCard).height, expandedHeight);
