@@ -16,12 +16,12 @@ class EditorSettings {
     this.entitySuggest = true,
     this.weightStep = 0.1,
     this.fontSize = 16,
-    this.abnormalThreshold = 10,
+    this.chipFontSize = 16,
     this.chipMode = false,
     this.compactTagPanel = false,
   });
 
-  /// 正文字号的可调范围与步长。
+  /// 字号的可调范围与步长(正文与芯片共用这套界限,各自独立取值)。
   ///
   /// 原来是「小/标准/大」三档 —— 屏幕尺寸、视力、单双手各不相同,三档太粗。
   /// 上下界是排版能扛住的范围:再小注音那行糊成一片,再大一行放不下两个词。
@@ -36,9 +36,6 @@ class EditorSettings {
   static const weightStepMin = 0.01;
   static const weightStepMax = 1.0;
   static const weightStepTick = 0.01;
-
-  /// 异常权重阈值可选档位。
-  static const abnormalThresholds = [3.0, 5.0, 10.0];
 
   /// 词条下方的中文注音翻译层(关掉同时取消为译文预留的词间距/行高)。
   final bool showTranslation;
@@ -61,11 +58,14 @@ class EditorSettings {
   /// 词条栏 +/− 每步的数值调整量,见 [weightStepMin] / [weightStepMax]。
   final double weightStep;
 
-  /// 编辑器正文字号,见 [fontSizeMin] / [fontSizeMax];注音测量层同步。
+  /// 注音富文本的正文字号,见 [fontSizeMin] / [fontSizeMax];注音测量层同步。
   final double fontSize;
 
-  /// 异常权重阈值:词条中段 `N::` 的 N ≥ 此值视为疑似丢逗号(标红警示)。
-  final double abnormalThreshold;
+  /// 芯片模式的标签字号:chip 的内边距、译文行、图标全按它缩放。
+  ///
+  /// 与正文字号分开调:一个决定一屏能塞下多少字,一个决定点得准不准 ——
+  /// 同一个人在两种形态下想要的往往不是同一档。
+  final double chipFontSize;
 
   /// 正文的显示形态:false=注音富文本(默认),true=芯片流。
   /// 底栏一键切,记在设置里 —— 这是用惯了哪种的问题,不该每次进页面重选。
@@ -88,7 +88,7 @@ class EditorSettings {
     bool? entitySuggest,
     double? weightStep,
     double? fontSize,
-    double? abnormalThreshold,
+    double? chipFontSize,
     bool? chipMode,
     bool? compactTagPanel,
   }) => EditorSettings(
@@ -100,7 +100,7 @@ class EditorSettings {
     entitySuggest: entitySuggest ?? this.entitySuggest,
     weightStep: weightStep ?? this.weightStep,
     fontSize: fontSize ?? this.fontSize,
-    abnormalThreshold: abnormalThreshold ?? this.abnormalThreshold,
+    chipFontSize: chipFontSize ?? this.chipFontSize,
     chipMode: chipMode ?? this.chipMode,
     compactTagPanel: compactTagPanel ?? this.compactTagPanel,
   );
@@ -110,15 +110,6 @@ class EditorSettings {
   static double _range(double? v, double lo, double hi, double fallback) {
     if (v == null || v.isNaN) return fallback;
     return v.clamp(lo, hi).toDouble();
-  }
-
-  /// 读回的数值不在档位表里(旧版本/脏数据)时回退默认。
-  static double _snap(double? v, List<double> allowed, double fallback) {
-    if (v == null) return fallback;
-    for (final a in allowed) {
-      if ((v - a).abs() < 0.001) return a;
-    }
-    return fallback;
   }
 
   factory EditorSettings.fromJson(Map<String, dynamic> j) => EditorSettings(
@@ -140,10 +131,12 @@ class EditorSettings {
       fontSizeMax,
       16,
     ),
-    abnormalThreshold: _snap(
-      (j['abnormalThreshold'] as num?)?.toDouble(),
-      abnormalThresholds,
-      10,
+    chipFontSize: _range(
+      (j['chipFontSize'] as num?)?.toDouble(),
+      fontSizeMin,
+      fontSizeMax,
+      // 旧档只有一个合并字号:芯片跟着它走,升级前后看着一样。
+      _range((j['fontSize'] as num?)?.toDouble(), fontSizeMin, fontSizeMax, 16),
     ),
     chipMode: j['chipMode'] as bool? ?? false,
     compactTagPanel: j['compactTagPanel'] as bool? ?? false,
@@ -158,7 +151,7 @@ class EditorSettings {
     'entitySuggest': entitySuggest,
     'weightStep': weightStep,
     'fontSize': fontSize,
-    'abnormalThreshold': abnormalThreshold,
+    'chipFontSize': chipFontSize,
     'chipMode': chipMode,
     'compactTagPanel': compactTagPanel,
   };
@@ -174,7 +167,7 @@ class EditorSettings {
       other.entitySuggest == entitySuggest &&
       other.weightStep == weightStep &&
       other.fontSize == fontSize &&
-      other.abnormalThreshold == abnormalThreshold &&
+      other.chipFontSize == chipFontSize &&
       other.chipMode == chipMode &&
       other.compactTagPanel == compactTagPanel;
 
@@ -188,7 +181,7 @@ class EditorSettings {
     entitySuggest,
     weightStep,
     fontSize,
-    abnormalThreshold,
+    chipFontSize,
     chipMode,
     compactTagPanel,
   );

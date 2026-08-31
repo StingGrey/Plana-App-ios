@@ -57,7 +57,8 @@ class FloatingPillNotifier extends Notifier<FloatingPillState> {
 
   void close() => state = const FloatingPillState();
 
-  void drag(double v) => state = FloatingPillState(which: state.which, draft: v);
+  void drag(double v) =>
+      state = FloatingPillState(which: state.which, draft: v);
 
   /// 松手 / 提交:留着开合状态,只把草稿清掉。
   void endDrag() => state = FloatingPillState(which: state.which);
@@ -112,8 +113,20 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
     // (见 _lastVibeFee),避免费用在参数连改时来回跳。
     final fee = ref.watch(vibeEncodeFeeProvider(vibeEncodeFeeKey(sent))).value;
     if (fee != null) _lastVibeFee = fee;
+    // 带遮罩(重绘)走另一条公式:像素按**发送尺寸**算、再按强度折算。
+    // 用生成那条公式会把重绘的价钱报高 —— 重绘发的常常只是一小块裁切区。
+    final job = sent.inpaint;
     final totalCost =
-        estimateCost(sent, isOpus: isOpus, v5Charged: v5Charged) +
+        (job != null
+            ? estimateInpaintCost(
+                sent,
+                isOpus: isOpus,
+                sendW: sent.params.width,
+                sendH: sent.params.height,
+                strength: job.strength,
+                v5Charged: v5Charged,
+              )
+            : estimateCost(sent, isOpus: isOpus, v5Charged: v5Charged)) +
         (fee ?? _lastVibeFee);
     // 按**会发出去**的那份参数判(见 sentParamsProvider)
     final batchable = sent.params.batchable;

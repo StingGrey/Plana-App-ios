@@ -78,7 +78,8 @@ class GenSettings {
       other.retryDelaySecs == retryDelaySecs &&
       other.retryCount == retryCount &&
       other.genNotify == genNotify &&
-      other.notifyPrimed == notifyPrimed;
+      other.notifyPrimed == notifyPrimed &&
+      other.straightAlpha == straightAlpha;
 
   @override
   int get hashCode => Object.hash(
@@ -87,6 +88,7 @@ class GenSettings {
     retryCount,
     genNotify,
     notifyPrimed,
+    straightAlpha,
   );
 }
 

@@ -133,6 +133,9 @@ class GalleryNotifier extends Notifier<GalleryState> {
     ResultBadge badge = ResultBadge.none,
     GenerateState? input,
 
+    /// 重绘产物的源图 id(供「按住对比」取原图);非重绘为 null。
+    String? inpaintFrom,
+
     /// 这张在批次里的位置(-1 = 不是批次产物)。与 seed 一起决定这张图
     /// 将来还能不能复现,见 [ResultImage.batchIndex]。
     int batchIndex = -1,
@@ -149,6 +152,7 @@ class GalleryNotifier extends Notifier<GalleryState> {
       badge: badge,
       createdAt: DateTime.now().millisecondsSinceEpoch,
       batchIndex: batchIndex,
+      inpaintFrom: inpaintFrom,
       bytes: bytes,
       input: input,
     );
@@ -167,14 +171,9 @@ class GalleryNotifier extends Notifier<GalleryState> {
       results: list,
       selectedId: select ? r.id : state.selectedId,
     );
-    final store = ref.read(appStoresProvider).gallery;
-    store.persistResult(r);
-    // 重绘产物继承源图蒙版:消费一次即清空,之后两张各自独立编辑保存。
-    final from = store.pendingMaskInheritFrom;
-    if (from != null) {
-      store.pendingMaskInheritFrom = null;
-      if (badge == ResultBadge.inpaint) store.copyMask(from, r.id);
-    }
+    // 蒙版不再按图存盘:它跟着创作页的重绘状态走(见 InpaintJob.grid),
+    // 所以这里也没有「产物继承源图蒙版」这回事了。
+    ref.read(appStoresProvider).gallery.persistResult(r);
     _persistIndex();
     enforceCap();
     return r;

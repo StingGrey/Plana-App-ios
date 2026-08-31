@@ -256,10 +256,20 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
                   // 撤层那一帧,page 0 画的是同一份终帧字节(入库与预览同引用,
                   // ImageCache 直接命中),所以「生成中 → 出图」照旧不闪。
                   if (showGen)
+                    // 局部重绘:发出去的只是那块裁切区,流帧本身是一小张。拿整
+                    // 张原图垫底、把流帧盖回原位,画面才和入库结果(贴回后的整图)
+                    // 是同一个东西 —— 否则生成中看一张小图、出图那一刻啪地换成
+                    // 整图。整图生成时 pasteUnder 为空,走原来那条。
                     _ZoomableImage(
-                      bytes: gen.preview ?? selBytes ?? _lastShown,
-                      width: gen.width,
-                      height: gen.height,
+                      bytes: gen.pasteUnder ?? gen.preview ?? selBytes,
+                      width: gen.pasteUnder != null
+                          ? (selected?.width ?? gen.width)
+                          : gen.width,
+                      height: gen.pasteUnder != null
+                          ? (selected?.height ?? gen.height)
+                          : gen.height,
+                      overlay: gen.pasteUnder == null ? null : gen.preview,
+                      overlayAt: gen.pasteAt,
                     ),
                   // 结果操作层:非生成态淡入,生成时淡出
                   AnimatedOpacity(
@@ -354,10 +364,14 @@ class _ResultPage extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final bytes =
         result.bytes ?? ref.watch(galleryImageProvider(result.id)).value;
+    // 按住对比只作用在**当前这张**上:PageView 会把左右邻页也建出来,
+    // 不判一下的话邻页也跟着换图(看不见,但白解码)。
+    final selected = ref.watch(galleryProvider).selectedId == result.id;
     return _ZoomableImage(
       bytes: bytes,
       width: result.width,
       height: result.height,
+      compare: selected ? ref.watch(compareBytesProvider) : null,
     );
   }
 }
@@ -375,11 +389,26 @@ class _ZoomableImage extends ConsumerStatefulWidget {
     required this.bytes,
     required this.width,
     required this.height,
+    this.overlay,
+    this.overlayAt,
+    this.compare,
   });
 
   final Uint8List? bytes;
   final int width;
   final int height;
+
+  /// 盖在底图上的一小张(局部重绘的流帧),[overlayAt] 是它在**原图坐标**里的位置。
+  /// 两个都为空 = 普通生成,只画底图。
+  final Uint8List? overlay;
+  final ({int x, int y, int w, int h})? overlayAt;
+
+  /// 「按住对比」要盖的重绘前原图;满幅,和底图同一个盒子。
+  ///
+  /// **必须画在这里面**,不能在外层 Stack 上另起一层:缩放/平移是
+  /// InteractiveViewer 做的,外层那层不吃这个变换 —— 图放大之后一按对比,
+  /// 屏幕上就是一张放大的和一张原大的在比。
+  final Uint8List? compare;
 
   @override
   ConsumerState<_ZoomableImage> createState() => _ZoomableImageState();
@@ -452,12 +481,69 @@ class _ZoomableImageState extends ConsumerState<_ZoomableImage>
       child: InteractiveViewer(
         transformationController: _tc,
         maxScale: 10,
-        child: GalleryImageLayer(
-          bytes: widget.bytes,
-          width: widget.width,
-          height: widget.height,
-        ),
+        child: _layer(),
       ),
+    );
+  }
+}
+
+/// 底图 + 可选的贴回覆盖层。覆盖层按**原图坐标**定位,所以要跟底图共用同一个
+/// 等比盒子 —— 用 AspectRatio + FractionallySizedBox 换算,不必自己量像素。
+extension on _ZoomableImageState {
+  Widget _layer() {
+    final over = widget.overlay;
+    final at = widget.overlayAt;
+    final cmp = widget.compare;
+    // 对比图和底图共用同一套布局参数(同一个盒子、同样 contain),
+    // 所以叠上去必然严丝合缝,不用自己算位置。
+    final base = cmp != null
+        ? GalleryImageLayer(
+            bytes: cmp,
+            width: widget.width,
+            height: widget.height,
+          )
+        : GalleryImageLayer(
+            bytes: widget.bytes,
+            width: widget.width,
+            height: widget.height,
+          );
+    if (over == null || at == null || widget.width <= 0 || widget.height <= 0) {
+      return base;
+    }
+    final w = widget.width.toDouble(), h = widget.height.toDouble();
+    return Stack(
+      fit: StackFit.passthrough,
+      children: [
+        base,
+        Positioned.fill(
+          child: LayoutBuilder(
+            builder: (_, c) {
+              // 图在盒子里是 contain 的,先算出它实际占的矩形
+              final scale = (c.maxWidth / w) < (c.maxHeight / h)
+                  ? c.maxWidth / w
+                  : c.maxHeight / h;
+              final dw = w * scale, dh = h * scale;
+              final dx = (c.maxWidth - dw) / 2, dy = (c.maxHeight - dh) / 2;
+              return Stack(
+                children: [
+                  Positioned(
+                    left: dx + at.x * scale,
+                    top: dy + at.y * scale,
+                    width: at.w * scale,
+                    height: at.h * scale,
+                    child: Image.memory(
+                      over,
+                      fit: BoxFit.fill,
+                      gaplessPlayback: true,
+                      filterQuality: FilterQuality.medium,
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 }

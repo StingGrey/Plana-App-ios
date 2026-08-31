@@ -148,7 +148,7 @@ class _Group {
 ///    逗号**之后**的写法照样收得了口(老实现只认「段尾以 `::` 结尾」,
 ///    收不了口的组就一路开着吞掉后面所有段);
 /// ② 组的右界恒被下一个前缀截断,**绝不吞掉后面的组** —— 老实现遇到新前缀
-///    是再压一层栈(权重连乘),于是底色糊成一片、effMult 连乘成异常权重报橙。
+///    是再压一层栈(权重连乘),于是底色糊成一片、effMult 连乘成离谱的倍率。
 final _numGroupRe = RegExp(r'-?\d+(?:\.\d+)?::');
 
 class _NumGroup {
@@ -217,6 +217,12 @@ List<Tok> parseToks(
   // 折叠不嵌套,同时最多一个开着;-1 = 当前不在折叠内
   var foldOpen = -1;
   var foldNameS = 0, foldNameE = 0, foldBodyS = 0;
+
+  /// 折叠体里还没收口的 `<xxx` 层数。折叠的尾巴是 `>`,而**折叠体自己也可能
+  /// 带尖括号** —— 画师串常见 `<artist>…</artist>` 这种包裹。不数一数就会在
+  /// `<artist>` 那个 `>` 上提前收尾:折叠只吞下一个 `<artist>`,后面整串裸在
+  /// 正文里,末尾还剩一个多余的 `>`(实测)。
+  var foldAngle = 0;
 
   int trimL(int a, int b) {
     while (a < b && _isSpace(text[a])) {
@@ -345,14 +351,40 @@ List<Tok> parseToks(
         foldNameE = trimR(foldNameS, colon);
         a = trimL(colon + 1, b);
         foldBodyS = a;
+        foldAngle = 0;
       }
     }
-    // 闭记号要在权重组收口**之前**量 body 右界:组的 `}`/`]` 属于 body 内容
+    // 闭记号要在权重组收口**之前**量 body 右界:组的 `}`/`]` 属于 body 内容。
     var foldEnd = -1, foldBodyE = -1;
-    if (b > a && text[b - 1] == '>' && foldOpen >= 0) {
-      foldEnd = b;
-      b = trimR(a, b - 1);
-      foldBodyE = b;
+    if (b > a && foldOpen >= 0) {
+      if (b - 2 >= a &&
+          text[b - 2] == kFoldClose[0] &&
+          text[b - 1] == kFoldClose[1]) {
+        // 专用收尾记号 [kFoldClose]:一眼定死,不必猜
+        foldEnd = b;
+        b = trimR(a, b - 2);
+        foldBodyE = b;
+      } else {
+        // 老草稿的裸 `>`:内容自己也可能带尖括号,只有**不欠着 body 里的 `<`**
+        // 时段尾那个 `>` 才是尾巴。`</artist>>` 于是收对了 —— 前一个 `>` 替
+        // `</artist` 收口,最后那个才是折叠的。见 [foldAngle] / [kFoldClose]。
+        var depth = foldAngle;
+        for (var k = a; k < b; k++) {
+          final c = text[k];
+          if (c == '<') {
+            if (k + 1 < b && _isTagOpen(text[k + 1])) depth++;
+          } else if (c == '>') {
+            if (k == b - 1 && depth == 0) {
+              foldEnd = b;
+              b = trimR(a, b - 1);
+              foldBodyE = b;
+              break;
+            }
+            if (depth > 0) depth--;
+          }
+        }
+        if (foldEnd < 0) foldAngle = depth;
+      }
     }
 
     // 括号净差:>0 = 本段有未闭合的组开,<0 = 有替前文收口的组闭。
@@ -462,6 +494,7 @@ List<Tok> parseToks(
         ),
       );
       foldOpen = -1;
+      foldAngle = 0;
     }
   }
 
@@ -495,6 +528,24 @@ List<Tok> parseToks(
     );
   }
   return res;
+}
+
+/// 折叠的收尾记号。**不是**裸 `>`:折叠体就是一段提示词,里面本来就可能带
+/// 尖括号 —— `<artist>…</artist>` 这类包裹、`<lora:x:1>`、`<3` 颜文字,裸 `>`
+/// 判不清哪个才是尾巴。`#>` 与开头的 `<#` 对称,内容里撞不上。
+///
+/// 老草稿(裸 `>` 收尾)照常读得回,走 [parseToks] 里数尖括号那一支兜底;
+/// 读回来再存一次就换成这个写法,不必迁移历史数据。
+const String kFoldClose = '#>';
+
+/// `<` 后面这个字符像不像 `<artist>` / `</artist>` 那种标签开头。
+///
+/// 只认字母与 `/`:`<3`、`>_<` 这类颜文字标签同样带尖括号,把它们也算成
+/// 一层的话,反过来会把折叠**真正**的尾巴当成它们的收口吃掉。
+bool _isTagOpen(String c) {
+  if (c == '/') return true;
+  final u = c.codeUnitAt(0);
+  return (u >= 0x41 && u <= 0x5A) || (u >= 0x61 && u <= 0x7A);
 }
 
 /// 折叠列表(按出现顺序,不嵌套故互不重叠)。
@@ -723,20 +774,6 @@ String sdToNaiSeg(String seg) {
   return '${fmtMult(w)}::$tag::';
 }
 
-/// 异常权重检测(web detectAbnormalWeight 同款):词条内层文本**中段**出现
-/// `N::` 且 N≥[threshold](设置里可调,默认 10)——多半是丢了逗号,
-/// 把「10::tag::」并进了上一枚词。词首的合法数值权重(如 `1.2::sky::`)
-/// 不算。返回可疑数字串,无异常 null。
-String? abnormalWeightOf(String text, Tok t, {double threshold = 10}) {
-  if (t.innerEnd <= t.innerStart) return null;
-  final inner = text.substring(t.innerStart, t.innerEnd);
-  for (final m in RegExp(r'(\d+(?:\.\d+)?)::').allMatches(inner)) {
-    if (m.start == 0) continue; // 词首 = 合法数值权重
-    if ((double.tryParse(m.group(1)!) ?? 0) >= threshold) return m.group(1);
-  }
-  return null;
-}
-
 (String, int) deleteTok(String text, Tok t) {
   var a = t.segStart, b = t.segEnd;
   var e = b;
@@ -862,7 +899,11 @@ String foldRange(String text, int first, int last, String name) {
   final l = _clampLast(toks, last);
   final (a, b) = _rangeBounds(text, toks[first], toks[l]);
   final sub = text.substring(a, b);
-  return text.replaceRange(a, b, '<#${sanitizeFoldName(name)}: $sub>');
+  return text.replaceRange(
+    a,
+    b,
+    '<#${sanitizeFoldName(name)}: $sub$kFoldClose',
+  );
 }
 
 /// 把一串标签包成命名折叠,供**批量加入**的来源调用(补全的画师串 / OC
@@ -877,7 +918,7 @@ String foldWrap(String name, String tags) {
   if (t.isEmpty) return t;
   if (parseToks(t).length < 2) return t;
   if (parseFolds(t).isNotEmpty) return t;
-  return '<#${sanitizeFoldName(name)}: $t>';
+  return '<#${sanitizeFoldName(name)}: $t$kFoldClose';
 }
 
 // ---- 折叠占位符(编辑器会话内的表现形式)----
@@ -926,7 +967,7 @@ List<FoldRef> parseFoldRefs(String text, Map<String, String> bodies) => [
     if (bodies.containsKey(m.group(1)!)) FoldRef(m.start, m.end, m.group(1)!),
 ];
 
-/// 草稿(完整语法)→ (正文, 折叠表)。完整折叠 `<#名字: 内容>` 收成 `<#名字>`,
+/// 草稿(完整语法)→ (正文, 折叠表)。完整折叠 `<#名字: 内容#>` 收成占位符,
 /// 内容进表;重名且内容不同 → 追加「 2」「 3」去重(名字是表键,必须唯一)。
 /// [seed] 是已占用的名字表(正/负两侧共用一张表时,后收的一侧要避开先收的)。
 (String, Map<String, String>) collapseFolds(
@@ -966,7 +1007,7 @@ String uniqueFoldName(String name, String body, Map<String, String> taken) {
 }
 
 /// (正文, 折叠表)→ 草稿(完整语法)。按占位符所处的逗号段分三种情况:
-/// - 段恰为占位符自身 → 还原完整折叠 `<#名字: 内容>`(下次载入原样收回);
+/// - 段恰为占位符自身 → 还原完整折叠 `<#名字: 内容#>`(下次载入原样收回);
 /// - 段为 `~<#名字>~`(折叠被整只禁用)→ 内容逐成员套 `~`(折叠随之解散);
 /// - 其余(被 `{}` / `N::` 组语法包住等)→ 内容裸铺进去(组权重照常作用于
 ///   成员,折叠解散)——完整语法塞在组记号里会错位解析不出,宁可降级也
@@ -991,7 +1032,7 @@ String expandFolds(String text, Map<String, String> bodies) {
     final seg = out.substring(a, b).trim();
     final String ins;
     if (seg == foldRefLiteral(r.name)) {
-      ins = '<#${r.name}: $body>';
+      ins = '<#${r.name}: $body$kFoldClose';
     } else if (seg == '~${foldRefLiteral(r.name)}~') {
       final toks = parseToks(body);
       ins = toks.isEmpty
@@ -1106,6 +1147,11 @@ String moveUnits(
       if (i >= 0 && i < n) i,
   }.toList()..sort();
   if (sel.isEmpty || sel.length == n) return text;
+  // 选中的**正好**是一整个权重组 → 连组记号一起搬(见 [_moveGroupBlock])。
+  // 只挑了组里的一部分不走这条:那时用户要的是把这几枚拿出去,组留在原地。
+  for (final g in unitGroups(text, units)) {
+    if (g.coversExactly(sel)) return _moveGroupBlock(text, units, g, to);
+  }
   final segs = [for (final u in units) text.substring(u.start, u.end)];
   final picked = [for (final i in sel) segs[i]];
   // 目标位置换算到"剔除选中项之后"的下标:数一数 to 左边还剩几个没被选中的。
@@ -1148,6 +1194,98 @@ List<(int, int)> weightRuns(List<TopUnit> units, Iterable<int> idx) {
     k = j + 1;
   }
   return runs;
+}
+
+/// 整组搬动:把 [g] 的成员**连同外面那层组记号**当一整块挪到间隙 [to]。
+///
+/// 为什么要单开一条路:组记号(`1.3::` 与收尾的 `::`)落在词条 seg **之外**的
+/// 分隔区,而 [moveUnits] 的槽位法只搬各单元自己那一格 —— 于是壳子会原地不动,
+/// 谁滑进那两格谁就接管这份加权,搬走的那批反倒裸着出去。这里把整组并成一格
+/// 槽,组内的逗号跟着一起走,记号自然也就跟着走了。
+String _moveGroupBlock(String text, List<TopUnit> units, UnitGroup g, int to) {
+  final n = units.length;
+  // 槽:组前面每枚各一格 + 组自己一格(含记号)+ 组后面每枚各一格
+  final slots = <(int, int)>[
+    for (var i = 0; i < g.first; i++) (units[i].start, units[i].end),
+    (g.start, g.end),
+    for (var i = g.last + 1; i < n; i++) (units[i].start, units[i].end),
+  ];
+  // 单元间隙 → 槽间隙(剔掉组块之后的下标)。落在组内部/两端的间隙都是原位。
+  final int at;
+  if (to <= g.first) {
+    at = to;
+  } else if (to <= g.last + 1) {
+    at = g.first;
+  } else {
+    at = to - g.length;
+  }
+  final segs = [for (final (a, b) in slots) text.substring(a, b)];
+  final moved = segs.removeAt(g.first);
+  segs.insert(at.clamp(0, segs.length), moved);
+  var out = text;
+  for (var i = slots.length - 1; i >= 0; i--) {
+    out = out.replaceRange(slots[i].$1, slots[i].$2, segs[i]);
+  }
+  return out;
+}
+
+/// 顶层权重组:一层权重记号罩住的**连续**顶层单元区间。
+class UnitGroup {
+  const UnitGroup(this.first, this.last, this.mult, this.start, this.end);
+
+  /// 首 / 末成员的顶层单元下标(闭区间)。
+  final int first;
+  final int last;
+
+  /// 这一层记号自己的倍率(不含外层)。
+  final double mult;
+
+  /// 原文区间,**含**组记号与成员之间的逗号 —— 整组搬动时搬的就是这一段。
+  final int start;
+  final int end;
+
+  int get length => last - first + 1;
+
+  /// [sel] 是否**不多不少**正好是本组的全部成员。
+  bool coversExactly(List<int> sortedSel) =>
+      sortedSel.length == length &&
+      sortedSel.first == first &&
+      sortedSel.last == last;
+}
+
+/// 顶层权重组:一个权重记号罩住**≥2 枚**顶层单元(`1.3::a, b::` / `{a, b}`)
+/// 时的成员区间与倍率。芯片模式据此把成员圈成一块、读数只报一次,整组搬动
+/// 也认这个区间。
+///
+/// 单枚词条自带的数值/括号权重**不算组** —— 那是它自己的事,芯片上照常内联
+/// 报数。判据就是「盖住几枚」:`1.2::solo::` 盖住一枚,`1.2::a, b::` 盖住两枚。
+///
+/// 嵌套只取**最外**那层:一层框已经够读,套娃只会把词挤没。内层剩下的那点
+/// 倍率仍由成员芯片内联报出(它的 effMult 除掉这层),合起来还是有效权重。
+List<UnitGroup> unitGroups(String text, List<TopUnit> units) {
+  if (units.length < 2) return const [];
+  final spans = <WeightSpan>[];
+  parseToks(text, weightSpans: spans);
+  final runs = <UnitGroup>[];
+  for (final sp in spans) {
+    var a = -1, b = -1;
+    for (var i = 0; i < units.length; i++) {
+      if (units[i].end <= sp.start || units[i].start >= sp.end) continue;
+      if (a < 0) a = i;
+      b = i;
+    }
+    if (a < 0 || b <= a) continue; // 只盖住一枚 = 它自己的权重,不是组
+    runs.add(UnitGroup(a, b, sp.mult, sp.start, sp.end));
+  }
+  // 宽的先来,被别人整段包住的丢掉 —— 留下的就是互不重叠的最外层。
+  runs.sort((x, y) => y.length.compareTo(x.length));
+  final out = <UnitGroup>[];
+  for (final r in runs) {
+    if (out.any((o) => r.first >= o.first && r.last <= o.last)) continue;
+    out.add(r);
+  }
+  out.sort((x, y) => x.first.compareTo(y.first));
+  return out;
 }
 
 /// 顶层单元多选的权重批量(套括号 / 统一数值 / 清除):按 [weightRuns] 切出的

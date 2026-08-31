@@ -7,8 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
 import '../net/nai_client.dart';
-import 'secure_storage.dart';
-import 'token_store.dart';
+import 'nai_keys.dart';
 
 /// NAI 账号密码登录:密码在本机派生 access key(密码本身不出设备、不落盘),
 /// 拿 key 换 30 天 JWT 走现有 token 管道。这是官网网页端同款零知识算法 ——
@@ -38,10 +37,9 @@ Future<String> deriveNaiAccessKey(String email, String password) async {
     secretKey: SecretKey(utf8.encode(password)),
     nonce: salt.bytes,
   );
-  final encoded = base64Url.encode(await key.extractBytes()).replaceAll(
-    '=',
-    '',
-  );
+  final encoded = base64Url
+      .encode(await key.extractBytes())
+      .replaceAll('=', '');
   return encoded.substring(0, 64);
 }
 
@@ -72,7 +70,10 @@ Future<String> naiLoginWithKey(String accessKey) async {
   }
   // 成功是 201 Created(创建会话),判 2xx 而不是 ==200(实测踩过)。
   if (resp.statusCode < 200 || resp.statusCode >= 300) {
-    throw NaiException('登录失败(HTTP ${resp.statusCode})', status: resp.statusCode);
+    throw NaiException(
+      '登录失败(HTTP ${resp.statusCode})',
+      status: resp.statusCode,
+    );
   }
   final data = jsonDecode(resp.body);
   final token = data is Map ? data['accessToken'] : null;
@@ -136,44 +137,10 @@ DateTime? naiJwtExpiry(String token) {
   }
 }
 
-/// 账号密码登录留下的续期凭证(派生 access key,非密码)。
-/// 存这个才能在 JWT 到期时静默换新;pst / 手贴 JWT 用户没有这份,也不需要。
-///
-/// 存储键刻意避开 token_store 的 `nai_access_token` —— 名字只差一个词,
-/// 混用会互相覆盖。
-const _accessKeyKey = 'nai_login_access_key';
-
-final accessKeyProvider = AsyncNotifierProvider<AccessKeyNotifier, String?>(
-  AccessKeyNotifier.new,
-);
-
-class AccessKeyNotifier extends AsyncNotifier<String?> {
-  @override
-  Future<String?> build() async {
-    try {
-      final v = await ref.read(secureStorageProvider).read(key: _accessKeyKey);
-      return (v == null || v.isEmpty) ? null : v;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  Future<void> save(String key) async {
-    try {
-      await ref.read(secureStorageProvider).write(key: _accessKeyKey, value: key);
-      state = AsyncData(key);
-    } catch (e, st) {
-      state = AsyncError(e, st);
-    }
-  }
-
-  Future<void> clear() async {
-    try {
-      await ref.read(secureStorageProvider).delete(key: _accessKeyKey);
-    } catch (_) {}
-    state = const AsyncData(null);
-  }
-}
+/// 续期凭证(派生 access key,非密码)现在**跟着每把 Key 存**,见 [NaiKey.accessKey]
+/// —— 存成全局一份的话,多把 Key 里只有一把能自动续期,而且续期会拿这份凭证把
+/// **另一把**的令牌换成它所属账号的。老的 `nai_login_access_key` 由
+/// [NaiKeysNotifier] 首次读取时一并搬进列表。
 
 /// 启动静默续期:主界面 `ref.watch` 一次即触发。当前 token 是 15 天内到期
 /// (或已过期)的 JWT、且存有续期凭证时,重新换一枚新 JWT 落盘;其余情况
@@ -183,17 +150,25 @@ class AccessKeyNotifier extends AsyncNotifier<String?> {
 /// 15 天窗口 = 30 天寿命过半就换,用户哪怕半个月不开 App 也不会撞上过期。
 final naiTokenAutoRefreshProvider = FutureProvider<void>((ref) async {
   try {
-    final token = await ref.read(tokenProvider.future);
-    if (token == null) return;
-    final expiry = naiJwtExpiry(token);
-    if (expiry == null) return; // pst- 令牌不过期,无需续
-    if (expiry.difference(DateTime.now().toUtc()) > const Duration(days: 15)) {
-      return;
+    final keys = await ref.read(naiKeysStoreProvider.future);
+    final store = ref.read(naiKeysStoreProvider.notifier);
+    // 逐把各续各的:每把 Key 属于不同账号,凭证也各是各的。一把失败不影响别把,
+    // 所以 try 包在循环**里面**。
+    for (final k in keys) {
+      final accessKey = k.accessKey;
+      if (accessKey == null) continue; // 手贴 JWT,没有续期凭证,只能到期重贴
+      final expiry = naiJwtExpiry(k.token);
+      if (expiry == null) continue; // pst- 令牌不过期,无需续
+      if (expiry.difference(DateTime.now().toUtc()) >
+          const Duration(days: 15)) {
+        continue;
+      }
+      try {
+        await store.replaceToken(k.id, await naiLoginWithKey(accessKey));
+      } catch (_) {
+        // 这把没续上,下次启动再试;继续看下一把。
+      }
     }
-    final accessKey = await ref.read(accessKeyProvider.future);
-    if (accessKey == null) return; // 手贴 JWT,没有续期凭证,只能到期重贴
-    final fresh = await naiLoginWithKey(accessKey);
-    await ref.read(tokenProvider.notifier).save(fresh);
   } catch (_) {
     // 静默失败,见上。
   }

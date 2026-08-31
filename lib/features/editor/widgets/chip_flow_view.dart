@@ -80,10 +80,12 @@ double _transRowHeight(double fontSize) =>
 /// 带权重角标/禁用删除线),折叠段是一颗 `#名字` chip(和普通标签同款外观,
 /// 只多个折叠符号与主色边)。
 ///
-/// 交互分两个阶段,**互不干扰**:
+/// 交互分两个阶段:
 ///  1. 选:点 chip 加选/取消(可多选)。这个阶段点什么都不会移动东西。
-///  2. 放:在底部面板点「移动」进入([placing])。⊕ 只在这个阶段出现,点它落位;
-///     这个阶段点芯片什么也不会发生(不会改选中)。
+///     **长按**则一步到位 —— 直接把它(或已选那一批)拿起来进落位阶段。
+///  2. 放:在底部面板点「移动」进入([placing])。⊕ 只在这个阶段出现,点它落位。
+///     这个阶段**照样能点芯片加减选中** —— 搬到一半发现漏了一个,不必退出来
+///     重选;选空或选到没落点时由外层自动退回选择阶段。
 ///
 /// 折叠 chip 和散标签一视同仁,选中即整块移动(moveUnits 保证记号跟随不卷入)。
 /// 选中后的操作(权重/禁用/删除/解散)全在底部面板上 —— 这里没有光标,正文里
@@ -99,6 +101,7 @@ class ChipFlowView extends StatefulWidget {
     required this.selection,
     required this.onSelectionChanged,
     required this.onMove,
+    required this.onLongPressChip,
     required this.input,
     required this.inputFocus,
     required this.onInputChanged,
@@ -107,7 +110,6 @@ class ChipFlowView extends StatefulWidget {
     this.placing = false,
     this.showTrans = true,
     this.fontSize = 16,
-    this.abnormalThreshold = 10,
   });
 
   final RichTagController controller;
@@ -133,6 +135,9 @@ class ChipFlowView extends StatefulWidget {
   /// (随手一点就搬走),而选择阶段已经不会被 ⊕ 干扰,不需要再拿命中率换。
   final bool placing;
 
+  /// 长按某颗芯片:直接进落位阶段(见外层 `_chipLongPress`)。
+  final void Function(int index) onLongPressChip;
+
   /// 尾部输入框(页面持有:补全管线要读它的文本)。
   final TextEditingController input;
   final FocusNode inputFocus;
@@ -153,16 +158,12 @@ class ChipFlowView extends StatefulWidget {
   /// 正文字号(编辑器设置 14/16/18):chip 整体大小跟着走,和注音富文本同一档。
   final double fontSize;
 
-  /// 异常权重阈值(编辑器设置)。
-  final double abnormalThreshold;
-
   @override
   State<ChipFlowView> createState() => _ChipFlowViewState();
 }
 
 class _ChipFlowViewState extends State<ChipFlowView>
     with TickerProviderStateMixin {
-
   final GlobalKey _stackKey = GlobalKey();
   final List<GlobalKey> _chipKeys = [];
   List<(int, Offset)> _anchors = const []; // (gap, 加号中心) 内容坐标
@@ -212,7 +213,6 @@ class _ChipFlowViewState extends State<ChipFlowView>
   Set<int> get _sel => widget.selection;
 
   void _tapChip(int i) {
-    if (widget.placing) return; // 落位阶段只认 ⊕,点芯片不改选中
     Haptics.selection();
     // 在途滑动先归位并清位移,保证下次插入量到干净布局
     if (_startOffsets.isNotEmpty) {
@@ -276,14 +276,13 @@ class _ChipFlowViewState extends State<ChipFlowView>
 
   static bool _selWas(List<int> sorted, int i) => sorted.contains(i);
 
-
-
   /// 布局后按 chip 实际位置计算间隙加号锚点(浮层,不占 Wrap 位——
   /// 加号出现/消失时 chip 一动不动)。结果收敛才 setState,防循环。
   void _scheduleAnchors(int count) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final sel = _sel;
+      // 落位阶段的 ⊕ 跟着选中实时重算:加减选中之后能落的位置本来就变了。
       final gaps = widget.placing ? chipValidGaps(sel, count) : const <int>{};
       if (gaps.isEmpty) {
         if (_anchors.isNotEmpty) setState(() => _anchors = const []);
@@ -361,26 +360,14 @@ class _ChipFlowViewState extends State<ChipFlowView>
                 Align(
                   alignment: Alignment.topLeft,
                   child: Wrap(
-                    spacing: 8,
-                    runSpacing: 10,
+                    // 缝只要够把两颗分开就行:chip 自带底色和边框,靠不上
+                    // 留白来断句。横向比纵向再紧一档 —— 一行里缝出现的次数
+                    // 多得多,同样的数看着就更松。
+                    spacing: 6,
+                    runSpacing: 8,
                     crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
-                      for (var i = 0; i < units.length; i++)
-                        _slide(
-                          i,
-                          t,
-                          _place(
-                            i,
-                            sel,
-                            _chipFor(
-                              text,
-                              units[i],
-                              i,
-                              sel,
-                              pendingOf(units[i]),
-                            ),
-                          ),
-                        ),
+                      ..._rows(text, units, sel, pendingOf, t),
                       _inputBox(units.isEmpty),
                     ],
                   ),
@@ -471,6 +458,7 @@ class _ChipFlowViewState extends State<ChipFlowView>
     int i,
     Set<int> sel,
     bool translating,
+    double band,
   ) {
     if (u.isFold) {
       return _FoldChip(
@@ -480,22 +468,22 @@ class _ChipFlowViewState extends State<ChipFlowView>
         fontSize: widget.fontSize,
         selected: sel.contains(i),
         onTap: () => _tapChip(i),
+        onLongPress: () => widget.onLongPressChip(i),
       );
     }
     final tok = u.tok!;
     return _TagChip(
       key: _chipKeys[i],
       tok: tok,
-      abnormal:
-          abnormalWeightOf(text, tok, threshold: widget.abnormalThreshold) !=
-          null,
       sd: isSdWeightSeg(text.substring(tok.segStart, tok.segEnd)),
       showTrans: widget.showTrans,
       translating: translating,
       pulse: _pulse,
       fontSize: widget.fontSize,
+      band: band,
       selected: sel.contains(i),
       onTap: () => _tapChip(i),
+      onLongPress: () => widget.onLongPressChip(i),
     );
   }
 
@@ -504,6 +492,81 @@ class _ChipFlowViewState extends State<ChipFlowView>
 
   /// 落位阶段里被选中的那几枚是**搬运物**:淡出读作「已拿起」,好让用户一眼
   /// 分清「要搬的」和「可以落在哪儿」。点击本身由 [_tapChip] 挡掉。
+  /// 铺 Wrap 的孩子:被同一个权重罩着的连续几枚收进一只 [_GroupBand],
+  /// 其余原样单颗上。**下标不变** —— 组只是套了层框,`_chipKeys[i]`、选中集、
+  /// 落点 ⊕ 那一套照旧按顶层单元下标算,框里框外一视同仁。
+  List<Widget> _rows(
+    String text,
+    List<TopUnit> units,
+    Set<int> sel,
+    bool Function(TopUnit u) pendingOf,
+    double t,
+  ) {
+    final groups = unitGroups(text, units);
+    // own=false:这颗的选中态归外面那只框管,高亮和落位半透明都别再来一遍。
+    Widget one(int i, double band, {bool own = true}) {
+      final mine = own ? sel : const <int>{};
+      return _slide(
+        i,
+        t,
+        _place(
+          i,
+          mine,
+          _chipFor(text, units[i], i, mine, pendingOf(units[i]), band),
+        ),
+      );
+    }
+
+    final out = <Widget>[];
+    for (var i = 0; i < units.length; i++) {
+      // 正文里的换行在这儿断行:芯片模式**不新增**排版能力,只是把注音模式
+      // 已经存在的分段照着显示出来 —— 否则用户粘进来的多段提示词在这边糊成
+      // 一片,一切回去又变回三段,同一份文本两种样子。
+      //
+      // 分隔符本来就一直留在原文里(topLevelUnits 只圈标签本身,不碰缝隙),
+      // 所以这里只是读,不写。
+      final gap = _newlinesBefore(text, units, i);
+      if (gap > 0) out.add(_LineBreak(blank: gap > 1));
+
+      final g = groups.where((r) => r.first == i).firstOrNull;
+      if (g == null) {
+        out.add(one(i, 1));
+        continue;
+      }
+      // 「选中整组」把成员一次收齐 —— 那时选中的是**这只框**,里头几颗回到
+      // 常态。每颗各自再高亮一遍既吵,也说不清选中的到底是框还是某一颗。
+      final whole = g.coversExactly(sel.toList()..sort());
+      final band = _GroupBand(
+        mult: g.mult,
+        fontSize: widget.fontSize,
+        selected: whole,
+        children: [
+          for (var k = g.first; k <= g.last; k++) one(k, g.mult, own: !whole),
+        ],
+      );
+      // 整只被拿起来时整只压暗 —— 和单颗芯片落位时一个待遇
+      out.add(
+        widget.placing && whole ? Opacity(opacity: .45, child: band) : band,
+      );
+      i = g.last;
+    }
+    return out;
+  }
+
+  /// 第 [i] 枚之前的缝里有几个换行(0 = 不断行)。
+  ///
+  /// 只看**紧邻的**上一枚到这一枚之间那段原文;第 0 枚看的是正文开头到它之前
+  /// (粘贴进来常带一个前导空行,那也是用户的排版)。
+  int _newlinesBefore(String text, List<TopUnit> units, int i) {
+    final from = i == 0 ? 0 : units[i - 1].end;
+    final gap = text.substring(from, units[i].start);
+    var n = 0;
+    for (var k = 0; k < gap.length; k++) {
+      if (gap[k] == '\n') n++;
+    }
+    return n;
+  }
+
   Widget _place(int i, Set<int> sel, Widget chip) =>
       widget.placing && sel.contains(i)
       ? Opacity(opacity: .45, child: chip)
@@ -517,6 +580,109 @@ class _ChipFlowViewState extends State<ChipFlowView>
   }
 }
 
+/// Wrap 里的强制断行:宽度撑满就把后面的孩子挤到下一行去。
+///
+/// [blank] = 原文那儿是**空行**(两个及以上换行),多留一截高度把段落隔开 ——
+/// 不然连着两次断行看着和一次没区别,用户分的段就白分了。
+///
+/// 高度不能给 0:Wrap 的 runSpacing 只作用在行与行之间,零高的行会被上下两条
+/// 缝夹成一道莫名其妙的宽缝。给个小正数,它自己就是那道缝。
+class _LineBreak extends StatelessWidget {
+  const _LineBreak({this.blank = false});
+
+  final bool blank;
+
+  @override
+  Widget build(BuildContext context) =>
+      SizedBox(width: double.infinity, height: blank ? 10 : 0.01);
+}
+
+/// 权重组的连体框:`1.3::empty eyes, panting::` 这种一个权重罩住好几枚词的
+/// 写法,过去在芯片模式下摊成「每颗各挂一个 ×1.3」—— 同一件事说 N 遍,还看不
+/// 出这几枚是**一起**被加权的。现在圈成一块,读数只在框头报一次。
+///
+/// 成员仍是各自独立的芯片(照常点选、长按、加减权重),框只是背景 —— 它不
+/// 拦手势,点框内空处和点别处一样落到底层那层空白手势上。
+class _GroupBand extends StatelessWidget {
+  const _GroupBand({
+    required this.mult,
+    required this.fontSize,
+    required this.selected,
+    required this.children,
+  });
+
+  final double mult;
+  final double fontSize;
+
+  /// 成员被一次选齐(词条栏的「选中整组」)= 选中的是整只框。
+  /// 这时它接管高亮,搬动也带着记号一起走(见 [moveUnits])。
+  final bool selected;
+
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = context.editor;
+    final scheme = context.scheme;
+    final up = mult > 1;
+    final i = up
+        ? ((mult - 1) / 1.5).clamp(0.0, 1.0)
+        : ((1 - mult) / 0.7).clamp(0.0, 1.0);
+    final line = up ? pal.weightUpBorder : pal.weightDownBorder;
+    // 框比芯片淡:它是底,芯片才是要读的东西。压不下去就成了一块色斑,
+    // 里面那几颗反而看不清。
+    final wash = pal.weightWash(mult);
+    final pad = fontSize * 0.3;
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: selected
+            ? scheme.primaryContainer
+            : wash == null
+            ? null
+            : Color.alphaBlend(
+                wash.withValues(alpha: wash.a * .38),
+                scheme.surface,
+              ),
+        border: Border.all(
+          color: selected
+              ? scheme.primary
+              : line.withValues(alpha: .35 + i * .3),
+          width: selected ? 2 : 1,
+        ),
+        borderRadius: BorderRadius.circular(fontSize * 0.7),
+      ),
+      child: Padding(
+        padding: EdgeInsets.all(pad),
+        child: Wrap(
+          spacing: 6,
+          runSpacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            Padding(
+              // 读数贴着左边那道框,和第一颗芯片之间留出与缝同宽的距离
+              padding: EdgeInsets.only(left: pad * 0.5),
+              child: Text(
+                '${fmtMult(mult)}×',
+                style: TextStyle(
+                  fontSize: fontSize - _kTransDrop,
+                  fontWeight: FontWeight.w700,
+                  color: selected
+                      ? scheme.onPrimaryContainer
+                      : up
+                      ? pal.weightUp
+                      : pal.weightDown,
+                ),
+              ),
+            ),
+            ...children,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 /// 折叠 chip:和普通标签同款外观(单行,主色系),前缀 `#` 折叠符号 + 成员数。
 /// 点它选中/移动,和散标签一视同仁;解散在正文点标题做。
 class _FoldChip extends StatelessWidget {
@@ -527,6 +693,7 @@ class _FoldChip extends StatelessWidget {
     required this.fontSize,
     required this.selected,
     required this.onTap,
+    required this.onLongPress,
   });
 
   final String name;
@@ -534,6 +701,7 @@ class _FoldChip extends StatelessWidget {
   final double fontSize;
   final bool selected;
   final VoidCallback onTap;
+  final VoidCallback onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -554,6 +722,7 @@ class _FoldChip extends StatelessWidget {
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
+        onLongPress: onLongPress,
         child: Padding(
           padding: EdgeInsets.symmetric(
             horizontal: fontSize * 0.7,
@@ -609,7 +778,8 @@ class _TagChip extends StatelessWidget {
     required this.fontSize,
     required this.selected,
     required this.onTap,
-    this.abnormal = false,
+    required this.onLongPress,
+    this.band = 1,
     this.sd = false,
   });
 
@@ -627,9 +797,12 @@ class _TagChip extends StatelessWidget {
   final double fontSize;
   final bool selected;
   final VoidCallback onTap;
+  final VoidCallback onLongPress;
 
-  /// 异常权重(词中段疑似丢逗号的 `N::`):红底红框警示,盖过权重色。
-  final bool abnormal;
+  /// 外面那只 [_GroupBand] 已经替本颗报掉的组倍率(不在组里=1)。
+  /// 底色与读数都按**扣掉它之后**剩下的那点权重算 —— 框说过一遍的事,
+  /// 每颗再说一遍就成了刷屏,而且看不出这几枚是一起被加权的。
+  final double band;
 
   /// SD 权重语法 `(tag:1.2)`:tertiary 底提示可转换。
   final bool sd;
@@ -638,14 +811,13 @@ class _TagChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final pal = context.editor;
-    final mult = tok.effMult;
+    final mult = band == 0 ? tok.effMult : tok.effMult / band;
     final weightColor = mult > 1.0001
         ? pal.weightUp
         : mult < 0.9999
         ? pal.weightDown
         : null;
-    // 权重底色/边框(web getWeightStyle 同款):越偏离 1 越深,禁用不铺色;
-    // 异常权重红底红框优先(web abnormalWeight 同款)。
+    // 权重底色/边框(web getWeightStyle 同款):越偏离 1 越深,禁用不铺色。
     var chipBg = scheme.surfaceContainerHigh;
     var chipBorder = scheme.outlineVariant;
     if (tok.disabled) {
@@ -654,12 +826,6 @@ class _TagChip extends StatelessWidget {
       // 改成往下沉一档的底 + 淡到几乎没有的边:整颗 chip 从这一片里退出去。
       chipBg = scheme.surfaceContainerLowest;
       chipBorder = scheme.outlineVariant.withValues(alpha: .4);
-    } else if (abnormal && !tok.disabled) {
-      chipBg = Color.alphaBlend(
-        scheme.error.withValues(alpha: .14),
-        scheme.surfaceContainerHigh,
-      );
-      chipBorder = scheme.error.withValues(alpha: .55);
     } else if (sd && !tok.disabled) {
       chipBg = Color.alphaBlend(
         scheme.tertiary.withValues(alpha: .14),
@@ -692,6 +858,7 @@ class _TagChip extends StatelessWidget {
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
+        onLongPress: onLongPress,
         child: Padding(
           padding: EdgeInsets.symmetric(
             horizontal: fontSize * 0.7,
@@ -704,6 +871,20 @@ class _TagChip extends StatelessWidget {
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  // 读数在名字**前**:和组框那只同一个位置、同一副写法,
+                  // 扫一眼就知道「这一份加权管到哪儿为止」。
+                  if (weightColor != null) ...[
+                    Text(
+                      '${fmtMult(mult)}×',
+                      // 读数只报数,不跟着权重变红蓝 —— 高低看 chip 底色与边框
+                      style: TextStyle(
+                        fontSize: fontSize - _kTransDrop,
+                        fontWeight: FontWeight.w700,
+                        color: tok.disabled ? scheme.outline : scheme.onSurface,
+                      ),
+                    ),
+                    const SizedBox(width: 5),
+                  ],
                   Flexible(
                     child: Text(
                       tok.name,
@@ -719,20 +900,6 @@ class _TagChip extends StatelessWidget {
                       ),
                     ),
                   ),
-                  if (weightColor != null) ...[
-                    const SizedBox(width: 5),
-                    Text(
-                      '×${fmtMult(mult)}',
-                      // 读数只报数,不跟着权重变红蓝 —— 高低看 chip 底色与边框
-                      style: TextStyle(
-                        fontSize: fontSize - _kTransDrop,
-                        fontWeight: FontWeight.w700,
-                        color: tok.disabled
-                            ? scheme.outline
-                            : scheme.onSurface,
-                      ),
-                    ),
-                  ],
                 ],
               ),
               // 译文行恒占位:译文是异步到货的,不预留高度的话每回一批就有

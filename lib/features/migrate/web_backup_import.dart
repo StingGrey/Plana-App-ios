@@ -132,7 +132,8 @@ Future<WebBackupImportOutcome?> runWebBackupImport(
   // 画师串 / OC → 灵感库(一次 mergeBackup 合并两类,只落一次盘)
   final pickedCats = {
     for (final e in cats.entries)
-      if (picked.contains(e.key == 'character' ? 'oc' : 'artist')) e.key: e.value,
+      if (picked.contains(e.key == 'character' ? 'oc' : 'artist'))
+        e.key: e.value,
   };
   if (pickedCats.isNotEmpty) {
     try {

@@ -13,6 +13,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../../../core/store/app_stores.dart';
 import '../../../core/store/cache_sweep.dart' show kShareCacheDir;
+import '../../../core/store/ui_prefs.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../generate/widgets/common.dart'
     show ExpandBody, hintSnack, sharedAxisRoute;
@@ -69,7 +70,9 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
   bool _searchOpen = false;
   String _query = '';
   String? _modelFilter; // null=全部;''=未知(无参数快照的老图)
-  int _daysFilter = 0; // 0=全部 / 1=今天 / 7=近7天 / 30=近30天
+  // 0=全部 / 1=今天 / 7=近7天 / 30=近30天。记住上次的 —— 常年只看近 7 天的人
+  // 不该每次开网格都先筛一遍。
+  late int _daysFilter = ref.read(uiPrefsProvider).galleryDaysFilter;
 
   // ---- 多选操作栏的几何 ----
   static const _actH = 46.0;
@@ -246,7 +249,12 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
         ('近 7 天', 7, null),
         ('近 30 天', 30, null),
       ],
-      onPick: (v) => setState(() => _daysFilter = v),
+      onPick: (v) {
+        ref
+            .read(uiPrefsProvider.notifier)
+            .patch((p) => p.copyWith(galleryDaysFilter: v));
+        setState(() => _daysFilter = v);
+      },
     );
   }
 

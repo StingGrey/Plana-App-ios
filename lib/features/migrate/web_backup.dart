@@ -122,7 +122,10 @@ class WebBackup {
       final bytes = decodeDataUrl(c['preview']);
       if (bytes == null) continue; // 没图的角色参考条目没有意义
       final name = c['name'];
-      crs.add((name: name is String && name.isNotEmpty ? name : '参考图', bytes: bytes));
+      crs.add((
+        name: name is String && name.isNotEmpty ? name : '参考图',
+        bytes: bytes,
+      ));
     }
 
     final (presets, activeId) = _presetsOf(ls);

@@ -307,7 +307,15 @@ class KeyLedgerStore {
   // ── 查询(内存态,时间范围按本地时区) ────────────────
 
   /// [range] ∈ today/week(周一起)/month(1 号起)。
-  ({int images, int free, int genPts, int vibePts, int upsPts, int v5, int v5Pts})
+  ({
+    int images,
+    int free,
+    int genPts,
+    int vibePts,
+    int upsPts,
+    int v5,
+    int v5Pts,
+  })
   sumRange(String range, {DateTime? now}) {
     final from = _rangeStart(range, now ?? DateTime.now());
     final fromKey = dayKey(from);

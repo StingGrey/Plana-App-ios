@@ -180,6 +180,8 @@ class InpaintJob {
     required this.mask,
     required this.strength,
     this.paste,
+    this.sourceId,
+    this.grid,
   });
 
   /// 发送底图 PNG(整图重绘=原图;局部=裁切子图)。
@@ -192,6 +194,17 @@ class InpaintJob {
 
   /// 局部重绘的贴回信息;null = 整图(结果直接入库)。
   final InpaintPaste? paste;
+
+  /// 底图在图库里的 id;回编辑器时用它认「是不是同一张图」。
+  /// 从无图库归属的入口进来时为 null。
+  final String? sourceId;
+
+  /// 涂抹网格的编码(`MaskGrid.encode()`)。[mask] 那张 PNG 是**发给服务端**的,
+  /// 回不成可编辑的格子;要接着涂就得留这一份。
+  ///
+  /// 蒙版记忆因此不再需要图库那套按图存盘的实现 —— 遮罩跟着创作页状态走,
+  /// 工作区一起持久化,重启也在。
+  final Uint8List? grid;
 }
 
 /// 局部重绘贴回:结果(发送框尺寸)中 tight 区域贴回原图对应位置。
@@ -368,6 +381,32 @@ bool isKreaModel(String displayModel) =>
 bool isModalModel(String displayModel) =>
     providerOfModel(displayModel) != GenProvider.nai;
 
+/// 一档 Modal 模型(anima / krea)的整套采样参数。档位推荐配方
+/// ([animaTierDefaults] / [kreaTierDefaults])与 [GenParams.modalMem] 共用同一形状。
+typedef ModalSampling = ({
+  int steps,
+  double cfg,
+  String sampler,
+  String scheduler,
+});
+
+/// 档位记忆的键(`anima:turbo` / `krea:raw` …)。NAI 无档位配方 → null。
+/// 两条渠道混在一张表里,键自带前缀,不会撞名(anima 也有 turbo)。
+String? modalTierKeyOf(String displayModel) =>
+    switch (providerOfModel(displayModel)) {
+      GenProvider.anima => 'anima:${animaTierOf(displayModel)}',
+      GenProvider.krea => 'krea:${kreaTierOf(displayModel)}',
+      GenProvider.nai => null,
+    };
+
+/// 该型号的官方推荐配方;NAI 无此概念 → null。
+ModalSampling? modalTierDefaultsOf(String displayModel) =>
+    switch (providerOfModel(displayModel)) {
+      GenProvider.anima => animaTierDefaults(animaTierOf(displayModel)),
+      GenProvider.krea => kreaTierDefaults(kreaTierOf(displayModel)),
+      GenProvider.nai => null,
+    };
+
 /// 大类展示名(模型选择弹层的切换条;对齐 web MODEL_PROVIDERS.label)。
 String providerLabel(GenProvider p) => switch (p) {
   GenProvider.nai => 'NovelAI',
@@ -493,9 +532,7 @@ const kBatchMax = 4;
 /// (从更早那套 base+turbo-lora 旧配方继承来的,两头都不沾),2026-08-09 随
 /// web 按官方区间校正。成本很小 —— 832×1216 每步约 0.3s,28→36 只多 2.4s,
 /// 而端到端本就有 ~40s 固定开销。
-({int steps, double cfg, String sampler, String scheduler}) animaTierDefaults(
-  String tier,
-) => switch (tier) {
+ModalSampling animaTierDefaults(String tier) => switch (tier) {
   'aesthetic' ||
   'base' => (steps: 36, cfg: 4.5, sampler: 'er_sde', scheduler: 'simple'),
   // 2.9B(社区层扩展版)这组**不是**照抄上面两档,是模型作者给的配方:
@@ -570,10 +607,8 @@ bool kreaSchedulerRisky(String id) => id == 'karras';
 /// 正负各算一遍)。turbo 是蒸馏档,轨迹已烤进权重,多给步数不涨质量,照官方 8 步。
 ///
 /// 两档采样器相同(都是官方配方 er_sde + simple)—— 这正是当初没建参数链的原因。
-/// 切档仍会把它们重置回默认,与 steps/cfg 的行为一致。
-({int steps, double cfg, String sampler, String scheduler}) kreaTierDefaults(
-  String tier,
-) => tier == 'turbo'
+/// 切档时它们与 steps/cfg 走同一条路:该档没调过才套配方,见 [GenParams.modalMem]。
+ModalSampling kreaTierDefaults(String tier) => tier == 'turbo'
     ? (steps: 8, cfg: 1.0, sampler: 'er_sde', scheduler: 'simple')
     : (steps: 36, cfg: 3.5, sampler: 'er_sde', scheduler: 'simple');
 
@@ -860,6 +895,7 @@ class GenParams {
     this.kreaScheduler = 'simple',
     this.hires = const HiresConfig(),
     this.batchCount = 1,
+    this.modalMem = const {},
   });
 
   final String model;
@@ -897,6 +933,17 @@ class GenParams {
   /// 真正会发出去的值见 [effectiveBatch] —— 这里存的只是用户的选择。
   final int batchCount;
 
+  /// 各 Modal 档位记住自己那套采样参数(键见 [modalTierKeyOf])。
+  ///
+  /// anima 四档 / krea 两档共用上面那两组字段(生效的永远是当前这档),
+  /// 所以切档必须有个地方安放上一档调好的值 —— 否则「Turbo 拉到 20 步 → 去
+  /// Base 看一眼 → 切回来」步数就没了,连回 NAI 转一圈再回来都会没。
+  ///
+  /// 写入/取回都在 [rememberModalSampling] / [recallModalSampling],切模型时
+  /// 成对调用。**没进过的档取不到值 → 套官方配方**,这样切到慢档不会挂着
+  /// 蒸馏档的 12 步 CFG1 出糊图(切档联动的初衷,见 [animaTierDefaults])。
+  final Map<String, ModalSampling> modalMem;
+
   /// 这一单**实际**会出几张。规则跟服务端对齐,不是界面上选什么就是什么:
   ///  - 只有 anima / krea 走 ComfyUI 的 `batch_size`,NAI 那条路没有这回事;
   ///  - anima 开着重绘放大时服务端**强制单张**(二段要跑 N × scale² 的量,
@@ -930,6 +977,50 @@ class GenParams {
     GenProvider.nai => copyWith(steps: v),
   };
 
+  /// 当前生效的那套 Modal 采样参数(NAI 下这两组都不参与出图,取 anima 那组
+  /// 只是占位;调用方一律先判 [modalTierKeyOf] 再用)。
+  ModalSampling get _modalSampling => isKreaModel(model)
+      ? (
+          steps: kreaSteps,
+          cfg: kreaCfg,
+          sampler: kreaSampler,
+          scheduler: kreaScheduler,
+        )
+      : (
+          steps: animaSteps,
+          cfg: animaCfg,
+          sampler: animaSampler,
+          scheduler: animaScheduler,
+        );
+
+  /// **离开当前档位前**调:把这档调好的参数按档存进 [modalMem]。NAI 无档位,原样返回。
+  GenParams rememberModalSampling() {
+    final key = modalTierKeyOf(model);
+    if (key == null) return this;
+    return copyWith(modalMem: {...modalMem, key: _modalSampling});
+  }
+
+  /// **切到新模型之后**调:取回这档上次调好的参数;没进过这档就套官方配方。
+  GenParams recallModalSampling() {
+    final d = modalTierDefaultsOf(model);
+    final key = modalTierKeyOf(model);
+    if (d == null || key == null) return this; // NAI:没有档位这回事
+    final s = modalMem[key] ?? d;
+    return isKreaModel(model)
+        ? copyWith(
+            kreaSteps: s.steps,
+            kreaCfg: s.cfg,
+            kreaSampler: s.sampler,
+            kreaScheduler: s.scheduler,
+          )
+        : copyWith(
+            animaSteps: s.steps,
+            animaCfg: s.cfg,
+            animaSampler: s.sampler,
+            animaScheduler: s.scheduler,
+          );
+  }
+
   /// Opus 免费判定(像素 ≤ 免费阈值 + ≤28 步),按像素而非预设成员,兼容自定义尺寸。
   bool get isFree => steps <= 28 && width * height <= kFreePixelThreshold;
 
@@ -956,6 +1047,7 @@ class GenParams {
     String? kreaScheduler,
     HiresConfig? hires,
     int? batchCount,
+    Map<String, ModalSampling>? modalMem,
   }) {
     return GenParams(
       model: model ?? this.model,
@@ -980,6 +1072,7 @@ class GenParams {
       kreaScheduler: kreaScheduler ?? this.kreaScheduler,
       hires: hires ?? this.hires,
       batchCount: batchCount ?? this.batchCount,
+      modalMem: modalMem ?? this.modalMem,
     );
   }
 }
@@ -1056,8 +1149,12 @@ class GenerateState {
   /// 风格参考强度 —— 全局一份(所有参考图共用官方那个 LoRA 的 strength)。
   final double kreaStyleRefWeight;
 
-  /// 重绘任务载荷:仅由重绘编辑器写入生成快照(与 img2img 互斥,
-  /// 优先生效);创作页编辑器状态恒为 null。
+  /// 重绘任务载荷(底图 + 遮罩 + 强度 + 回贴信息)。与 [img2img] 互斥、优先生效
+  /// —— 带遮罩的图生图就是重绘,两者不该同时存在。
+  ///
+  /// **是创作页的常驻状态,不再是一次性快照**(2026-08-31 改):遮罩编辑器只负责
+  /// 把它存进来,发车统一交给主生成按钮 —— 对齐官网。所以它跟着工作区一起持久化
+  /// (见 state_codec),也跟着「图生图」模块的显隐一起剥(见 stripHiddenModules)。
   final InpaintJob? inpaint;
 
   /// 粗略 token 估算(占位;正式版接 T5 分词)

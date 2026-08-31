@@ -1,9 +1,11 @@
 import 'dart:typed_data';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../../core/util/haptics.dart';
 import '../../gallery/gallery_state.dart';
 import '../char_position.dart';
 import '../generate_state.dart';
@@ -11,8 +13,8 @@ import '../models.dart';
 
 /// 角色定位弹窗(对齐 web `CharacterPositionModal`)。
 ///
-/// · V5(NAI 5)自由画布:按当前出图横竖比例占位,点哪放哪;主页当前图与出图
-///   比例一致时直接拿它当画布,在真实构图上摆位更直观。
+/// · V5(NAI 5)自由画布:按当前出图横竖比例占位,点哪放哪、也能按住直接拖;
+///   主页当前图与出图比例一致时直接拿它当画布,在真实构图上摆位更直观。
 /// · V4/V4.5:5×5 网格(画布表达不了网格档位语义)。
 /// 二者共享:顶部角色条一处切换多个角色、先选后确认(改动落草稿,确认才写回)。
 Future<void> showPositionGridDialog(BuildContext context, String charId) {
@@ -20,6 +22,21 @@ Future<void> showPositionGridDialog(BuildContext context, String charId) {
     context: context,
     builder: (context) => _PositionDialog(initialCharId: charId),
   );
+}
+
+/// 画布拖动:落点即接管。
+///
+/// 二维拖动和外层弹窗的竖向滚动同轴相争,默认判法是谁先够 slop —— 拖动要 36
+/// 像素、滚动只要 18,手指往下拖必被滚动抢走,角色纹丝不动。画布是这个弹窗里
+/// 唯一要用手拖的东西,索性按下当场判胜:画布里的每一次划动都归它。
+class _CanvasDragRecognizer extends PanGestureRecognizer {
+  _CanvasDragRecognizer({super.debugOwner});
+
+  @override
+  void addAllowedPointer(PointerDownEvent event) {
+    super.addAllowedPointer(event);
+    resolve(GestureDisposition.accepted);
+  }
 }
 
 class _PositionDialog extends ConsumerStatefulWidget {
@@ -41,6 +58,12 @@ class _PositionDialogState extends ConsumerState<_PositionDialog> {
   /// 挂在切换条当前选中那颗 chip 上,打开时把它滚进视野。
   final _selectedChipKey = GlobalKey();
 
+  /// 手指正按在画布上(拖动中):点放大一圈,底下的读数改显实时坐标。
+  bool _dragging = false;
+
+  /// 按在别人那颗点上、还没分清是拖是点时的暂存(见 [_grabAt])。
+  ({String id, Offset at, String pos})? _pending;
+
   @override
   void initState() {
     super.initState();
@@ -53,6 +76,82 @@ class _PositionDialogState extends ConsumerState<_PositionDialog> {
   }
 
   void _setPos(String? pos) => setState(() => _draft[_selectedId] = pos);
+
+  /// 画布局部坐标 → 自由坐标串。
+  String _posAt(Offset p, double w, double h) => formatFreeformPosition(
+    (p.dx / w).clamp(0.0, 1.0),
+    (p.dy / h).clamp(0.0, 1.0),
+  );
+
+  /// 落点抓到的那颗点;够不着任何一颗 → null(空处按下 = 放当前角色)。
+  ///
+  /// 半径按手指给足(比点本身大一圈),几颗叠在一处时当前角色优先 —— 拖自己
+  /// 那颗的时候选中不该被旁边的挤走。
+  String? _hitDot(Offset p, List<CharacterPrompt> chars, double w, double h) {
+    const r2 = 24.0 * 24.0;
+    double? distTo(String id) {
+      final ctr = resolveCharacterCenter(_draft[id]);
+      if (ctr == null) return null;
+      final d = (Offset(ctr.x * w, ctr.y * h) - p).distanceSquared;
+      return d <= r2 ? d : null;
+    }
+
+    if (distTo(_selectedId) != null) return _selectedId;
+    String? best;
+    var bestD = double.infinity;
+    for (final c in chars) {
+      final d = distTo(c.id);
+      if (d != null && d < bestD) {
+        best = c.id;
+        bestD = d;
+      }
+    }
+    return best;
+  }
+
+  /// 按下:空处落点,按住自己那颗点则只是把它拿起来,两种都接着跟手拖。
+  ///
+  /// 抓自己那颗点**不挪动**(同 web):一按就跳到手指中心的话,本来想微调的人
+  /// 反倒先被推走一截 —— 命中半径 24px,那一下最多偏 24px。
+  ///
+  /// 按在**别人**那颗点上则先按住不动:划开了才算要挪他(省得为挪一个角色先
+  /// 回顶上切一次),只点一下仍按老规矩把当前角色放这儿。V5 一图能摆 32 个,
+  /// 点挨得密,按下就改判的话,想在别人旁边落一个自己的点全会变成把人拖走。
+  void _grabAt(Offset p, List<CharacterPrompt> chars, double w, double h) {
+    final hit = _hitDot(p, chars, w, h);
+    if (hit != null && hit != _selectedId) {
+      _pending = (id: hit, at: p, pos: _posAt(p, w, h));
+      return;
+    }
+    setState(() {
+      _dragging = true;
+      if (hit == null) _draft[_selectedId] = _posAt(p, w, h);
+    });
+  }
+
+  void _dragTo(Offset p, double w, double h) {
+    final pend = _pending;
+    if (pend != null) {
+      // 够 slop 才改判,免得点按时手指那一两像素的抖动被当成拖动
+      if ((p - pend.at).distance < kTouchSlop) return;
+      _pending = null;
+      Haptics.selection();
+    }
+    setState(() {
+      if (pend != null) _selectedId = pend.id;
+      _dragging = true;
+      _draft[_selectedId] = _posAt(p, w, h);
+    });
+  }
+
+  void _endDrag() {
+    final tapped = _pending?.pos; // 始终没划开 = 只是点了一下别人的点
+    _pending = null;
+    setState(() {
+      if (tapped != null) _draft[_selectedId] = tapped;
+      _dragging = false;
+    });
+  }
 
   void _confirm() {
     final notifier = ref.read(generateProvider.notifier);
@@ -74,12 +173,7 @@ class _PositionDialogState extends ConsumerState<_PositionDialog> {
     final chars = gen.characters;
     final params = gen.params;
     final isV5 = isNai5Model(params.model);
-    final selName = chars
-        .firstWhere(
-          (c) => c.id == _selectedId,
-          orElse: () => chars.isNotEmpty ? chars.first : _placeholder,
-        )
-        .name;
+    final isAuto = _draft[_selectedId] == null;
 
     // 主页当前图:比例与出图设置一致时当画布底图
     final sel = ref.watch(galleryProvider).selected;
@@ -140,7 +234,7 @@ class _PositionDialogState extends ConsumerState<_PositionDialog> {
                         key: chars[i].id == _selectedId
                             ? _selectedChipKey
                             : null,
-                        child: _switcherChip(context, chars[i], i),
+                        child: _switcherChip(context, chars[i], i, isV5),
                       ),
                     ),
                   ),
@@ -152,16 +246,25 @@ class _PositionDialogState extends ConsumerState<_PositionDialog> {
                 else
                   _grid(context, chars),
                 const SizedBox(height: 14),
-                // AUTO(当前角色置为自动)
+                // AUTO(当前角色置为自动)。它是当前角色的一个档位,所以照 app
+                // 里开关的惯例做成选中态:实心 + primary 描边,一眼看出现在是不
+                // 是自动。名字不再复述 —— 上头切换条正标着改的是谁。
                 OutlinedButton.icon(
                   onPressed: () => _setPos(null),
                   icon: const Icon(Icons.auto_awesome, size: 16),
-                  label: Text('$selName · 自动 (AUTO)'),
+                  label: const Text('自动 (AUTO)'),
                   style: OutlinedButton.styleFrom(
                     minimumSize: const Size.fromHeight(42),
-                    foregroundColor: _draft[_selectedId] == null
-                        ? scheme.primary
+                    backgroundColor: isAuto ? scheme.primaryContainer : null,
+                    foregroundColor: isAuto
+                        ? scheme.onPrimaryContainer
                         : scheme.onSurfaceVariant,
+                    side: BorderSide(
+                      color: isAuto
+                          ? scheme.primary
+                          : scheme.outline.withValues(alpha: .9),
+                      width: isAuto ? 1.5 : 1,
+                    ),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(21),
                     ),
@@ -212,9 +315,12 @@ class _PositionDialogState extends ConsumerState<_PositionDialog> {
     );
   }
 
-  static const _placeholder = CharacterPrompt(id: '', name: '');
-
-  Widget _switcherChip(BuildContext context, CharacterPrompt c, int index) {
+  Widget _switcherChip(
+    BuildContext context,
+    CharacterPrompt c,
+    int index,
+    bool isV5,
+  ) {
     final scheme = context.scheme;
     final active = c.id == _selectedId;
     return Material(
@@ -241,7 +347,9 @@ class _PositionDialogState extends ConsumerState<_PositionDialog> {
                     style: TextStyle(
                       fontSize: 10,
                       fontWeight: FontWeight.w700,
-                      color: active ? scheme.onPrimary : scheme.onSurfaceVariant,
+                      color: active
+                          ? scheme.onPrimary
+                          : scheme.onSurfaceVariant,
                     ),
                   ),
                 ),
@@ -258,13 +366,16 @@ class _PositionDialogState extends ConsumerState<_PositionDialog> {
               ),
               const SizedBox(width: 6),
               Text(
-                positionChipLabel(_draft[c.id]),
+                // 网格模型下显示它实际会被吸附到的那一格,别写着 '42,67%'
+                // 而请求里发的是 C4 的格心。
+                positionChipLabel(_draft[c.id], grid: !isV5),
                 style: context.texts.labelSmall!.copyWith(
                   fontFeatures: const [FontFeature.tabularFigures()],
-                  color: (active
-                          ? scheme.onPrimaryContainer
-                          : scheme.onSurfaceVariant)
-                      .withValues(alpha: .7),
+                  color:
+                      (active
+                              ? scheme.onPrimaryContainer
+                              : scheme.onSurfaceVariant)
+                          .withValues(alpha: .7),
                 ),
               ),
             ],
@@ -294,68 +405,102 @@ class _PositionDialogState extends ConsumerState<_PositionDialog> {
         }
         return Column(
           children: [
-            Center(
+            // 上下留白:点以自身中心对齐坐标,坐标压在 0 或 1 时有一半落在画布
+            // 外,没这段留白会顶到上头的角色条和下面的读数行。
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 14),
               child: SizedBox(
                 width: w,
                 height: h,
-                child: GestureDetector(
-                  onTapDown: (d) {
-                    final x = (d.localPosition.dx / w).clamp(0.0, 1.0);
-                    final y = (d.localPosition.dy / h).clamp(0.0, 1.0);
-                    _setPos(formatFreeformPosition(x, y));
+                // 按下即落点、拖着走就一路跟手、抬手落定;点一下正是零位移的
+                // 那一趟拖动,所以两种手势共用同一条路径。
+                child: RawGestureDetector(
+                  gestures: {
+                    _CanvasDragRecognizer:
+                        GestureRecognizerFactoryWithHandlers<
+                          _CanvasDragRecognizer
+                        >(() => _CanvasDragRecognizer(debugOwner: this), (r) {
+                          r.onStart = (d) =>
+                              _grabAt(d.localPosition, chars, w, h);
+                          r.onUpdate = (d) => _dragTo(d.localPosition, w, h);
+                          r.onEnd = (_) => _endDrag();
+                          r.onCancel = _endDrag;
+                        }),
                   },
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: Stack(
-                      children: [
-                        Positioned.fill(
-                          child: ColoredBox(color: scheme.surfaceContainerHigh),
+                  // 底图与网格线单独一层做圆角裁剪,点层留在裁剪外面 ——
+                  // 否则坐标贴边(x=0 / y=1 这类)的点会被切掉一半,偏偏那几个
+                  // 最需要看清落在哪。Clip.none 是为了让溢出的半个点画得出来。
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Positioned.fill(
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: Stack(
+                            children: [
+                              Positioned.fill(
+                                child: ColoredBox(
+                                  color: scheme.surfaceContainerHigh,
+                                ),
+                              ),
+                              // 底图:主页当前图(比例一致)+ 轻压暗保证点/线可辨
+                              if (bgBytes != null) ...[
+                                Positioned.fill(
+                                  child: Image.memory(
+                                    bgBytes,
+                                    fit: BoxFit.cover,
+                                  ),
+                                ),
+                                Positioned.fill(
+                                  child: ColoredBox(
+                                    color: Colors.black.withValues(alpha: .2),
+                                  ),
+                                ),
+                              ],
+                              // 参考网格线(仅视觉辅助,不吸附)
+                              for (final f in const [.2, .4, .6, .8]) ...[
+                                Positioned(
+                                  left: w * f,
+                                  top: 0,
+                                  bottom: 0,
+                                  child: Container(
+                                    width: 1,
+                                    color: scheme.outline.withValues(
+                                      alpha: .25,
+                                    ),
+                                  ),
+                                ),
+                                Positioned(
+                                  top: h * f,
+                                  left: 0,
+                                  right: 0,
+                                  child: Container(
+                                    height: 1,
+                                    color: scheme.outline.withValues(
+                                      alpha: .25,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
                         ),
-                        // 底图:主页当前图(比例一致)+ 轻压暗保证点/线可辨
-                        if (bgBytes != null) ...[
-                          Positioned.fill(
-                            child: Image.memory(bgBytes, fit: BoxFit.cover),
-                          ),
-                          Positioned.fill(
-                            child: ColoredBox(
-                              color: Colors.black.withValues(alpha: .2),
-                            ),
-                          ),
-                        ],
-                        // 参考网格线(仅视觉辅助,不吸附)
-                        for (final f in const [.2, .4, .6, .8]) ...[
-                          Positioned(
-                            left: w * f,
-                            top: 0,
-                            bottom: 0,
-                            child: Container(
-                              width: 1,
-                              color: scheme.outline.withValues(alpha: .25),
-                            ),
-                          ),
-                          Positioned(
-                            top: h * f,
-                            left: 0,
-                            right: 0,
-                            child: Container(
-                              height: 1,
-                              color: scheme.outline.withValues(alpha: .25),
-                            ),
-                          ),
-                        ],
-                        // 各角色的点,当前编辑的高亮放大
-                        for (var i = 0; i < chars.length; i++)
-                          ..._dot(context, chars[i], i, w, h),
-                      ],
-                    ),
+                      ),
+                      // 各角色的点,当前编辑的高亮放大
+                      for (var i = 0; i < chars.length; i++)
+                        ..._dot(context, chars[i], i, w, h),
+                    ],
                   ),
                 ),
               ),
             ),
-            const SizedBox(height: 8),
+            // 拖动时手指正好压住那颗点,读数换成实时坐标补上看不见的反馈。
             Text(
-              '${params.width}×${params.height} · 点击画布放置当前角色',
+              _dragging
+                  ? positionChipLabel(_draft[_selectedId])
+                  : '${params.width}×${params.height} · 点按或拖动放置角色',
               style: context.texts.labelSmall!.copyWith(
+                fontFeatures: const [FontFeature.tabularFigures()],
                 color: scheme.onSurfaceVariant,
               ),
             ),
@@ -382,26 +527,33 @@ class _PositionDialogState extends ConsumerState<_PositionDialog> {
         left: ctr.x * w - d / 2,
         top: ctr.y * h - d / 2,
         child: IgnorePointer(
-          child: Container(
-            width: d,
-            height: d,
-            decoration: BoxDecoration(
-              color: cur ? scheme.primary : scheme.surfaceContainerHighest,
-              shape: BoxShape.circle,
-              border: cur
-                  ? Border.all(color: Colors.white, width: 2)
-                  : Border.all(color: scheme.outline.withValues(alpha: .5)),
-              boxShadow: const [
-                BoxShadow(color: Colors.black26, blurRadius: 3),
-              ],
-            ),
-            alignment: Alignment.center,
-            child: Text(
-              '${index + 1}',
-              style: TextStyle(
-                fontSize: cur ? 13 : 11,
-                fontWeight: FontWeight.w700,
-                color: cur ? scheme.onPrimary : scheme.onSurfaceVariant,
+          // 抓在手里时胀一圈。用缩放而不是改尺寸:尺寸一变,上面按目标直径
+          // 算的锚点就和过渡中的实际直径对不上,点会在动画那 150ms 里偏心。
+          child: AnimatedScale(
+            scale: cur && _dragging ? 1.2 : 1,
+            duration: Motion.fast,
+            curve: Motion.standard,
+            child: Container(
+              width: d,
+              height: d,
+              decoration: BoxDecoration(
+                color: cur ? scheme.primary : scheme.surfaceContainerHighest,
+                shape: BoxShape.circle,
+                border: cur
+                    ? Border.all(color: Colors.white, width: 2)
+                    : Border.all(color: scheme.outline.withValues(alpha: .5)),
+                boxShadow: const [
+                  BoxShadow(color: Colors.black26, blurRadius: 3),
+                ],
+              ),
+              alignment: Alignment.center,
+              child: Text(
+                '${index + 1}',
+                style: TextStyle(
+                  fontSize: cur ? 13 : 11,
+                  fontWeight: FontWeight.w700,
+                  color: cur ? scheme.onPrimary : scheme.onSurfaceVariant,
+                ),
               ),
             ),
           ),
@@ -414,13 +566,16 @@ class _PositionDialogState extends ConsumerState<_PositionDialog> {
   Widget _grid(BuildContext context, List<CharacterPrompt> chars) {
     final scheme = context.scheme;
     final myIndex = chars.indexWhere((c) => c.id == _selectedId) + 1;
+    // 一律按「落在哪一格」算,不能拿 position 字符串直接比:从 V5 带过来的
+    // '0.42,0.67' 跟任何格子 id 都不相等,格子会全显示未选中,而发送层已经把它
+    // 吸附进了某一格 —— 界面和请求对不上。连 '0.7000,0.3000' 这种正正压在格心
+    // 上的也一样比不中。见 [gridCellForPosition]。
+    final myCell = gridCellForPosition(_draft[_selectedId]);
     final occ = <String, List<int>>{};
     for (var i = 0; i < chars.length; i++) {
       final c = chars[i];
-      final p = _draft[c.id];
-      if (c.id != _selectedId && p != null && RegExp(r'^[A-E][1-5]$').hasMatch(p)) {
-        (occ[p] ??= []).add(i + 1);
-      }
+      final cell = gridCellForPosition(_draft[c.id]);
+      if (c.id != _selectedId && cell != null) (occ[cell] ??= []).add(i + 1);
     }
     return Column(
       children: [
@@ -458,7 +613,9 @@ class _PositionDialogState extends ConsumerState<_PositionDialog> {
                 ),
               ),
               for (final col in 'ABCDE'.split(''))
-                Expanded(child: _cell(context, '$col$row', myIndex, occ)),
+                Expanded(
+                  child: _cell(context, '$col$row', myIndex, myCell, occ),
+                ),
             ],
           ),
           if (row < 5) const SizedBox(height: 6),
@@ -471,10 +628,11 @@ class _PositionDialogState extends ConsumerState<_PositionDialog> {
     BuildContext context,
     String code,
     int myIndex,
+    String? myCell,
     Map<String, List<int>> occ,
   ) {
     final scheme = context.scheme;
-    final mine = _draft[_selectedId] == code;
+    final mine = myCell == code;
     final others = occ[code] ?? const <int>[];
     final all = [if (mine) myIndex, ...others]..sort();
     final stacked = all.length >= 2;

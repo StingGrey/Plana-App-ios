@@ -23,7 +23,6 @@ class TagPanel extends StatefulWidget {
     this.relatedLoading = false,
     this.weightStep = 0.1,
     this.compact = false,
-    this.warning,
     this.sdConvert,
     this.onSelectGroup,
     required this.onWrap,
@@ -43,9 +42,6 @@ class TagPanel extends StatefulWidget {
   /// 行内改名(芯片模式专有:那边没有光标,改字只能从这里进)。
   /// null = 文本模式,点标题不进编辑态——直接点正文里那个词就行。
   final void Function(String name)? onRename;
-
-  /// 异常权重警示:词中段疑似丢逗号的数字串(如 '10'),null=正常。
-  final String? warning;
 
   /// 当前词条是 SD 权重语法时的转换回调(web convertSDToNAI);null=非 SD。
   final VoidCallback? sdConvert;
@@ -90,14 +86,13 @@ class TagPanel extends StatefulWidget {
 /// 360 那档也放得下。一行里塞八样东西,单颗就只能到这个尺寸 ——
 /// 想再粗只能减功能。
 ///
-/// ⚠ / ⇄ 那两枚条件图标出现时(异常权重、SD 语法,都很少见)会超出这个
-/// 预算,整排退化成横向可滚。那是有意的取舍:为了两个罕见状态把常态的按钮
-/// 再削一圈不划算。
+/// ⇄ 那枚条件图标出现时(SD 语法,很少见)会超出这个预算,整排退化成横向
+/// 可滚。那是有意的取舍:为了一个罕见状态把常态的按钮再削一圈不划算。
 const double _kWrapW = 38; // [ ] / { }
 const double _kWrapH = 38;
 const double _kStepW = 36; // ⊖ / ⊕
 const double _kReadW = 48; // ×N 读数(mono 12 下「×1.2」正好 48)
-const double _kTailW = 34; // ⌫ / 👁 / 🗑 / ⚠ / ⇄
+const double _kTailW = 34; // ⌫ / 👁 / 🗑 / ⇄
 
 /// 控件之间**唯一**的间距。原先是 2/2/8/10/2 各不相同,想用疏密表达分组,
 /// 结果只是看着乱 —— 分组交给中间那道弹性空隙就够了。
@@ -250,28 +245,6 @@ class _TagPanelState extends State<TagPanel> {
                           ),
                         ),
                       ),
-                  ],
-                ),
-              ),
-            if (widget.warning != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 5),
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.warning_amber_rounded,
-                      size: 15,
-                      color: scheme.error,
-                    ),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        '「${widget.warning}」可能被误识别为权重,疑似丢了逗号',
-                        style: context.texts.labelSmall!.copyWith(
-                          color: scheme.error,
-                        ),
-                      ),
-                    ),
                   ],
                 ),
               ),
@@ -505,12 +478,9 @@ class _TagPanelState extends State<TagPanel> {
     // 固定宽的那几段。**改控件尺寸要同步改这里** —— 这几个数是「滚不滚」的
     // 依据,对不上就会在该滚的时候不滚(溢出)。
     // [ ] ⊖ ×N ⊕ { } ⌫ 六件 + 五道缝
-    const weightW =
-        _kWrapW * 2 + _kStepW * 2 + _kReadW + _kTailW + _kGap * 5;
+    const weightW = _kWrapW * 2 + _kStepW * 2 + _kReadW + _kTailW + _kGap * 5;
     const tagW = _kTailW * 2 + _kGap; // 👁 🗑
-    final extra =
-        (widget.warning != null ? _kTailW + _kGap : 0) +
-        (widget.sdConvert != null ? _kTailW + _kGap : 0);
+    final extra = widget.sdConvert != null ? _kTailW + _kGap : 0;
     // 两组之间至少也留一道同样的缝
     final fixed = weightW + tagW + _kGap + extra;
 
@@ -571,20 +541,6 @@ class _TagPanelState extends State<TagPanel> {
     );
 
     List<Widget> lead() => [
-      if (widget.warning != null) ...[
-        _denseIcon(
-          context,
-          Icons.warning_amber_rounded,
-          color: scheme.error,
-          tooltip: '疑似丢了逗号',
-          onTap: () => hintSnack(
-            context,
-            '「${widget.warning}」可能被误识别为权重,疑似丢了逗号',
-            icon: Icons.warning_amber_rounded,
-          ),
-        ),
-        const SizedBox(width: _kGap),
-      ],
       if (widget.sdConvert != null) ...[
         _denseIcon(
           context,
@@ -1197,9 +1153,7 @@ class BatchPanel extends StatelessWidget {
                 const SizedBox(width: 7),
                 Expanded(
                   child: Text(
-                    placing
-                        ? '点击加号移动'
-                        : (has ? '已选 $count 项' : '点词条可多选'),
+                    placing ? '点击加号移动' : (has ? '已选 $count 项' : '点词条可多选'),
                     style: context.texts.titleMedium!.copyWith(
                       fontWeight: FontWeight.w700,
                       color: has ? scheme.onSurface : scheme.outline,
@@ -1207,11 +1161,7 @@ class BatchPanel extends StatelessWidget {
                   ),
                 ),
                 if (has) ...[
-                  _circleIcon(
-                    context,
-                    icon: Icons.content_copy,
-                    onTap: onCopy,
-                  ),
+                  _circleIcon(context, icon: Icons.content_copy, onTap: onCopy),
                   const SizedBox(width: 4),
                   _circleIcon(context, icon: Icons.close, onTap: onClose),
                 ],

@@ -163,10 +163,9 @@ class _StoragePageState extends ConsumerState<StoragePage> {
           confirmLabel: '清空',
         );
         if (!ok) return;
-        await _run(
-          [key],
-          () => ref.read(tagLibraryProvider.notifier).clearLocalPreviews(),
-        );
+        await _run([
+          key,
+        ], () => ref.read(tagLibraryProvider.notifier).clearLocalPreviews());
       case 'gallery':
         final n = _report?['gallery']?.count;
         final ok = await confirmDialog(
@@ -209,10 +208,9 @@ class _StoragePageState extends ConsumerState<StoragePage> {
           confirmLabel: '清空',
         );
         if (!ok) return;
-        await _run(
-          [key],
-          () => ref.read(vibeLibraryProvider.notifier).clearAll(),
-        );
+        await _run([
+          key,
+        ], () => ref.read(vibeLibraryProvider.notifier).clearAll());
       case 'charLib':
         final n = _report?['charLib']?.count;
         final ok = await confirmDialog(
@@ -224,10 +222,9 @@ class _StoragePageState extends ConsumerState<StoragePage> {
           confirmLabel: '清空',
         );
         if (!ok) return;
-        await _run(
-          [key],
-          () => ref.read(charLibraryProvider.notifier).clearAll(),
-        );
+        await _run([
+          key,
+        ], () => ref.read(charLibraryProvider.notifier).clearAll());
       case 'models':
         final ok = await confirmDialog(
           context,

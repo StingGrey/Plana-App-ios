@@ -9,19 +9,25 @@ import '../../../core/net/backend_config.dart';
 import 'completion_source.dart';
 import 'suggestions.dart';
 
-/// 注音层的后端翻译通道(仅增强补全模式),对齐 web `translate.ts` 两步:
-/// ① `POST /api/tags/translations/lookup` 共享翻译库(公开,内存镜像,轻)
-/// ② 未命中批量走 `POST /api/translate/en2zh` 服务端 LLM(公开,60/min/IP 限流)
+/// 注音层的后端翻译通道(仅增强补全模式)。
 ///
-/// **原先还有第 ③ 步**:把 LLM 译文 fire-and-forget 回写共享映射库。2026-08-25
-/// 起取消,与 web 同步 —— 那张库攒到 24.2 万条时其中 19.7 万条是 AI 回写的,抽样
-/// 核实 94.6% 的 key 连 danbooru.tsv 都不认识:它们是被当成 tag 提交的**整段提示词
-/// 碎片**。app 这边尤其严重,`_nameMax` 放到 200 就是为了让 Krea 那种整句自然语言
-/// 也能翻译(见下),而那些句子转头就被当成"标签"写进了公共库。
-/// 服务端 `_TAG_TRANS_CLIENT_SOURCES` 现已收紧成只收 `wiki`,`ai` 一律拒收 ——
-/// 也就是说这一步早已是白发的请求。译文照常显示、照常进本地反查缓存,只是不再固化。
-/// 命中回填 [cacheTagMeta](transCacheRev 随之自增)后 notifyListeners,
-/// 编辑器刷新注音层/词条栏。离线补全模式不联网(enabled=false 全程 no-op)。
+/// **一次请求搞定**:`POST /api/tags/translate`,服务端内部依次走共享映射库 →
+/// 进程内 LLM 缓存 → 上游 LLM。2026-08-28 之前 app 要自己打两次(先
+/// `/api/tags/translations/lookup` 查库,未命中的再打 `/api/translate/en2zh`),
+/// 而后者是个收任意 `messages` 的**通用 chat 代理** —— 提示词握在客户端手里,
+/// 等于对外开了个免费 LLM。现在提示词收进服务端,这个端点只收 tag 数组、只回
+/// 译名映射。旧的两个没下线(已发布的 APK 会一直打它们),但已收紧成模板路由。
+///
+/// 归一化也一并交给服务端了:剥 NAI 权重(`{{x}}`/`1.5::x::`/`x:1.2`)、大小写、
+/// 连续空白。所以响应的键**就是我们传进去的原文**,不用再做一层映射。
+///
+/// LLM 译文**不回写**公共映射库(服务端 2026-08-25 起也不再收 `ai` 源):那张库
+/// 攒到 24.2 万条时有 19.7 万条是 AI 回写的,抽样核实 94.6% 的 key 连
+/// danbooru.tsv 都不认识 —— 全是被当成 tag 提交的整段提示词碎片。译文照常显示、
+/// 照常进本地反查缓存,只是不固化。
+///
+/// 命中回填 [cacheTagMeta](transCacheRev 随之自增)后 notifyListeners,编辑器
+/// 刷新注音层/词条栏。离线补全模式不联网(enabled=false 全程 no-op)。
 class TagTranslationService extends ChangeNotifier {
   TagTranslationService({
     required this.enabled,
@@ -34,13 +40,17 @@ class TagTranslationService extends ChangeNotifier {
   final http.Client _client;
 
   static const _timeout = Duration(seconds: 20);
-  static const _batchMax = 20; // en2zh 一次 LLM 调用里的 tag 数上限
+
+  /// 一次请求里的 tag 数。服务端上限是 200,但它对未命中的部分**按 20 分块、
+  /// 串行**打 LLM —— 发 60 个就是三次串行调用,轻松吃掉这边 20 秒的超时。
+  /// 保持 20 = 服务端最多一次 LLM,延迟可控。
+  static const _batchMax = 20;
 
   final _pending = <String>{}; // 待查(小写、空格形式)
   final _asked = <String>{}; // 已有定论(含 LLM 也答不出的),本进程不再问
   Timer? _timer;
   bool _busy = false;
-  DateTime? _llmCooldownUntil; // LLM 失败/限流后的冷却窗口
+  DateTime? _cooldownUntil; // 撞限流(429)后的退避窗口
 
   /// 单个名字的长度上限。
   ///
@@ -66,7 +76,7 @@ class TagTranslationService extends ChangeNotifier {
   /// 不能一直转下去。
   bool isPending(String name) {
     if (!enabled || baseUrl.isEmpty) return false;
-    final k = name.trim().toLowerCase();
+    final k = metaKey(name); // 与反查缓存同一套键,见 [metaKey]
     if (!_worthAsking(k) || _asked.contains(k)) return false;
     return translationOf(k) == null;
   }
@@ -76,7 +86,7 @@ class TagTranslationService extends ChangeNotifier {
     if (!enabled || baseUrl.isEmpty) return;
     var added = false;
     for (final n in names) {
-      final k = n.trim().toLowerCase();
+      final k = metaKey(n); // 同上:下划线/连续空白归一,否则同一个词会问两遍
       if (!_worthAsking(k) || _asked.contains(k)) continue;
       if (translationOf(k) != null) continue; // 本地缓存/词库已有
       added |= _pending.add(k);
@@ -92,59 +102,46 @@ class TagTranslationService extends ChangeNotifier {
   Future<void> _flush() async {
     if (_busy || _pending.isEmpty) return;
     _busy = true;
-    final batch = _pending.take(_batchMax).toList();
-    _pending.removeAll(batch);
     final askedBefore = _asked.length;
     try {
-      // ① 共享翻译库
-      final Map<String, String> found;
-      try {
-        found = await _lookup(batch);
-      } catch (_) {
-        // 网络失败:整批放回,稍后再试(避免疯狂重试)
+      final batch = _pending.take(_batchMax).toList();
+      _pending.removeAll(batch);
+      // 入队时查过一次本地缓存还不够:防抖这 700ms 里离线库灌注可能刚好到货。
+      // `warmTagMeta` 要先读 4.7MB asset、再进 isolate 解 9 万行,几百毫秒起步,
+      // 而 `_notifier.load` 在 postFrame 就把提示词喂进来了 —— 进编辑器那第一批
+      // 词多半是「入队时缓存还空着,发之前已经灌好了」。不在这里再滤一道,
+      // 它们就会白跑一趟 lookup,未命中还要接着落到 LLM 那步。
+      batch.removeWhere((t) => translationOf(t) != null);
+      if (batch.isEmpty) return;
+      final cool = _cooldownUntil;
+      if (cool != null && DateTime.now().isBefore(cool)) {
+        _pending.addAll(batch);
+        _arm(cool.difference(DateTime.now()) + const Duration(seconds: 1));
+        return;
+      }
+
+      final res = await _translate(batch);
+      if (res == null) {
+        // 网络失败 / 非 200:整批放回稍后再试。撞限流时 [_translate] 已经把
+        // [_cooldownUntil] 设好,上面那道会拦住下一次。
         _pending.addAll(batch);
         _arm(const Duration(seconds: 30));
         return;
       }
-      found.forEach((tag, zh) {
-        cacheTagMeta(tag, trans: zh);
-        _asked.add(tag);
+
+      var gotAny = false;
+      res.hits.forEach((name, zh) {
+        cacheTagMeta(name, trans: zh); // 只进本地反查缓存,不回写公共库
+        _asked.add(name);
+        gotAny = true;
       });
+      // 服务端明说「查过、确实没有」的(含被它的 LLM 闸门挡掉的画师名、纯中文、
+      // 提示词碎片)。这些也算有定论 —— 不记进 `_asked`,芯片流的加载态会一直转。
+      _asked.addAll(res.missing);
 
-      final missing = [
-        for (final t in batch)
-          if (!found.containsKey(t)) t,
-      ];
-      var gotAny = found.isNotEmpty;
-
-      // ② 服务端 LLM(冷却窗口内先搁置)
-      if (missing.isNotEmpty) {
-        final until = _llmCooldownUntil;
-        if (until != null && DateTime.now().isBefore(until)) {
-          _pending.addAll(missing);
-          _arm(until.difference(DateTime.now()) + const Duration(seconds: 1));
-        } else {
-          final ai = await _en2zh(missing);
-          if (ai == null) {
-            _llmCooldownUntil = DateTime.now().add(const Duration(seconds: 90));
-            _pending.addAll(missing);
-            _arm(const Duration(seconds: 91));
-          } else {
-            for (var i = 0; i < missing.length; i++) {
-              final zh = i < ai.length ? ai[i].trim() : '';
-              _asked.add(missing[i]); // LLM 给不出的也不再问
-              if (zh.isNotEmpty && zh.toLowerCase() != missing[i]) {
-                cacheTagMeta(missing[i], trans: zh); // 只进本地反查缓存,不回写公共库
-                gotAny = true;
-              }
-            }
-          }
-        }
-      }
-
-      // 有定论就通知,**不只看翻出了什么**:一个都没翻出来时 `_asked` 照样
-      // 长了,芯片流的加载态得据此收掉 —— 只在 gotAny 时通知的话,那些
-      // 「问过但没答案」的 chip 会一直转到下一次无关重绘。
+      // 有定论就通知,**不只看翻出了什么**:一个都没翻出来时 `_asked` 照样长了,
+      // 芯片流的加载态得据此收掉 —— 只在 gotAny 时通知的话,那些「问过但没答案」
+      // 的 chip 会一直转到下一次无关重绘。
       if (gotAny || _asked.length != askedBefore) notifyListeners();
     } finally {
       _busy = false;
@@ -154,89 +151,46 @@ class TagTranslationService extends ChangeNotifier {
     }
   }
 
-  // 键标准化对齐后端:小写 + 空格→下划线;响应键映射回空格形式回填。
-  Future<Map<String, String>> _lookup(List<String> tags) async {
-    final norm = {for (final t in tags) t.replaceAll(' ', '_'): t};
-    final r = await _client
-        .post(
-          Uri.parse('$baseUrl/api/tags/translations/lookup'),
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({
-            'tags': [...norm.keys],
-          }),
-        )
-        .timeout(_timeout);
-    if (r.statusCode != 200) return const {};
-    final j = jsonDecode(utf8.decode(r.bodyBytes));
-    if (j is! Map) return const {};
-    return {
-      for (final e in j.entries)
-        if (norm[e.key] != null &&
-            e.value is String &&
-            (e.value as String).isNotEmpty)
-          norm[e.key]!: e.value as String,
-    };
-  }
-
-  /// LLM 英译中(web translateSegments 同款指令与解析);失败返回 null。
-  Future<List<String>?> _en2zh(List<String> tags) async {
-    final instruction =
-        '你是Danbooru标签翻译器,负责将Danbooru/NovelAI绘画标签从英文翻译为中文。\n'
-        '这些标签用于AI绘画(Stable Diffusion/NovelAI),请在绘画语境下理解含义。\n'
-        '翻译要求:\n'
-        '1. 简洁准确,符合绘画标签的含义(如 "1girl" → "1个女孩","masterpiece" → "杰作")\n'
-        '2. 角色名、画师名(artist:xxx)等专有名词保持原样不翻译\n'
-        '3. 身体部位、服装、姿势等按绘画描述语境翻译\n'
-        '4. 返回格式必须是JSON数组,顺序与输入一致\n\n'
-        'Input: ${jsonEncode(tags)}\n\n'
-        '只返回JSON数组,不要其他内容。';
+  /// 一次请求要到译名。失败(网络 / 非 200)返回 null;撞 429 时顺手把
+  /// [_cooldownUntil] 设成 90 秒后,由 [_flush] 那道闸拦住后续请求。
+  ///
+  /// 响应的键就是传进去的原文——归一化在服务端(见类文档),这边不用再映射一层。
+  Future<({Map<String, String> hits, List<String> missing})?> _translate(
+    List<String> tags,
+  ) async {
     try {
       final r = await _client
           .post(
-            Uri.parse('$baseUrl/api/translate/en2zh'),
+            Uri.parse('$baseUrl/api/tags/translate'),
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'messages': [
-                {'role': 'user', 'content': instruction},
-              ],
-              'temperature': 0.3,
-              'max_tokens': 1500,
-            }),
+            body: jsonEncode({'tags': tags}),
           )
           .timeout(_timeout);
+      if (r.statusCode == 429) {
+        _cooldownUntil = DateTime.now().add(const Duration(seconds: 90));
+        return null;
+      }
       if (r.statusCode != 200) return null;
       final j = jsonDecode(utf8.decode(r.bodyBytes));
-      var content = '';
-      final choices = (j as Map)['choices'];
-      if (choices is List && choices.isNotEmpty) {
-        final msg = (choices.first as Map)['message'];
-        if (msg is Map) content = (msg['content'] as String?) ?? '';
-      }
-      return _parseJsonArray(content);
+      if (j is! Map) return null;
+      final tr = j['translations'];
+      final ms = j['missing'];
+      return (
+        hits: <String, String>{
+          if (tr is Map)
+            for (final e in tr.entries)
+              if (e.value is String && (e.value as String).isNotEmpty)
+                '${e.key}': e.value as String,
+        },
+        missing: <String>[
+          if (ms is List)
+            for (final x in ms)
+              if (x is String) x,
+        ],
+      );
     } catch (_) {
       return null;
     }
-  }
-
-  /// 剥 markdown 代码块后解析 JSON 数组(web parseJsonArray 同款容错)。
-  static List<String>? _parseJsonArray(String text) {
-    var s = text.trim();
-    s = s
-        .replaceFirst(RegExp(r'^```(?:json)?\s*', caseSensitive: false), '')
-        .replaceFirst(RegExp(r'\s*```$'), '');
-    List<String>? tryParse(String x) {
-      try {
-        final a = jsonDecode(x);
-        return a is List ? [for (final v in a) '$v'] : null;
-      } catch (_) {
-        return null;
-      }
-    }
-
-    final direct = tryParse(s);
-    if (direct != null) return direct;
-    final m = RegExp(r'\[[\s\S]*?\]').firstMatch(s);
-    return m == null ? null : tryParse(m.group(0)!);
   }
 
   @override
@@ -248,7 +202,7 @@ class TagTranslationService extends ChangeNotifier {
 }
 
 /// 按生效来源 + 后端基址构造;任一变化即重建(与 tagCompletionProvider 同款)。
-/// 不再需要 bot 会话 —— 两个端点都是公开的,回写那一步已取消(见类文档)。
+/// 不再需要 bot 会话 —— 端点是公开的,回写那一步已取消(见类文档)。
 /// 来源本身就跟着会话走([effectiveCompletionSourceProvider]),登录/登出照样重建。
 final tagTranslationServiceProvider = Provider<TagTranslationService>((ref) {
   final source = ref.watch(effectiveCompletionSourceProvider);

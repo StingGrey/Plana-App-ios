@@ -39,7 +39,9 @@ Future<Object?> readPickedJson(PlatformFile f) async {
 /// 首字节是否为 [byte](嗅探文件类型用)。有路径时只读这 1 个字节。
 Future<bool> pickedStartsWith(PlatformFile f, int byte) async {
   final path = f.path;
-  if (path == null) return f.bytes?.isNotEmpty == true && f.bytes!.first == byte;
+  if (path == null) {
+    return f.bytes?.isNotEmpty == true && f.bytes!.first == byte;
+  }
   await for (final chunk in File(path).openRead(0, 1)) {
     if (chunk.isNotEmpty) return chunk.first == byte;
   }

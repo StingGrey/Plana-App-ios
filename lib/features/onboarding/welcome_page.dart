@@ -5,7 +5,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/auth/auth_mode.dart';
 import '../../core/auth/bot_session_store.dart';
-import '../../core/auth/nai_credential_login.dart';
 import '../../core/auth/token_probe.dart';
 import '../../core/auth/token_store.dart';
 import '../../core/live_progress/live_progress.dart';
@@ -601,9 +600,9 @@ class _AccessStepState extends ConsumerState<_AccessStep>
     final t = _tokenCtrl.text.trim();
     if (t.isEmpty) return;
     setState(() => _saving = true);
+    // 手贴的这把不带续期凭证,到期需重贴。凭证现在跟着每把 Key 存,所以不必
+    // 再作废什么 —— 不存在「续期把令牌换成别的账号」这条老坑了。
     await ref.read(tokenProvider.notifier).save(t);
-    // 手动保存 = 自己管理凭证,作废账号密码登录的续期凭证(防跨账号换新)。
-    await ref.read(accessKeyProvider.notifier).clear();
     if (!mounted) return;
     setState(() => _saving = false);
     await ref.read(authModeProvider.notifier).set(AuthMode.token);

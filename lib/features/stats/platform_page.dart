@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../core/store/ui_prefs.dart';
 
 import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
@@ -19,7 +20,8 @@ class PlatformPage extends ConsumerStatefulWidget {
 }
 
 class _PlatformPageState extends ConsumerState<PlatformPage> {
-  String _range = 'week';
+  /// 与统计页共用同一份记忆(见 [UiPrefs.statsRange])。
+  late String _range = ref.read(uiPrefsProvider).statsRange;
 
   @override
   Widget build(BuildContext context) {
@@ -47,7 +49,12 @@ class _PlatformPageState extends ConsumerState<PlatformPage> {
                 children: [
                   RangeChips(
                     range: _range,
-                    onChanged: (v) => setState(() => _range = v),
+                    onChanged: (v) {
+                      ref
+                          .read(uiPrefsProvider.notifier)
+                          .patch((p) => p.copyWith(statsRange: v));
+                      setState(() => _range = v);
+                    },
                   ),
                   const SizedBox(height: 12),
                   _poolCard(context),

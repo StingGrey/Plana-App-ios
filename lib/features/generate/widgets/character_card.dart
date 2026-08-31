@@ -27,13 +27,16 @@ class CharacterCard extends ConsumerWidget {
     final chars = state.characters;
     final cap = maxCharactersOf(state.params.model);
     final canAdd = chars.length < cap;
+    // 读数按**启用**数算:上限管的是进载荷的那几个,停用的不占额度。切模型时
+    // 超出的尾巴会自动停用(见 GenerateNotifier._capEnabled),之后还标红就只剩
+    // 一种来路 —— 用户在小槽位模型下自己又勾回来了,那确实该红。
+    final active = chars.where((c) => c.enabled).length;
 
     return SectionCard(
       icon: Icons.group_outlined,
       title: '角色',
       reorderIndex: reorderIndex,
-      // 超限 = nai5 攒的角色切回 V4(槽位 6)带不下:超出的不进载荷,标红提醒。
-      badge: CountBadge('${chars.length} / $cap', error: chars.length > cap),
+      badge: CountBadge('$active / $cap', error: active > cap),
       actions: [
         if (chars.isNotEmpty)
           RoundIconBtn(
@@ -118,6 +121,10 @@ class _CharacterTile extends ConsumerWidget {
     final notifier = ref.read(generateProvider.notifier);
     final scheme = context.scheme;
     final enabled = char.enabled;
+    // 只有站位徽章的写法跟模型走(见下),select 一下别让整张卡跟着全局状态重建。
+    final isV5 = ref.watch(
+      generateProvider.select((s) => isNai5Model(s.params.model)),
+    );
     final tokens = totalPromptTokens(
       ref.watch(naiTokenizerProvider).value,
       main: char.positive,
@@ -227,7 +234,10 @@ class _CharacterTile extends ConsumerWidget {
                               SizedBox(
                                 width: 48,
                                 child: Text(
-                                  positionChipLabel(char.position),
+                                  // 网格模型(V4/V4.5)下显示它实际会被吸附到的
+                                  // 那一格:徽章写着 '42,67%'、请求里发的却是
+                                  // C4 的格心,两边对不上(见 quantizeCenterToGrid)。
+                                  positionChipLabel(char.position, grid: !isV5),
                                   textAlign: TextAlign.center,
                                   style:
                                       mono(

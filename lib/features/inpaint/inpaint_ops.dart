@@ -5,8 +5,13 @@
 /// 所见即所发;发送框 64 对齐、结果只把 tight 区域贴回原图。
 library;
 
+import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
+
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../core/store/app_stores.dart';
 import 'dart:ui' as ui;
 
 /// 像素矩形(整数坐标),用于裁切框/发送框。
@@ -408,4 +413,66 @@ Future<Uint8List> pasteBack({
   out.dispose();
   picture.dispose();
   return data!.buffer.asUint8List();
+}
+
+/// 重绘编辑器的工具偏好:笔刷粗细、重绘强度、偏位套杆。
+///
+/// 只记**手感类**的三项。画笔/橡皮、局部、扩图这些是「这一张要怎么处理」,
+/// 每次进来都该从干净状态起步,记住反而碍事。
+class InpaintPrefs {
+  const InpaintPrefs({
+    this.brush = 50, // 笔刷直径(图像素),对齐 web 默认
+    this.strength = 0.7,
+    this.assist = false,
+  });
+
+  final double brush;
+  final double strength;
+
+  /// 偏位套杆:光标偏于触点上方,手指不挡涂抹点。用不用是个人习惯。
+  final bool assist;
+
+  Map<String, dynamic> toJson() => {
+    'brush': brush,
+    'strength': strength,
+    'assist': assist,
+  };
+
+  factory InpaintPrefs.fromJson(Map<String, dynamic> j) => InpaintPrefs(
+    brush: ((j['brush'] as num?)?.toDouble() ?? 50).clamp(4, 400),
+    strength: ((j['strength'] as num?)?.toDouble() ?? 0.7).clamp(0.01, 1.0),
+    assist: j['assist'] == true,
+  );
+}
+
+const _inpaintPrefsKey = 'inpaint_prefs';
+
+/// 同步读:PrefsStore 的内存表在 AppStores.open 时已经装满,所以这里没有
+/// 「首帧还没读出来」那一档 —— 面板一开就是上次的手感,不会先跳回默认值。
+final inpaintPrefsProvider =
+    NotifierProvider<InpaintPrefsNotifier, InpaintPrefs>(
+      InpaintPrefsNotifier.new,
+    );
+
+class InpaintPrefsNotifier extends Notifier<InpaintPrefs> {
+  @override
+  InpaintPrefs build() {
+    try {
+      final raw = ref.read(prefsStoreProvider).get(_inpaintPrefsKey);
+      if (raw == null || raw.isEmpty) return const InpaintPrefs();
+      return InpaintPrefs.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+    } catch (_) {
+      return const InpaintPrefs(); // 损坏/无 AppStores(测试)按默认
+    }
+  }
+
+  /// 关面板时存一次。**不在滑杆每一跳都写** —— 那是每帧一次整份 JSON 落盘。
+  Future<void> save(InpaintPrefs p) async {
+    state = p;
+    try {
+      await ref
+          .read(prefsStoreProvider)
+          .write(key: _inpaintPrefsKey, value: jsonEncode(p.toJson()));
+    } catch (_) {} // 写失败只影响下次恢复
+  }
 }

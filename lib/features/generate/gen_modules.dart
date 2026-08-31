@@ -255,8 +255,11 @@ GenerateState stripHiddenModules(GenerateState s, GenModuleSettings ms) {
   if (!on(GenModule.charRef) && out.charRefs.isNotEmpty) {
     out = out.copyWith(charRefs: const []);
   }
-  if (!on(GenModule.img2img) && out.img2img != null) {
-    out = out.copyWith(img2img: null);
+  // 遮罩挂在图生图这张卡下面(带遮罩的图生图就是重绘),卡收走了它也得跟着走 ——
+  // 否则卡片没了、重绘照跑,用户找不到地方关掉它。
+  if (!on(GenModule.img2img)) {
+    if (out.img2img != null) out = out.copyWith(img2img: null);
+    if (out.inpaint != null) out = out.copyWith(inpaint: null);
   }
   // LoRA 挂载列表两个父类共用一份,但启用位分两个 key —— 按当前模型那个判。
   if (!on(loraModuleOf(model)) && out.loras.isNotEmpty) {

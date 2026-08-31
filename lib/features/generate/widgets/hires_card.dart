@@ -116,8 +116,9 @@ class HiresCard extends ConsumerWidget {
             max: kHiresStepsMax.toDouble(),
             divisions: kHiresStepsMax,
             // 0 = 跟随主步数;1~3 服务端会抬到 4,updateHires 已就地钳住
-            valueTextOf: (v) =>
-                v.round() == 0 ? '跟随主步数' : '${v.round().clamp(kHiresStepsMin, kHiresStepsMax)}',
+            valueTextOf: (v) => v.round() == 0
+                ? '跟随主步数'
+                : '${v.round().clamp(kHiresStepsMin, kHiresStepsMax)}',
             onCommit: (v) => notifier.updateHires(steps: v.round()),
           ),
         ],

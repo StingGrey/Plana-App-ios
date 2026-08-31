@@ -68,6 +68,26 @@ class _GalleryPickerPageState extends ConsumerState<GalleryPickerPage>
       sizeConstraint: SizeConstraint(ignoreSize: true),
     ),
     orders: const [OrderOption(type: OrderOptionType.createDate, asc: false)],
+    // ⚠ **必须显式关掉日期条件。**
+    //
+    // FilterOptionGroup 的 createTimeCond 默认是 DateTimeCond.def(),而它是
+    // `max: DateTime.now()` —— 取的是**构造那一刻**。这里又是 static final,
+    // Dart 静态 final 懒初始化:进程内第一次打开选择器时构造一次,此后 max 就
+    // 冻在那个时刻,每次查询都带着 `DATE_ADDED <= 那个瞬间`。
+    //
+    // 后果是「之后新存的图一张都查不出来,刷多少次都没用,只有重启才有」——
+    // 而删除照常生效(行没了就是没了,与日期条件无关),所以看着特别像缓存问题。
+    // 选图不看日期,直接 ignore。
+    createTimeCond: DateTimeCond(
+      min: DateTime.utc(1970),
+      max: DateTime.utc(2100),
+      ignore: true,
+    ),
+    updateTimeCond: DateTimeCond(
+      min: DateTime.utc(1970),
+      max: DateTime.utc(2100),
+      ignore: true,
+    ),
   );
 
   PermissionState? _perm; // null = 请求中
@@ -80,6 +100,9 @@ class _GalleryPickerPageState extends ConsumerState<GalleryPickerPage>
   /// 全部相册:首次点标题切相册时才拉(为什么不在进页时拉,见
   /// [_openInitialAlbum])。失败不缓存,下次点还能重来。
   Future<List<AssetPathEntity>>? _albumsFuture;
+
+  /// 每个相册的封面 + 张数,按相册 id 缓存(见 [_brief])。
+  final _briefs = <String, Future<_AlbumBrief>>{};
 
   final _sel = <AssetEntity>[];
   final _selIds = <String>{};
@@ -126,6 +149,10 @@ class _GalleryPickerPageState extends ConsumerState<GalleryPickerPage>
   /// 列表骤然变短会把滚动位置甩到底。
   Future<void> _reload() async {
     if (!mounted || _perm?.hasAccess != true) return;
+    // 相册列表连同封面/张数一起作废:库变了,下次点开切相册面板重新拉。
+    // 都是懒的(要到用户点开才查),置空不产生任何即时开销。
+    _albumsFuture = null;
+    _briefs.clear();
     final pages = _page;
     await _openInitialAlbum(keepId: _album?.id);
     while (mounted && _page < pages && !_exhausted) {
@@ -261,55 +288,80 @@ class _GalleryPickerPageState extends ConsumerState<GalleryPickerPage>
   String _albumLabel(AssetPathEntity a) =>
       a.isAll ? '全部图片' : (a.name.isEmpty ? '图库' : a.name);
 
+  /// 一行相册要额外查的两样:封面(相册里最新的一张)与张数。
+  ///
+  /// 按 id 缓存 —— 滚回去的行直接复用,不重查。两次查询串起来发,不并发:
+  /// 总工作量一样,但不会一屏十来行同时朝平台通道挤。
+  Future<_AlbumBrief> _brief(AssetPathEntity a) => _briefs[a.id] ??= () async {
+    final count = await a.assetCountAsync;
+    final head = count == 0
+        ? const <AssetEntity>[]
+        : await a.getAssetListPaged(page: 0, size: 1);
+    return _AlbumBrief(head.isEmpty ? null : head.first, count);
+  }();
+
   Future<void> _switchAlbum() async {
     final albums = _albumsFuture ??= _fetchAlbums();
     final picked = await showModalBottomSheet<AssetPathEntity>(
       context: context,
+      isScrollControlled: true, // 带封面的行更高,给足高度免得只露两三行
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.sizeOf(context).height * .7,
+      ),
       builder: (sheet) => SafeArea(
-        child: FutureBuilder<List<AssetPathEntity>>(
-          future: albums,
-          builder: (context, snap) {
-            final list = snap.data;
-            if (list == null) {
-              return const SizedBox(
-                height: 96,
-                child: Center(child: CircularProgressIndicator()),
-              );
-            }
-            if (list.isEmpty) {
-              return ListTile(
-                dense: true,
-                enabled: false,
-                title: Text('没有相册', style: context.texts.bodyMedium),
-              );
-            }
-            // 逐条懒建:每行的张数都是一次媒体库查询,一次性建完整张列表
-            // 会同时打出几十条查询,慢媒体库上面板会僵住。
-            return ListView.builder(
-              shrinkWrap: true,
-              itemCount: list.length,
-              itemBuilder: (context, i) {
-                final a = list[i];
-                return ListTile(
-                  dense: true,
-                  selected: a.id == _album?.id,
-                  title: Text(
-                    _albumLabel(a),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  trailing: FutureBuilder<int>(
-                    future: a.assetCountAsync,
-                    builder: (context, snap) => Text(
-                      snap.hasData ? '${snap.data}' : '',
-                      style: mono(context, color: context.scheme.outline),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 14, 20, 6),
+              child: Row(
+                children: [
+                  Text(
+                    '相册',
+                    style: context.texts.titleMedium!.copyWith(
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
-                  onTap: () => Navigator.of(sheet).pop(a),
-                );
-              },
-            );
-          },
+                ],
+              ),
+            ),
+            Flexible(
+              child: FutureBuilder<List<AssetPathEntity>>(
+                future: albums,
+                builder: (context, snap) {
+                  final list = snap.data;
+                  if (list == null) {
+                    return const SizedBox(
+                      height: 96,
+                      child: Center(child: CircularProgressIndicator()),
+                    );
+                  }
+                  if (list.isEmpty) {
+                    return ListTile(
+                      dense: true,
+                      enabled: false,
+                      title: Text('没有相册', style: context.texts.bodyMedium),
+                    );
+                  }
+                  // 逐条懒建:每行的封面与张数都是一次媒体库查询,一次性
+                  // 建完整张列表会同时打出几十条查询,慢媒体库上面板会僵住。
+                  return ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: list.length,
+                    itemBuilder: (context, i) {
+                      final a = list[i];
+                      return _AlbumTile(
+                        label: _albumLabel(a),
+                        selected: a.id == _album?.id,
+                        brief: _brief(a),
+                        onTap: () => Navigator.of(sheet).pop(a),
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -373,7 +425,9 @@ class _GalleryPickerPageState extends ConsumerState<GalleryPickerPage>
                         type: RequestType.image,
                       );
                       if (!mounted) return;
-                      _albumsFuture = null; // 授权范围变了,相册列表得重拉
+                      // 授权范围变了,相册列表连同封面/张数都得重拉
+                      _albumsFuture = null;
+                      _briefs.clear();
                       await _openInitialAlbum(keepId: _album?.id);
                     },
                   ),
@@ -500,6 +554,83 @@ class _GalleryPickerPageState extends ConsumerState<GalleryPickerPage>
             ),
           ],
         ],
+      ),
+    );
+  }
+}
+
+/// 相册行的附加信息:封面(相册里最新的一张,没有图时为 null)与张数。
+class _AlbumBrief {
+  const _AlbumBrief(this.cover, this.count);
+
+  final AssetEntity? cover;
+  final int count;
+}
+
+/// 切相册面板的一行:封面缩略图 + 相册名 + 张数,当前相册打勾。
+///
+/// 名字先出、封面与张数到了再补 —— 整行等 [brief] 会让面板空着开场。
+class _AlbumTile extends StatelessWidget {
+  const _AlbumTile({
+    required this.label,
+    required this.selected,
+    required this.brief,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final Future<_AlbumBrief> brief;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return ListTile(
+      selected: selected,
+      onTap: onTap,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      leading: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: SizedBox(
+          width: 48,
+          height: 48,
+          child: FutureBuilder<_AlbumBrief>(
+            future: brief,
+            builder: (context, snap) => Stack(
+              fit: StackFit.expand,
+              children: [
+                // 缩略图解码前的底色(与网格骨架同色,补图时不闪白)
+                ColoredBox(color: scheme.surfaceContainerHigh),
+                if (snap.data?.cover case final cover?)
+                  AssetEntityImage(
+                    cover,
+                    isOriginal: false,
+                    thumbnailSize: const ThumbnailSize.square(150),
+                    fit: BoxFit.cover,
+                    errorBuilder: (context, _, _) => const SizedBox.shrink(),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+      title: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+      trailing: FutureBuilder<_AlbumBrief>(
+        future: brief,
+        builder: (context, snap) => Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (selected) ...[
+              Icon(Icons.check, size: 16, color: scheme.primary),
+              const SizedBox(width: 6),
+            ],
+            Text(
+              snap.hasData ? '${snap.data!.count}' : '',
+              style: mono(context, color: scheme.outline),
+            ),
+          ],
+        ),
       ),
     );
   }

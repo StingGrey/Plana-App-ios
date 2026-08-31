@@ -178,9 +178,7 @@ class _FreeCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: scheme.surfaceContainerHigh,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: scheme.outlineVariant.withValues(alpha: .6),
-        ),
+        border: Border.all(color: scheme.outlineVariant.withValues(alpha: .6)),
       ),
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
       child: Column(
@@ -403,7 +401,6 @@ class RentalCard extends ConsumerWidget {
   }
 }
 
-
 /// 未启动:机型 + 空闲关机 + 启动。
 class _RentalConfig extends ConsumerStatefulWidget {
   const _RentalConfig();
@@ -531,10 +528,17 @@ class _RentalConfigState extends ConsumerState<_RentalConfig> {
         // 一次开几台。服务端**并发建**,所以开 4 台和开 1 台等的时间差不多;
         // 但钱是 4 份 —— 所以按钮上把台数和总价一起写出来,别让人按完才发现。
         if (s.maxCount > 1) ...[
-          Divider(height: 15, color: scheme.outlineVariant.withValues(alpha: .5)),
+          Divider(
+            height: 15,
+            color: scheme.outlineVariant.withValues(alpha: .5),
+          ),
           Row(
             children: [
-              Icon(Icons.dns_outlined, size: 17, color: scheme.onSurfaceVariant),
+              Icon(
+                Icons.dns_outlined,
+                size: 17,
+                color: scheme.onSurfaceVariant,
+              ),
               const SizedBox(width: 9),
               Expanded(
                 child: Text(
@@ -938,9 +942,7 @@ class _RentalRunning extends ConsumerWidget {
           // 多台时按钮上必须写「全部」:这个端点不带 instance_id 就是全停,
           // 而那几台里可能有一台是在 web 上开的、用户以为只关手机上这台。
           label: Text(
-            ending
-                ? '关机中…'
-                : (multi ? '全部关机并结账(${s.count} 台)' : '关机并结账'),
+            ending ? '关机中…' : (multi ? '全部关机并结账(${s.count} 台)' : '关机并结账'),
           ),
           style: OutlinedButton.styleFrom(
             minimumSize: const Size(double.infinity, 42),
@@ -1097,7 +1099,9 @@ class _MachineRow extends StatelessWidget {
           Text(
             // 没就绪的那台没有读数(服务端 billed_seconds 在 ready 之前恒为 0),
             // 摆一串 00:00 · ¥0.00 会看着像「这台白跑」
-            ready ? '${fmtUptime(m.elapsedAt(fetchedAtMs, now))} · ${fmtYuan(m.priceAt(fetchedAtMs, now))}' : '启动中',
+            ready
+                ? '${fmtUptime(m.elapsedAt(fetchedAtMs, now))} · ${fmtYuan(m.priceAt(fetchedAtMs, now))}'
+                : '启动中',
             style: ready
                 ? mono(context, size: 12, color: scheme.onSurfaceVariant)
                 : context.texts.labelSmall!.copyWith(color: scheme.outline),
@@ -1139,11 +1143,7 @@ class _AddMoreButton extends ConsumerWidget {
               );
             },
       icon: const Icon(Icons.add, size: 18),
-      label: Text(
-        '再开一台 · $name',
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
+      label: Text('再开一台 · $name', maxLines: 1, overflow: TextOverflow.ellipsis),
       style: OutlinedButton.styleFrom(
         minimumSize: const Size(double.infinity, 42),
         padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -1228,24 +1228,22 @@ class _RentalNoAuth extends StatelessWidget {
 
 /// 算力来源弹层。模型弹层标题行那枚胶囊、创作页顶栏那枚,点的都是它 ——
 /// 通道切换、卡型、空闲关机、开关机全在这一处,不在两个地方各摆一半。
-Future<void> showRentalSheet(BuildContext context) => showModalBottomSheet<void>(
-  context: context,
-  useSafeArea: true,
-  isScrollControlled: true,
-  builder: (ctx) => SafeArea(
-    child: SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _sheetTitle(ctx, '算力来源'),
-          const RentalSourceBlock(),
-        ],
+Future<void> showRentalSheet(BuildContext context) =>
+    showModalBottomSheet<void>(
+      context: context,
+      useSafeArea: true,
+      isScrollControlled: true,
+      builder: (ctx) => SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [_sheetTitle(ctx, '算力来源'), const RentalSourceBlock()],
+          ),
+        ),
       ),
-    ),
-  ),
-);
+    );
 
 Widget _sheetTitle(BuildContext context, String text) => Padding(
   padding: const EdgeInsets.fromLTRB(4, 0, 4, 10),

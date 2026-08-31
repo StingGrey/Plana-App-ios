@@ -96,7 +96,10 @@ class _LoraUploadSheetState extends State<_LoraUploadSheet> {
     setState(() {
       _file = f;
       if (_name.text.trim().isEmpty) {
-        _name.text = f.name.replaceAll(RegExp(r'\.safetensors$', caseSensitive: false), '');
+        _name.text = f.name.replaceAll(
+          RegExp(r'\.safetensors$', caseSensitive: false),
+          '',
+        );
       }
     });
   }
@@ -129,7 +132,10 @@ class _LoraUploadSheetState extends State<_LoraUploadSheet> {
         fileName: f.name,
         size: f.size,
         displayName: _name.text.trim().isEmpty
-            ? f.name.replaceAll(RegExp(r'\.safetensors$', caseSensitive: false), '')
+            ? f.name.replaceAll(
+                RegExp(r'\.safetensors$', caseSensitive: false),
+                '',
+              )
             : _name.text.trim(),
         triggerGroups: groups,
         type: _type,

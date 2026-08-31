@@ -73,14 +73,34 @@ final Map<String, int> _countCache = {};
 int _transRev = 0;
 int get transCacheRev => _transRev;
 
-/// 多译合一的字符串(逗号/顿号/斜杠/分号分隔)只留第一段——注音要短。
-/// 各来源(离线库/wiki 中文名 join/共享翻译库/LLM)在此统一兜底。
-String? _firstTrans(String? zh) {
+/// 多译合一的字符串只留第一段——注音层单行绘制,太长只会画成省略号。
+/// 各来源(离线库/wiki 中文名 join/共享翻译库/LLM)在此统一兜底,
+/// [LocalTagDb.firstZh] 也转到这里,免得名单改一处漏一处。
+///
+/// **只在括号外切**。原先无脑取各分隔符的最小下标,而 Fate 系的作品名自带斜杠,
+/// 于是「玉藻前（命运/额外）」被切成「玉藻前（命运」——83 条角色名就这么断在
+/// 半括号上。竖线是离线库里 byzod 那半边词表的分隔符,也在名单里。
+/// [tag] 给出时用来判断斜杠的身份:标签自身带 `/`(`fate/zero`、`ranma_1/2`、
+/// `22/7`、`k/da_(league_of_legends)`)时,译名里的 `/` 是名字的一部分,不是
+/// 多译分隔符 —— 照切会把「Fate/Zero」削成「命运」,而 `fate_(series)` 也叫
+/// 这个,两个标签的注音就撞了。这类共 135 条。
+String? firstTransSegment(String? zh, {String? tag}) {
   if (zh == null) return null;
+  final sep = tag != null && tag.contains('/') ? ',，、;；|｜' : ',，、/;；|｜';
+  const open = '(（[［【';
+  const close = ')）]］】';
+  var depth = 0;
   var cut = zh.length;
-  for (final s in const [',', '，', '、', '/', ';', '；']) {
-    final i = zh.indexOf(s);
-    if (i >= 0 && i < cut) cut = i;
+  for (var i = 0; i < zh.length; i++) {
+    final c = zh[i];
+    if (open.contains(c)) {
+      depth++;
+    } else if (close.contains(c)) {
+      if (depth > 0) depth--;
+    } else if (depth == 0 && sep.contains(c)) {
+      cut = i;
+      break;
+    }
   }
   final first = zh.substring(0, cut).trim();
   return first.isEmpty ? null : first;
@@ -90,14 +110,40 @@ String? _firstTrans(String? zh) {
 /// 一次就灌进 7 万条译文 / 9 万条热度,而这里满了是整表清空 —— 上限写 20000
 /// 的话灌注途中自己清了三四次,最后只剩尾部那截最冷门的标签。词库按热度降序,
 /// 被清掉的恰恰是 1girl、solo 这些最常用的,注音层和补全反查全查不到。
-/// 15 万给灌注之后的网络回填留了余量。
+/// 2026-08-28 起灌注量涨到约 11.2 万(9.1 万正名 + 2.1 万别名,见
+/// `LocalTagDb._warmTagMeta` 第二遍),15 万仍留着约 3.8 万的网络回填余量 ——
+/// 而网络回填一次会话最多几十条,够得很。
 const _metaCap = 150000;
 
-/// 回填某标签的中文名/热度(键用小写形式)。由 `TagCompletion` 与离线库灌注调用。
+/// 反查缓存的规范键:小写 + 下划线归空格 + 连续空白压成一个。
+///
+/// **Danbooru 的 `_` 就是空格**,同一个标签两种写法都常见:app 自己的补全插入的是
+/// 空格形态(`Suggestion.text` = `tag.replaceAll('_', ' ')`,灌注也走这条),而从
+/// Danbooru 复制、或从别处导入的提示词绝大多数是**下划线形态**。
+///
+/// 2026-08-28 之前这里只做 `trim().toLowerCase()` —— 于是灌进缓存的是
+/// `long hair`、查的是 `long_hair`,**下划线写法的提示词一条都命中不了**:
+/// 注音层整条空白、词条栏没热度,还会把这些词全都白送去后端问一遍。
+/// 连续空白同理(`long   hair` 也查不到)。
+String metaKey(String text) => text
+    .trim()
+    .toLowerCase()
+    .replaceAll('_', ' ')
+    .replaceAll(RegExp(r'\s+'), ' ');
+
+/// 回填某标签的中文名/热度(键见 [metaKey])。由 `TagCompletion` 与离线库灌注调用。
 /// 上限防无界增长(清空只影响反查显示,重查询即回填)。
 void cacheTagMeta(String text, {String? trans, int? count}) {
-  final k = text.trim().toLowerCase();
-  final t = _firstTrans(trans);
+  final k = metaKey(text);
+  var t = firstTransSegment(trans, tag: k);
+  // 译名跟标签**一字不差**就是没翻译,收下等于占坑:`translationOf` 从此返回
+  // 非 null,`TagTranslationService.request` 便直接跳过,后端那条路再也够不着
+  // 它们。离线库里这样的有 2221 条(`:<`→`:<`、`rwby`→`rwby`、`+++`→`+++`)。
+  //
+  // 比较**大小写敏感**,别顺手改成 toLowerCase:另有 211 条是刻意排版过的专有
+  // 名词——`vocaloid`→`VOCALOID`、`iphone`→`iPhone`、`muv-luv`→`Muv-Luv`,
+  // 它们没有中文名,保持原文就是正确答案,忽略大小写会把这批一起误杀。
+  if (t != null && t == k) t = null; // k 已是空格形态,见 [metaKey]
   if (t != null) {
     if (_transCache.length > _metaCap) _transCache.clear();
     _transCache[k] = t;
@@ -160,49 +206,15 @@ String? formatCount(int n) {
 
 // ---- 内置词库(占位) ----
 
+/// 灌注前的兜底译名。**只放离线库(`assets/danbooru.tsv`)没有的词** ——
+/// 这是个硬不变式,`translationOf` 是先查缓存、缓存空了才线性扫这里,所以:
+///   · 与库重复 → 冗余,白扫;
+///   · 与库**不一致** → 用户会在灌注完成的那一刻看到注音**跳字**。
+///     2026-08-28 清理前实测有 6 条这样的:`red eyes` 红眼→红眼睛、
+///     `bad anatomy` 解剖错误→身体结构崩坏、`yuuki asuna` 结城明日奈→亚丝娜…
+/// 留下的这几条是 NAI/SD 的质量词与描述词 —— 它们不是 Danbooru 标签,
+/// 词库里天生没有,而几乎每条提示词都会带。
 const _tags = <Suggestion>[
-  Suggestion(
-    text: 'yukata',
-    kind: SuggestionKind.tag,
-    trans: '浴衣',
-    count: 320000,
-  ),
-  Suggestion(
-    text: 'yuki onna',
-    kind: SuggestionKind.tag,
-    trans: '雪女',
-    count: 5200,
-  ),
-  Suggestion(
-    text: 'yukikaze',
-    kind: SuggestionKind.tag,
-    trans: '雪风',
-    count: 900,
-  ),
-  Suggestion(
-    text: 'yukkuri shiteitte ne',
-    kind: SuggestionKind.tag,
-    trans: '油库里',
-    count: 8100,
-  ),
-  Suggestion(
-    text: '1girl',
-    kind: SuggestionKind.tag,
-    trans: '1个女孩',
-    count: 6200000,
-  ),
-  Suggestion(
-    text: '1boy',
-    kind: SuggestionKind.tag,
-    trans: '1个男孩',
-    count: 1400000,
-  ),
-  Suggestion(
-    text: 'solo',
-    kind: SuggestionKind.tag,
-    trans: '单人',
-    count: 5100000,
-  ),
   Suggestion(
     text: 'silver hair',
     kind: SuggestionKind.tag,
@@ -216,28 +228,10 @@ const _tags = <Suggestion>[
     count: 34000,
   ),
   Suggestion(
-    text: 'long hair',
-    kind: SuggestionKind.tag,
-    trans: '长发',
-    count: 4300000,
-  ),
-  Suggestion(
-    text: 'red eyes',
-    kind: SuggestionKind.tag,
-    trans: '红眼',
-    count: 890000,
-  ),
-  Suggestion(
     text: 'gothic dress',
     kind: SuggestionKind.tag,
     trans: '哥特连衣裙',
     count: 12000,
-  ),
-  Suggestion(
-    text: 'smile',
-    kind: SuggestionKind.tag,
-    trans: '微笑',
-    count: 3100000,
   ),
   Suggestion(
     text: 'moonlit rooftop',
@@ -246,46 +240,10 @@ const _tags = <Suggestion>[
     count: 640,
   ),
   Suggestion(
-    text: 'full moon',
-    kind: SuggestionKind.tag,
-    trans: '满月',
-    count: 96000,
-  ),
-  Suggestion(
-    text: 'petals',
-    kind: SuggestionKind.tag,
-    trans: '花瓣',
-    count: 74000,
-  ),
-  Suggestion(
-    text: 'blue sky',
-    kind: SuggestionKind.tag,
-    trans: '蓝天',
-    count: 520000,
-  ),
-  Suggestion(
-    text: 'cloud',
-    kind: SuggestionKind.tag,
-    trans: '云',
-    count: 480000,
-  ),
-  Suggestion(
-    text: 'cityscape',
-    kind: SuggestionKind.tag,
-    trans: '城市景观',
-    count: 41000,
-  ),
-  Suggestion(
     text: 'cinematic lighting',
     kind: SuggestionKind.tag,
     trans: '电影感光照',
     count: 38000,
-  ),
-  Suggestion(
-    text: 'chiaroscuro',
-    kind: SuggestionKind.tag,
-    trans: '明暗对比',
-    count: 5600,
   ),
   Suggestion(
     text: 'highly detailed',
@@ -305,60 +263,17 @@ const _tags = <Suggestion>[
     trans: '杰作',
     count: 1200000,
   ),
-  Suggestion(
-    text: 'lowres',
-    kind: SuggestionKind.tag,
-    trans: '低分辨率',
-    count: 130000,
-  ),
-  Suggestion(
-    text: 'bad anatomy',
-    kind: SuggestionKind.tag,
-    trans: '解剖错误',
-    count: 210000,
-  ),
-  Suggestion(
-    text: 'bad hands',
-    kind: SuggestionKind.tag,
-    trans: '手部畸形',
-    count: 180000,
-  ),
-  Suggestion(
-    text: 'jpeg artifacts',
-    kind: SuggestionKind.tag,
-    trans: 'JPEG 伪影',
-    count: 90000,
-  ),
 ];
 
+/// 同 [_tags] 的不变式:只放离线库没有的。库里有 2 万角色,这里只补
+/// 词序不同的写法(Danbooru 是 `nagato_yuki`,用户常写 `yuki nagato`)。
 const _characters = <Suggestion>[
-  Suggestion(
-    text: 'yukinoshita yukino',
-    kind: SuggestionKind.character,
-    trans: '雪之下雪乃',
-    source: '我的青春恋爱物语',
-    count: 45000,
-  ),
-  Suggestion(
-    text: 'yuuki asuna',
-    kind: SuggestionKind.character,
-    trans: '结城明日奈',
-    source: '刀剑神域',
-    count: 62000,
-  ),
   Suggestion(
     text: 'yuki nagato',
     kind: SuggestionKind.character,
     trans: '长门有希',
     source: '凉宫春日的忧郁',
     count: 28000,
-  ),
-  Suggestion(
-    text: 'hatsune miku',
-    kind: SuggestionKind.character,
-    trans: '初音未来',
-    source: 'VOCALOID',
-    count: 520000,
   ),
 ];
 
@@ -455,25 +370,25 @@ String? transOf(Suggestion s) {
 
 /// 供注音流反查某个已确定标签的中文翻译(先查网络回填缓存,再退回内置词库)
 String? translationOf(String text) {
-  final t = text.trim().toLowerCase();
+  final t = metaKey(text);
   final cached = _transCache[t];
   if (cached != null) return cached;
   for (final s in _tags) {
-    if (s.text.toLowerCase() == t) return s.trans;
+    if (metaKey(s.text) == t) return s.trans;
   }
   for (final s in _characters) {
-    if (s.text.toLowerCase() == t) return s.trans;
+    if (metaKey(s.text) == t) return s.trans;
   }
   return null;
 }
 
 /// 反查某标签热度(词条栏用),<1000 或未知返回 null
 int? countOf(String text) {
-  final t = text.trim().toLowerCase();
+  final t = metaKey(text);
   final cached = _countCache[t];
   if (cached != null && cached >= 1000) return cached;
   for (final s in [..._tags, ..._characters]) {
-    if (s.text.toLowerCase() == t) return s.count >= 1000 ? s.count : null;
+    if (metaKey(s.text) == t) return s.count >= 1000 ? s.count : null;
   }
   return null;
 }

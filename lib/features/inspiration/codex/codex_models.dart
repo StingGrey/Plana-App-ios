@@ -222,15 +222,19 @@ class CodexCharacter {
 
   /// 展示名:`char1` → 角色 1;`char2-4` → 角色 2-4;`char` → 角色。
   String get display {
-    final m = RegExp(r'^char\s*(\d+(?:\s*-\s*\d+)?)$', caseSensitive: false)
-        .firstMatch(label.trim());
+    final m = RegExp(
+      r'^char\s*(\d+(?:\s*-\s*\d+)?)$',
+      caseSensitive: false,
+    ).firstMatch(label.trim());
     return m == null ? label : '角色 ${m.group(1)!.replaceAll(' ', '')}';
   }
 
   /// 这段管哪几个角色位(1 起)。`char2-4` → [2,3,4];`char` → [1];认不出 → 空。
   List<int> get slots {
-    final m = RegExp(r'^char\s*(\d+)?(?:\s*-\s*(\d+))?$', caseSensitive: false)
-        .firstMatch(label.trim());
+    final m = RegExp(
+      r'^char\s*(\d+)?(?:\s*-\s*(\d+))?$',
+      caseSensitive: false,
+    ).firstMatch(label.trim());
     if (m == null) return const [];
     final a = int.tryParse(m.group(1) ?? '') ?? 1; // `char` 不带号 = 第一个
     final b = int.tryParse(m.group(2) ?? '') ?? a;

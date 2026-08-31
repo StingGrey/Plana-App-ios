@@ -47,6 +47,27 @@ class GenerateNotifier extends Notifier<GenerateState> {
   }
 
   // ---- 角色 ----
+
+  /// 换模型后收口:从尾巴往前停用角色,直到**启用**数落回新模型的上限内。
+  ///
+  /// V5 能摆 32 个,V4/V4.5 只有 6 个(见 [maxCharactersOf])。两条发送线都只按
+  /// 「启用且正向非空」筛角色、**都不截断**,所以从 V5 切下来不收口的话,第 7 个
+  /// 往后照样发出去 —— 卡头那句「超出的不进载荷」在此之前并不成立。
+  ///
+  /// 停用而不是删除:切回 V5 时人还在,勾一下就回来。
+  ///
+  /// 按启用数而不是按位置数:已经手动停用的不占额度,所以「10 张里自己停了 4 张」
+  /// 这种本来就合规的配置一张都不会被动到 —— 换成按下标砍会把它砍到只剩 2 张。
+  List<CharacterPrompt> _capEnabled(List<CharacterPrompt> chars, String model) {
+    final cap = maxCharactersOf(model);
+    if (chars.where((c) => c.enabled).length <= cap) return chars;
+    var kept = 0;
+    return [
+      for (final c in chars)
+        if (c.enabled && ++kept > cap) c.copyWith(enabled: false) else c,
+    ];
+  }
+
   void addCharacter() {
     if (state.characters.length >= maxCharactersOf(state.params.model)) return;
     final c = CharacterPrompt(
@@ -577,6 +598,41 @@ class GenerateNotifier extends Notifier<GenerateState> {
 
   void disableImg2Img() => state = state.copyWith(img2img: null);
 
+  // ---- 重绘遮罩 ----
+
+  /// 遮罩编辑器存盘:底图 + 遮罩 + 强度(+ 局部重绘的回贴信息)一起落进创作页
+  /// 状态,发车交给主生成按钮。
+  ///
+  /// 顺带把生成分辨率设成**发送尺寸** —— 局部重绘发的是裁切区、扩图发的是垫大
+  /// 之后的画布,两者都不是原图尺寸。不设的话下一次生成会按创作页那个旧尺寸发,
+  /// 服务端收到的图和声明的尺寸对不上。
+  ///
+  /// 与 img2img 互斥:带遮罩的图生图就是重绘,留着另一份底图只会让发送层二选一。
+  void setInpaint(InpaintJob job, {required int width, required int height}) {
+    state = state.copyWith(
+      inpaint: job,
+      img2img: null,
+      params: state.params.copyWith(width: width, height: height),
+    );
+    openPanel(Panel.i2i);
+  }
+
+  /// 改强度(遮罩不动)。
+  void updateInpaintStrength(double strength) {
+    final cur = state.inpaint;
+    if (cur == null) return;
+    state = state.copyWith(
+      inpaint: InpaintJob(
+        image: cur.image,
+        mask: cur.mask,
+        strength: strength,
+        paste: cur.paste,
+      ),
+    );
+  }
+
+  void clearInpaint() => state = state.copyWith(inpaint: null);
+
   // ---- 提示词(编辑器实时回写) ----
   /// 提示词写入。[positiveRaw] / [negativeRaw] 是编辑器原文草稿(含禁用、
   /// 折叠等仅编辑期语法),**传了就照写**;不传则视为编辑器之外的写入方,
@@ -645,8 +701,15 @@ class GenerateNotifier extends Notifier<GenerateState> {
     String? kreaSampler,
     String? kreaScheduler,
   }) {
+    // 换档位时先把旧档那套收进记忆(与 setModel 同一套规矩)。**不**跟着取回
+    // 新档的:导入面板给了哪些字段就落哪些,没勾的项保持不动是这条路的本意。
+    var cur = state.params;
+    if (model != null && model != cur.model) cur = cur.rememberModalSampling();
     state = state.copyWith(
-      params: state.params.copyWith(
+      // 导入面板勾了模型这一项时也可能把槽位换小,同 setModel 一样收口。
+      // 角色是在这之前落地的(导入面板先加角色再落设置),所以得在这儿再过一遍。
+      characters: _capEnabled(state.characters, model ?? cur.model),
+      params: cur.copyWith(
         model: model,
         width: width,
         height: height,
@@ -673,36 +736,32 @@ class GenerateNotifier extends Notifier<GenerateState> {
     params: state.params.copyWith(width: width, height: height),
   );
 
-  /// 切模型;切到 Anima / Krea 档位时套用该档推荐采样参数
-  /// (对齐 web applyAnimaTier / applyKreaTier —— 两档之间步数与 CFG 差得很远,
-  /// 不联动的话切过去还挂着上一档的配方,出图直接不对)。
+  /// 切模型;Anima / Krea 的采样参数按档位存取:**这档调过就还原成调过的样子,
+  /// 没进过才套官方推荐配方**(见 [GenParams.modalMem])。
+  ///
+  /// 比 web 的 applyAnimaTier / applyKreaTier 多了「记住」这一步 —— 那边每次
+  /// 选中都无条件套默认值,于是回 NAI 转一圈再切回来、甚至在弹层里点一下当前
+  /// 这档,调好的步数/CFG 就没了。联动的初衷(切到慢档别还挂着蒸馏档的 12 步)
+  /// 由「没进过的档才套配方」保住。
   ///
   /// 换 LoRA 底模时连带清空已挂的:上一个库的 LR 编号在新库里查无此条,
   /// 留着发出去服务端会静默丢弃,等于白跑一次生成(对齐 web prevLoraBaseRef)。
   /// NAI 归在 anima 那一侧,所以 NAI↔Anima 来回切不动列表,只有进出 Krea 才清。
   void setModel(String model) {
-    var p = state.params.copyWith(model: model);
-    if (isAnimaModel(model)) {
-      final d = animaTierDefaults(animaTierOf(model));
-      p = p.copyWith(
-        animaSteps: d.steps,
-        animaCfg: d.cfg,
-        animaSampler: d.sampler,
-        animaScheduler: d.scheduler,
-      );
-    } else if (isKreaModel(model)) {
-      final d = kreaTierDefaults(kreaTierOf(model));
-      p = p.copyWith(
-        kreaSteps: d.steps,
-        kreaCfg: d.cfg,
-        kreaSampler: d.sampler,
-        kreaScheduler: d.scheduler,
-      );
-    }
+    // 收好旧档 → 换名 → 取回新档,顺序不能反(两步各自认 params.model)
+    final p = state.params
+        .rememberModalSampling()
+        .copyWith(model: model)
+        .recallModalSampling();
     final baseChanged =
         loraBaseOf(model) != loraBaseOf(state.params.model) &&
         state.loras.isNotEmpty;
-    state = state.copyWith(params: p, loras: baseChanged ? const [] : null);
+    state = state.copyWith(
+      params: p,
+      loras: baseChanged ? const [] : null,
+      // 5 → 4/4.5 槽位从 32 掉到 6,超出的尾巴就地停用(见 [_capEnabled])
+      characters: _capEnabled(state.characters, model),
+    );
   }
 
   void setLoop(LoopCount l) =>

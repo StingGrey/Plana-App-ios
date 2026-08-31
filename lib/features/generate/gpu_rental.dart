@@ -157,6 +157,7 @@ class RentalTier {
 const kIdleChoicesFallback = <int>[180, 600, 1800, 0];
 const kIdleDefaultFallback = 600;
 const kMaxUptimeFallback = 4 * 3600;
+
 /// 同时最多几台(服务端 `IMG_MAX_RENTALS`,现为 4)。
 /// 兜底写 1 而不是 4:没拿到 status 时按最保守的假设显示 —— 台数选择器
 /// 据此决定给不给选,宁可少给一个选项,也不要凭猜下一单四台的钱。
@@ -454,13 +455,16 @@ class RentalState {
     // 多台时用第一台代表:app 没有多机界面,而机型/档位这几样逐台才有。
     // (真开了多台的话下面 count 会 >1,界面另有一句交代。)
     final machines = j['machines'];
-    final first = (machines is List && machines.isNotEmpty && machines.first is Map)
+    final first =
+        (machines is List && machines.isNotEmpty && machines.first is Map)
         ? machines.first as Map
         : const {};
     return copyWith(
       status: _parseStatus(j['state']),
       instanceId:
-          (j['instance_id'] as String?) ?? (first['instance_id'] as String?) ?? '',
+          (j['instance_id'] as String?) ??
+          (first['instance_id'] as String?) ??
+          '',
       idleSeconds: (j['idle_timeout'] as num?)?.toInt() ?? idleSeconds,
       elapsedS: (j['elapsed_s'] as num?)?.toInt() ?? 0,
       price: (j['price'] as num?)?.toDouble() ?? 0,
@@ -488,7 +492,9 @@ class RentalState {
       tierKey: (first['tier'] as String?) ?? (j['tier'] as String?) ?? tierKey,
       tierLabel: (first['tier_label'] as String?) ?? '',
       spot: first['spot'] == true,
-      count: (j['count'] as num?)?.toInt() ?? (machines is List ? machines.length : 0),
+      count:
+          (j['count'] as num?)?.toInt() ??
+          (machines is List ? machines.length : 0),
       maxCount: (j['max_count'] as num?)?.toInt() ?? maxCount,
       machines: machines is List
           ? [for (final m in machines) ?RentalMachine.fromJson(m)]

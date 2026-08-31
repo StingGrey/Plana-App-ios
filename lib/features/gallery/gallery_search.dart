@@ -46,10 +46,7 @@ bool searchMatch(String normalizedText, List<String> terms) =>
 /// 搜什么都命中,纯噪音)。
 String _joinedText(String prompt, Iterable<String> charPositives) =>
     normalizeSearchText(
-      [
-        prompt,
-        ...charPositives,
-      ].where((t) => t.trim().isNotEmpty).join(', '),
+      [prompt, ...charPositives].where((t) => t.trim().isNotEmpty).join(', '),
     );
 
 /// 内存里的输入快照 → 元数据(addResult 同帧,input 一定在)。

@@ -455,10 +455,10 @@ low contrast, simple background''';
       expect(naiV5UpscaleSupportsSize(2048, 2048), isFalse);
     });
 
-    // 没有分辨率白名单 —— 这正是它比传统超分好用的地方
+    // 没有分辨率白名单 —— 这正是它比已下线的传统 4× 超分好用的地方
     test('任意尺寸都收,不看白名单', () {
       expect(naiV5UpscaleSupportsSize(777, 999), isTrue);
-      expect(naiUpscaleSupportsSize(777, 999), isFalse);
+      expect(naiV5UpscaleSupportsSize(1216, 832), isTrue);
     });
 
     test('结果尺寸 = 边长向下对齐 16 再 ×2', () {
@@ -557,8 +557,8 @@ low contrast, simple background''';
     });
 
     test('老存档只有方式名 → 其余落默认', () {
-      final v = UpscaleSettings.fromJson(const {'method': 'nai'});
-      expect(v.method, UpscaleMethod.nai);
+      final v = UpscaleSettings.fromJson(const {'method': 'redraw'});
+      expect(v.method, UpscaleMethod.redraw);
       expect(v.enhanceScale, EnhanceScale.x15);
       expect(v.strength, kRedrawStrength);
     });
@@ -570,9 +570,10 @@ low contrast, simple background''';
       );
     });
 
-    // 本地超分整条下线了,存量偏好里的两个本地档要落到默认档而不是崩掉。
-    test('已下线的本地档 → 落默认', () {
-      for (final v in ['localFast', 'localQuality']) {
+    // 下线过三种:两个本地档,以及官方停掉的传统 4×(nai)。
+    // 存量偏好里遇到它们要落到默认档而不是崩掉。
+    test('已下线的档位 → 落默认', () {
+      for (final v in ['localFast', 'localQuality', 'nai']) {
         expect(
           UpscaleSettings.fromJson({'method': v}).method,
           UpscaleMethod.naiV5,

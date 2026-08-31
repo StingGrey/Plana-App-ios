@@ -134,6 +134,11 @@ Map<String, double> _center(String? pos, int index) {
   final p = s.params;
   final inpaint = s.inpaint;
   final model = naiModelId(p.model);
+  // ⚠ **最终要发的** model,不是面板上选的:V5 Curated 的重绘会回退到 4.5
+  //   Curated Inpainting。两处按能力分叉都得看它 —— 透明输出(transparency)、
+  //   角色坐标要不要吸附到格心(freeformCharacterPosition)。载荷**结构**仍按
+  //   底模判(下面的 isV4/isV5),那跟能力是两回事。
+  final sendModel = inpaint != null ? inpaintModelId(model) : model;
   final sampler = _samplerMap[p.sampler] ?? 'k_euler_ancestral';
   final isV4 = model.startsWith('nai-diffusion-4');
   // V5 载荷与 V4/V4.5 同构:仍用 v4_prompt/v4_negative_prompt 结构化提示词,
@@ -155,6 +160,16 @@ Map<String, double> _center(String? pos, int index) {
   final centers = [
     for (var i = 0; i < chars.length; i++) _center(chars[i].position, i),
   ];
+  // 只有 V5 吃自由坐标(官方能力位 freeformCharacterPosition);其余模型官方在
+  // 发送前把坐标吸附到 5×5 格心,存着的值不动。char_captions 发吸附后的,
+  // characterPrompts 仍发原始坐标 —— 那是给导入回放用的,不该被这次请求对模型
+  // 的迁就改掉(同官方)。
+  final sentCenters = sendModel.startsWith('nai-diffusion-5')
+      ? centers
+      : centers.map((c) {
+          final q = quantizeCenterToGrid(c['x']!, c['y']!);
+          return {'x': q.x, 'y': q.y};
+        }).toList();
 
   // autoText:引号内容自动转 `text:` 块,仅 V5 有这项能力。
   // 排在 centers 算完之后 —— 阅读顺序排序要用到每个角色的坐标。
@@ -179,10 +194,7 @@ Map<String, double> _center(String? pos, int index) {
   // 透明背景:由提示词里的 `transparent background` 触发,不是开关。
   // straight_alpha 跟官方一样「只要模型支持就无条件发」—— 它只是 alpha 的编码
   // 约定,跟这次到底透不透明无关;tag_hint 才是记录「这张是不是透明图」的那个。
-  //
-  // ⚠ 看的是**最终要发的** model,不是面板上选的:V5 Curated 的重绘会回退到
-  //   4.5 Curated Inpainting,那个模型没有 transparency 能力,不该跟着发。
-  final sendModel = inpaint != null ? inpaintModelId(model) : model;
+  // 按 sendModel 判:4.5 Curated Inpainting 没有 transparency 能力,不该跟着发。
   final canTransparent = naiSupportsTransparency(sendModel);
 
   final params = <String, dynamic>{
@@ -244,7 +256,7 @@ Map<String, double> _center(String? pos, int index) {
           for (var i = 0; i < chars.length; i++)
             {
               'char_caption': chars[i].positive.trim(),
-              'centers': [centers[i]],
+              'centers': [sentCenters[i]],
             },
         ],
       },
@@ -260,7 +272,7 @@ Map<String, double> _center(String? pos, int index) {
             if (chars[i].negative.trim().isNotEmpty)
               {
                 'char_caption': chars[i].negative.trim(),
-                'centers': [centers[i]],
+                'centers': [sentCenters[i]],
               },
         ],
       },
@@ -325,7 +337,7 @@ Map<String, double> _center(String? pos, int index) {
 
   final body = <String, dynamic>{
     'input': promptText,
-    'model': inpaint != null ? inpaintModelId(model) : model,
+    'model': sendModel,
     'action': inpaint != null
         ? 'infill'
         : (img2img != null ? 'img2img' : 'generate'),

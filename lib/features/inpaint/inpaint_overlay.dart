@@ -6,18 +6,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/net/anlas_provider.dart';
-import '../../core/store/app_stores.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/ui/param_input.dart';
-import '../gallery/gallery_state.dart';
-import '../generate/cost.dart';
 import '../generate/gen_modules.dart';
 import '../generate/generate_state.dart';
-import '../generate/generation_controller.dart';
 import '../generate/models.dart';
 import '../generate/res_rules.dart' show kFreePixelThreshold;
-import '../generate/vibe_encoder.dart';
 import '../generate/widgets/common.dart' show hintSnack;
 import '../shell/shell_state.dart';
 import 'inpaint_ops.dart';
@@ -135,7 +129,6 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
 
   /// 上一次算出的 Vibe 编码费(同 BottomActionBar._lastVibeFee):查询键一变
   /// 就从 loading 重来,取值 null 时沿用旧值,免得费用在参数连改时来回跳。
-  int _lastVibeFee = 0;
 
   // 扩图模式(对齐 web:四向 padding 恒 64 倍数,发送=白底扩后画布)
   bool _expandMode = false;
@@ -144,9 +137,10 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   int _expandStartPad = 0;
   Offset? _expandDragScreen; // 拖拽起点(屏幕坐标;pad 按屏幕位移/scale 折算)
   bool _expandDragMoved = false; // 未移动即抬手 = 点按把手,+64 一个单位
-  // 扩图完成后旧图在新图中的位置:「按住对比」按位对齐,新增区露底=遮挡
-  Offset _prevImgOffset = Offset.zero;
-  Offset _pendingPrevOffset = Offset.zero;
+  // 扩图完成后旧图在新图中的位置:「按住对比」按位对齐,新增区露底=遮挡。
+  // 生成搬走之后 _prevImg 恒为 null(没人再往里塞旧图),这一对现在是死的 ——
+  // 「按住对比」不再出现。留着是为了下一步把对比接到图库那份结果上,别删。
+  final Offset _prevImgOffset = Offset.zero;
 
   // 视图变换(图坐标 → 屏幕 = *scale + offset)
   double _scale = 1;
@@ -180,8 +174,9 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   /// 触屏没有悬停,索性让它在该看结果的时候自己让开。
   bool _maskAsOutline = false;
 
-  // 会话内当前底图:每次重绘完成后替换为新结果(遮罩保留,可连环重抽)
-  late Uint8List _currentBytes = widget.session.imageBytes;
+  // 会话底图。以前每次重绘完成会就地换成新结果(连环重抽),生成搬到主按钮
+  // 之后不再换 —— 想接着抽就在图库对新图重新进编辑器。
+  late final Uint8List _currentBytes = widget.session.imageBytes;
 
   // 上一张底图(重绘前):「按住对比」按住时显示它,与当前结果对照
   ui.Image? _prevImg;
@@ -189,15 +184,25 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   // 流式预览(仅本编辑器发起的生成;_previewDst 非空 = 生成归属本会话):
   // 预览帧只画进发送目标区,并按发送时的遮罩快照 clip(遮罩区换新、其余原图)
   ui.Image? _previewImg;
-  Uint8List? _lastPreviewBytes;
   ui.Rect? _previewDst;
   List<ui.Rect>? _previewClip;
 
   @override
   void initState() {
     super.initState();
+    // 上次的手感(笔刷/强度/偏位)。同步取值,面板一开就是对的,
+    // 不会先画一帧默认值再跳。
+    final p = ref.read(inpaintPrefsProvider);
+    _brush = p.brush;
+    _strength = p.strength;
+    _assist = p.assist;
     _decode();
   }
+
+  /// 关面板时把手感存一次(滑杆每一跳都写等于每帧落一次盘)。
+  void _savePrefs() => ref
+      .read(inpaintPrefsProvider.notifier)
+      .save(InpaintPrefs(brush: _brush, strength: _strength, assist: _assist));
 
   /// 先解码、图就位后才播入场动画:渐显第一帧画布即完整,避免
   /// 「底色/加载圈 → 图突现」的闪烁。解码失败直接退出会话(防锁死)。
@@ -213,33 +218,24 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
         _img = frame.image;
         _grid = MaskGrid(frame.image.width, frame.image.height);
       });
-      await _restoreMask();
+      _restoreMask();
       unawaited(_ac.forward());
     } catch (_) {
       if (mounted) ref.read(inpaintSessionProvider.notifier).close();
     }
   }
 
-  /// 恢复这张图上次留下的蒙版(按图库 id 记忆)。
-  /// 尺寸对不上(扩过图/裁过)时 [MaskGrid.decodeInto] 会拒绝,保持空白重涂。
-  Future<void> _restoreMask() async {
-    final id = widget.session.sourceId;
+  /// 从创作页那份遮罩恢复涂抹网格 —— 「回编辑器接着改」就靠它。
+  ///
+  /// 认人靠 [InpaintJob.sourceId]:不是同一张图就不恢复,免得把别人的遮罩套上来。
+  /// 尺寸对不上(扩过图/裁过)时 [MaskGrid.decodeInto] 自己会拒,是第二道保险。
+  void _restoreMask() {
     final grid = _grid;
-    if (id == null || grid == null) return;
-    final data = await ref.read(appStoresProvider).gallery.readMask(id);
-    if (data == null || !mounted) return;
+    final job = ref.read(generateProvider).inpaint;
+    final data = job?.grid;
+    if (grid == null || data == null) return;
+    if (job!.sourceId != widget.session.sourceId) return;
     if (grid.decodeInto(data)) setState(() => _rev++);
-  }
-
-  /// 把当前蒙版存回这张图(空蒙版=清除记录)。离开面板与发起重绘时各调一次。
-  void _saveMask() {
-    final id = widget.session.sourceId;
-    final grid = _grid;
-    if (id == null || grid == null) return;
-    ref
-        .read(appStoresProvider)
-        .gallery
-        .writeMask(id, grid.isEmpty ? null : grid.encode());
   }
 
   @override
@@ -252,77 +248,9 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     super.dispose();
   }
 
-  // ---------- 会话内流式生成 ----------
-
-  /// 解码流式预览帧(≈1 帧/秒,主线程解码可承受)。
-  Future<void> _decodePreview(Uint8List bytes) async {
-    try {
-      final codec = await ui.instantiateImageCodec(bytes);
-      final frame = await codec.getNextFrame();
-      if (!mounted || _previewDst == null) {
-        frame.image.dispose();
-        return;
-      }
-      setState(() {
-        _previewImg?.dispose();
-        _previewImg = frame.image;
-      });
-    } catch (_) {
-      /* 单帧解码失败直接丢帧 */
-    }
-  }
-
-  /// 重绘完成:底图换成新结果,遮罩/撤销栈保留(同区可立刻重抽);
-  /// 旧底图归档为对比图(「按住对比」显示重绘前)。
-  Future<void> _swapImage(Uint8List bytes) async {
-    try {
-      final codec = await ui.instantiateImageCodec(bytes);
-      final frame = await codec.getNextFrame();
-      if (!mounted) {
-        frame.image.dispose();
-        return;
-      }
-      setState(() {
-        _prevImg?.dispose();
-        _prevImg = _img; // 重绘前的图留作对比
-        _prevImgOffset = _pendingPrevOffset; // 扩图时旧图对位 (padL, padT)
-        _img = frame.image;
-        _currentBytes = bytes;
-        // 结果落地 → 遮罩退成轮廓,把刚重绘出来的像素完整露出来(动笔即恢复实心)
-        _maskAsOutline = true;
-        // 尺寸变化(扩图完成/异常):重建遮罩,扩展与裁切框归零,视图重新适配
-        if (_grid == null ||
-            _grid!.imgW != frame.image.width ||
-            _grid!.imgH != frame.image.height) {
-          _grid = MaskGrid(frame.image.width, frame.image.height);
-          _undo.clear();
-          _rev++;
-          _resetPad();
-          _crop = null;
-          _cropMode = false;
-          _cropOptOut = false; // 尺寸变了等于重开一张,自动跟随重新生效
-          _cropResized = false;
-          _fitKey = null;
-          _viewport = Size.zero;
-        }
-        _clearPreviewState();
-      });
-    } catch (_) {
-      if (mounted) setState(_clearPreviewState);
-    }
-  }
-
-  void _clearPreviewState() {
-    _previewImg?.dispose();
-    _previewImg = null;
-    _lastPreviewBytes = null;
-    _previewDst = null;
-    _previewClip = null;
-  }
-
   /// 反向收起后卸载(会话置空)。连点关闭安全:reverse 幂等。
   Future<void> _close() async {
-    _saveMask(); // 涂了没生成也留着,下次打开接着改
+    _savePrefs();
     await _ac.reverse();
     if (mounted) ref.read(inpaintSessionProvider.notifier).close();
   }
@@ -823,16 +751,6 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     ref.read(genModulesProvider).value ?? const GenModuleSettings(),
   );
 
-  ({int w, int h}) get _sendSize {
-    final img = _img;
-    if (img == null) return (w: 0, h: 0);
-    if (_expandMode) {
-      return (w: img.width + _padL + _padR, h: img.height + _padT + _padB);
-    }
-    final c = _cropMode ? _crop : null;
-    return (w: c?.w ?? img.width, h: c?.h ?? img.height);
-  }
-
   /// 扩图发送:白底扩后画布 + 自动 mask(原图区黑/新增区白),
   /// paste 置空 → 结果即完整新图直接入库(尺寸=params 扩后尺寸)。
   Future<void> _fireExpand(ui.Image img, GenerateState input) async {
@@ -863,40 +781,52 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
         padR: _padR,
         padB: _padB,
       );
-      final snapshot = input.copyWith(
-        inpaint: InpaintJob(image: image, mask: mask, strength: _strength),
-        img2img: null,
-        params: input.params.copyWith(width: tw, height: th, seed: ''),
-      );
       if (!mounted) return;
-      // 完成换底图后旧图落位 (padL, padT);预览帧直接铺满扩后区域
-      _pendingPrevOffset = Offset(_padL.toDouble(), _padT.toDouble());
-      setState(() {
-        _previewDst = ui.Rect.fromLTWH(
-          -_padL.toDouble(),
-          -_padT.toDouble(),
-          tw.toDouble(),
-          th.toDouble(),
-        );
-        _previewClip = null;
-      });
-      unawaited(
-        ref.read(generationProvider.notifier).generate(using: snapshot),
+      _saveInto(
+        InpaintJob(
+          image: image,
+          mask: mask,
+          strength: _strength,
+          sourceId: widget.session.sourceId,
+          // 扩图后尺寸变了,这份网格回去会被 decodeInto 拒掉 —— 留着无妨,
+          // 图没扩成功时(用户又退回来)还能接着用。
+          grid: _grid?.encode(),
+        ),
+        width: tw,
+        height: th,
       );
     } finally {
       if (mounted) setState(() => _firing = false);
     }
   }
 
+  /// 存进创作页并收工 —— 这个编辑器**只负责产出遮罩**,发车交给主生成按钮
+  /// (对齐官网)。流式预览也跟着回到图库画布那一份,不再自己画一套。
+  ///
+  /// 存完直接跳创作页:主生成按钮在那儿,留在图库等于让人自己去找。
+  void _saveInto(InpaintJob job, {required int width, required int height}) {
+    final before = ref.read(generateProvider).params;
+    ref
+        .read(generateProvider.notifier)
+        .setInpaint(job, width: width, height: height);
+    Haptics.medium();
+    // 遮罩会改写生成分辨率(局部发裁切区、扩图发垫大后的画布),和图生图选底图
+    // 一个道理 —— 变了就说一声,免得回到创作页看见分辨率莫名其妙换了。
+    if (before.width != width || before.height != height) {
+      hintSnack(
+        context,
+        '分辨率已按重绘范围调整为 $width×$height',
+        icon: Icons.aspect_ratio,
+      );
+    }
+    ref.read(shellIndexProvider.notifier).select(kTabCreate);
+    _close();
+  }
+
   Future<void> _fire() async {
     final img = _img;
     final grid = _grid;
     if (img == null || grid == null || _firing) return;
-    // 只拦另一条重绘(回贴信息共享,两条同时跑会串);普通出图并行不冲突。
-    if (ref.read(inpaintStatusProvider).busy) {
-      hintSnack(context, '重绘进行中,请稍后再试', icon: Icons.hourglass_top);
-      return;
-    }
     // 参数现读创作页,模型自然也跟着走:面板开着的时候完全可以切去换成
     // Anima / Krea(那两条通道都没有 infill)。进面板时 result_canvas 已拦过
     // 一道,这里补发车前的第二道 —— 否则会一路走到生成器里才报不支持。
@@ -965,44 +895,18 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
         image = _currentBytes;
         mask = await maskToPng(grid);
       }
-      final snapshot = input.copyWith(
-        inpaint: InpaintJob(
+      if (!mounted) return;
+      _saveInto(
+        InpaintJob(
           image: image,
           mask: mask,
           strength: _strength,
           paste: paste,
+          sourceId: widget.session.sourceId,
+          grid: grid.encode(),
         ),
-        img2img: null,
-        params: input.params.copyWith(width: sw, height: sh, seed: ''),
-      );
-      if (!mounted) return;
-      // 留在编辑器内流式预览:记录预览目标区 + 发送时遮罩快照
-      // (遮罩区换新内容、其余保持原图;完成后换底图、遮罩保留)
-      _pendingPrevOffset = Offset.zero;
-      setState(() {
-        _previewDst = send != null
-            ? ui.Rect.fromLTWH(
-                send.x.toDouble(),
-                send.y.toDouble(),
-                send.w.toDouble(),
-                send.h.toDouble(),
-              )
-            : ui.Rect.fromLTWH(
-                0,
-                0,
-                img.width.toDouble(),
-                img.height.toDouble(),
-              );
-        _previewClip = List.of(_maskRects);
-      });
-      // 蒙版记忆:本图存一份,并让这次重绘的产物继承一次(落新图时消费)
-      _saveMask();
-      final srcId = widget.session.sourceId;
-      if (srcId != null) {
-        ref.read(appStoresProvider).gallery.pendingMaskInheritFrom = srcId;
-      }
-      unawaited(
-        ref.read(generationProvider.notifier).generate(using: snapshot),
+        width: sw,
+        height: sh,
       );
     } finally {
       if (mounted) setState(() => _firing = false);
@@ -1015,63 +919,6 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final img = _img;
-    final gen = ref.watch(inpaintStatusProvider);
-
-    // 会话内生成跟踪(_previewDst 非空 = 本编辑器发起):
-    // 预览帧解码 → 画布混合;完成 → 换底图保留遮罩;失败 → 清预览。
-    ref.listen<GenStatus>(inpaintStatusProvider, (prev, next) {
-      if (_previewDst == null) return;
-      final preview = next.preview;
-      if (next.busy &&
-          preview != null &&
-          !identical(preview, _lastPreviewBytes)) {
-        _lastPreviewBytes = preview;
-        _decodePreview(preview);
-      }
-      if ((prev?.busy ?? false) && !next.busy) {
-        if (next.error == null) {
-          final results = ref.read(galleryProvider).results;
-          final latest = results.isEmpty ? null : results.first;
-          final bytes = latest?.bytes;
-          if (bytes != null) {
-            _swapImage(bytes);
-          } else {
-            setState(_clearPreviewState);
-          }
-        } else {
-          setState(_clearPreviewState);
-        }
-      }
-    });
-    final isOpus = ref.watch(anlasProvider).asData?.value?.isOpus ?? false;
-    // V5 额度见底后免费尺寸转扣 Anlas,那时「免费」得变回真实点数(见 provider)
-    final v5Charged = ref.watch(v5ChargedProvider);
-    final send = _sendSize;
-    // 计价读的是创作页当下的状态,和 _fire 发出去的那份同源(见 _liveInput):
-    // 步数进两处 —— 免费门槛 steps≤28 和基础价的 (steps+5) —— 用打开面板时的
-    // 快照会让改完步数切回来价格纹丝不动。
-    final live = stripHiddenModules(
-      ref.watch(generateProvider),
-      ref.watch(genModulesProvider).value ?? const GenModuleSettings(),
-    );
-    // 与创作页吸底栏同口径:未缓存的 Vibe 编码费要单列进来。重绘和手动生成
-    // 走的是同一条 generate() → _prepareVibes,缓存 miss 照样现场编码扣 2 点
-    // (bot / 直连都扣);漏算的话创作页写「2 Anlas」、重绘写「免费」,同一批
-    // Vibe 两处报两个价。查询键随创作页变,新键从 loading 起步取值为 null ——
-    // 落 0 会让费用在「免费 ⇄ N」间闪,沿用上次的更稳(同 BottomActionBar)。
-    final fee = ref.watch(vibeEncodeFeeProvider(vibeEncodeFeeKey(live))).value;
-    if (fee != null) _lastVibeFee = fee;
-    final cost = img == null
-        ? 0
-        : estimateInpaintCost(
-                live,
-                isOpus: isOpus,
-                sendW: send.w,
-                sendH: send.h,
-                strength: _strength,
-                v5Charged: v5Charged,
-              ) +
-              (fee ?? _lastVibeFee);
     final hasPrev = _prevImg != null; // 至少重绘过一次才有「前后对比」
     // 编辑中允许切 tab(图库页 keep-alive 保留本面板);仅当图库可见时
     // 返回键收面板,在其他 tab 返回键走系统默认(最小化)。
@@ -1248,7 +1095,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
                 ),
                 SlideTransition(
                   position: _panelSlide,
-                  child: _buildBottomPanel(gen, cost),
+                  child: _buildBottomPanel(),
                 ),
               ],
             ),
@@ -1316,8 +1163,8 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     _setExpandMode(expand);
   }
 
-  Widget _buildBottomPanel(GenStatus gen, int cost) {
-    if (_expandMode) return _buildExpandPanel(gen, cost);
+  Widget _buildBottomPanel() {
+    if (_expandMode) return _buildExpandPanel();
     final scheme = context.scheme;
     final grid = _grid;
     final canUndo = _undo.isNotEmpty;
@@ -1393,10 +1240,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
                 ),
                 const SizedBox(width: 10),
                 Expanded(
-                  child: SizedBox(
-                    height: 46,
-                    child: _buildCtaArea(gen, cost, label: '重绘'),
-                  ),
+                  child: SizedBox(height: 46, child: _buildCtaArea('保存遮罩')),
                 ),
               ],
             ),
@@ -1407,7 +1251,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   }
 
   /// 扩图专属底面板:尺寸(点击弹窗直接输入)/强度/重置 + 全宽 CTA。
-  Widget _buildExpandPanel(GenStatus gen, int cost) {
+  Widget _buildExpandPanel() {
     final scheme = context.scheme;
     final img = _img;
     final tw = img == null ? 0 : img.width + _padL + _padR;
@@ -1466,12 +1310,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
             SizedBox(
               height: 46,
               width: double.infinity,
-              child: _buildCtaArea(
-                gen,
-                cost,
-                label: '扩图',
-                disabled: !_hasExpand,
-              ),
+              child: _buildCtaArea('保存扩图', disabled: !_hasExpand),
             ),
           ],
         ),
@@ -1479,79 +1318,18 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     );
   }
 
-  /// 生成 CTA / 生成中进度条(涂抹与扩图面板共用)。
-  Widget _buildCtaArea(
-    GenStatus gen,
-    int cost, {
-    required String label,
-    bool disabled = false,
-  }) {
+  /// 存盘 CTA(涂抹与扩图面板共用)。
+  ///
+  /// 这里不再有进度条与点数:生成不在本编辑器发生了 —— 进度在图库画布上,
+  /// 点数在创作页那颗主生成按钮上,两处各报一次只会互相打架。
+  Widget _buildCtaArea(String label, {bool disabled = false}) {
     final scheme = context.scheme;
-    if (gen.busy) {
-      // 判据是 sampling 而不是「进度条有没有值」:准备阶段(拉 LoRA)现在也
-      // 能画出条来,按有没有值判会在那几分钟里显示「0 / 0」。
-      final readout = gen.sampling
-          ? '${gen.step} / ${gen.total}'
-          : (gen.note ?? '生成中…');
-      final style = TextStyle(
-        fontSize: 13.5,
-        fontWeight: FontWeight.w800,
-        color: scheme.onSurface,
-        fontFeatures: const [ui.FontFeature.tabularFigures()],
-      );
-      // 整条可点取消(与创作页吸底栏同款)。原先这里只有进度条、没有任何点击
-      // 入口 —— 重绘一旦发起就只能等到底,断网时更是干等超时。实测反馈。
-      return ClipRRect(
-        borderRadius: BorderRadius.circular(23),
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            LinearProgressIndicator(
-              value: gen.progress,
-              backgroundColor: scheme.surfaceContainerHigh,
-              color: scheme.primary.withValues(alpha: .38),
-            ),
-            Material(
-              color: Colors.transparent,
-              child: InkWell(
-                onTap: () => ref.read(generationProvider.notifier).cancel(),
-                // 重绘 CTA 比创作页窄:只留 ✕ 图标不写「取消」,省出的宽度
-                // 给读数(排队文案最长)。图标紧挨进度条,语义已经够清楚。
-                child: Center(
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        Icons.close_rounded,
-                        size: 19,
-                        color: scheme.onSurface,
-                      ),
-                      const SizedBox(width: 7),
-                      Flexible(
-                        child: Text(
-                          readout,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: style,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      );
-    }
     return FilledButton(
       style: FilledButton.styleFrom(
         padding: EdgeInsets.zero,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(23)),
       ),
       onPressed: _firing || disabled ? null : _fire,
-      // 整块等比缩,不让任何一段省略号:窄屏 + 四位数点数时,原先是标签和
-      // 点数各自 Flexible 平分,谁都装不下,双双被截。
       child: FittedBox(
         fit: BoxFit.scaleDown,
         child: Row(
@@ -1568,47 +1346,17 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
                 ),
               )
             else
-              const Icon(Icons.auto_awesome, size: 18),
+              const Icon(Icons.check_rounded, size: 19),
             const SizedBox(width: 7),
             Text(
-              _firing ? '准备中…' : label,
+              _firing ? '保存中…' : label,
               style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
             ),
-            if (!_firing) ...[
-              const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                decoration: BoxDecoration(
-                  color: scheme.onPrimary.withValues(alpha: .16),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                // 「N Anlas」在这条 CTA 上放不下:涂抹面板里它只占半宽,还要
-                // 和强度按钮分。改成顶栏同款点数图标 + 数字,砍掉最长的那个词,
-                // 四位数也不必再靠 FittedBox 整块压缩。免费档保留中文。
-                child: cost == 0
-                    ? Text('免费', style: _pillStyle(scheme))
-                    : Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.toll, size: 12, color: scheme.onPrimary),
-                          const SizedBox(width: 3),
-                          Text('$cost', style: _pillStyle(scheme)),
-                        ],
-                      ),
-              ),
-            ],
           ],
         ),
       ),
     );
   }
-
-  /// CTA 上费用胶囊的文字样式(图标与数字同色同重)。
-  TextStyle _pillStyle(ColorScheme scheme) => TextStyle(
-    fontSize: 11,
-    fontWeight: FontWeight.w700,
-    color: scheme.onPrimary,
-  );
 
   /// 扩图尺寸弹窗:输入/步进目标分辨率(controller 生命周期归弹窗
   /// StatefulWidget 管,退场动画期间仍存活,勿在 await 后立刻 dispose)。

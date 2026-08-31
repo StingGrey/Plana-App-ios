@@ -236,50 +236,197 @@ class ProgressPill extends StatelessWidget {
   }
 }
 
-class _ActionRail extends ConsumerWidget {
+/// 「按住对比」正按着时要显示的**源图**字节;没按住为 null。
+///
+/// 提到 provider 是因为按钮在操作轨上、画面在图库画布上,两棵子树互不相干。
+/// 只存本次按住的这一份,松手即清 —— 它是个瞬时姿态,不该活过这一次按压。
+final compareBytesProvider = NotifierProvider<CompareBytesNotifier, Uint8List?>(
+  CompareBytesNotifier.new,
+);
+
+class CompareBytesNotifier extends Notifier<Uint8List?> {
+  @override
+  Uint8List? build() => null;
+
+  void show(Uint8List bytes) => state = bytes;
+  void hide() => state = null;
+}
+
+/// 右侧操作轨的收合状态。
+///
+/// **提到 provider 而不是留在 widget 里**:切页、换图都会把画布那棵子树重建掉,
+/// 局部 state 跟着没 —— 用户看到的就是「明明收起了,回来又自己展开」。
+///
+/// 同步读:PrefsStore 的内存表在 AppStores.open 时已经装满,所以这里没有
+/// 「首帧还没读出来」那一档 —— 那正是放大面板记忆坏掉的成因,别再踩一遍。
+final railCollapsedProvider = NotifierProvider<RailCollapsedNotifier, bool>(
+  RailCollapsedNotifier.new,
+);
+
+class RailCollapsedNotifier extends Notifier<bool> {
+  static const _key = 'gallery_rail_collapsed';
+
+  @override
+  bool build() {
+    try {
+      return ref.read(prefsStoreProvider).get(_key) == '1';
+    } catch (_) {
+      return false; // 没有 AppStores 的场合(测试)按摊开算
+    }
+  }
+
+  Future<void> set(bool v) async {
+    state = v;
+    try {
+      await ref.read(prefsStoreProvider).write(key: _key, value: v ? '1' : '0');
+    } catch (_) {} // 写失败只影响下次恢复,不打扰这一次收合
+  }
+}
+
+/// 手指还按在「对比」上没有?读盘是异步的,读完可能已经松手了。
+final _holdingProvider = NotifierProvider<_HoldingNotifier, bool>(
+  _HoldingNotifier.new,
+);
+
+class _HoldingNotifier extends Notifier<bool> {
+  @override
+  bool build() => false;
+  set on(bool v) => state = v;
+}
+
+class _ActionRail extends ConsumerStatefulWidget {
   const _ActionRail({required this.result});
 
   final ResultImage result;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.end,
-      children: [
-        _RailButton(
-          label: '重绘',
-          icon: Icons.brush,
-          onTap: () => _inpaint(context, ref),
-        ),
-        const SizedBox(height: 10),
-        _RailButton(
-          label: '放大',
-          icon: Icons.open_in_full,
-          onTap: () => _upscale(context, ref),
-        ),
-        const SizedBox(height: 10),
-        _RailButton(
-          label: '保存',
-          icon: Icons.download,
-          onTap: () => _download(context, ref),
-          onLongPress: () => _openSaveSheet(context, ref),
-        ),
-        const SizedBox(height: 10),
-        _RailButton(
-          label: '导入',
-          icon: Icons.input,
-          onTap: () => _import(context, ref),
-        ),
-        const SizedBox(height: 10),
-        _RailButton(
-          label: '重新生成',
-          icon: Icons.refresh,
-          primary: true,
-          onTap: () => _regenerate(context, ref),
-        ),
-      ],
+  ConsumerState<_ActionRail> createState() => _ActionRailState();
+}
+
+class _ActionRailState extends ConsumerState<_ActionRail> {
+  ResultImage get result => widget.result;
+
+  /// 收起 = 只留「重新生成」那一颗。四颗次要动作平时顺着右边缘占掉大半屏高,
+  /// 挡的正好是竖图的主体;而看图的时候多半一颗都不用点。
+  void _setCollapsed(bool v) {
+    if (ref.read(railCollapsedProvider) == v) return;
+    Haptics.selection();
+    ref.read(railCollapsedProvider.notifier).set(v);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final collapsed = ref.watch(railCollapsedProvider);
+    return GestureDetector(
+      // 竖向拖:上滑展开、下滑收起 —— 方向即语义,不用先找那颗小箭头在哪。
+      // 只认速度不认位移:这条轨很窄,一路拖到底反而别扭,轻甩一下就该认。
+      onVerticalDragEnd: (d) {
+        final v = d.velocity.pixelsPerSecond.dy;
+        if (v < -80) {
+          _setCollapsed(false);
+        } else if (v > 80) {
+          _setCollapsed(true);
+        }
+      },
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          // 收起的只有这四颗;「重新生成」永远露着 —— 它是这一屏的主动作,
+          // 藏起来就等于把最常点的那颗也一起收走了。
+          ClipRect(
+            child: AnimatedAlign(
+              duration: Motion.medium,
+              curve: Motion.standard,
+              alignment: Alignment.bottomRight,
+              heightFactor: collapsed ? 0 : 1,
+              child: AnimatedOpacity(
+                duration: Motion.fast,
+                opacity: collapsed ? 0 : 1,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    _RailButton(
+                      label: '重绘',
+                      icon: Icons.brush,
+                      onTap: () => _inpaint(context, ref),
+                    ),
+                    const SizedBox(height: 10),
+                    _RailButton(
+                      label: '放大',
+                      icon: Icons.open_in_full,
+                      onTap: () => _upscale(context, ref),
+                    ),
+                    const SizedBox(height: 10),
+                    _RailButton(
+                      label: '保存',
+                      icon: Icons.download,
+                      onTap: () => _download(context, ref),
+                      onLongPress: () => _openSaveSheet(context, ref),
+                    ),
+                    const SizedBox(height: 10),
+                    _RailButton(
+                      label: '导入',
+                      icon: Icons.input,
+                      onTap: () => _import(context, ref),
+                    ),
+                    const SizedBox(height: 10),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          _RailHandle(
+            collapsed: collapsed,
+            onTap: () => _setCollapsed(!collapsed),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              // 只有重绘产物才有「之前」可看;源图被删了也不给(取不到字节)。
+              if (result.inpaintFrom != null) ...[
+                _RailButton(
+                  label: '对比',
+                  icon: Icons.compare,
+                  onHold: (down) => _compare(context, ref, down),
+                  onTap: () {},
+                ),
+                const SizedBox(width: 10),
+              ],
+              _RailButton(
+                label: '重新生成',
+                icon: Icons.refresh,
+                primary: true,
+                onTap: () => _regenerate(context, ref),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
+  }
+
+  /// 按住看重绘前的原图,松手回到结果。
+  ///
+  /// 按下才去读盘:大多数时候没人按,提前读就是白占内存。读回来时可能已经松手了
+  /// (`_holding` 那一道)—— 那时不该再把图糊上去。
+  Future<void> _compare(BuildContext context, WidgetRef ref, bool down) async {
+    final n = ref.read(compareBytesProvider.notifier);
+    ref.read(_holdingProvider.notifier).on = down;
+    if (!down) {
+      n.hide();
+      return;
+    }
+    final from = result.inpaintFrom;
+    if (from == null) return;
+    final bytes = await ref.read(appStoresProvider).gallery.readImage(from);
+    if (bytes == null || !context.mounted) return;
+    // 先解码再上屏:直接 setState 的话第一帧还没解出来,画面会白闪一下。
+    await precacheImage(MemoryImage(bytes), context);
+    if (ref.read(_holdingProvider)) n.show(bytes);
   }
 
   /// 字节:内存缓存优先,卸载/水合后按需读盘(读不到才是真无像素)。
@@ -343,7 +490,6 @@ class _ActionRail extends ConsumerWidget {
       return;
     }
     final w = result.width, h = result.height;
-    final naiOk = naiUpscaleSupportsSize(w, h);
     final naiV5Ok = naiV5UpscaleSupportsSize(w, h);
     // 重绘走生成管线。快照只负责提供**提示词与采样参数**,模型跟着创作页
     // 当前选的那个走 —— 重绘是一次新的生成,用哪个模型是用户此刻的选择,
@@ -368,19 +514,23 @@ class _ActionRail extends ConsumerWidget {
         ? '源图 $w×$h 已超过 NAI 的总像素上限,重绘放不出任何倍率'
         : null;
 
-    // 1. 上次那套参数(不可用的方式/倍率就地回退,免得面板一开就是个死选项)
-    var init =
-        ref.read(upscaleSettingsProvider).value ?? const UpscaleSettings();
-    if ((init.method == UpscaleMethod.nai && !naiOk) ||
-        (init.method == UpscaleMethod.naiV5 && !naiV5Ok) ||
+    // 1. 上次那套参数(不可用的方式/倍率就地回退,免得面板一开就是个死选项)。
+    //
+    // **await 而不是取 .value**:懒加载的 AsyncNotifier 首读期间 .value 是 null,
+    // 那会把「还没读出来」当成「没存过」,于是本次会话第一次开面板永远是默认档
+    // —— 用户看到的就是「上次选的没记住」。
+    var init = const UpscaleSettings();
+    try {
+      init = await ref.read(upscaleSettingsProvider.future);
+    } catch (_) {} // 读不出来就用默认档,不挡这一次放大
+    if ((init.method == UpscaleMethod.naiV5 && !naiV5Ok) ||
         (init.method == UpscaleMethod.redraw && redrawWhy != null)) {
-      // 三条路互为兜底:哪条能用就落哪条,别把面板开成一个死选项
+      // 两条路互为兜底:哪条能用就落哪条,别把面板开成一个死选项
       init = init.copyWith(
-        method: naiV5Ok
-            ? UpscaleMethod.naiV5
-            : (naiOk ? UpscaleMethod.nai : UpscaleMethod.redraw),
+        method: naiV5Ok ? UpscaleMethod.naiV5 : UpscaleMethod.redraw,
       );
     }
+    if (!context.mounted) return;
     if (!scales.contains(init.enhanceScale) && scales.isNotEmpty) {
       init = init.copyWith(enhanceScale: scales.first);
     }
@@ -391,7 +541,6 @@ class _ActionRail extends ConsumerWidget {
       useSafeArea: true,
       builder: (_) => _UpscalePanel(
         init: init,
-        naiEnabled: naiOk,
         naiV5Enabled: naiV5Ok,
         redrawWhy: redrawWhy,
         redrawScales: scales,
@@ -428,7 +577,6 @@ class _ActionRail extends ConsumerWidget {
         bytes,
         width: w,
         height: h,
-        v5: method == UpscaleMethod.naiV5,
         onStage: (s) => stage.value = s,
       );
       final png = r.png;
@@ -593,12 +741,56 @@ class _ActionRail extends ConsumerWidget {
   }
 }
 
+/// 收起/展开的把手。跟动作按钮同一套质感(实色 + 投影),做成横药丸而不是圆 ——
+/// 一眼看得出它是这条轨上的控件、又不会被当成第五个动作。
+///
+/// 箭头指向**按下去会发生什么**(收起时朝上=还能展开,展开时朝下=可以收起)。
+/// 拖动本来就能开合,但看不见的手势等于不存在 —— 这颗是那条手势的说明书,
+/// 顺带自己也能点。不配文字标签:一个箭头已经说完了,再挂两个字反而与下面
+/// 那排动作标签抢读。
+class _RailHandle extends StatelessWidget {
+  const _RailHandle({required this.collapsed, required this.onTap});
+
+  final bool collapsed;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return Material(
+      color: scheme.surfaceContainerHighest,
+      borderRadius: BorderRadius.circular(14),
+      elevation: 1.5,
+      shadowColor: scheme.shadow,
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: SizedBox(
+          width: 48,
+          height: 28,
+          child: AnimatedRotation(
+            duration: Motion.medium,
+            curve: Motion.standard,
+            turns: collapsed ? 0 : .5,
+            child: Icon(
+              Icons.keyboard_arrow_up_rounded,
+              size: 22,
+              color: scheme.onSurface,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _RailButton extends StatelessWidget {
   const _RailButton({
     required this.label,
     required this.icon,
     required this.onTap,
     this.onLongPress,
+    this.onHold,
     this.primary = false,
   });
 
@@ -606,6 +798,9 @@ class _RailButton extends StatelessWidget {
   final IconData icon;
   final VoidCallback onTap;
   final VoidCallback? onLongPress;
+
+  /// 按住/松手(true = 按下)。给「对比」这种按着才生效的用。
+  final void Function(bool down)? onHold;
   final bool primary;
 
   @override
@@ -629,6 +824,9 @@ class _RailButton extends StatelessWidget {
           child: InkWell(
             onTap: onTap,
             onLongPress: onLongPress,
+            // 按住类动作走 highlight 回调:onTapDown/Up 收不到「手指划走」,
+            // 划出去之后图就一直糊在那儿了。
+            onHighlightChanged: onHold,
             child: SizedBox(
               width: d,
               height: d,
@@ -705,7 +903,6 @@ class _SeedChip extends StatelessWidget {
 class _UpscalePanel extends ConsumerStatefulWidget {
   const _UpscalePanel({
     required this.init,
-    required this.naiEnabled,
     required this.naiV5Enabled,
     required this.redrawWhy,
     required this.redrawScales,
@@ -715,7 +912,6 @@ class _UpscalePanel extends ConsumerStatefulWidget {
   });
 
   final UpscaleSettings init;
-  final bool naiEnabled;
   final bool naiV5Enabled;
 
   /// 图生图那条支路不可用的原因;null = 可用。
@@ -736,25 +932,25 @@ class _UpscalePanel extends ConsumerStatefulWidget {
 class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
   late UpscaleSettings _s = widget.init;
 
-  /// 这张图能用的超分方式(尺寸不合格的直接不列)。
-  late final List<UpscaleMethod> _upscaleMethods = [
-    if (widget.naiEnabled) UpscaleMethod.nai,
-    if (widget.naiV5Enabled) UpscaleMethod.naiV5,
-  ];
-
-  /// 上一次选的**超分**方式。切到图生图再切回来时还原它,而不是每次都跳回第一档。
-  late UpscaleMethod _lastUpscale = _upscaleMethods.contains(widget.init.method)
-      ? widget.init.method
-      : (_upscaleMethods.firstOrNull ?? UpscaleMethod.naiV5);
+  /// 超分这条支路现在只剩 V5 一档;尺寸不合格时整条不可选。
+  bool get _upscaleOk => widget.naiV5Enabled;
 
   bool get _isRedraw => _s.method == UpscaleMethod.redraw;
 
-  void _set(UpscaleSettings next) => setState(() => _s = next);
-
-  void _setMethod(UpscaleMethod m) {
-    if (m != UpscaleMethod.redraw) _lastUpscale = m;
-    _set(_s.copyWith(method: m));
+  /// [remember] = 顺手落盘。
+  ///
+  /// **不等确认**:只有点了 CTA 才存的话,开面板改一下再退出去等于没选过 ——
+  /// 下次开又回上上次那档,用户看到的就是「没记住」。离散选择(方式 / 倍率 /
+  /// 幅度档)都立刻存;两个滑杆变化太密,留给确认时跟着 picked 一起存。
+  void _set(UpscaleSettings next, {bool remember = false}) {
+    setState(() => _s = next);
+    if (remember) {
+      unawaited(ref.read(upscaleSettingsProvider.notifier).set(next));
+    }
   }
+
+  void _setMethod(UpscaleMethod m) =>
+      _set(_s.copyWith(method: m), remember: true);
 
   /// 结果尺寸 —— 三条路三种算法,别互相套用(见各自函数的注释)。
   ({int w, int h}) get _target {
@@ -762,16 +958,14 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
     return switch (_s.method) {
       UpscaleMethod.redraw => enhanceTargetSize(w, h, _s.enhanceScale),
       UpscaleMethod.naiV5 => naiV5UpscaleTargetSize(w, h),
-      UpscaleMethod.nai => (w: w * 4, h: h * 4),
     };
   }
 
   /// 预估点数;null = 这条路当前给不出结果(CTA 禁用)。
   ///
-  /// 三条路三种算法:NAI 传统固定 7(用户实测);V5 扩散按**源图**像素查表;
-  /// 图生图放大走生成公式(按**结果**尺寸 + 强度折算)。
+  /// 两条路两种算法:V5 扩散按**源图**像素查表;图生图放大走生成公式
+  /// (按**结果**尺寸 + 强度折算)。
   int? get _cost => switch (_s.method) {
-    UpscaleMethod.nai => 7,
     UpscaleMethod.naiV5 => naiV5UpscalePrice(widget.width, widget.height),
     UpscaleMethod.redraw => _redrawCost(),
   };
@@ -793,17 +987,11 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
     );
   }
 
-  /// 选中那条超分线的一句话说明(含价钱)。两条都不可用时说清为什么。
-  String get _upscaleNote {
-    final price = naiV5UpscalePrice(widget.width, widget.height);
-    if (_upscaleMethods.isEmpty) {
-      return '当前尺寸 ${widget.width}×${widget.height} 两条超分线都不受理';
-    }
-    return switch (_s.method) {
-      UpscaleMethod.nai => '官方传统模型 · 固定 4× · 7 点',
-      _ => '扩散模型 · 任意尺寸(≤3,145,728 像素) · $price 点',
-    };
-  }
+  /// 超分那一句话说明(含价钱);尺寸不受理时说清为什么。
+  String get _upscaleNote => _upscaleOk
+      ? 'V5 扩散超分 · 固定 2× · '
+            '${naiV5UpscalePrice(widget.width, widget.height)} 点'
+      : '源图 ${widget.width}×${widget.height} 超过 3,145,728 像素,超分不受理';
 
   /// 当前倍率档在干什么。Max 档的尺寸是服务端定的,这里只能给估值。
   String get _scaleNote => switch (_s.enhanceScale) {
@@ -875,7 +1063,7 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
                       ButtonSegment(
                         value: false,
                         label: const Text('超分辨率'),
-                        enabled: _upscaleMethods.isNotEmpty,
+                        enabled: _upscaleOk,
                       ),
                       ButtonSegment(
                         value: true,
@@ -886,7 +1074,7 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
                     selected: {_isRedraw},
                     showSelectedIcon: false,
                     onSelectionChanged: (v) => _setMethod(
-                      v.first ? UpscaleMethod.redraw : _lastUpscale,
+                      v.first ? UpscaleMethod.redraw : UpscaleMethod.naiV5,
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -912,32 +1100,10 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
     );
   }
 
-  // ---- 超分辨率支路:两条线并成一行 ----
+  // ---- 超分辨率支路:官方下线传统 4× 之后只剩 V5 一档,没什么可选的了 ----
 
   List<Widget> _upscaleSection(ColorScheme scheme) => [
-    SegmentedButton<UpscaleMethod>(
-      segments: [
-        ButtonSegment(
-          value: UpscaleMethod.nai,
-          label: const Text('NAI 旧版 4x'),
-          enabled: widget.naiEnabled,
-        ),
-        ButtonSegment(
-          value: UpscaleMethod.naiV5,
-          label: const Text('V5 新版 2x'),
-          enabled: widget.naiV5Enabled,
-        ),
-      ],
-      selected: {_s.method},
-      showSelectedIcon: false,
-      onSelectionChanged: (v) => _setMethod(v.first),
-    ),
-    const SizedBox(height: 8),
     _note(scheme, _upscaleNote),
-    if (!widget.naiEnabled) ...[
-      const SizedBox(height: 4),
-      _note(scheme, 'NAI 传统超分只收 832×1216 / 1216×832 / 1024²,这张图用不了'),
-    ],
   ];
 
   // ---- 图生图放大支路:倍率与档位并成一行 ----
@@ -956,7 +1122,8 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
               items: [
                 for (final s in widget.redrawScales) (value: s, text: s.label),
               ],
-              onChanged: (v) => _set(_s.copyWith(enhanceScale: v)),
+              onChanged: (v) =>
+                  _set(_s.copyWith(enhanceScale: v), remember: true),
             ),
           ),
           const SizedBox(width: 10),
@@ -979,6 +1146,7 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
                     strength: kMagnitudePresets[i].strength,
                     noise: kMagnitudePresets[i].noise,
                   ),
+                  remember: true,
                 );
               },
             ),
@@ -1132,7 +1300,6 @@ class _UpscaleProgressDialog extends StatelessWidget {
   final ValueNotifier<String> stage;
 
   IconData get _icon => switch (method) {
-    UpscaleMethod.nai => Icons.cloud_outlined,
     UpscaleMethod.naiV5 => Icons.blur_on,
     UpscaleMethod.redraw => Icons.auto_fix_high,
   };

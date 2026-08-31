@@ -91,6 +91,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
   bool _translating = false; // 「翻译为英文」LLM 在途(补全条切「翻译中」态)
   bool _sheetOpen = false; // 形态 B(分类竖向列表)弹层是否打开
   Tok? _panelTok; // 光标所在词条(显示词条栏)
+  bool _cursorDragging = false; // 正在拖水滴手柄挪光标(吸底面板暂时收起)
   (int, int)? _multiRange; // 划词多选覆盖的词条区间 [first, last](批量面板)
   double _multiMult = 1.0; // 批量面板的统一数值权重读数
   List<String> _related = const []; // 当前词的关联标签(异步拉取)
@@ -134,11 +135,20 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _controller.addListener(_onCtrl);
     // 占位符要从一开始就在:框子真空过一次,那一次的退格就收不到信号。
     _resetInput();
-    // 灌注离线词库全量翻译(否则注音只显示补全零星回填过的词);
-    // 灌完刷新注音层/词条栏。幂等,重复进编辑器不重复灌。
-    ref.read(localTagDbProvider).warmTagMeta().then((_) {
-      if (mounted) _refreshAnnotations();
-    });
+    // 灌注离线词库全量翻译(否则注音只显示补全零星回填过的词)。整轮在手机上要
+    // 一两秒,干等完才刷的话首屏是"提示词先出来、注音过一会儿整片冒出来" ——
+    // 所以灌到前几片就各刷一次(词库按热度降序,前 8000 条已覆盖真实提示词约七成),
+    // 整轮完再刷最后一次收尾。幂等,重复进编辑器不重复灌。
+    ref
+        .read(localTagDbProvider)
+        .warmTagMeta(
+          onChunk: () {
+            if (mounted) _refreshAnnotations();
+          },
+        )
+        .then((_) {
+          if (mounted) _refreshAnnotations();
+        });
     // 增强模式的后端翻译通道:回填到货即刷新注音。
     _transSvc = ref.read(tagTranslationServiceProvider);
     _transSvc.addListener(_refreshAnnotations);
@@ -611,10 +621,8 @@ class _EditorPageState extends ConsumerState<EditorPage>
             _pick(s);
           },
           onInsert: _chipMode
-              ? (s) => _appendTag(
-                  _insertTextOf(s, plainSlot: true),
-                  quiet: true,
-                )
+              ? (s) =>
+                    _appendTag(_insertTextOf(s, plainSlot: true), quiet: true)
               : _insertAppend,
           onCollapse: () => Navigator.of(ctx).pop(),
         ),
@@ -859,13 +867,35 @@ class _EditorPageState extends ConsumerState<EditorPage>
 
   /// 换一批选中:重算起步读数(批量数值是**统一设定**不是相对加减,留着上
   /// 一批的读数会指着不相干的词),并把光标同步到新的单选目标上。
-  void _setChipSel(Set<int> next) {
+  ///
+  /// **落位阶段不再被改选中踢掉** —— 进了落位还能接着加减要搬的东西,不必先退
+  /// 出来重选。只有两种情况自动退出:选空了(没东西可搬)、或选到没有有效落点
+  /// (比如全选了,搬到哪儿都还是原样),那时留在落位阶段只会是个点不动的空壳。
+  void _setChipSel(Set<int> next, {bool enterPlacing = false}) {
+    final units = topLevelUnits(_controller.text, _foldBodies).length;
     setState(() {
       _chipSel = next;
-      _chipPlacing = false;
+      _chipPlacing =
+          (enterPlacing || _chipPlacing) &&
+          next.isNotEmpty &&
+          chipValidGaps(next, units).isNotEmpty;
       _chipMult = _sharedMult(parseToks(_controller.text), next);
     });
     _syncChipCursor();
+  }
+
+  /// 长按芯片 = 一步进落位阶段,省掉「点选中 → 再点面板上的移动」两步。
+  ///
+  /// 长按的那颗不在选中里就只搬它自己;已经在选中里则整批一起搬(长按谁都一样,
+  /// 那时用户显然是想把攒好的这批拿起来)。已经在落位里时长按不再有额外含义 ——
+  /// 那时点一下就能加减,重置成单颗反而会把攒好的批次弄没。
+  void _chipLongPress(int i) {
+    if (_chipPlacing) return;
+    final next = _chipSel.contains(i) ? {..._chipSel} : {i};
+    final units = topLevelUnits(_controller.text, _foldBodies).length;
+    if (chipValidGaps(next, units).isEmpty) return; // 没有落点就别进空阶段
+    Haptics.medium(); // 拾起
+    _setChipSel(next, enterPlacing: true);
   }
 
   // ---- 芯片模式的尾部输入框 ----
@@ -1318,6 +1348,19 @@ class _EditorPageState extends ConsumerState<EditorPage>
     );
   }
 
+  /// 拖手柄挪光标期间把吸底面板淡掉:词条栏正好压在手指下方那一片,挡着
+  /// 看不见落点;而且光标每跨过一枚词它就换一副内容,一路闪。松手再淡回来 ——
+  /// 那时才知道最终停在哪枚词上。
+  ///
+  /// **只淡不摘**:把它从布局里摘掉会让正文可视区当场长高一截,滚动位置被
+  /// 夹回同样的量,整片正文在手指底下平移 —— 而框架起拖那一刻记下的
+  /// 「手指 → 文字」偏移是**固定的**,平移之后就一直错着，越往上拖越够不着,
+  /// 到顶只剩原地弹。
+  void _setCursorDragging(bool v) {
+    if (_cursorDragging == v) return;
+    setState(() => _cursorDragging = v);
+  }
+
   /// 关闭词条栏(下次移光标进词内会再出现)
   void _closePanel() {
     if (_panelTok == null) return;
@@ -1402,6 +1445,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
                             foldBodies: foldBodies,
                             selection: _chipSel,
                             onSelectionChanged: _setChipSel,
+                            onLongPressChip: _chipLongPress,
                             onMove: _moveUnits,
                             input: _input,
                             inputFocus: _inputFocus,
@@ -1410,8 +1454,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
                             placing: _chipPlacing,
                             translating: _transSvc.isPending,
                             showTrans: settings.showTranslation,
-                            fontSize: settings.fontSize,
-                            abnormalThreshold: settings.abnormalThreshold,
+                            fontSize: settings.chipFontSize,
                           )
                         : ClipRect(
                             child: SlideTransition(
@@ -1427,7 +1470,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
                                   showTrans: settings.showTranslation,
                                   showWeightWash: settings.showWeightWash,
                                   fontSize: settings.fontSize,
-                                  abnormalThreshold: settings.abnormalThreshold,
+                                  onCursorDrag: _setCursorDragging,
                                   onFoldTap: _unfoldByName,
                                   hint: '点击输入标签,可输入中文自动触发翻译与联想',
                                 ),
@@ -1435,28 +1478,38 @@ class _EditorPageState extends ConsumerState<EditorPage>
                             ),
                           ),
                   ),
-                  // dock 入场:淡入 + 轻微上滑(高度瞬时占位,不撑盒子,避免橡皮筋)
-                  // 离场(关面板/收补全)比入场快:走了就别在路上磨蹭。
-                  AnimatedSwitcher(
-                    duration: Motion.fast,
-                    reverseDuration: Motion.quick,
-                    switchInCurve: Motion.emphasized,
-                    switchOutCurve: Motion.standard,
-                    layoutBuilder: (current, previous) => Stack(
-                      alignment: Alignment.bottomCenter,
-                      children: [...previous, ?current],
+                  // 拖光标期间只是**淡出**,位置照占:见 [_setCursorDragging]。
+                  AnimatedOpacity(
+                    duration: Motion.quick,
+                    curve: Motion.standard,
+                    opacity: _cursorDragging ? 0 : 1,
+                    child: IgnorePointer(
+                      ignoring: _cursorDragging,
+                      child:
+                          // dock 入场:淡入 + 轻微上滑(高度瞬时占位,不撑盒子,避免橡皮筋)
+                          // 离场(关面板/收补全)比入场快:走了就别在路上磨蹭。
+                          AnimatedSwitcher(
+                            duration: Motion.fast,
+                            reverseDuration: Motion.quick,
+                            switchInCurve: Motion.emphasized,
+                            switchOutCurve: Motion.standard,
+                            layoutBuilder: (current, previous) => Stack(
+                              alignment: Alignment.bottomCenter,
+                              children: [...previous, ?current],
+                            ),
+                            transitionBuilder: (child, anim) => FadeTransition(
+                              opacity: anim,
+                              child: SlideTransition(
+                                position: Tween<Offset>(
+                                  begin: const Offset(0, 0.06),
+                                  end: Offset.zero,
+                                ).animate(anim),
+                                child: child,
+                              ),
+                            ),
+                            child: _dock(),
+                          ),
                     ),
-                    transitionBuilder: (child, anim) => FadeTransition(
-                      opacity: anim,
-                      child: SlideTransition(
-                        position: Tween<Offset>(
-                          begin: const Offset(0, 0.06),
-                          end: Offset.zero,
-                        ).animate(anim),
-                        child: child,
-                      ),
-                    ),
-                    child: _dock(),
                   ),
                   EditorBottomBar(
                     onToggleMode: _toggleChipMode,
@@ -1530,14 +1583,20 @@ class _EditorPageState extends ConsumerState<EditorPage>
       placing: _chipPlacing,
       // 只有芯片模式有芯片可点;没有有效落点时(比如全选中了,搬到哪儿都
       // 还是原样)这条路给 null,按钮不出现,免得点进去一个空阶段。
-      onTogglePlacing:
-          _chipMode && chipValidGaps(live, units.length).isNotEmpty
+      onTogglePlacing: _chipMode && chipValidGaps(live, units.length).isNotEmpty
           ? () => setState(() => _chipPlacing = !_chipPlacing)
           : null,
     );
   }
 
-  Widget _dock() {
+  /// 上一次(非拖动态)算出来的 dock。拖动期间原样端出去 —— 见 [_dock]。
+  Widget _lastDock = const SizedBox.shrink(key: ValueKey('dock-empty'));
+
+  /// 拖光标期间**冻住**:面板自己换形态(词条栏 ↔ 批量面板 ↔ 无)会改高度,
+  /// 一样会把正文顶得平移。外层只把它淡掉,位置照占。
+  Widget _dock() => _cursorDragging ? _lastDock : (_lastDock = _buildDock());
+
+  Widget _buildDock() {
     // key 稳定=同一形态内更新不重播入场动画(如长按连续调权重);切形态才动画
     //
     // 芯片模式与划词多选共用同一张批量面板:前者点 chip 攒集合(可跳选),
@@ -1604,11 +1663,6 @@ class _EditorPageState extends ConsumerState<EditorPage>
         relatedLoading: tok.name == _relatedFor && _relatedLoading,
         weightStep: _settings.weightStep,
         compact: _settings.compactTagPanel,
-        warning: abnormalWeightOf(
-          _controller.text,
-          tok,
-          threshold: _settings.abnormalThreshold,
-        ),
         sdConvert:
             isSdWeightSeg(_controller.text.substring(tok.segStart, tok.segEnd))
             ? _convertSd
