@@ -35,7 +35,7 @@ Tok _tok({
   groupMult: groupMult,
 );
 
-Widget _host({required bool compact, Tok? tok, String? warning}) => MaterialApp(
+Widget _host({required bool compact, Tok? tok}) => MaterialApp(
   theme: AppTheme.light(),
   home: Scaffold(
     // 词条栏是吸底的,给它一个贴底的宿主,量到的高度就是它真实占的高度
@@ -46,7 +46,6 @@ Widget _host({required bool compact, Tok? tok, String? warning}) => MaterialApp(
         count: 1234567,
         related: const ['blue hair', 'green eyes'],
         compact: compact,
-        warning: warning,
         onWrap: (_) {},
         onSetMult: (_) {},
         onClear: () {},
@@ -134,18 +133,6 @@ void main() {
     await pumpAt(t, _host(compact: true, tok: _tok(disabled: true)));
     expect(find.byIcon(Icons.visibility), findsOneWidget);
     expect(find.byIcon(Icons.visibility_off), findsNothing);
-  });
-
-  testWidgets('警示不再占一整行,压成一枚可点的图标', (t) async {
-    await pumpAt(t, _host(compact: true, warning: '10'));
-    expect(find.byIcon(Icons.warning_amber_rounded), findsOneWidget);
-    expect(
-      t.getSize(find.byType(TagPanel)).height,
-      lessThanOrEqualTo(60),
-      reason: '带警示时也还是一行,不然「一行」这个承诺就是有条件的',
-    );
-    // 完整版那句话在这儿不该常驻(点图标才说)
-    expect(find.textContaining('疑似丢了逗号'), findsNothing);
   });
 
   testWidgets('按钮不小于第一版:尾部圆钮 34、括号键 38', (t) async {

@@ -211,7 +211,7 @@ void main() {
     // 空提示词直接放入,多枚标签包成以条目名命名的折叠
     expect(
       appendTagPositivesFolded('', [a]),
-      '<#wlop厚涂: {{wlop}}, thick paint>',
+      '<#wlop厚涂: {{wlop}}, thick paint#>',
     );
     // token 已全命中(权重/下划线归一后)→ 跳过
     expect(
@@ -221,7 +221,7 @@ void main() {
     // 部分命中 → 整串追加
     expect(
       appendTagPositivesFolded('wlop', [a]),
-      'wlop, <#wlop厚涂: {{wlop}}, thick paint>',
+      'wlop, <#wlop厚涂: {{wlop}}, thick paint#>',
     );
     // 同批内两条目重复也去重
     expect(
@@ -229,7 +229,7 @@ void main() {
         a,
         _e(TagCategory.artist, positive: 'wlop'),
       ]),
-      '<#wlop厚涂: {{wlop}}, thick paint>',
+      '<#wlop厚涂: {{wlop}}, thick paint#>',
     );
     // 单枚标签不折(折一枚只是徒增记号)
     expect(

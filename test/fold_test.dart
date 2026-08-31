@@ -50,7 +50,7 @@ void main() {
   test('创建与解散往返:内容一字不改', () {
     const t = 'a, b, c';
     final folded = foldRange(t, 1, 2, '画风');
-    expect(folded, 'a, <#画风: b, c>');
+    expect(folded, 'a, <#画风: b, c#>');
     expect(outputOf(folded), t);
 
     // 编辑器视角:收成占位符 → 点标题解散 → 内容平铺回来
@@ -73,14 +73,14 @@ void main() {
     const t = '1girl, >_<, <3';
     expect(canFoldRange(t, 1, 2), isTrue);
     final folded = foldRange(t, 1, 2, '表情');
-    expect(folded, '1girl, <#表情: >_<, <3>');
+    expect(folded, '1girl, <#表情: >_<, <3#>');
     expect(outputOf(folded), t); // 往返一字不改
   });
 
-  test('批量加权不吞折叠记号:包出来是 <#n: {a, b}> 而非 {<#n: a, b}>', () {
-    const t = '<#n: a, b>';
+  test('批量加权不吞折叠记号:包出来是 <#n: {a, b}#> 而非 {<#n: a, b}#>', () {
+    const t = '<#n: a, b#>';
     final wrapped = batchWrap(t, 0, 1, up: true);
-    expect(wrapped, '<#n: {a, b}>');
+    expect(wrapped, '<#n: {a, b}#>');
 
     // 记号没错位,折叠仍解析得出,组权重灌进两枚成员
     final folds = <FoldSpan>[];
@@ -95,8 +95,8 @@ void main() {
   test('名字合法化:分隔与记号字符会毁解析,建组时就抹平', () {
     const t = 'a, b';
     // 逗号/冒号/尖括号进名字会让记号错位,统一换成空格
-    expect(foldRange(t, 0, 1, 'x,y:z'), '<#x y z: a, b>');
-    expect(foldRange(t, 0, 1, '  '), '<#折叠: a, b>'); // 空名兜底
+    expect(foldRange(t, 0, 1, 'x,y:z'), '<#x y z: a, b#>');
+    expect(foldRange(t, 0, 1, '  '), '<#折叠: a, b#>'); // 空名兜底
   });
 
   test('未闭合的折叠容忍到文末(边打字边成组时不闪断)', () {
@@ -139,7 +139,7 @@ void main() {
   });
 
   test('foldWrap:单枚不折、已含折叠不嵌套、空串原样', () {
-    expect(foldWrap('画风', 'a, b, c'), '<#画风: a, b, c>');
+    expect(foldWrap('画风', 'a, b, c'), '<#画风: a, b, c#>');
     expect(foldWrap('画风', 'a'), 'a'); // 折一枚没意义
     expect(foldWrap('画风', '  '), '');
     expect(foldWrap('外', '<#内: a, b>'), '<#内: a, b>'); // 不嵌套
@@ -151,7 +151,7 @@ void main() {
   // 钉死 collapse/expand 的往返与降级规则。
 
   test('collapse:草稿收成占位符 + 表;重名不同体自动加序号', () {
-    const draft = 'a, <#画风: b, c>, d';
+    const draft = 'a, <#画风: b, c#>, d';
     final (display, bodies) = collapseFolds(draft);
     expect(display, 'a, ​#画风​, d');
     expect(bodies, {'画风': 'b, c'});
@@ -175,7 +175,7 @@ void main() {
   test('expand 降级:占位符被组语法包住时裸铺内容,绝不漏记号', () {
     final bodies = {'n': '1.1::a::, 0.8::b::'};
     // 独占一段 → 还原完整折叠
-    expect(expandFolds('x, ​#n​', bodies), 'x, <#n: 1.1::a::, 0.8::b::>');
+    expect(expandFolds('x, ​#n​', bodies), 'x, <#n: 1.1::a::, 0.8::b::#>');
     // 被 {} 包住 → 裸铺(组权重照常作用于成员,折叠解散)
     final braced = expandFolds('{​#n​}', bodies);
     expect(braced, '{1.1::a::, 0.8::b::}');

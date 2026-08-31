@@ -1,19 +1,21 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/store/ui_prefs.dart';
 import 'metadata_tool_page.dart';
 import 'weight_convert_page.dart';
 
 /// 工具箱(对齐 web):权重转换 / 图片元数据 两个页签,
 /// IndexedStack 保活,切页签不丢已输入内容与已选图。
-class ToolsPage extends StatefulWidget {
+class ToolsPage extends ConsumerStatefulWidget {
   const ToolsPage({super.key});
 
   @override
-  State<ToolsPage> createState() => _ToolsPageState();
+  ConsumerState<ToolsPage> createState() => _ToolsPageState();
 }
 
-class _ToolsPageState extends State<ToolsPage> {
-  int _tab = 0;
+class _ToolsPageState extends ConsumerState<ToolsPage> {
+  late int _tab = ref.read(uiPrefsProvider).toolsTab;
 
   @override
   Widget build(BuildContext context) {
@@ -39,7 +41,12 @@ class _ToolsPageState extends State<ToolsPage> {
                   ),
                 ],
                 selected: {_tab},
-                onSelectionChanged: (s) => setState(() => _tab = s.first),
+                onSelectionChanged: (s) {
+                  ref
+                      .read(uiPrefsProvider.notifier)
+                      .patch((p) => p.copyWith(toolsTab: s.first));
+                  setState(() => _tab = s.first);
+                },
                 showSelectedIcon: false,
               ),
             ),

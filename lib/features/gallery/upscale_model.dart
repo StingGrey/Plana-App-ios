@@ -10,12 +10,12 @@ import '../generate/models.dart' show isNai5Model;
 /// 放大方式。全部走 NAI 远程、全部扣点 —— 本地 ncnn-vulkan 超分已于
 /// 2026-08-24 整条砍掉(连 18MB 的 Real-ESRGAN native 一起),不再有离线档。
 enum UpscaleMethod {
-  /// NAI 传统超分(api 子域,4×,仅限固定尺寸,固定扣 7 点——用户实测确认)。
-  nai(label: 'NAI 旧版', badge: '4x', factor: 4),
-
   /// NAI V5 扩散超分(image 子域,固定 2×,**输入尺寸无白名单**,按源图 1–4 点)。
-  /// 与 [nai] 是两个并存的端点,不是新旧替代关系。
-  naiV5(label: 'V5 新版', badge: '2x', factor: 2),
+  ///
+  /// 旧的传统 4× 超分(api 子域、只收三种固定尺寸、固定 7 点)官方已下线,
+  /// 2026-08-31 从本 app 整条摘掉 —— 存量偏好里那个 `nai` 由 [UpscaleSettings]
+  /// 的 orElse 落到这一档。
+  naiV5(label: 'V5 超分', badge: '2x', factor: 2),
 
   /// NAI 图生图重绘放大(倍率可选,会轻微改画面;走生成管线,扣点)。
   /// 倍率见 [EnhanceScale],所以 [factor] 无意义。
@@ -35,17 +35,6 @@ enum UpscaleMethod {
   /// 固定倍率;0 = 由别处决定([redraw] 走 [EnhanceScale])。
   final int factor;
 }
-
-/// NAI 传统超分支持的固定分辨率(其他尺寸后端直接拒)。
-const naiUpscaleResolutions = <(int, int)>[
-  (832, 1216),
-  (1216, 832),
-  (1024, 1024),
-];
-
-/// 当前尺寸能否走 NAI 传统超分。
-bool naiUpscaleSupportsSize(int w, int h) =>
-    naiUpscaleResolutions.contains((w, h));
 
 // ==================== NAI V5 扩散超分 ====================
 
@@ -259,7 +248,8 @@ class UpscaleSettings {
 
   factory UpscaleSettings.fromJson(Map<String, dynamic> j) {
     // `redraw15x` 是重绘那一档改成可选倍率之前的名字,存量偏好照样认。
-    // `localFast` / `localQuality` 是砍掉的本地超分,落到默认档。
+    // `localFast` / `localQuality`(砍掉的本地超分)与 `nai`(官方已下线的
+    // 传统 4×)都没有对应档位了,由下面的 orElse 落到 V5 超分。
     final m = j['method'] == 'redraw15x' ? 'redraw' : j['method'];
     return UpscaleSettings(
       method: UpscaleMethod.values.firstWhere(

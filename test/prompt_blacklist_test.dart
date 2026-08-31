@@ -269,6 +269,7 @@ void main() {
             selection: const {},
             onSelectionChanged: (_) {},
             onMove: (_) {},
+            onLongPressChip: (_) {},
             input: input,
             inputFocus: focus,
             onInputChanged: (_) {},

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plana_app/features/editor/data/local_tag_db.dart';
 import 'package:plana_app/features/editor/data/suggestions.dart';
@@ -80,5 +82,127 @@ void main() {
     expect(LocalTagDb.firstZh('a/b'), 'a');
     expect(LocalTagDb.firstZh(null), isNull);
     expect(LocalTagDb.firstZh(' , '), isNull);
+    // 竖线是 byzod 那半边词表的分隔符,原先漏在名单外 —— smile、ribbon、
+    // panties 这些百万热度的词整串「微笑|笑容」画进了注音层。
+    expect(LocalTagDb.firstZh('微笑|笑容'), '微笑');
+    expect(LocalTagDb.firstZh('张开腿|M字张腿|桃色蹲姿'), '张开腿');
+    expect(LocalTagDb.firstZh('心｜心形'), '心');
+    // 括号内的分隔符不算数:Fate/型月系的作品名自带斜杠,原先切在半括号上,
+    // 「玉藻前（命运/额外）」变成「玉藻前（命运」,83 条角色名都是这么断的。
+    expect(LocalTagDb.firstZh('玉藻前（命运/额外）'), '玉藻前（命运/额外）');
+    expect(LocalTagDb.firstZh('珊璞 (乱马 1/2)'), '珊璞 (乱马 1/2)');
+    expect(LocalTagDb.firstZh('莫德雷德 (Fate/Apocrypha),红saber'), '莫德雷德 (Fate/Apocrypha)');
+    // 括号外照切
+    expect(LocalTagDb.firstZh('户外/野战'), '户外');
+    // 只有右括号(数据脏)不能把深度带成负数,否则后面的分隔符就切不掉了
+    expect(LocalTagDb.firstZh('甲)乙,丙'), '甲)乙');
+  });
+
+  test('firstZh:标签自身带斜杠时,译名里的斜杠算名字不算分隔符', () {
+    // 不给 tag 就按老规矩切 —— 「命运/大订单」削成「命运」,跟 fate_(series) 撞了
+    expect(LocalTagDb.firstZh('Fate/Zero'), 'Fate');
+    expect(LocalTagDb.firstZh('Fate/Zero', tag: 'fate/zero'), 'Fate/Zero');
+    expect(LocalTagDb.firstZh('乱马1/2', tag: 'ranma_1/2'), '乱马1/2');
+    expect(LocalTagDb.firstZh('22/7', tag: '22/7'), '22/7');
+    // 斜杠豁免只对斜杠生效,别的分隔符照切
+    expect(LocalTagDb.firstZh('K/DA,女团', tag: 'k/da_(league_of_legends)'), 'K/DA');
+    // 标签不含斜杠时,斜杠仍是多译分隔符
+    expect(LocalTagDb.firstZh('伪娘/变装', tag: 'crossdressing'), '伪娘');
+  });
+
+  test('静态兜底表只放离线库没有的词:灌注前后不跳字', () async {
+    // translationOf 先查缓存、缺了才扫静态表。两边都有同一个词、译名却不同的话,
+    // 用户会在灌注完成那一刻看到注音**跳字**(清理前实测 6 条:red eyes 红眼→红眼睛、
+    // bad anatomy 解剖错误→身体结构崩坏、yuuki asuna 结城明日奈→亚丝娜…)。
+    const conflicted = ['red eyes', 'bad anatomy', 'bad hands', 'jpeg artifacts',
+        'chiaroscuro', 'yuuki asuna'];
+    final before = {for (final w in conflicted) w: translationOf(w)};
+    await LocalTagDb().warmTagMeta();
+    for (final w in conflicted) {
+      final after = translationOf(w);
+      expect(after, isNotNull, reason: '$w 灌注后该有译名');
+      if (before[w] != null) {
+        expect(before[w], after, reason: '$w 灌注前后不能变字');
+      }
+    }
+    // 库里天生没有的质量词仍要秒出(它们不是 Danbooru 标签)
+    expect(translationOf('masterpiece'), isNotNull);
+    expect(translationOf('best quality'), isNotNull);
+  });
+
+  test('渐进灌注:第一片就能查到最热的词,不必等整轮', () async {
+    // 整轮灌注在手机上要一两秒。词库按热度降序,所以前几片就覆盖了真实提示词里
+    // 大部分的词 —— 编辑器据此提前刷注音,否则首屏是"提示词先出来、注音过一会儿
+    // 整片冒出来"。这里钉住:回调时热门词必须已经可查。
+    final db = LocalTagDb();
+    final atFirstChunk = <String, String?>{};
+    var chunks = 0;
+    await db.warmTagMeta(
+      onChunk: () {
+        if (chunks++ == 0) {
+          atFirstChunk['1girl'] = translationOf('1girl');
+          atFirstChunk['solo'] = translationOf('solo');
+          atFirstChunk['long hair'] = translationOf('long hair');
+        }
+      },
+    );
+    expect(chunks, 3, reason: '只在前三个进度点刷,刷太勤注音层会反复重排');
+    // 多个调用者各自的 onChunk 都要收到 —— 编辑器和同屏若干 PromptChips 会各调
+    // 一次,记忆化写成 `_warming ??=` 的话只有头一个能收到,其余只能干等整轮。
+    final db2 = LocalTagDb();
+    var a = 0, b = 0;
+    final f = db2.warmTagMeta(onChunk: () => a++);
+    unawaited(db2.warmTagMeta(onChunk: () => b++));
+    await f;
+    expect(a, 3);
+    expect(b, 3, reason: '第二个调用者也要收到分片回调');
+    expect(atFirstChunk['1girl'], isNotNull);
+    expect(atFirstChunk['solo'], isNotNull);
+    expect(atFirstChunk['long hair'], isNotNull);
+  });
+
+  test('别名也进反查缓存:hires / 1girls / oppai 这类写法认得', () async {
+    await LocalTagDb().warmTagMeta();
+    // 别名是同一个标签的另一种写法,译名和热度都该跟着正名走
+    expect(translationOf('hires'), translationOf('highres'));
+    expect(countOf('hires'), countOf('highres'));
+    expect(translationOf('1girls'), translationOf('1girl'));
+    expect(translationOf('longhair'), translationOf('long hair'));
+    expect(translationOf('oppai'), translationOf('breasts'));
+    // 下划线写法同样走 metaKey 归一
+    expect(translationOf('high_res'), translationOf('highres'));
+    // 正名优先:别名不能盖掉一个本身就是正式标签的词
+    expect(translationOf('solo'), isNotNull);
+  });
+
+  test('反查键归一:下划线/连续空白/大小写三种写法都命中', () {
+    // 灌注写进去的是空格形态(warmTagMeta 用 e.tag.replaceAll('_', ' ')),
+    // 而从 Danbooru 复制来的提示词是下划线形态 —— 2026-08-28 之前后者一条都
+    // 命中不了:注音层整条空白、词条栏没热度,还会把这些词全白送去后端问一遍。
+    cacheTagMeta('zzz long hair', trans: '长发', count: 4350743);
+    for (final form in [
+      'zzz long hair',
+      'zzz_long_hair',
+      'zzz  long   hair',
+      'ZZZ_Long_Hair',
+      '  zzz long hair  ',
+    ]) {
+      expect(translationOf(form), '长发', reason: form);
+      expect(countOf(form), 4350743, reason: form);
+    }
+  });
+
+  test('cacheTagMeta:译名等于标签本身不收,刻意排版过的专有名词照收', () {
+    cacheTagMeta('rwby', trans: 'rwby');
+    expect(translationOf('rwby'), isNull, reason: '原样透传等于没翻译,占坑会挡住后端');
+    cacheTagMeta('pixiv id', trans: 'pixiv id');
+    expect(translationOf('pixiv id'), isNull, reason: '下划线转空格后仍是原样');
+    cacheTagMeta('zzz_echo_tag', trans: 'zzz echo tag');
+    expect(translationOf('zzz_echo_tag'), isNull, reason: '两边归一后相同,同样是没翻译');
+
+    cacheTagMeta('vocaloid', trans: 'VOCALOID');
+    expect(translationOf('vocaloid'), 'VOCALOID', reason: '专有名词保持原文就是正确答案');
+    cacheTagMeta('muv-luv', trans: 'Muv-Luv');
+    expect(translationOf('muv-luv'), 'Muv-Luv');
   });
 }

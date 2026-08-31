@@ -28,22 +28,6 @@ class WikiPreview {
       otherNames.isNotEmpty;
 }
 
-/// 中文补全里的 **AI 推荐 / AI 直译**暂时停用(2026-08-24,与 web 同步)。
-///
-/// 这两条都打 `/api/translate/en2zh`,服务端模型是 deepseek-v4-flash —— 而它在
-/// commandcode 渠道上**思考链关不掉**:thinking / reasoning / enable_thinking /
-/// chat_template_kwargs 这些字段网关一律静默无视(传个非法值也照回 200),唯一
-/// 认的 `reasoning_effort` 只收 low|medium|high|xhigh|max,没有 off。
-/// 「推荐 Danbooru 标签」这类要判断的 prompt 光思考就烧 120~500+ token,把这里
-/// 传的 max_tokens(50 / 200)吃得干干净净 → `finish_reason=length`、content 恒为
-/// 空串。也就是每次中文查词白等 2~4 秒,一条结果都拿不到。
-///
-/// 换成不思考的模型、或找到真能关思考的开关之后,把这里改回 false 即可。
-/// 不在此列的两条:整句「翻译为英文」([TagCompletion.translateNatural])是简单
-/// 照译(思考量 13~95)且给了 500 额度;批量译名走另一条链路(max_tokens 1500)。
-/// 两者实测都还能出结果,别顺手一起关了。
-const _kAiTagsDisabled = true;
-
 /// 标签补全引擎。按生效来源分流:
 ///  - `danbooru`:**离线**词库 [LocalTagDb](assets/danbooru.tsv),仅英文,不碰网络
 ///    (手机直连 danbooru.donmai.us 被 Cloudflare 挡死,早改离线了)。
@@ -84,7 +68,6 @@ class TagCompletion {
   // 清空只损失命中率,下次查询重新拉取。
   static const _cacheCap = 500;
   final _cache = <String, SuggestResult>{};
-  final _aiCache = <String, List<Suggestion>>{};
   final _relatedCache = <String, List<String>>{};
   final _originChars = <String, List<String>>{}; // 作品 → 该作品下的角色池
   final _rand = Random();
@@ -290,18 +273,17 @@ class TagCompletion {
     return tags;
   }
 
-  /// 中文:语义搜词(/tags/search)+ AI 推荐(LLM)合并去重。
-  /// AI 那一路现已停用,见 [_kAiTagsDisabled] —— 实际只剩语义搜词。
+  /// 中文:语义搜词(`/api/tags/search`)。
+  ///
+  /// 这里原先还并着一路「AI 推荐 / AI 直译」(中文查询 → LLM 猜 Danbooru 标签),
+  /// 2026-08-24 停用、2026-08-28 删除:它打的是 `/api/translate/en2zh` —— 一个
+  /// 收任意 messages 的通用 chat 代理,那个端点已被收编成固定格式的翻译接口。
+  /// web 那半边(aiRecommendTags / aiDirectTranslate)同时删掉。
   Future<List<Suggestion>> _enhancedChineseTags(String q) async {
-    final searchF = _backendSearch(q);
-    final aiF = _kAiTagsDisabled
-        ? Future.value(const <Suggestion>[])
-        : _aiTags(q);
-    final search = await searchF;
-    final ai = await aiF;
     final seen = <String>{};
     final out = <Suggestion>[];
-    for (final s in [...search, ...ai]) {
+    // 去重保留:上游同一次搜索里角色与作品分类可能给出同名条目。
+    for (final s in await _backendSearch(q)) {
       if (seen.add(s.text.toLowerCase())) out.add(s);
     }
     // 「翻译为英文」行:含中文逗号或 >3 个 CJK 字 → 顶部插一条整句翻译入口
@@ -321,88 +303,28 @@ class TagCompletion {
   }
 
   /// 「翻译为英文」:中文整句 → 流畅英文短句(非标签)。仅选中该行时调。
+  ///
+  /// 提示词 2026-08-28 收进了服务端(`_NATURALIZE_INSTRUCTION`),这边只递一句中文。
+  /// 原先走 `/api/translate/en2zh` —— 那是个收任意 `messages` 的通用 chat 代理,
+  /// 提示词握在客户端手里等于对外开了个免费 LLM;它现已收紧成模板路由,只认已发布
+  /// 版本写死的那几套 prompt(所以旧 APK 照常能用)。
   Future<String?> translateNatural(String zh) async {
-    final content = await _aiCall(
-      '你是 AI 绘画提示词翻译器。把中文描述翻译成流畅的英文自然语言短句(用于 NovelAI '
-      '生成,不要转成标签格式、不要多余解释),只返回翻译结果。中文:$zh',
-      500,
-    );
-    return content?.trim();
-  }
-
-  /// 中文 → Danbooru 标签(AI:直译 1 个 + 推荐 5-8 个),best-effort,缓存防限流。
-  /// **当前停用**,见 [_kAiTagsDisabled]。
-  Future<List<Suggestion>> _aiTags(String zh) async {
-    final hit = _aiCache[zh];
-    if (hit != null) return hit;
-    final r = await Future.wait([
-      _aiCall(
-        '将以下中文描述直接翻译为一个英文 Danbooru 标签,用下划线连接单词,全小写,'
-        '只输出标签本身、不要任何解释。中文:$zh',
-        50,
-      ),
-      _aiCall(
-        '你是 Danbooru 标签专家。根据中文描述推荐 5-8 个最相关且真实存在的 Danbooru '
-        '英文标签,每行一个、用下划线连接单词、按相关度排序,只输出标签不要解释。中文:$zh',
-        200,
-      ),
-    ]);
-    final seen = <String>{};
-    final out = <Suggestion>[];
-    for (final t in [
-      ..._parseAiTags(r[0], single: true),
-      ..._parseAiTags(r[1], single: false),
-    ]) {
-      final text = t.replaceAll('_', ' ');
-      if (seen.add(text)) {
-        out.add(Suggestion(text: text, kind: SuggestionKind.tag));
-      }
-    }
-    _capped(_aiCache, zh, out);
-    return out;
-  }
-
-  Future<String?> _aiCall(String prompt, int maxTokens) async {
+    if (baseUrl.isEmpty) return null;
     try {
-      final resp = await _client
+      final r = await _client
           .post(
-            Uri.parse('$baseUrl/api/translate/en2zh'),
+            Uri.parse('$baseUrl/api/tags/naturalize'),
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'messages': [
-                {'role': 'user', 'content': prompt},
-              ],
-              'temperature': 0.1,
-              'max_tokens': maxTokens,
-            }),
+            body: jsonEncode({'query': zh}),
           )
           .timeout(const Duration(seconds: 20));
-      if (resp.statusCode != 200) return null;
-      final j = jsonDecode(utf8.decode(resp.bodyBytes));
-      if (j is Map) {
-        final choices = j['choices'];
-        if (choices is List && choices.isNotEmpty) {
-          final msg = choices.first['message'];
-          if (msg is Map) return msg['content'] as String?;
-        }
-      }
-    } catch (_) {}
-    return null;
-  }
-
-  List<String> _parseAiTags(String? content, {required bool single}) {
-    if (content == null) return const [];
-    final out = <String>[];
-    for (var line in content.split('\n')) {
-      line = line.replaceFirst(RegExp(r'^[-*•\d.)\s]+'), '').trim();
-      if (line.isEmpty) continue;
-      line = line.toLowerCase().replaceAll(' ', '_');
-      if (RegExp(r'^[a-z0-9_()]+$').hasMatch(line)) {
-        out.add(line);
-        if (single || out.length >= 8) break;
-      }
+      if (r.statusCode != 200) return null;
+      final j = jsonDecode(utf8.decode(r.bodyBytes));
+      final text = j is Map ? j['text'] : null;
+      return text is String && text.trim().isNotEmpty ? text.trim() : null;
+    } catch (_) {
+      return null;
     }
-    return out;
   }
 
   Future<List<Suggestion>> _backendAutocomplete(String q) async {

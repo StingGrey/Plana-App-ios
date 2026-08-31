@@ -7,8 +7,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/store/app_stores.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/util/prompt_convert.dart' show replacePromptUnderscores;
 import '../../core/theme/editor_theme.dart';
-import '../../core/util/prompt_convert.dart';
 import '../generate/generate_state.dart';
 import '../generate/widgets/common.dart' show hintSnack;
 import 'data/local_tag_db.dart';
@@ -16,9 +16,9 @@ import 'data/suggestions.dart';
 import 'data/tag_completion.dart';
 import 'data/tag_translation_service.dart';
 import 'editor_models.dart';
+import 'prompt_blacklist.dart';
 import 'editor_settings.dart';
 import 'editor_state.dart';
-import 'prompt_blacklist.dart';
 import 'widgets/annotated_field.dart';
 import 'widgets/chip_flow_view.dart';
 import 'widgets/completion_bar.dart';
@@ -61,15 +61,18 @@ class _EditorPageState extends ConsumerState<EditorPage>
   /// 芯片模式的尾部输入框(唯一打字入口)。控制器提在页面上:补全管线要读它。
   final TextEditingController _input = TextEditingController();
 
-  /// 芯片尾部输入框的上一版正文,用于区分逐字输入与整段粘贴。逐字时等逗号/
-  /// 换行提交后再过滤,整段粘贴则连末尾最后一枚也立即过滤。
-  String _prevInput = '';
-
   final FocusNode _inputFocus = FocusNode();
 
-  String get _inputText => _input.text;
+  /// 输入框的**有效**文本:去掉常驻的零宽占位符(见 [kChipInputPad])。
+  /// 凡是读 _input.text 的地方都走这里 —— 占位符不是用户打的字。
+  String get _inputText => chipInputBody(_input.text);
 
-  /// 把芯片模式的尾部输入框清空。
+  /// 上一次的有效文本。用来分辨「空框退格」和「把打了一半的词全选删掉」——
+  /// 两者都让框子变空,但后者不该顺手把标签也删了。
+  String _prevInputBody = '';
+
+  /// 把输入框清成「只剩占位符」的空态。芯片模式下清空一律走这里:
+  /// 真清成空串的话,下一次空框退格就又收不到信号了。
   void _resetInput() => _setInputBody('');
 
   /// 正/负切换时编辑区的方向滑入(切负面从右进、切正面从左进)。
@@ -82,6 +85,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
   Timer? _debounce;
   bool _muting = false;
   String _prevText = '';
+  TextSelection _prevSel = const TextSelection.collapsed(offset: -1);
   String? _syncedText;
   String _query = '';
   SuggestResult _result = const SuggestResult();
@@ -90,6 +94,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
   bool _translating = false; // 「翻译为英文」LLM 在途(补全条切「翻译中」态)
   bool _sheetOpen = false; // 形态 B(分类竖向列表)弹层是否打开
   Tok? _panelTok; // 光标所在词条(显示词条栏)
+  bool _cursorDragging = false; // 正在拖水滴手柄挪光标(吸底面板暂时收起)
   (int, int)? _multiRange; // 划词多选覆盖的词条区间 [first, last](批量面板)
   double _multiMult = 1.0; // 批量面板的统一数值权重读数
   List<String> _related = const []; // 当前词的关联标签(异步拉取)
@@ -118,8 +123,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
   EditorSettings get _settings =>
       ref.read(editorSettingsProvider).value ?? const EditorSettings();
 
-  /// 只有“自动删”模式会改写输入；标红模式的规则仅用于呈现与
-  /// 用户主动触发的“全部删除”。
+  /// 只有自动删除模式会改写输入；标红模式仅影响呈现。
   List<String> get _autoRemoveBlacklist =>
       _settings.promptBlacklistMode == PromptBlacklistMode.remove
       ? _settings.promptBlacklist
@@ -138,12 +142,22 @@ class _EditorPageState extends ConsumerState<EditorPage>
       },
     );
     _controller.addListener(_onCtrl);
+    // 占位符要从一开始就在:框子真空过一次,那一次的退格就收不到信号。
     _resetInput();
-    // 灌注离线词库全量翻译(否则注音只显示补全零星回填过的词);
-    // 灌完刷新注音层/词条栏。幂等,重复进编辑器不重复灌。
-    ref.read(localTagDbProvider).warmTagMeta().then((_) {
-      if (mounted) _refreshAnnotations();
-    });
+    // 灌注离线词库全量翻译(否则注音只显示补全零星回填过的词)。整轮在手机上要
+    // 一两秒,干等完才刷的话首屏是"提示词先出来、注音过一会儿整片冒出来" ——
+    // 所以灌到前几片就各刷一次(词库按热度降序,前 8000 条已覆盖真实提示词约七成),
+    // 整轮完再刷最后一次收尾。幂等,重复进编辑器不重复灌。
+    ref
+        .read(localTagDbProvider)
+        .warmTagMeta(
+          onChunk: () {
+            if (mounted) _refreshAnnotations();
+          },
+        )
+        .then((_) {
+          if (mounted) _refreshAnnotations();
+        });
     // 增强模式的后端翻译通道:回填到货即刷新注音。
     _transSvc = ref.read(tagTranslationServiceProvider);
     _transSvc.addListener(_refreshAnnotations);
@@ -286,6 +300,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
       );
       _syncedText = next.activeText;
       _prevText = next.activeText;
+      _prevSel = _controller.selection;
       _muting = false;
       _reroute();
       _feedTranslation(next.activeText); // 载入/切 tab 的既有文本也问翻译
@@ -298,6 +313,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
 
   void _onCtrl() {
     if (_muting) return;
+    _prevSel = _controller.selection;
     final text = _controller.text;
     if (text != _prevText) {
       if (_guardFoldEdit(text)) return; // 折叠被啃 → 改判为整只删,已自行落地
@@ -305,9 +321,6 @@ class _EditorPageState extends ConsumerState<EditorPage>
         text,
         _autoRemoveBlacklist,
         cursor: _controller.selection.baseOffset,
-        // 一次插入多个字符视为粘贴/候选词落地:末尾未带逗号也要立即过滤。
-        // 单字符逐打则只处理已有分隔符的完整 tag,避免 `girl` 黑名单让
-        // 用户永远打不出 `girl on top`。
         completedOnly: _insertedLength(_prevText, text) <= 1,
         foldBodies: _foldBodies,
       );
@@ -319,6 +332,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
         );
         _prevText = filtered.text;
         _syncedText = filtered.text;
+        _prevSel = _controller.selection;
         _muting = false;
         _notifier.editActive(filtered.text);
         _routeTyping();
@@ -332,28 +346,23 @@ class _EditorPageState extends ConsumerState<EditorPage>
       _routeTyping(); // 打字一律走补全
       _feedTranslation(text);
     } else {
+      // 保留原生局部选区。iOS 输入法在退格/撤销自动修正时会短暂产生
+      // 局部选区；自动扩成整枚标签会让下一次退格误删整词。
       if (_snapCaretOutOfFold()) return;
-      // 原生选区原样保留。不能把单词选区自动扩成整枚提示词:iOS 输入法在
-      // 连续退格/撤销自动修正时也会短暂产生选区,扩张后下一次退格会整词删除。
-      _routeCursor();
+      _routeCursor(); // 纯移光标 → 右邻判定
     }
   }
 
-  /// 取一次编辑真正插入的新字符数。不能只看总长度差:选中一长段后粘贴同样
-  /// 长的内容时总长度不变,但显然仍是一次整段粘贴。
   int _insertedLength(String before, String after) {
     var prefix = 0;
-    final shortest = before.length < after.length
-        ? before.length
-        : after.length;
+    final shortest = before.length < after.length ? before.length : after.length;
     while (prefix < shortest && before[prefix] == after[prefix]) {
       prefix++;
     }
     var suffix = 0;
     while (suffix < before.length - prefix &&
         suffix < after.length - prefix &&
-        before[before.length - 1 - suffix] ==
-            after[after.length - 1 - suffix]) {
+        before[before.length - 1 - suffix] == after[after.length - 1 - suffix]) {
       suffix++;
     }
     return after.length - prefix - suffix;
@@ -362,8 +371,9 @@ class _EditorPageState extends ConsumerState<EditorPage>
   void _showBlacklistRemoval(int count) {
     if (count <= 0) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      hintSnack(context, '已自动移除 $count 个黑名单标签', icon: Icons.block_outlined);
+      if (mounted) {
+        hintSnack(context, '已自动移除 $count 个黑名单标签', icon: Icons.block_outlined);
+      }
     });
   }
 
@@ -382,7 +392,6 @@ class _EditorPageState extends ConsumerState<EditorPage>
     );
     final count = filtered.removedCount + inputFiltered.removedCount;
     if (count == 0) return;
-
     if (_chipMode && filtered.changed) _setChipSel({});
     if (filtered.changed) _applyText(filtered.text, filtered.cursor);
     if (inputFiltered.changed) _setInputBody(inputFiltered.text);
@@ -424,7 +433,8 @@ class _EditorPageState extends ConsumerState<EditorPage>
       if (off <= r.start || off >= r.end) continue;
       _muting = true;
       final to = (off - r.start) < (r.end - off) ? r.start : r.end;
-      _controller.selection = TextSelection.collapsed(offset: to);
+      _prevSel = TextSelection.collapsed(offset: to);
+      _controller.selection = _prevSel;
       _muting = false;
       _routeCursor();
       return true;
@@ -540,7 +550,8 @@ class _EditorPageState extends ConsumerState<EditorPage>
       final at = u.isFold ? u.start : u.tok!.nameStart;
       if (_controller.selection.baseOffset != at) {
         _muting = true;
-        _controller.selection = TextSelection.collapsed(offset: at);
+        _prevSel = TextSelection.collapsed(offset: at);
+        _controller.selection = _prevSel;
         _muting = false;
       }
       if (!u.isFold && _settings.enableTagPanel) tok = u.tok;
@@ -605,19 +616,6 @@ class _EditorPageState extends ConsumerState<EditorPage>
       var res = await ref.read(tagCompletionProvider).query(word);
       // 实体建议关闭:只留标签行(引擎缓存不区分设置,出口过滤)
       if (!_settings.entitySuggest) res = SuggestResult(tags: res.tags);
-      final blacklist = _autoRemoveBlacklist;
-      if (blacklist.isNotEmpty) {
-        res = SuggestResult(
-          characters: res.characters,
-          ocs: res.ocs,
-          works: res.works,
-          artists: res.artists,
-          tags: [
-            for (final tag in res.tags)
-              if (!isPromptTagBlacklisted(tag.text, blacklist)) tag,
-          ],
-        );
-      }
       // 被后续输入/移光标取代,或光标已移出该词 → 丢弃这次结果
       if (!mounted || gen != _queryGen || _queryWord() != word) return;
       setState(() {
@@ -750,6 +748,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
     );
     _prevText = newText;
     _syncedText = newText;
+    _prevSel = _controller.selection;
     _muting = false;
     _notifier.editActive(newText, structural: true);
     _feedTranslation(newText); // 同 _applyText:_muting 压掉了 _onCtrl,得自己喂
@@ -775,6 +774,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
     );
     _prevText = text;
     _syncedText = text;
+    _prevSel = _controller.selection;
     _muting = false;
     _notifier.editActive(text, structural: structural);
     // 打字走 _onCtrl 会喂翻译,这条路径 _muting 压掉了 _onCtrl,必须自己喂 ——
@@ -941,32 +941,68 @@ class _EditorPageState extends ConsumerState<EditorPage>
 
   /// 换一批选中:重算起步读数(批量数值是**统一设定**不是相对加减,留着上
   /// 一批的读数会指着不相干的词),并把光标同步到新的单选目标上。
-  void _setChipSel(Set<int> next) {
+  ///
+  /// **落位阶段不再被改选中踢掉** —— 进了落位还能接着加减要搬的东西,不必先退
+  /// 出来重选。只有两种情况自动退出:选空了(没东西可搬)、或选到没有有效落点
+  /// (比如全选了,搬到哪儿都还是原样),那时留在落位阶段只会是个点不动的空壳。
+  void _setChipSel(Set<int> next, {bool enterPlacing = false}) {
+    final units = topLevelUnits(_controller.text, _foldBodies).length;
     setState(() {
       _chipSel = next;
-      _chipPlacing = false;
+      _chipPlacing =
+          (enterPlacing || _chipPlacing) &&
+          next.isNotEmpty &&
+          chipValidGaps(next, units).isNotEmpty;
       _chipMult = _sharedMult(parseToks(_controller.text), next);
     });
     _syncChipCursor();
   }
 
+  /// 长按芯片 = 一步进落位阶段,省掉「点选中 → 再点面板上的移动」两步。
+  ///
+  /// 长按的那颗不在选中里就只搬它自己;已经在选中里则整批一起搬(长按谁都一样,
+  /// 那时用户显然是想把攒好的这批拿起来)。已经在落位里时长按不再有额外含义 ——
+  /// 那时点一下就能加减,重置成单颗反而会把攒好的批次弄没。
+  void _chipLongPress(int i) {
+    if (_chipPlacing) return;
+    final next = _chipSel.contains(i) ? {..._chipSel} : {i};
+    final units = topLevelUnits(_controller.text, _foldBodies).length;
+    if (chipValidGaps(next, units).isEmpty) return; // 没有落点就别进空阶段
+    Haptics.medium(); // 拾起
+    _setChipSel(next, enterPlacing: true);
+  }
+
   // ---- 芯片模式的尾部输入框 ----
 
   /// 打字:逗号/换行即定稿(web commitInput 同款),其余交给补全。
-  /// 空输入框上的退格不做额外处理;删除整枚标签只走显式删除操作。
+  ///
+  /// 开头先认一件事:占位符还在不在。它没了 = 用户在**空框**上按了退格
+  /// (框里有字时退格删的是字,占位符在最前面轮不到它)——那一下转成
+  /// 「删掉最后一枚标签」。见 [kChipInputPad]。
   void _onInputChanged(String raw) {
+    var body = chipInputBody(raw);
+    final wasEmpty = _prevInputBody.isEmpty;
     final filtered = filterPromptBlacklist(
-      raw,
+      body,
       _autoRemoveBlacklist,
-      cursor: raw.length,
-      completedOnly: _insertedLength(_prevInput, raw) <= 1,
+      cursor: body.length,
+      completedOnly: _insertedLength(_prevInputBody, body) <= 1,
     );
-    var body = filtered.text;
     if (filtered.changed) {
+      body = filtered.text;
       _setInputBody(body);
       _showBlacklistRemoval(filtered.removedCount);
-    } else {
-      _prevInput = raw;
+      raw = '$kChipInputPad$body';
+    }
+    _prevInputBody = body;
+    if (!raw.startsWith(kChipInputPad)) {
+      _setInputBody(body);
+      // 之前本来就是空的才算退格。之前有字(全选删掉、整段替换)只是普通清空。
+      if (body.isEmpty && wasEmpty) {
+        _chipBackspace();
+        return;
+      }
+      // 极少见:输入法整段替换把占位符一起带走了。补回去当普通输入继续。
     }
     final m = RegExp(r'[,，\n]').firstMatch(body);
     if (m != null) {
@@ -980,13 +1016,34 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _scheduleQuery();
   }
 
-  /// 写回输入框,光标落在正文末尾。
+  /// 写回输入框:占位符恒在最前,光标落在正文末尾。
   void _setInputBody(String body) {
-    _prevInput = body;
+    _prevInputBody = body;
     _input.value = TextEditingValue(
-      text: body,
-      selection: TextSelection.collapsed(offset: body.length),
+      text: '$kChipInputPad$body',
+      selection: TextSelection.collapsed(
+        offset: kChipInputPad.length + body.length,
+      ),
     );
+  }
+
+  /// 空框上按退格 = 删掉最后一枚标签(有选中就删选中的那批)。
+  ///
+  /// 芯片流里没有光标,标签也不是输入框里的字符,退格不会自然地落到它们身上;
+  /// 不接这一下,想清掉一串标签只能一枚枚点选再点删除。
+  ///
+  /// 连着按就连着删,一次一枚 —— 删过头有撤销兜底([_applyText] 每次都进撤销栈)。
+  void _chipBackspace() {
+    if (_chipSel.isNotEmpty) {
+      _chipDelete();
+      return;
+    }
+    final units = topLevelUnits(_controller.text, _foldBodies);
+    if (units.isEmpty) return;
+    final (text, cursor) = deleteUnits(_controller.text, _foldBodies, {
+      units.length - 1,
+    });
+    _applyText(text, cursor);
   }
 
   /// 回车/「直接添加」:整条落成标签。
@@ -1004,11 +1061,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
   /// 末尾追加一枚标签。[quiet] = 不重算 dock(补全弹层里连续插入时用:
   /// 列表得冻在原地,不能因为插了一枚就整块塌下去)。
   void _appendTag(String tag, {bool quiet = false}) {
-    final filtered = filterPromptBlacklist(
-      tag,
-      _autoRemoveBlacklist,
-      foldBodies: _foldBodies,
-    );
+    final filtered = filterPromptBlacklist(tag, _autoRemoveBlacklist);
     if (filtered.changed) _showBlacklistRemoval(filtered.removedCount);
     final next = appendUnit(_controller.text, filtered.text);
     if (next == _controller.text) return;
@@ -1020,6 +1073,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
       );
       _prevText = next;
       _syncedText = next;
+      _prevSel = _controller.selection;
       _muting = false;
       _notifier.editActive(next, structural: true);
       _feedTranslation(next); // _muting 压掉了 _onCtrl,得自己喂
@@ -1207,6 +1261,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
     );
     _prevText = newText;
     _syncedText = newText;
+    _prevSel = _controller.selection;
     _muting = false;
     _notifier.editActive(newText, structural: true);
     // 批量操作只改权重/禁用,理论上不带进新名字;仍统一喂一次,让「压了
@@ -1424,6 +1479,19 @@ class _EditorPageState extends ConsumerState<EditorPage>
     }
   }
 
+  /// 拖手柄挪光标期间把吸底面板淡掉:词条栏正好压在手指下方那一片,挡着
+  /// 看不见落点;而且光标每跨过一枚词它就换一副内容,一路闪。松手再淡回来 ——
+  /// 那时才知道最终停在哪枚词上。
+  ///
+  /// **只淡不摘**:把它从布局里摘掉会让正文可视区当场长高一截,滚动位置被
+  /// 夹回同样的量,整片正文在手指底下平移 —— 而框架起拖那一刻记下的
+  /// 「手指 → 文字」偏移是**固定的**,平移之后就一直错着，越往上拖越够不着,
+  /// 到顶只剩原地弹。
+  void _setCursorDragging(bool v) {
+    if (_cursorDragging == v) return;
+    setState(() => _cursorDragging = v);
+  }
+
   /// 关闭词条栏(下次移光标进词内会再出现)
   void _closePanel() {
     if (_panelTok == null) return;
@@ -1456,12 +1524,8 @@ class _EditorPageState extends ConsumerState<EditorPage>
         if (p.entitySuggest != next.entitySuggest && _query.isNotEmpty) {
           _scheduleQuery();
         }
-        final blacklistChanged = !listEquals(
-          p.promptBlacklist,
-          next.promptBlacklist,
-        );
-        final blacklistModeChanged =
-            p.promptBlacklistMode != next.promptBlacklistMode;
+        final blacklistChanged = !listEquals(p.promptBlacklist, next.promptBlacklist);
+        final blacklistModeChanged = p.promptBlacklistMode != next.promptBlacklistMode;
         if (blacklistChanged || blacklistModeChanged) {
           _controller.promptBlacklist = next.promptBlacklist;
           _controller.highlightPromptBlacklist =
@@ -1475,9 +1539,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
               foldBodies: _foldBodies,
             );
             var removed = filtered.removedCount;
-            if (filtered.changed) {
-              _applyText(filtered.text, filtered.cursor);
-            }
+            if (filtered.changed) _applyText(filtered.text, filtered.cursor);
             final inputFiltered = filterPromptBlacklist(
               _inputText,
               next.promptBlacklist,
@@ -1547,6 +1609,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
                             foldBodies: foldBodies,
                             selection: _chipSel,
                             onSelectionChanged: _setChipSel,
+                            onLongPressChip: _chipLongPress,
                             onMove: _moveUnits,
                             input: _input,
                             inputFocus: _inputFocus,
@@ -1555,11 +1618,9 @@ class _EditorPageState extends ConsumerState<EditorPage>
                             placing: _chipPlacing,
                             translating: _transSvc.isPending,
                             showTrans: settings.showTranslation,
-                            fontSize: settings.fontSize,
-                            abnormalThreshold: settings.abnormalThreshold,
+                            fontSize: settings.chipFontSize,
                             promptBlacklist:
-                                settings.promptBlacklistMode ==
-                                    PromptBlacklistMode.highlight
+                                settings.promptBlacklistMode == PromptBlacklistMode.highlight
                                 ? settings.promptBlacklist
                                 : const [],
                           )
@@ -1577,7 +1638,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
                                   showTrans: settings.showTranslation,
                                   showWeightWash: settings.showWeightWash,
                                   fontSize: settings.fontSize,
-                                  abnormalThreshold: settings.abnormalThreshold,
+                                  onCursorDrag: _setCursorDragging,
                                   onFoldTap: _unfoldByName,
                                   hint: '点击输入标签,可输入中文自动触发翻译与联想',
                                 ),
@@ -1585,31 +1646,40 @@ class _EditorPageState extends ConsumerState<EditorPage>
                             ),
                           ),
                   ),
-                  // dock 入场:淡入 + 轻微上滑(高度瞬时占位,不撑盒子,避免橡皮筋)
-                  // 离场(关面板/收补全)比入场快:走了就别在路上磨蹭。
-                  AnimatedSwitcher(
-                    duration: Motion.fast,
-                    reverseDuration: Motion.quick,
-                    switchInCurve: Motion.emphasized,
-                    switchOutCurve: Motion.standard,
-                    layoutBuilder: (current, previous) => Stack(
-                      alignment: Alignment.bottomCenter,
-                      children: [...previous, ?current],
+                  // 拖光标期间只是**淡出**,位置照占:见 [_setCursorDragging]。
+                  AnimatedOpacity(
+                    duration: Motion.quick,
+                    curve: Motion.standard,
+                    opacity: _cursorDragging ? 0 : 1,
+                    child: IgnorePointer(
+                      ignoring: _cursorDragging,
+                      child:
+                          // dock 入场:淡入 + 轻微上滑(高度瞬时占位,不撑盒子,避免橡皮筋)
+                          // 离场(关面板/收补全)比入场快:走了就别在路上磨蹭。
+                          AnimatedSwitcher(
+                            duration: Motion.fast,
+                            reverseDuration: Motion.quick,
+                            switchInCurve: Motion.emphasized,
+                            switchOutCurve: Motion.standard,
+                            layoutBuilder: (current, previous) => Stack(
+                              alignment: Alignment.bottomCenter,
+                              children: [...previous, ?current],
+                            ),
+                            transitionBuilder: (child, anim) => FadeTransition(
+                              opacity: anim,
+                              child: SlideTransition(
+                                position: Tween<Offset>(
+                                  begin: const Offset(0, 0.06),
+                                  end: Offset.zero,
+                                ).animate(anim),
+                                child: child,
+                              ),
+                            ),
+                            child: _dock(),
+                          ),
                     ),
-                    transitionBuilder: (child, anim) => FadeTransition(
-                      opacity: anim,
-                      child: SlideTransition(
-                        position: Tween<Offset>(
-                          begin: const Offset(0, 0.06),
-                          end: Offset.zero,
-                        ).animate(anim),
-                        child: child,
-                      ),
-                    ),
-                    child: _dock(),
                   ),
-                  if (settings.promptBlacklistMode ==
-                      PromptBlacklistMode.highlight)
+                  if (settings.promptBlacklistMode == PromptBlacklistMode.highlight)
                     AnimatedBuilder(
                       animation: Listenable.merge([_controller, _input]),
                       builder: (context, _) {
@@ -1619,13 +1689,9 @@ class _EditorPageState extends ConsumerState<EditorPage>
                               settings.promptBlacklist,
                               foldBodies: foldBodies,
                             ).length +
-                            blacklistedPromptToks(
-                              _inputText,
-                              settings.promptBlacklist,
-                            ).length;
+                            blacklistedPromptToks(_inputText, settings.promptBlacklist).length;
                         return AnimatedSwitcher(
                           duration: Motion.fast,
-                          reverseDuration: Motion.quick,
                           child: count == 0
                               ? const SizedBox.shrink()
                               : PromptBlacklistBar(
@@ -1714,7 +1780,14 @@ class _EditorPageState extends ConsumerState<EditorPage>
     );
   }
 
-  Widget _dock() {
+  /// 上一次(非拖动态)算出来的 dock。拖动期间原样端出去 —— 见 [_dock]。
+  Widget _lastDock = const SizedBox.shrink(key: ValueKey('dock-empty'));
+
+  /// 拖光标期间**冻住**:面板自己换形态(词条栏 ↔ 批量面板 ↔ 无)会改高度,
+  /// 一样会把正文顶得平移。外层只把它淡掉,位置照占。
+  Widget _dock() => _cursorDragging ? _lastDock : (_lastDock = _buildDock());
+
+  Widget _buildDock() {
     // key 稳定=同一形态内更新不重播入场动画(如长按连续调权重);切形态才动画
     //
     // 芯片模式与划词多选共用同一张批量面板:前者点 chip 攒集合(可跳选),
@@ -1781,11 +1854,6 @@ class _EditorPageState extends ConsumerState<EditorPage>
         relatedLoading: tok.name == _relatedFor && _relatedLoading,
         weightStep: _settings.weightStep,
         compact: _settings.compactTagPanel,
-        warning: abnormalWeightOf(
-          _controller.text,
-          tok,
-          threshold: _settings.abnormalThreshold,
-        ),
         sdConvert:
             isSdWeightSeg(_controller.text.substring(tok.segStart, tok.segEnd))
             ? _convertSd

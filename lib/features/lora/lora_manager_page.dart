@@ -1210,7 +1210,11 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
                 padding: const EdgeInsets.only(right: 6),
                 child: Text(
                   label,
-                  style: mono(context, size: 11, color: scheme.onSurfaceVariant),
+                  style: mono(
+                    context,
+                    size: 11,
+                    color: scheme.onSurfaceVariant,
+                  ),
                 ),
               ),
             const _BusyIcon(),

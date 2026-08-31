@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/editor_theme.dart' show EditorPalette;
+import '../../editor/data/local_tag_db.dart';
 import '../../editor/data/tag_translation_service.dart';
 import '../../editor/editor_models.dart' show Tok, fmtMult, parseToks;
 
@@ -15,6 +16,13 @@ typedef PromptSection = ({String? label, String body});
 ///
 /// 译文与编辑器同一条链路:[parseToks] 解析时先吃共享缓存/离线词库,
 /// 缺的批量丢给 [TagTranslationService](增强补全模式才联网),到货即刷新。
+///
+/// **离线词库的灌注也在这里触发**(2026-08-28 补)。此前全 app 只有编辑器
+/// `initState` 会灌 —— 而法典/灵感页完全可能是用户进来后碰的第一个页面,
+/// 那时反查缓存里只有几条静态兜底词,于是整片芯片的译文都得走网络:
+/// 700ms 防抖 + 20 个一批 + 每批一次往返,慢得很;**离线补全模式下更是
+/// 永远空白**(那边 `TagTranslationService` 全程 no-op,没人去问)。
+/// `warmTagMeta` 幂等且记忆化,已灌过的直接返回,重复进不会重复灌。
 class PromptChips extends ConsumerStatefulWidget {
   const PromptChips({super.key, required this.sections});
 
@@ -46,6 +54,12 @@ class _PromptChipsState extends ConsumerState<PromptChips>
   void initState() {
     super.initState();
     _parse(); // 服务在 build 里才接上(要跟着 provider 换代),首帧先出词
+    // 灌注离线词库(见类文档)。分片回调让最热的词先出来,不必干等整轮 ——
+    // 整轮读 4.9MB asset + 解析 14 万行,手机上要一两秒。
+    ref
+        .read(localTagDbProvider)
+        .warmTagMeta(onChunk: _onTrans)
+        .then((_) => _onTrans());
   }
 
   @override
@@ -80,8 +94,9 @@ class _PromptChipsState extends ConsumerState<PromptChips>
     });
   }
 
+  /// 译文到货(网络回填或词库灌注到片):重解析一遍,`trans` 由 [parseToks]
+  /// 现查缓存填上。
   void _onTrans() {
-    // 译文到货:重解析一遍,trans 由 parseToks 现查缓存填上
     if (mounted) setState(_parse);
   }
 

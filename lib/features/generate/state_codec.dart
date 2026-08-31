@@ -151,6 +151,18 @@ Future<EncodedState> encodeGenerateState(
       'kreaCfg': p.kreaCfg,
       'kreaSampler': p.kreaSampler,
       'kreaScheduler': p.kreaScheduler,
+      // 各 Modal 档位调过的采样参数(切档来回不丢,见 GenParams.modalMem)。
+      // 没进过任何一档就整键不写,老存档/纯 NAI 用户的档案一个字节都不变。
+      if (p.modalMem.isNotEmpty)
+        'modalMem': {
+          for (final e in p.modalMem.entries)
+            e.key: {
+              'steps': e.value.steps,
+              'cfg': e.value.cfg,
+              'sampler': e.value.sampler,
+              'scheduler': e.value.scheduler,
+            },
+        },
       'batchCount': p.batchCount,
       // 整块常驻(不只在 enabled 时写):同一份 codec 也在存创作页工作区,
       // 只存开着的那份,用户关掉开关重启后调好的倍率/强度就没了。
@@ -170,6 +182,8 @@ Future<EncodedState> encodeGenerateState(
         'image': await putImg(inpaint.image),
         'mask': await putImg(inpaint.mask),
         'strength': inpaint.strength,
+        if (inpaint.sourceId != null) 'sourceId': inpaint.sourceId,
+        if (inpaint.grid != null) 'grid': await putImg(inpaint.grid!),
         if (paste != null)
           'paste': {
             'original': await putImg(paste.original),
@@ -359,6 +373,32 @@ Future<GenerateState> decodeGenerateState(
         model: _enumByName(HiresUpscaler.values, he['model']) ?? hires.model,
       );
     }
+    // 档位记忆:四个字段缺一条就整条丢掉(回落该档官方配方)—— 半套参数还原
+    // 出去是 sampler 传空串给服务端,那比忘掉这一档难查得多。
+    final modalMem = <String, ModalSampling>{};
+    if (e['modalMem'] is Map) {
+      for (final me in (e['modalMem'] as Map).entries) {
+        final k = me.key;
+        final v = me.value;
+        if (k is! String || v is! Map) continue;
+        final steps = (v['steps'] as num?)?.toInt();
+        final cfg = (v['cfg'] as num?)?.toDouble();
+        final sampler = v['sampler'];
+        final scheduler = v['scheduler'];
+        if (steps == null ||
+            cfg == null ||
+            sampler is! String ||
+            scheduler is! String) {
+          continue;
+        }
+        modalMem[k] = (
+          steps: steps,
+          cfg: cfg,
+          sampler: sampler,
+          scheduler: scheduler,
+        );
+      }
+    }
     params = GenParams(
       model: e['model'] is String ? e['model'] as String : params.model,
       width: (e['width'] as num?)?.toInt() ?? params.width,
@@ -394,12 +434,10 @@ Future<GenerateState> decodeGenerateState(
           : params.kreaScheduler,
       // 老记录没这键 → 1 张(与此前恒为单张的行为一致)。夹一遍范围:
       // 服务端上限降下来的话,存档里那个 4 不该把新的限制绕过去。
-      batchCount:
-          ((e['batchCount'] as num?)?.toInt() ?? params.batchCount).clamp(
-            1,
-            kBatchMax,
-          ),
+      batchCount: ((e['batchCount'] as num?)?.toInt() ?? params.batchCount)
+          .clamp(1, kBatchMax),
       hires: hires,
+      modalMem: modalMem,
     );
   }
 
@@ -432,6 +470,8 @@ Future<GenerateState> decodeGenerateState(
         mask: mask,
         strength: (e['strength'] as num?)?.toDouble() ?? 0.7,
         paste: paste,
+        sourceId: e['sourceId'] as String?,
+        grid: await img(e['grid']),
       );
     }
   }

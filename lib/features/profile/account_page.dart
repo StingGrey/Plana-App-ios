@@ -1,23 +1,19 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/auth/auth_mode.dart';
 import '../../core/auth/bot_session_store.dart';
-import '../../core/auth/nai_credential_login.dart';
-import '../../core/auth/token_probe.dart';
-import '../../core/auth/token_store.dart';
+import '../../core/auth/nai_keys.dart';
 import '../../core/net/backend_config.dart';
 import '../../core/net/nai_client.dart';
+import '../../core/net/nai_key_status.dart';
 import '../../core/theme/app_theme.dart';
 import '../editor/data/completion_source.dart';
 import '../generate/widgets/common.dart'
     show confirmDialog, hintSnack, sharedAxisRoute;
 import '../onboarding/bot_auth_page.dart';
-import 'widgets/credential_login_sheet.dart';
-import 'widgets/token_status.dart';
+import '../stats/stats_providers.dart' show fmtInt;
+import 'token_manage_page.dart';
 import '../../core/util/haptics.dart';
 
 /// 账号与接入(我的页二级):接入方式切换、Token / Bot 凭据、标签补全来源。
@@ -29,112 +25,19 @@ class AccountPage extends ConsumerStatefulWidget {
 }
 
 class _AccountPageState extends ConsumerState<AccountPage> {
-  final _controller = TextEditingController();
-  bool _seeded = false; // 已存令牌灌入输入框一次
-  bool _obscure = true;
-  bool _saving = false;
+  void _openTokens() =>
+      Navigator.of(context).push(sharedAxisRoute(const TokenManagePage()));
 
-  /// Token 账户状态(会员档位 + Anlas):输入像样的令牌就防抖直查,
-  /// 不等保存(相当于保存前的在线校验);进页灌入已存令牌同样触发。
-  late final TokenProbe _probe = TokenProbe(
-    (t) => ref.read(naiClientProvider).subscription(t),
-  );
-
-  @override
-  void initState() {
-    super.initState();
-    _controller.addListener(_onChanged);
-    _probe.addListener(_onProbe);
+  Future<void> _makePrimary(String id) async {
+    await ref.read(naiKeysStoreProvider.notifier).makePrimary(id);
+    if (mounted) Haptics.selection();
   }
-
-  void _onProbe() {
-    if (mounted) setState(() {});
-  }
-
-  void _onChanged() {
-    setState(() {});
-    _probe.input(_controller.text);
-  }
-
-  @override
-  void dispose() {
-    _probe
-      ..removeListener(_onProbe)
-      ..dispose();
-    _controller
-      ..removeListener(_onChanged)
-      ..dispose();
-    super.dispose();
-  }
-
-  Future<void> _save() async {
-    final t = _controller.text.trim();
-    if (t.isEmpty) return;
-    setState(() => _saving = true);
-    await ref.read(tokenProvider.notifier).save(t);
-    // 手动换令牌 = 用户自己管理凭证:必须作废账号密码登录留下的续期凭证,
-    // 否则日后自动续期会拿旧账号的 key 把令牌悄悄换回旧账号。
-    await ref.read(accessKeyProvider.notifier).clear();
-    if (!mounted) return;
-    setState(() => _saving = false);
-    FocusScope.of(context).unfocus();
-    final err = ref.read(tokenProvider).hasError;
-    Haptics.selection();
-    _snack(err ? '保存失败,请重试' : '令牌已保存');
-  }
-
-  Future<void> _clear() async {
-    final ok = await confirmDialog(
-      context,
-      title: '清除令牌',
-      message: '将从本机删除已保存的 API Token,需重新填写才能生成。',
-      confirmLabel: '清除',
-    );
-    if (!ok) return;
-    await ref.read(tokenProvider.notifier).clear();
-    await ref.read(accessKeyProvider.notifier).clear(); // 续期凭证一并清
-    if (!mounted) return;
-    _controller.clear();
-    _probe.reset();
-    Haptics.medium();
-    _snack('已清除令牌');
-  }
-
-  Future<void> _paste() async {
-    final data = await Clipboard.getData(Clipboard.kTextPlain);
-    final t = data?.text?.trim();
-    if (t == null || t.isEmpty) return;
-    _controller.text = t;
-    _controller.selection = TextSelection.collapsed(
-      offset: _controller.text.length,
-    );
-  }
-
-  /// 邮箱密码登录:sheet 里已完成换 JWT + 落盘,这里只回填输入框 ——
-  /// 回填触发 probe 查档位,且输入与存档一致,按钮自然呈「清除」态。
-  Future<void> _credentialLogin() async {
-    final jwt = await showCredentialLoginSheet(context);
-    if (jwt == null || !mounted) return;
-    _controller.text = jwt;
-    _controller.selection = TextSelection.collapsed(offset: jwt.length);
-    _snack('已登录,令牌有效期 30 天,到期自动换新');
-  }
-
-  void _snack(String msg) => hintSnack(context, msg);
 
   Future<void> _selectMode(AuthMode m) async {
     if (m == ref.read(authModeProvider).value) return;
     await ref.read(authModeProvider.notifier).set(m);
     // 不再自动跳授权页:Bot 卡常驻在下方,选了没配也会在卡内直接标红提示。
   }
-
-  /// Token 卡里的账户状态行:档位 + Anlas。查询中/失败/空态都占同一行位,
-  /// 状态出现或消失不改卡片高度。
-  Widget _accountLine(BuildContext context) => tokenStatusLine(
-    context,
-    _probe,
-    onRetry: () => _probe.run(_controller.text),
-  );
 
   void _openBotAuth() =>
       Navigator.of(context).push(sharedAxisRoute(const BotAuthPage()));
@@ -155,18 +58,8 @@ class _AccountPageState extends ConsumerState<AccountPage> {
 
   @override
   Widget build(BuildContext context) {
-    final async = ref.watch(tokenProvider);
-    // 载入完成后把已存令牌灌入输入框一次(之后交给用户编辑)。
-    if (!_seeded && async.hasValue) {
-      // 灌入触发 listener → 走输入即查的同一条防抖链
-      _controller.text = async.value ?? '';
-      _seeded = true;
-    }
-    final saved = async.value ?? '';
-    final cur = _controller.text.trim();
-    final hasSaved = saved.isNotEmpty;
-    final dirty = cur != saved;
-    final canSave = cur.isNotEmpty && dirty && !_saving;
+    final keys = ref.watch(naiKeysStoreProvider).value ?? const <NaiKey>[];
+    final hasSaved = keys.isNotEmpty;
 
     final mode = ref.watch(authModeProvider).value ?? AuthMode.token;
     final session = ref.watch(botSessionProvider).value;
@@ -188,19 +81,9 @@ class _AccountPageState extends ConsumerState<AccountPage> {
           ),
           const SizedBox(height: 12),
           _TokenCard(
-            controller: _controller,
-            obscure: _obscure,
-            hasSaved: hasSaved,
-            canSave: canSave,
-            // 有存档且未改动 → 按钮化身红底「清除」
-            showClear: hasSaved && !dirty && !_saving,
-            saving: _saving,
-            onToggleObscure: () => setState(() => _obscure = !_obscure),
-            onPaste: _paste,
-            onSave: _save,
-            onClear: _clear,
-            onCredentialLogin: _credentialLogin,
-            accountLine: _accountLine(context),
+            keys: keys,
+            onPrimary: _makePrimary,
+            onManage: _openTokens,
           ),
           const SizedBox(height: 12),
           _BotCard(
@@ -221,50 +104,41 @@ class _AccountPageState extends ConsumerState<AccountPage> {
   }
 }
 
+/// 「账号与接入」里的 Token 卡:参与生成的令牌一块一块摆出来(一行两块,
+/// 点哪块哪块就是主账号)、左下角是这几个号加起来的点数与额度、
+/// 右下角进[TokenManagePage]。
+///
+/// 只摆**真会被用到**的:这一块回答的是「现在直连拿哪几个号在跑」,没勾并发
+/// 生成的属于管理范畴,归二级页。细节(完整读数、单项开关、增删)也全在二级页。
 class _TokenCard extends StatelessWidget {
   const _TokenCard({
-    required this.controller,
-    required this.obscure,
-    required this.hasSaved,
-    required this.canSave,
-    required this.showClear,
-    required this.saving,
-    required this.onToggleObscure,
-    required this.onPaste,
-    required this.onSave,
-    required this.onClear,
-    required this.onCredentialLogin,
-    required this.accountLine,
+    required this.keys,
+    required this.onPrimary,
+    required this.onManage,
   });
 
-  final TextEditingController controller;
-  final bool obscure;
-  final bool hasSaved;
-  final bool canSave;
+  /// 已存的全部 Key(含没参与生成的;下面只摆参与的那几块)。
+  final List<NaiKey> keys;
 
-  /// true = 同一颗按钮化身红底「清除」(有存档且输入未改动)。
-  final bool showClear;
-  final bool saving;
-  final VoidCallback onToggleObscure;
-  final VoidCallback onPaste;
-  final VoidCallback onSave;
-  final VoidCallback onClear;
-
-  /// 打开邮箱密码登录弹层(没有令牌也能接入的路)。
-  final VoidCallback onCredentialLogin;
-
-  /// 账户状态行(会员档位 · Anlas / 查询中 / 失败重试 / 空占位)。
-  final Widget accountLine;
+  /// 换主账号(圆钮选中了谁)。
+  final ValueChanged<String> onPrimary;
+  final VoidCallback onManage;
 
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
+    // 摆出来的就是**真会被用到**的:主账号恒在,副账号要勾了并发生成才算。
+    final on = [
+      for (final k in keys)
+        if (k.forGenerate) k,
+    ];
+
     return Material(
       color: scheme.surfaceContainerLow,
       borderRadius: BorderRadius.circular(16),
       clipBehavior: Clip.antiAlias,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 15, 16, 16),
+        padding: const EdgeInsets.fromLTRB(16, 15, 16, 12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -278,125 +152,215 @@ class _TokenCard extends StatelessWidget {
                   ),
                 ),
                 const Spacer(),
-                _StatusChip(saved: hasSaved),
+                _StatusChip(saved: on.isNotEmpty, onLabel: '${on.length} 账号'),
               ],
             ),
-            const SizedBox(height: 10),
-            Text(
-              '获取方式:NovelAI 网站 → User Settings → Account → '
-              'Get Persistent API Token',
-              style: context.texts.labelSmall!.copyWith(color: scheme.outline),
-            ),
-            const SizedBox(height: 4),
-            // 直连由本机直打 api.novelai.net,不经过 Bot 后端中转:网络到不了
-            // 官网,令牌再对也生成不了。
-            Text(
-              '直连生成需要你的网络可以访问 NovelAI 官网',
-              style: context.texts.labelSmall!.copyWith(color: scheme.outline),
-            ),
             const SizedBox(height: 12),
-            TextField(
-              controller: controller,
-              obscureText: obscure,
-              maxLines: obscure ? 1 : 3,
-              minLines: 1,
-              autocorrect: false,
-              enableSuggestions: false,
-              keyboardType: TextInputType.visiblePassword,
-              style: mono(context, size: 13),
-              decoration: InputDecoration(
-                filled: true,
-                fillColor: scheme.surfaceContainerHigh,
-                hintText: '粘贴 pst-… 令牌或网页 eyJ… JWT',
-                hintStyle: TextStyle(color: scheme.outline),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none,
+            if (on.isEmpty)
+              Text(
+                keys.isEmpty
+                    ? '直连生成需要你自己的 NovelAI 令牌,仅加密存储在本机'
+                    : '存了 ${keys.length} 把,但一把都没参与生成',
+                style: context.texts.labelSmall!.copyWith(
+                  color: keys.isEmpty ? scheme.outline : scheme.error,
                 ),
-                contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 14,
-                ),
-                suffixIcon: Row(
-                  mainAxisSize: MainAxisSize.min,
+              )
+            else
+              // 圆钮在这儿也能换主账号 —— 不必为了换个号专门进二级页。
+              // 分组套在整片外面,每块只报自己的 id(同令牌管理页)。
+              RadioGroup<String>(
+                groupValue: naiPrimaryKey(keys)?.id,
+                onChanged: (id) {
+                  if (id != null) onPrimary(id);
+                },
+                child: Column(
                   children: [
-                    IconButton(
-                      onPressed: onPaste,
-                      icon: const Icon(Icons.content_paste, size: 20),
-                      tooltip: '粘贴',
-                      color: scheme.onSurfaceVariant,
-                    ),
-                    IconButton(
-                      onPressed: onToggleObscure,
-                      icon: Icon(
-                        obscure ? Icons.visibility : Icons.visibility_off,
-                        size: 20,
+                    // 一行两块:一块只写名字(或尾号)+ 档位,认得出是谁就够了。
+                    // 更细的读数在二级页,这里挤三块就只剩省略号了。
+                    for (var i = 0; i < on.length; i += 2)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: _KeyChipTile(
+                                k: on[i],
+                                onTap: () => onPrimary(on[i].id),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: i + 1 < on.length
+                                  ? _KeyChipTile(
+                                      k: on[i + 1],
+                                      onTap: () => onPrimary(on[i + 1].id),
+                                    )
+                                  // 奇数个时留空占位,免得最后那块拉成整行宽
+                                  : const SizedBox.shrink(),
+                            ),
+                          ],
+                        ),
                       ),
-                      tooltip: obscure ? '显示' : '隐藏',
-                      color: scheme.onSurfaceVariant,
-                    ),
                   ],
                 ),
               ),
-            ),
-            const SizedBox(height: 14),
-            // 左边两行(账户状态 / 隐私说明),右边一颗随状态变身的按钮:
-            // 有改动 → 保存;与存档一致 → 红底清除
             Row(
               children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      accountLine,
-                      const SizedBox(height: 2),
-                      Text(
-                        '仅加密存储在本机',
-                        style: context.texts.labelSmall!.copyWith(
-                          color: scheme.outline,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 12),
-                FilledButton(
-                  onPressed: showClear ? onClear : (canSave ? onSave : null),
-                  style: FilledButton.styleFrom(
-                    minimumSize: const Size(96, 44),
-                    backgroundColor: showClear ? scheme.error : null,
-                    foregroundColor: showClear ? scheme.onError : null,
+                // 左下角是这几个号**加起来**的家底:单个号的读数在二级页,
+                // 这里要回答的是「直连这条路现在总共还剩多少」。
+                Expanded(child: _TotalsLine(keys: on)),
+                const SizedBox(width: 10),
+                OutlinedButton.icon(
+                  onPressed: onManage,
+                  icon: const Icon(Icons.tune, size: 17),
+                  label: const Text('管理令牌'),
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size(0, 40),
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(22),
+                      borderRadius: BorderRadius.circular(20),
                     ),
                   ),
-                  child: saving
-                      ? SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: scheme.onPrimary,
-                          ),
-                        )
-                      : Text(showClear ? '清除' : '保存'),
                 ),
               ],
             ),
-            const SizedBox(height: 4),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                onPressed: onCredentialLogin,
-                style: TextButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.symmetric(horizontal: 6),
-                ),
-                icon: const Icon(Icons.mail_outline, size: 16),
-                label: const Text('没有令牌?用邮箱密码登录'),
-              ),
-            ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 参与生成的这几个号**加起来**的点数与额度。
+///
+/// 额度按**相加**算(两个号各 87% / 50% → 137%),不是取平均:平均水位看着像
+/// 单号的电量,跟「一共还能出多少张」对不上 —— 这套口径与 [NaiUsageX.batteryPct]
+/// 一致(那边给 bot 的号池用的也是相加)。
+///
+/// 还没查到的号不计入,所以查询过程中数字是**往上长**的,不会先给个偏小的定值。
+class _TotalsLine extends ConsumerWidget {
+  const _TotalsLine({required this.keys});
+
+  final List<NaiKey> keys;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final scheme = context.scheme;
+    final small = context.texts.labelSmall!;
+    if (keys.isEmpty) return const SizedBox.shrink();
+
+    var anlas = 0;
+    var pct = 0.0;
+    var got = 0;
+    var hasUsage = false;
+    for (final k in keys) {
+      final sub = ref.watch(naiKeyStatusProvider(k.token)).value;
+      if (sub == null) continue;
+      got++;
+      anlas += sub.anlas;
+      final u = sub.usage;
+      if (u != null) {
+        hasUsage = true;
+        pct += u.batteryPct;
+      }
+    }
+    if (got == 0) {
+      return Text('查询账户状态…', style: small.copyWith(color: scheme.outline));
+    }
+    return Text(
+      [
+        'Anlas ${fmtInt(anlas)}',
+        // 额度只有拿得到才写:官方没承诺过这块字段,读不到就干脆不提。
+        if (hasUsage) '额度 ${pct.round()}%',
+      ].join(' · '),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: small.copyWith(
+        color: scheme.onSurfaceVariant,
+        fontWeight: FontWeight.w600,
+      ),
+    );
+  }
+}
+
+/// 一块令牌缩略:圆钮 + 名字/尾号 + 档位。**整块可点**,点了就换主账号 ——
+/// 圆钮本身只有二十来像素,单指点它容易落空。
+class _KeyChipTile extends ConsumerWidget {
+  const _KeyChipTile({required this.k, required this.onTap});
+
+  final NaiKey k;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final scheme = context.scheme;
+    final named = k.label.trim().isNotEmpty;
+    final tier = ref.watch(naiKeyStatusProvider(k.token)).value;
+    return AnimatedContainer(
+      duration: Motion.fast,
+      curve: Motion.standard,
+      decoration: BoxDecoration(
+        color: k.primary
+            ? scheme.primaryContainer
+            : scheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(11),
+        // 描边两态同宽,只变色 —— 变宽度会让两列跟着抖。
+        border: Border.all(
+          color: k.primary ? scheme.primary : Colors.transparent,
+        ),
+      ),
+      // 内边距在 InkWell **里面**:搁在外层 AnimatedContainer 上的话,水波只
+      // 铺到内容区,右边那截 padding 落在水波之外 —— 看着就是「按下去比色块小
+      // 一圈」。圆角也跟外层对齐(11),不然水波的角会切在色块角里面。
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(11),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: k.primary ? null : onTap,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(2, 3, 10, 3),
+            child: Row(
+              children: [
+                // 圆钮不接手势:点在它上面时只出一小圈水波,和点别处不是一个反馈。
+                IgnorePointer(
+                  child: Radio<String>(
+                    value: k.id,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ),
+                const SizedBox(width: 2),
+                Expanded(
+                  child: Text(
+                    naiKeyTitle(k),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: named
+                        ? context.texts.labelMedium!.copyWith(
+                            fontWeight: FontWeight.w600,
+                            color: k.primary ? scheme.onPrimaryContainer : null,
+                          )
+                        : mono(context, size: 11.5).copyWith(
+                            color: k.primary ? scheme.onPrimaryContainer : null,
+                          ),
+                  ),
+                ),
+                // 档位查到了才写:查询中/失败时这块留空,不占位、不闪动。
+                if (tier != null) ...[
+                  const SizedBox(width: 6),
+                  Text(
+                    naiTierName(tier.tier),
+                    style: context.texts.labelSmall!.copyWith(
+                      color: k.primary
+                          ? scheme.onPrimaryContainer.withValues(alpha: .8)
+                          : scheme.outline,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
         ),
       ),
     );

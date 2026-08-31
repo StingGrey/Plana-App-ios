@@ -98,8 +98,10 @@ Future<List<Uint8List>> streamBotTask({
     if (completer.isCompleted) return;
     try {
       final out = [for (final s in b64) base64Decode(s)];
-      logi('[bot] $taskId done: ${out.length} 张 / '
-          '${out.fold<int>(0, (a, b) => a + b.length)}B');
+      logi(
+        '[bot] $taskId done: ${out.length} 张 / '
+        '${out.fold<int>(0, (a, b) => a + b.length)}B',
+      );
       completer.complete(out);
     } catch (_) {
       fail(BackendException('结果解码失败'));
@@ -143,10 +145,7 @@ Future<List<Uint8List>> streamBotTask({
   Timer? watchdog;
   void armWatchdog() {
     watchdog?.cancel();
-    watchdog = Timer(
-      timeout,
-      () => fail(BackendException('生成超时,请稍后在图库确认')),
-    );
+    watchdog = Timer(timeout, () => fail(BackendException('生成超时,请稍后在图库确认')));
   }
 
   armWatchdog();
@@ -238,7 +237,9 @@ Future<List<Uint8List>> streamBotTask({
       pollFails = 0; // 联系上了就清零
       if (t.status != lastPolled) {
         lastPolled = t.status;
-        logi('[bot] $taskId poll: status=${t.status} ${t.step}/${t.totalSteps}');
+        logi(
+          '[bot] $taskId poll: status=${t.status} ${t.step}/${t.totalSteps}',
+        );
       }
       if (!t.success) return; // 尚未可见,继续
       warn(t.warning);

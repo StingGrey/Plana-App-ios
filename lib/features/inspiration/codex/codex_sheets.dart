@@ -674,9 +674,7 @@ class _DetailSheetState extends ConsumerState<_DetailSheet>
         padding: EdgeInsets.zero,
         shape: const StadiumBorder(),
         foregroundColor: on ? scheme.primary : scheme.onSurfaceVariant,
-        side: BorderSide(
-          color: on ? scheme.primary : scheme.outlineVariant,
-        ),
+        side: BorderSide(color: on ? scheme.primary : scheme.outlineVariant),
       ),
       child: Icon(
         on ? Icons.star_rounded : Icons.star_outline_rounded,
@@ -1118,7 +1116,10 @@ class _CodexHeroImagesState extends ConsumerState<_CodexHeroImages>
     // 邻居卡与顶卡同款毛玻璃留边,一摞牌观感才一致
     return Stack(
       fit: StackFit.expand,
-      children: [_BlurredBackdrop(url: url, frost: .35), img],
+      children: [
+        _BlurredBackdrop(url: url, frost: .35),
+        img,
+      ],
     );
   }
 
@@ -1202,7 +1203,12 @@ class _CodexHeroImagesState extends ConsumerState<_CodexHeroImages>
     entry: widget.entry,
     bgUrl: _imgCount == 0
         ? null
-        : codexImageItemUrl(widget.codex, widget.entry, widget.media, widget.page),
+        : codexImageItemUrl(
+            widget.codex,
+            widget.entry,
+            widget.media,
+            widget.page,
+          ),
   );
 
   Widget _img(int i, ColorScheme scheme) {
@@ -1227,7 +1233,10 @@ class _CodexHeroImagesState extends ConsumerState<_CodexHeroImages>
     // 垫底,留白像图自己延伸出去
     return Stack(
       fit: StackFit.expand,
-      children: [_BlurredBackdrop(url: url, frost: .35), img],
+      children: [
+        _BlurredBackdrop(url: url, frost: .35),
+        img,
+      ],
     );
   }
 }
@@ -1430,7 +1439,10 @@ class _PromptFaceState extends State<_PromptFace> {
     }
     return Stack(
       fit: StackFit.expand,
-      children: [_BlurredBackdrop(url: widget.bgUrl!, frost: .82), content],
+      children: [
+        _BlurredBackdrop(url: widget.bgUrl!, frost: .82),
+        content,
+      ],
     );
   }
 }

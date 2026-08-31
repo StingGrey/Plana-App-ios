@@ -139,7 +139,10 @@ void main() {
       expect(v5.suffixPositive, isTrue); // 前提:这是后缀档
       final r = applyPromptPreset(v5, '1girl, text: hello world', 'bad');
       expect(r.positive, '1girl, ${v5.positive}, text: hello world');
-      expect(r.positive.indexOf(v5.positive), lessThan(r.positive.indexOf('text:')));
+      expect(
+        r.positive.indexOf(v5.positive),
+        lessThan(r.positive.indexOf('text:')),
+      );
     });
 
     test('自动加的 teXt: 变体一并覆盖(预设与 autoText 谁先谁后都行)', () {
@@ -222,6 +225,49 @@ void main() {
         expect(hit?.positive, '1girl, smile', reason: id);
         expect(hit?.negative, 'bad hands, blurry', reason: id);
       }
+    });
+
+    test('多段粘贴文本和连续空行在导入后原样保留', () {
+      const positive = '''no_text, upper_body, 晚上, 昏暗的室内, 落地窗, 反光,
+
+
+0.65::tianliang_duohe_fangdongye::,
+0.75::mimoza (96mimo414), shanyao_jiang_tororo::,
+
+year_2026, year_2025, year_2024_''';
+      const negative = '''bad hands, blurry,
+
+low contrast, simple background''';
+      final b = baked(_p('v5-standard'), positive, negative);
+      final hit = detectPromptPreset(_all, b.pos, b.neg);
+
+      expect(hit?.preset.id, 'v5-standard');
+      expect(hit?.positive, positive);
+      expect(hit?.negative, negative);
+    });
+
+    test('手输换行和 Windows CRLF 不被预设剥离压平', () {
+      const positive = 'first tag\nsecond line, third tag';
+      const negative = 'first negative\r\nsecond negative, third negative';
+      final b = baked(_p('heavy'), positive, negative);
+      final hit = detectPromptPreset(_all, b.pos, b.neg);
+
+      expect(hit?.positive, positive);
+      expect(hit?.negative, negative);
+    });
+
+    test('老图的前缀预设剥离后保留用户段落', () {
+      final p = _p('heavy');
+      const positive = 'first block,\n\nsecond block, third';
+      const negative = 'bad hands,\n\nblurry, low contrast';
+      final hit = detectPromptPreset(
+        _all,
+        '${p.positive}, $positive',
+        '${p.negative}, $negative',
+      );
+
+      expect(hit?.positive, positive);
+      expect(hit?.negative, negative);
     });
 
     // 4.5 的 Light 和 V5 的 Standard **正面文本一模一样**,位置也一样了 ——
@@ -409,10 +455,10 @@ void main() {
       expect(naiV5UpscaleSupportsSize(2048, 2048), isFalse);
     });
 
-    // 没有分辨率白名单 —— 这正是它比传统超分好用的地方
+    // 没有分辨率白名单 —— 这正是它比已下线的传统 4× 超分好用的地方
     test('任意尺寸都收,不看白名单', () {
       expect(naiV5UpscaleSupportsSize(777, 999), isTrue);
-      expect(naiUpscaleSupportsSize(777, 999), isFalse);
+      expect(naiV5UpscaleSupportsSize(1216, 832), isTrue);
     });
 
     test('结果尺寸 = 边长向下对齐 16 再 ×2', () {
@@ -511,8 +557,8 @@ void main() {
     });
 
     test('老存档只有方式名 → 其余落默认', () {
-      final v = UpscaleSettings.fromJson(const {'method': 'nai'});
-      expect(v.method, UpscaleMethod.nai);
+      final v = UpscaleSettings.fromJson(const {'method': 'redraw'});
+      expect(v.method, UpscaleMethod.redraw);
       expect(v.enhanceScale, EnhanceScale.x15);
       expect(v.strength, kRedrawStrength);
     });
@@ -524,9 +570,10 @@ void main() {
       );
     });
 
-    // 本地超分整条下线了,存量偏好里的两个本地档要落到默认档而不是崩掉。
-    test('已下线的本地档 → 落默认', () {
-      for (final v in ['localFast', 'localQuality']) {
+    // 下线过三种:两个本地档,以及官方停掉的传统 4×(nai)。
+    // 存量偏好里遇到它们要落到默认档而不是崩掉。
+    test('已下线的档位 → 落默认', () {
+      for (final v in ['localFast', 'localQuality', 'nai']) {
         expect(
           UpscaleSettings.fromJson({'method': v}).method,
           UpscaleMethod.naiV5,

@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:archive/archive.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 
 import '../../core/util/prompt_convert.dart' show stripInlineTags;
 
@@ -300,6 +301,12 @@ const _naiModelNameMap = <String, String>{
 
 String? _asString(Object? v) => v?.toString();
 
+/// NAI 的 `{Source, Comment}` JSON → 元数据。各入口(tEXt / EXIF / LSB 隐写)
+/// 拿到 JSON 后都汇到这里,测试也从这里进。
+@visibleForTesting
+ImageMetadata? parseNaiMetadataJson(Map<String, dynamic> data) =>
+    _parseNai(data);
+
 ImageMetadata? _parseNai(Map<String, dynamic> data) {
   try {
     final rawComment = data['Comment'];
@@ -318,30 +325,65 @@ ImageMetadata? _parseNai(Map<String, dynamic> data) {
       negative = comment['uc'].toString();
     }
 
-    // 角色提示词
+    // 角色负向按坐标索引:v4_negative_prompt 那份**只收负向非空的那几个**,
+    // 下标跟正向对不上(正向有 3 个、只有第 2 个写了负向时,那边只有 1 条),
+    // 只能按坐标认人。
+    final negByCenter = <String, String>{};
+    if (v4Neg is Map && v4Neg['caption'] is Map) {
+      final nl = (v4Neg['caption'] as Map)['char_captions'];
+      if (nl is List) {
+        for (final c in nl) {
+          if (c is! Map) continue;
+          final t = (c['char_caption'] ?? '').toString();
+          final ctr = c['centers'];
+          if (t.isEmpty || ctr is! List || ctr.isEmpty || ctr.first is! Map) {
+            continue;
+          }
+          final x = (ctr.first['x'] as num?)?.toDouble();
+          final y = (ctr.first['y'] as num?)?.toDouble();
+          if (x != null && y != null) negByCenter['$x,$y'] = t;
+        }
+      }
+    }
+
+    // 角色提示词。
+    //
+    // 正向与坐标读 v4_prompt.caption.char_captions;**负向不在那里** —— 那份结构
+    // 里压根没有角色负向这个字段。它有两个出处,按可靠性依次取:
+    //   1. `characterPrompts[].uc` —— 官方与本 app 都发,顺序与正向一一对应;
+    //   2. `v4_negative_prompt` 那份,按坐标匹配(见上)。
+    // 一个都不读的话,导入回来的角色负向永远是空的(本 app 2026-08-31 前就是)。
+    final cps = comment['characterPrompts'];
     final chars = <CharacterMeta>[];
     final v4 = comment['v4_prompt'];
     if (v4 is Map && v4['caption'] is Map) {
       final capt = v4['caption'] as Map;
       final list = capt['char_captions'];
       if (list is List) {
-        for (final c in list) {
-          if (c is Map) {
-            double? cx, cy;
-            final centers = c['centers'];
-            if (centers is List && centers.isNotEmpty && centers.first is Map) {
-              cx = (centers.first['x'] as num?)?.toDouble();
-              cy = (centers.first['y'] as num?)?.toDouble();
-            }
-            chars.add(
-              CharacterMeta(
-                prompt: (c['char_caption'] ?? '').toString(),
-                uc: (c['char_uc'] ?? '').toString(),
-                centerX: cx,
-                centerY: cy,
-              ),
-            );
+        for (var i = 0; i < list.length; i++) {
+          final c = list[i];
+          if (c is! Map) continue;
+          double? cx, cy;
+          final centers = c['centers'];
+          if (centers is List && centers.isNotEmpty && centers.first is Map) {
+            cx = (centers.first['x'] as num?)?.toDouble();
+            cy = (centers.first['y'] as num?)?.toDouble();
           }
+          var uc = (c['char_uc'] ?? '').toString();
+          if (uc.isEmpty && cps is List && i < cps.length && cps[i] is Map) {
+            uc = ((cps[i] as Map)['uc'] ?? '').toString();
+          }
+          if (uc.isEmpty && cx != null && cy != null) {
+            uc = negByCenter['$cx,$cy'] ?? '';
+          }
+          chars.add(
+            CharacterMeta(
+              prompt: (c['char_caption'] ?? '').toString(),
+              uc: uc,
+              centerX: cx,
+              centerY: cy,
+            ),
+          );
         }
       }
     }

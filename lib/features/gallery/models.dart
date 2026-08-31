@@ -42,6 +42,7 @@ class ResultImage {
     this.batchIndex = -1,
     this.bytes,
     this.input,
+    this.inpaintFrom,
     bool? hasInput,
   }) : hasInput = hasInput ?? input != null;
 
@@ -50,6 +51,12 @@ class ResultImage {
   final int height;
   final int seed;
   final ResultBadge badge;
+
+  /// 重绘产物的**源图**在图库里的 id;非重绘产物为 null。
+  ///
+  /// 只存 id 不存字节:源图本来就在库里,复制一份等于把每张重绘图的占用翻倍。
+  /// 源图被删了就取不到 —— 那时「按住对比」自己消失,不报错。
+  final String? inpaintFrom;
 
   /// 生成时刻(ms epoch)。0 = 未知(升级前的老索引由文件 mtime 回填,
   /// 回填也失败才会留 0,展开页归入「更早」段)。
@@ -87,6 +94,7 @@ class ResultImage {
           badge: badge,
           createdAt: createdAt,
           batchIndex: batchIndex,
+          inpaintFrom: inpaintFrom,
           hasInput: hasInput,
         );
 
@@ -99,6 +107,7 @@ class ResultImage {
     badge: badge,
     createdAt: t,
     batchIndex: batchIndex,
+    inpaintFrom: inpaintFrom,
     bytes: bytes,
     input: input,
     hasInput: hasInput,

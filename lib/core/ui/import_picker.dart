@@ -177,7 +177,9 @@ class _ImportPickerState extends State<_ImportPicker> {
                       style: mono(
                         context,
                         size: 12.5,
-                        color: o.enabled ? scheme.onSurfaceVariant : scheme.outline,
+                        color: o.enabled
+                            ? scheme.onSurfaceVariant
+                            : scheme.outline,
                       ),
                     ),
                   ),

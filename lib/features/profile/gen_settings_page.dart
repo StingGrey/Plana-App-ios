@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../core/store/ui_prefs.dart';
 
 import '../../core/platform/platform_support.dart';
 import '../../core/store/gen_settings.dart';
@@ -123,7 +124,10 @@ class _ModulesSection extends ConsumerStatefulWidget {
 }
 
 class _ModulesSectionState extends ConsumerState<_ModulesSection> {
-  GenProvider _tab = GenProvider.nai;
+  late GenProvider _tab = GenProvider.values.firstWhere(
+    (e) => e.name == ref.read(uiPrefsProvider).genSettingsTab,
+    orElse: () => GenProvider.nai,
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -161,7 +165,12 @@ class _ModulesSectionState extends ConsumerState<_ModulesSection> {
               ButtonSegment(value: p, label: Text(providerLabel(p))),
           ],
           selected: {_tab},
-          onSelectionChanged: (v) => setState(() => _tab = v.first),
+          onSelectionChanged: (v) {
+            ref
+                .read(uiPrefsProvider.notifier)
+                .patch((p) => p.copyWith(genSettingsTab: v.first.name));
+            setState(() => _tab = v.first);
+          },
         ),
         const SizedBox(height: 8),
         _ModulesCard(_tab),

@@ -71,8 +71,8 @@ class _CredentialLoginSheetState extends ConsumerState<_CredentialLoginSheet> {
         _email.text,
         _password.text,
       );
-      await ref.read(tokenProvider.notifier).save(jwt);
-      await ref.read(accessKeyProvider.notifier).save(key);
+      // 续期凭证跟着这把 Key 一起存 —— 日后续期只会换它自己那把的令牌。
+      await ref.read(tokenProvider.notifier).save(jwt, accessKey: key);
       if (!mounted) return;
       Haptics.selection();
       Navigator.of(context).pop(jwt);

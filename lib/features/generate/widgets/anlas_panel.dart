@@ -69,7 +69,10 @@ class AnlasChip extends ConsumerWidget {
                 Icon(Icons.toll, size: 17, color: scheme.primary),
                 const SizedBox(width: 6),
                 Text(
-                  sub == null ? '—' : fmtAnlas(sub),
+                  // 顶栏只报**合计**:胶囊常驻在那儿,一眼要的是「还剩多少」。
+                  // 「订阅额+已购额」的拆分留给弹层里的 Anlas 那行 —— 想分清
+                  // 哪截月底会重置的人,本来就会点进去看。
+                  sub == null ? '—' : fmtInt(sub.anlas),
                   style: mono(
                     context,
                     size: 14,
@@ -103,10 +106,14 @@ class AnlasChip extends ConsumerWidget {
   }
 }
 
-/// 点数读数:手里有已购额时摊开成「订阅额+已购额」,订阅额在前;没有就一个数。
+/// 点数读数(**弹层内**用):手里有已购额时摊开成「订阅额+已购额」,订阅额在前;
+/// 没有就一个数。
 ///
 /// 两笔钱花起来一样,但一笔月底重置、一笔是买断的 —— 合成一个数看着宽裕,
 /// 月底才发现能留下的只有后面那截。摊开一眼就分得清。
+///
+/// 顶栏胶囊**不**用它,只报合计 [NaiSubscription.anlas]:那个位置要的是一眼
+/// 看个余额,摊开的两截数字在窄胶囊里反而要人分辨中间那个加号。
 String fmtAnlas(NaiSubscription s) => s.purchasedAnlas > 0
     ? '${fmtInt(s.fixedAnlas)}+${fmtInt(s.purchasedAnlas)}'
     : fmtInt(s.anlas);

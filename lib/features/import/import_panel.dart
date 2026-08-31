@@ -30,6 +30,7 @@ import '../vibe_library/naiv4vibe_codec.dart' show kModelToEncodingKey;
 import '../vibe_library/vibe_library.dart';
 import 'image_metadata.dart';
 import 'import_category.dart';
+import 'import_prefs.dart';
 import 'metadata_detail_page.dart';
 import '../../core/util/haptics.dart';
 
@@ -120,6 +121,10 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   bool _descrambling = false;
   bool _descrambled = false;
 
+  /// 上一次导入用过的偏好([_parse] 里取到,[_initSelections] 据此还原)。
+  /// 取不到就是默认值 —— 与加这个功能之前的行为逐项一致。
+  ImportPrefs _prefs = const ImportPrefs();
+
   /// 导入目标的模型类别(= 当前出图模型的类别,面板内可切换)。
   /// null 表示还没读到(build 时按当前模型补上)。
   ModelCategory? _target;
@@ -143,6 +148,10 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   /// **两档都剥文本** —— 留着文本又把档位切过去,下次生成必定重复拼一遍,
   /// 那个组合没有意义,所以不做成两个独立开关。
   bool _presetImport = true;
+
+  /// 预设卡的详情(会被剥掉的那段文本 + 说明)默认收起 —— 那段文本重度档能有
+  /// 二十来个词,常驻着会把下面的角色/Vibe/参数全顶出屏幕。点头部展开。
+  bool _presetExpanded = false;
 
   // 角色
   final Set<int> _charChecked = {};
@@ -192,6 +201,11 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
 
   Future<void> _parse() async {
     final m = await extractImageMetadata(_imageBytes);
+    // 偏好要在 _initSelections 之前到手,否则还原不上。读失败(首次/文件坏)
+    // 走默认值,不影响解析出来的元数据。
+    try {
+      _prefs = await ref.read(importPrefsProvider.future);
+    } catch (_) {}
     if (!mounted) return;
     setState(() {
       _meta = m;
@@ -202,7 +216,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     if (m != null && m.loras.isNotEmpty) unawaited(_resolveLoras(m));
   }
 
-  /// 使用 PNGPKG 默认的黄金分割偏移(62%)直接解混淆,并在当前页重新解析。
+  /// 使用 PNGPKG 默认的黄金分割偏移（62%）解混淆，并在当前页重新解析。
   Future<void> _descramble() async {
     if (_descrambling || _descrambled) return;
     setState(() => _descrambling = true);
@@ -229,9 +243,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
       }
       hintSnack(context, '已按默认 62% 偏移解混淆', icon: Icons.lock_open_outlined);
     } catch (_) {
-      if (mounted) {
-        hintSnack(context, '解混淆失败', icon: Icons.error_outline);
-      }
+      if (mounted) hintSnack(context, '解混淆失败', icon: Icons.error_outline);
     } finally {
       if (mounted) setState(() => _descrambling = false);
     }
@@ -246,7 +258,6 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     _vibeBytes = const [];
     _loraChecked.clear();
     _loraHits = const [];
-    _loraResolveRevision++;
     _resolvingLoras = false;
     _useModel = false;
     _useRes = false;
@@ -268,9 +279,6 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   /// LoRA 区展开态(与 Vibe/生成设置同款折叠)。
   bool _loraExpanded = true;
 
-  /// 解混淆后旧图片的认领请求可能仍在路上；版本号用于丢弃过期回包。
-  int _loraResolveRevision = 0;
-
   /// 完全覆盖(换成这一份)/ 额外添加(并进已挂的)。语义同角色、Vibe。
   bool _loraAppend = false;
 
@@ -278,7 +286,6 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   final _loraChecked = <int>{};
 
   Future<void> _resolveLoras(ImageMetadata m) async {
-    final revision = ++_loraResolveRevision;
     setState(() {
       _resolvingLoras = true;
       _loraHits = List.filled(m.loras.length, null);
@@ -298,7 +305,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
                 ),
             ],
           );
-      if (!mounted || revision != _loraResolveRevision) return;
+      if (!mounted) return;
       setState(() {
         _loraHits = [
           for (var i = 0; i < m.loras.length; i++)
@@ -306,21 +313,21 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
         ];
         // 认领到的默认勾上 —— 点「导入」就是要这一份。
         // Civitai 上有的一并勾:导入后先占位挂着、后台下载,不在这页做决策。
-        _loraChecked
-          ..clear()
-          ..addAll([
+        // 上次整区清空过就不预勾(见 [ImportPrefs.loraImport])。
+        _loraChecked.clear();
+        if (_prefs.loraImport) {
+          _loraChecked.addAll([
             for (var i = 0; i < _loraHits.length; i++)
               if (_loraHits[i]?.isLocal == true ||
                   _loraHits[i]?.isCivitai == true)
                 i,
           ]);
+        }
       });
     } catch (_) {
       // 认领失败不影响其它导入项,LoRA 区退回纯展示
     } finally {
-      if (mounted && revision == _loraResolveRevision) {
-        setState(() => _resolvingLoras = false);
-      }
+      if (mounted) setState(() => _resolvingLoras = false);
     }
   }
 
@@ -462,26 +469,43 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     // 所以勾着无害。其余来源(SD / 第三方 ComfyUI)不勾。
     _usePreset =
         m.isNovelAI && (m.prompt.isNotEmpty || m.negativePrompt.isNotEmpty);
-    _presetImport = true;
+    // ↓ 以下几项与这张图无关,还原上一次导入用的(见 [ImportPrefs])
+    _presetImport = _prefs.presetImport;
+    _presetExpanded = _prefs.presetExpanded;
+    _charAppend = _prefs.charAppend;
+    _vibeAppend = _prefs.vibeAppend;
+    _loraAppend = _prefs.loraAppend;
+    _charExpanded = _prefs.charExpanded;
+    _vibeExpanded = _prefs.vibeExpanded;
+    _settingsExpanded = _prefs.settingsExpanded;
+    _loraExpanded = _prefs.loraExpanded;
     _charChecked.clear();
     _vibeChecked.clear();
     _vibeBytes = const [];
     if (_inNai) {
-      _charChecked.addAll([for (var i = 0; i < m.characters.length; i++) i]);
+      // 上次把整区清空过就别再勾满(见 [ImportPrefs.charImport])。逐行的下标不还原
+      // ——那是逐图的,第 3 个角色在两张图里根本不是同一个人。
+      if (_prefs.charImport) {
+        _charChecked.addAll([for (var i = 0; i < m.characters.length; i++) i]);
+      }
       _vibeBytes = [
         for (final v in m.vibes) v.image != null ? _tryB64(v.image!) : null,
       ];
-      _vibeChecked.addAll([
-        for (var i = 0; i < m.vibes.length; i++)
-          if (_vibeImportable(m, i)) i,
-      ]);
+      if (_prefs.vibeImport) {
+        _vibeChecked.addAll([
+          for (var i = 0; i < m.vibes.length; i++)
+            if (_vibeImportable(m, i)) i,
+        ]);
+      }
     }
-    // 超出本机支持面的单项不预勾(勾了也导不了,还让计数虚高)
+    // 超出本机支持面的单项不预勾(勾了也导不了,还让计数虚高);支持的按上次
+    // 的勾选还原,**缺席即勾上** —— 所以第一次用、以及用户从没动过的项,
+    // 行为跟以前完全一样。
     final specs = _settingItems;
     for (final e in specs) {
-      e.set(e.unsupportedReason == null);
+      e.set(e.unsupportedReason == null && (_prefs.settings[e.label] ?? true));
     }
-    _useSeed = false; // 默认不导入种子(对齐定稿 4/5)
+    _useSeed = _prefs.useSeed; // 默认仍是不导入种子(对齐定稿 4/5)
   }
 
   /// 切到图片所属的模型类别,切完面板就地重算出完整字段。
@@ -776,6 +800,42 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   void _import() {
     final m = _meta;
     if (m == null) return;
+    // 先把这一套记下来(见 [ImportPrefsNotifier.save]:只在真正导入时写)。
+    // 参数项只存**被取消**的,缺席即勾上 —— 免得把三类模型各自的字段写满一表。
+    unawaited(
+      ref
+          .read(importPrefsProvider.notifier)
+          .save(
+            _prefs.copyWith(
+              presetImport: _presetImport,
+              presetExpanded: _presetExpanded,
+              // 区级「这类要不要导」。**只在这张图确实有可选项时才更新** ——
+              // 图里根本没角色时 _charChecked 也是空的,那不是用户的选择。
+              charImport: m.characters.isEmpty
+                  ? _prefs.charImport
+                  : _charChecked.isNotEmpty,
+              vibeImport: m.vibes.isEmpty
+                  ? _prefs.vibeImport
+                  : _vibeChecked.isNotEmpty,
+              loraImport: m.loras.isEmpty
+                  ? _prefs.loraImport
+                  : _loraChecked.isNotEmpty,
+              charAppend: _charAppend,
+              vibeAppend: _vibeAppend,
+              loraAppend: _loraAppend,
+              useSeed: _useSeed,
+              charExpanded: _charExpanded,
+              vibeExpanded: _vibeExpanded,
+              settingsExpanded: _settingsExpanded,
+              loraExpanded: _loraExpanded,
+              settings: {
+                ..._prefs.settings,
+                for (final e in _settingItems)
+                  if (e.unsupportedReason == null) e.label: e.on,
+              },
+            ),
+          ),
+    );
     final notifier = ref.read(generateProvider.notifier);
     final msgs = <String>[];
 
@@ -1379,105 +1439,94 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
       color: scheme.surfaceContainer,
       borderRadius: BorderRadius.circular(16),
       clipBehavior: Clip.antiAlias,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 10, 13, 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(
-                  Icons.auto_awesome_motion_outlined,
-                  size: 20,
-                  color: needPrompt
-                      ? scheme.onSurfaceVariant.withValues(alpha: .5)
-                      : scheme.onSurfaceVariant,
-                ),
-                const SizedBox(width: 11),
-                Expanded(
-                  child: Text(
-                    '提示词预设',
-                    style: context.texts.bodyLarge!.copyWith(
-                      fontWeight: FontWeight.w600,
-                      color: fg,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 头部整行可点 = 展开/收起;分段控件与勾选框自带手势,不连带展开。
+          InkWell(
+            onTap: () => setState(() => _presetExpanded = !_presetExpanded),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 10, 9, 10),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.auto_awesome_motion_outlined,
+                    size: 20,
+                    color: needPrompt
+                        ? scheme.onSurfaceVariant.withValues(alpha: .5)
+                        : scheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 11),
+                  Expanded(
+                    child: Text(
+                      '提示词预设',
+                      style: context.texts.bodyLarge!.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: fg,
+                      ),
                     ),
                   ),
-                ),
-                // 两档都剥,差别只在档位动不动 —— 所以是二选一而不是第二个开关
-                _presetModeSeg(scheme, enabled: on),
-                const SizedBox(width: 10),
-                InkResponse(
-                  onTap: needPrompt
-                      ? null
-                      : () => setState(() => _usePreset = !_usePreset),
-                  radius: 22,
-                  child: Padding(
-                    padding: const EdgeInsets.all(4),
-                    child: _checkBox(scheme, on),
+                  // 两档都剥,差别只在档位动不动 —— 所以是二选一而不是第二个开关。
+                  // 两字标签把格宽收到 52(默认 76 是按「完全覆盖」定的),否则这
+                  // 一行在窄屏上会把标题挤没。
+                  _SlideSeg(
+                    options: const ['剥离', '导入'],
+                    index: _presetImport ? 1 : 0,
+                    enabled: on,
+                    optWidth: 52,
+                    onChanged: (i) => setState(() => _presetImport = i == 1),
                   ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            if (needPrompt)
-              _presetNote(scheme, '需要先勾选正向或负向提示词')
-            else if (hit != null) ...[
-              // 直接把会被删掉的那段文本摊开 —— 「识别到 Heavy」看不出要删什么词
-              _presetTextBlock(scheme, hit.preset),
-              const SizedBox(height: 6),
-              _presetNote(
-                scheme,
-                _presetImport
-                    ? '以上文本会从提示词里剥掉,档位切成「${hit.preset.name}」。'
-                    : '以上文本会从提示词里剥掉,档位保持你现在选的那一档。',
+                  const SizedBox(width: 8),
+                  InkResponse(
+                    onTap: needPrompt
+                        ? null
+                        : () => setState(() => _usePreset = !_usePreset),
+                    radius: 22,
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: _checkBox(scheme, on),
+                    ),
+                  ),
+                  const SizedBox(width: 3),
+                  AnimatedRotation(
+                    turns: _presetExpanded ? .5 : 0,
+                    duration: Motion.medium,
+                    curve: Motion.emphasized,
+                    child: Icon(
+                      Icons.expand_more,
+                      size: 22,
+                      color: scheme.outline,
+                    ),
+                  ),
+                ],
               ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// 剥离 / 导入 二选一。
-  Widget _presetModeSeg(ColorScheme scheme, {required bool enabled}) {
-    Widget seg(String label, bool sel, VoidCallback onTap) => InkWell(
-      onTap: enabled ? onTap : null,
-      borderRadius: BorderRadius.circular(8),
-      child: AnimatedContainer(
-        duration: Motion.fast,
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        decoration: BoxDecoration(
-          color: sel ? scheme.primary : Colors.transparent,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Text(
-          label,
-          style: context.texts.labelMedium!.copyWith(
-            fontWeight: FontWeight.w700,
-            color: !enabled
-                ? scheme.onSurfaceVariant.withValues(alpha: .4)
-                : sel
-                ? scheme.onPrimary
-                : scheme.onSurfaceVariant,
+            ),
           ),
-        ),
-      ),
-    );
-    return Container(
-      padding: const EdgeInsets.all(2),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          seg(
-            '剥离',
-            !_presetImport,
-            () => setState(() => _presetImport = false),
+          ExpandBody(
+            expanded: _presetExpanded,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (needPrompt)
+                    _presetNote(scheme, '需要先勾选正向或负向提示词')
+                  else if (hit != null) ...[
+                    // 直接把会被删掉的那段文本摊开 ——
+                    // 「识别到 Heavy」看不出要删什么词
+                    _presetTextBlock(scheme, hit.preset),
+                    const SizedBox(height: 6),
+                    _presetNote(
+                      scheme,
+                      _presetImport
+                          ? '以上文本会从提示词里剥掉,档位切成「${hit.preset.name}」。'
+                          : '以上文本会从提示词里剥掉,档位保持你现在选的那一档。',
+                    ),
+                  ],
+                ],
+              ),
+            ),
           ),
-          seg('导入', _presetImport, () => setState(() => _presetImport = true)),
         ],
       ),
     );
@@ -2621,13 +2670,22 @@ class _SlideSeg extends StatelessWidget {
     required this.options,
     required this.index,
     required this.onChanged,
+    this.enabled = true,
+    this.optWidth = 76,
   });
 
   final List<String> options;
   final int index;
   final ValueChanged<int> onChanged;
 
-  static const double _optWidth = 76;
+  /// 禁用:指示块与文字一起褪色、点击不响应。**不整块隐藏** —— 用户仍要看得见
+  /// 现在选的是哪一档,只是暂时改不动。
+  final bool enabled;
+
+  /// 每格宽度。默认 76 是按「完全覆盖」这种四字标签定的;两字标签传小一点,
+  /// 免得把同一行的标题挤没。
+  final double optWidth;
+
   static const double _height = 30;
 
   @override
@@ -2640,20 +2698,22 @@ class _SlideSeg extends StatelessWidget {
         borderRadius: BorderRadius.circular(9),
       ),
       child: SizedBox(
-        width: _optWidth * options.length,
+        width: optWidth * options.length,
         height: _height,
         child: Stack(
           children: [
             AnimatedPositioned(
               duration: Motion.medium,
               curve: Motion.emphasized,
-              left: index * _optWidth,
+              left: index * optWidth,
               top: 0,
               bottom: 0,
-              width: _optWidth,
+              width: optWidth,
               child: DecoratedBox(
                 decoration: BoxDecoration(
-                  color: scheme.primary,
+                  color: enabled
+                      ? scheme.primary
+                      : scheme.onSurfaceVariant.withValues(alpha: .18),
                   borderRadius: BorderRadius.circular(7),
                 ),
               ),
@@ -2664,12 +2724,12 @@ class _SlideSeg extends StatelessWidget {
                   GestureDetector(
                     behavior: HitTestBehavior.opaque,
                     onTap: () {
-                      if (i == index) return;
+                      if (!enabled || i == index) return;
                       Haptics.selection();
                       onChanged(i);
                     },
                     child: SizedBox(
-                      width: _optWidth,
+                      width: optWidth,
                       height: _height,
                       child: Center(
                         child: AnimatedDefaultTextStyle(
@@ -2678,7 +2738,9 @@ class _SlideSeg extends StatelessWidget {
                           style: TextStyle(
                             fontSize: 11.5,
                             fontWeight: FontWeight.w600,
-                            color: i == index
+                            color: !enabled
+                                ? scheme.onSurfaceVariant.withValues(alpha: .4)
+                                : i == index
                                 ? scheme.onPrimary
                                 : scheme.onSurfaceVariant,
                           ),

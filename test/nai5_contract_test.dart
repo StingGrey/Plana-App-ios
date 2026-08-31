@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plana_app/features/generate/bot_request.dart';
+import 'package:plana_app/features/generate/char_position.dart';
 import 'package:plana_app/features/generate/models.dart';
 import 'package:plana_app/features/generate/nai_request.dart';
 import 'package:plana_app/features/generate/prompt_presets.dart';
@@ -79,7 +80,10 @@ void main() {
 
     test('重绘换模型时下标跟着换:V5 Curated 重绘回退 4.5 Curated', () {
       // inpaintModelId('nai-diffusion-5-curated') = 'nai-diffusion-4-5-curated-inpainting'
-      expect(ucPresetValue('none', inpaintModelId('nai-diffusion-5-curated')), 3);
+      expect(
+        ucPresetValue('none', inpaintModelId('nai-diffusion-5-curated')),
+        3,
+      );
     });
 
     test('v5 档跟随它所用的官方负面档', () {
@@ -227,6 +231,100 @@ void main() {
     test('归一化之后的串也吃得下(那时 hash 已经没了,只能看字面)', () {
       expect(naiSourceIsV5Full('NovelAI V5 Full'), isTrue);
       expect(naiSourceIsV5Full('NovelAI V5 Curated'), isFalse);
+    });
+  });
+
+  // 角色坐标:只有 V5 吃自由坐标,其余模型官方在**发送前**把坐标吸附到 5×5 格心
+  // (能力位 freeformCharacterPosition),存着的值一个字节不改。发错了照样出图,
+  // 只是构图和官方对不上 —— 又一条静默错。
+  group('角色坐标:非 V5 发送前吸附到格心', () {
+    GenerateState withChar(String model, String? pos) => _state(model).copyWith(
+      characters: [
+        CharacterPrompt(
+          id: 'c1',
+          name: '角色1',
+          positive: '1girl',
+          position: pos,
+        ),
+      ],
+    );
+
+    List<dynamic> capCenters(Map<String, dynamic> body) =>
+        (((body['parameters'] as Map)['v4_prompt'] as Map)['caption']
+                as Map)['char_captions']
+            as List;
+
+    test('floor 分桶,不是四舍五入 —— 0.2 / 0.4 这些边界差一格', () {
+      // u = [.1,.3,.5,.7,.9];  h = v => u[clamp(floor(5*v), 0, 4)]
+      expect(quantizeCenterToGrid(0.19, 0.19), (x: 0.1, y: 0.1));
+      expect(quantizeCenterToGrid(0.2, 0.4), (x: 0.3, y: 0.5));
+      expect(quantizeCenterToGrid(0.42, 0.67), (x: 0.5, y: 0.7));
+      expect(quantizeCenterToGrid(0.0, 1.0), (x: 0.1, y: 0.9));
+    });
+
+    test('V4.5 直连:自由坐标吸附进 char_captions,characterPrompts 仍是原值', () {
+      final body = buildNaiPayload(
+        withChar('NAI 4.5 Full', '0.4200,0.6700'),
+        presetId: 'heavy',
+      ).body;
+      expect(capCenters(body).first['centers'], [
+        {'x': 0.5, 'y': 0.7},
+      ]);
+      // 导入回放数据不跟着改,否则切回 V5 精确坐标就丢了
+      final cps = (body['parameters'] as Map)['characterPrompts'] as List;
+      expect(cps.first['center'], {'x': 0.42, 'y': 0.67});
+    });
+
+    test('V5 直连:自由坐标原样发', () {
+      final body = buildNaiPayload(
+        withChar('NAI 5.0 Full', '0.4200,0.6700'),
+        presetId: 'heavy',
+      ).body;
+      expect(capCenters(body).first['centers'], [
+        {'x': 0.42, 'y': 0.67},
+      ]);
+    });
+
+    // 判据得是**最终**模型:V5 Curated 的重绘回落到 4.5 Curated Inpainting,
+    // 底模看着是 V5,那条路却只吃格心。
+    test('V5 Curated 重绘回落到 4.5:照样吸附', () {
+      final s = withChar('NAI 5.0 Curated', '0.4200,0.6700').copyWith(
+        inpaint: InpaintJob(
+          image: Uint8List.fromList(const [1]),
+          mask: Uint8List.fromList(const [2]),
+          strength: 0.7,
+        ),
+      );
+      final body = buildNaiPayload(s, presetId: 'heavy').body;
+      expect(body['model'], 'nai-diffusion-4-5-curated-inpainting');
+      expect(capCenters(body).first['centers'], [
+        {'x': 0.5, 'y': 0.7},
+      ]);
+    });
+
+    // 网格 UI 的高亮要靠它:自由坐标串跟任何格子 id 都不相等,直接比字符串会让
+    // 25 个格子全显示未选中,而请求里发的是其中某一格。
+    test('gridCellForPosition:自由坐标也能算出落在哪一格', () {
+      expect(gridCellForPosition('0.4200,0.6700'), 'C4');
+      expect(gridCellForPosition('0.7000,0.3000'), 'D2');
+      expect(gridCellForPosition('D2'), 'D2');
+      expect(gridCellForPosition(null), isNull);
+    });
+
+    // 导入走的是同一套:元数据里的 center → position。V5 图的自由坐标必须原样
+    // 留住,吸附了就等于把用户摆的位置改掉(web importOptions 同规则)。
+    test('导入:V5 自由坐标不吸附,正落格心的才收成格子 id', () {
+      expect(positionOfCenter(0.42, 0.67), '0.4200,0.6700');
+      expect(positionOfCenter(0.5, 0.7), 'C4');
+      expect(positionOfCenter(null, null), isNull);
+      // 收成格子 id 也不丢位置:两种写法解析回来是同一个点
+      expect(resolveCharacterCenter('C4'), (x: 0.5, y: 0.7));
+    });
+
+    test('positionChipLabel:grid 模式显示会被吸附到的那一格', () {
+      expect(positionChipLabel('0.4200,0.6700'), '42,67%');
+      expect(positionChipLabel('0.4200,0.6700', grid: true), 'C4');
+      expect(positionChipLabel(null, grid: true), 'AUTO');
     });
   });
 }

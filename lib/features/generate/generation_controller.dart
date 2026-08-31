@@ -9,7 +9,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/auth/auth_mode.dart';
 import '../../core/auth/bot_session_store.dart';
-import '../../core/auth/token_store.dart';
 import '../../core/live_progress/live_progress.dart';
 import '../../core/net/anlas_provider.dart';
 import '../../core/store/gen_settings.dart';
@@ -17,6 +16,8 @@ import '../../core/net/backend_client.dart';
 import '../../core/net/backend_config.dart';
 import '../../core/net/bot_stream.dart';
 import '../../core/net/gen_abort.dart';
+import '../../core/auth/nai_keys.dart';
+import '../../core/net/nai_gate.dart';
 import '../../core/net/nai_client.dart';
 import '../../core/store/app_stores.dart';
 import '../../core/util/image_ops.dart';
@@ -54,6 +55,8 @@ class GenStatus {
     this.height = 0,
     this.preview,
     this.note,
+    this.pasteUnder,
+    this.pasteAt,
   });
 
   final bool busy;
@@ -67,6 +70,10 @@ class GenStatus {
   final int width;
   final int height;
   final Uint8List? preview;
+
+  /// 局部重绘的预览底与贴回位置(见 [GenJob.pasteUnder])。
+  final Uint8List? pasteUnder;
+  final ({int x, int y, int w, int h})? pasteAt;
 
   /// 进度未知阶段的状态文案(bot 排队「排队中 · 第 N 位」等),
   /// 画布进度胶囊优先显示;null 时显「准备中」。
@@ -163,6 +170,8 @@ GenStatus _statusOf(GenJob j) => GenStatus(
   prepPct: j.prepPct,
   preview: j.preview,
   note: j.note,
+  pasteUnder: j.pasteUnder,
+  pasteAt: j.pasteAt,
 );
 
 /// 同时**在跑**的任务数上限。
@@ -201,6 +210,9 @@ class _JobRun {
 
   /// 占用的并发槽位;直连模式下它同时是「用第几把 Key」。-1 = 还没拿到。
   int slot = -1;
+
+  /// 直连:闸门在取槽时一并定下的令牌(bot 线为 null)。
+  String? token;
 }
 
 class GenerationNotifier extends Notifier<GenPool> {
@@ -259,22 +271,14 @@ class GenerationNotifier extends Notifier<GenPool> {
 
   // ---- 并发闸门 ----
 
-  /// 同时在跑的上限。bot 固定 [kMaxRunningBot];直连 = 已存 Key 数
-  /// (见 [naiKeysProvider]:今天只有一把,于是直连仍是一次一张,行为与并行前
-  /// 完全一致;多 Key 落地后这里自动放大)。一把都没存时给 1,让它照常跑到
-  /// 「没有令牌」那个错误上,而不是卡在等位里没有下文。
+  /// 同时在跑的上限。bot 固定 [kMaxRunningBot];直连 = 已存 Key 数,由
+  /// [NaiGate] 说了算(今天只有一把,于是直连仍是一次一张;多 Key 落地后自动放大)。
+  ///
   /// [isBot] 由调用方传而不是在这里现读:`generate()` 已经判过一次接入方式,
   /// 两处各读各的会在冷启动那一小段(authMode 还是 loading)得出不同答案 ——
   /// 最坏是「按直连提交、按 bot 放行 5 条并发」,正好是不该松的那个方向。
-  Future<int> _runLimit(bool isBot) async {
-    if (isBot) return kMaxRunningBot;
-    try {
-      final keys = await ref.read(naiKeysProvider.future);
-      return keys.isEmpty ? 1 : keys.length;
-    } catch (_) {
-      return 1;
-    }
-  }
+  Future<int> _runLimit(bool isBot) async =>
+      isBot ? kMaxRunningBot : await ref.read(naiGateProvider).limit();
 
   /// 同时能跑几条 —— 循环/队列据此决定**同时投几条**。
   /// 投多了也不会失控(闸门会拦),但投的数量正好等于并发数时,派发者不用自己
@@ -428,6 +432,12 @@ class GenerationNotifier extends Notifier<GenPool> {
       total: s.params.activeSteps,
       // 已经有别的在跑 → 这条多半要等位,先说清楚是在等而不是在准备
       note: state.jobs.isEmpty ? null : '等待中',
+      // 局部重绘:流帧只是那块裁切区,画布要拿整张原图垫底才看得出在改哪儿。
+      pasteUnder: s.inpaint?.paste?.original,
+      pasteAt: switch (s.inpaint?.paste) {
+        final p? => (x: p.sendX, y: p.sendY, w: p.tightW, h: p.tightH),
+        _ => null,
+      },
     );
     final run = _JobRun(GenAbort());
     _runs[job.id] = run;
@@ -446,8 +456,33 @@ class GenerationNotifier extends Notifier<GenPool> {
     }
 
     try {
-      // 等位:bot 5 条 / 直连按 Key 数(见 _runLimit)
-      run.slot = await _acquireSlot(await _runLimit(isBot), run.abort);
+      // 等位:bot 5 条(池内计数);直连按 Key 数,且要和图库超分、标签预览
+      // **抢同一个闸门** —— 它们打的是同一个 NAI 账号、同一个限流桶。
+      if (isBot) {
+        run.slot = await _acquireSlot(kMaxRunningBot, run.abort);
+      } else {
+        final pass = await ref
+            .read(naiGateProvider)
+            .acquire(paid: _isPaid(s), abort: run.abort);
+        run.slot = pass.slot;
+        run.token = pass.token;
+        // 一把可用的都没有 → 闸门给 -1 + null。不能当成「被取消」静静收掉,
+        // 那样点了生成什么都不会发生。
+        //
+        // 「压根没存」和「存了但都不可用」得分开说:后者跑去设置页会看到令牌
+        // 明明在那儿,只是开关关着 / 这单要花点数而它们都不让花 —— 报「未设置」
+        // 会把人送错方向。
+        if (pass.token == null) {
+          final saved =
+              (ref.read(naiKeysStoreProvider).value ?? const <NaiKey>[])
+                  .isNotEmpty;
+          return _fail(
+            job.id,
+            saved ? '没有可用于本次出图的令牌(检查每把的启用/生成/点数开关)' : 'no-token',
+            GenOutcome.notCharged,
+          );
+        }
+      }
       if (run.slot < 0) return _cancelled(job.id);
       _patch(
         job.id,
@@ -457,7 +492,11 @@ class GenerationNotifier extends Notifier<GenPool> {
           ? await _generateViaBot(s, job.id, run)
           : await _generateDirect(s, job.id, run);
     } finally {
-      _releaseSlot(run.slot);
+      if (isBot) {
+        _releaseSlot(run.slot);
+      } else {
+        ref.read(naiGateProvider).release(run.slot);
+      }
       _remove(job.id); // 各分支正常都已摘掉,这里兜住异常路径不留幽灵卡
     }
   }
@@ -502,20 +541,12 @@ class GenerationNotifier extends Notifier<GenPool> {
   ) async {
     // 等 storage 读完再判(懒加载 AsyncNotifier 冷启动首读是 loading,
     // 直接取 .value 会把「还没读出来」误判成「没配置」)。
-    // 这段在主 try 之外:读失败(Keystore 异常等)若不接住会成为未捕获的 async
-    // 异常 —— 发起生成的调用点都不 await,用户只会看到「点了没反应」。
-    final List<String> keys;
-    try {
-      keys = await ref.read(naiKeysProvider.future);
-    } catch (e) {
-      return _fail(jobId, '读取令牌失败:$e', GenOutcome.notCharged);
-    }
-    if (keys.isEmpty) {
+    // 用哪把由闸门在取槽时一并定了(它按可用集合挑,顺序即优先级),
+    // 这里不再自己查列表 —— 两处各查一次会在中途增删 Key 时错位。
+    final token = run.token;
+    if (token == null) {
       return _fail(jobId, 'no-token', GenOutcome.notCharged); // 弹「去设置」
     }
-    // 槽位下标即 Key 下标:一把 Key 同时只跑一条(NAI 按账号限流)。
-    // Key 数在等位之后变少(用户中途删了一把)时兜到最后一把,不越界。
-    final token = keys[run.slot.clamp(0, keys.length - 1)];
 
     final total = s.params.steps;
 
@@ -666,6 +697,32 @@ class GenerationNotifier extends Notifier<GenPool> {
   /// 透明图的 alpha 编码约定(见 [GenSettings.straightAlpha])。
   bool get _straightAlpha =>
       ref.read(genSettingsProvider).value?.straightAlpha ?? true;
+
+  /// 这一单要不要扣 Anlas。关了「使用点数」的 Key 只跑不花钱的活,得先问这个。
+  ///
+  /// 免不免费按**主 Key** 的 Opus 状态算 —— 和生成按钮上显示的费用同一个口径。
+  /// 真跑起来用的可能是另一把,但两把 Opus 状态不同时按主 Key 判已经是最保守的
+  /// 那一侧(主 Key 非 Opus → 按付费算 → 只挑允许花点数的,不会误花白嫖号)。
+  bool _isPaid(GenerateState s) {
+    try {
+      final isOpus = ref.read(anlasProvider).value?.isOpus ?? false;
+      final v5Charged = ref.read(v5ChargedProvider);
+      final job = s.inpaint;
+      final pts = job != null
+          ? estimateInpaintCost(
+              s,
+              isOpus: isOpus,
+              sendW: s.params.width,
+              sendH: s.params.height,
+              strength: job.strength,
+              v5Charged: v5Charged,
+            )
+          : estimateCost(s, isOpus: isOpus, v5Charged: v5Charged);
+      return pts > 0;
+    } catch (_) {
+      return true; // 算不出来按付费算:宁可少用一把,也不误花白嫖号的点数
+    }
+  }
 
   /// 手动单发成功后顺手放行排队任务(循环/队列自身收尾各自拉起,不经此)。
   void _kickQueue() {
@@ -1175,6 +1232,8 @@ class GenerationNotifier extends Notifier<GenPool> {
           seed: seed,
           batchIndex: batchIndex,
           badge: job != null ? ResultBadge.inpaint : ResultBadge.none,
+          // 「按住对比」要拿原图,只记 id —— 源图本来就在库里。
+          inpaintFrom: job?.sourceId,
           input: s, // 参数快照,供图库「重新生成」按本图参数复现
           select: select,
         );

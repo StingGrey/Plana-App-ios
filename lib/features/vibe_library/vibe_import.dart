@@ -26,7 +26,7 @@ Future<VibeIngest> ingestVibeFiles(
   for (final f in files) {
     final base = f.name.replaceAll(RegExp(r'\.[^.]+$'), '');
     try {
-      if (await pickedStartsWith(f, 0x7B /* { */ )) {
+      if (await pickedStartsWith(f, 0x7B /* { */)) {
         final got = await lib.importVibeJson(
           await readPickedJson(f),
           fallbackName: base,

@@ -8,7 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:plana_app/core/auth/auth_mode.dart';
-import 'package:plana_app/core/auth/token_store.dart';
+import 'package:plana_app/core/auth/nai_keys.dart';
 import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/features/generate/gen_jobs.dart';
 import 'package:plana_app/features/generate/generation_controller.dart';
@@ -35,7 +35,8 @@ void main() {
       overrides: [
         appStoresProvider.overrideWithValue(stores),
         authModeProvider.overrideWith(() => _FakeAuthMode(mode)),
-        naiKeysProvider.overrideWith((ref) async => keys),
+        // 闸门读的是**存储**那份(要看每把的开关),不是派生出来的字符串列表
+        naiKeysStoreProvider.overrideWith(() => _FakeKeys(keys)),
       ],
     );
     addTearDown(() async {
@@ -121,6 +122,18 @@ void main() {
     // 普通任务不该让重绘面板以为自己在跑(否则面板会被后台出图带着收掉)
     expect(c.read(inpaintStatusProvider).busy, isFalse);
   });
+}
+
+/// 按令牌串造几把全开的 Key。
+class _FakeKeys extends NaiKeysNotifier {
+  _FakeKeys(this.tokens);
+
+  final List<String> tokens;
+
+  @override
+  Future<List<NaiKey>> build() async => [
+    for (var i = 0; i < tokens.length; i++) NaiKey(id: 'k$i', token: tokens[i]),
+  ];
 }
 
 class _FakeAuthMode extends AuthModeNotifier {

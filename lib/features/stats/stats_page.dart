@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../core/store/ui_prefs.dart';
 
 import '../../core/auth/auth_mode.dart';
 import '../../core/auth/bot_session_store.dart';
@@ -31,7 +32,10 @@ const double _kChartH = 46;
 
 class _StatsPageState extends ConsumerState<StatsPage> {
   late bool _bot;
-  String _range = 'week';
+
+  /// 时间范围。**与平台页共用一份记忆** —— 两页问的是同一件事:
+  /// 我习惯看多长时间。
+  late String _range = ref.read(uiPrefsProvider).statsRange;
 
   /// 趋势图选中柱;换范围/换数据源都清空。
   int? _picked;
@@ -45,10 +49,13 @@ class _StatsPageState extends ConsumerState<StatsPage> {
 
   void _push(Widget page) => Navigator.of(context).push(sharedAxisRoute(page));
 
-  void _setRange(String v) => setState(() {
-    _range = v;
-    _picked = null;
-  });
+  void _setRange(String v) {
+    ref.read(uiPrefsProvider.notifier).patch((p) => p.copyWith(statsRange: v));
+    setState(() {
+      _range = v;
+      _picked = null;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -395,11 +402,7 @@ class _StatsPageState extends ConsumerState<StatsPage> {
             label: 'V5 生图',
             value: fmtInt(sum.v5),
           ),
-          StatTile(
-            icon: Icons.toll,
-            label: 'V5 点数',
-            value: fmtInt(sum.v5Pts),
-          ),
+          StatTile(icon: Icons.toll, label: 'V5 点数', value: fmtInt(sum.v5Pts)),
         ];
       }
     }

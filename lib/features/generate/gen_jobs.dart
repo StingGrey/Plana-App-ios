@@ -46,6 +46,8 @@ class GenJob {
     this.preview,
     this.note,
     this.taskId,
+    this.pasteUnder,
+    this.pasteAt,
   });
 
   final String id;
@@ -58,6 +60,14 @@ class GenJob {
 
   /// 提交序号,越大越新。列表按它倒序展示(新的在最前,与图库一致)。
   final int seq;
+
+  /// 局部重绘的**预览底**:整张原图,以及流帧该盖回去的位置(原图坐标)。
+  ///
+  /// 局部重绘发出去的只是那块裁切区,所以流帧本身是一小张。不贴回原位的话,
+  /// 画布上会先显示一张小图、出图入库那一刻再啪地换成整图 —— 而入库结果本来
+  /// 就是贴回去的。两个都为空 = 整图生成,流帧直接就是全貌。
+  final Uint8List? pasteUnder;
+  final ({int x, int y, int w, int h})? pasteAt;
 
   final int step;
   final int total;
@@ -109,6 +119,8 @@ class GenJob {
     total: total ?? this.total,
     prepPct: prepPct ?? this.prepPct,
     preview: preview ?? this.preview,
+    pasteUnder: pasteUnder,
+    pasteAt: pasteAt,
     note: clearNote ? null : (note ?? this.note),
     taskId: taskId ?? this.taskId,
   );

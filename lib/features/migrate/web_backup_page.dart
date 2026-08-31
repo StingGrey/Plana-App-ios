@@ -176,7 +176,9 @@ class _WebBackupPageState extends ConsumerState<WebBackupPage> {
                 padding: const EdgeInsets.only(top: 8),
                 child: Text(
                   '这份备份里没有 app 能接收的数据。',
-                  style: context.texts.bodySmall!.copyWith(color: scheme.outline),
+                  style: context.texts.bodySmall!.copyWith(
+                    color: scheme.outline,
+                  ),
                 ),
               ),
           ],
@@ -217,7 +219,10 @@ class _Banner extends StatelessWidget {
           ),
           const SizedBox(width: 10),
           Expanded(
-            child: Text(text, style: context.texts.bodySmall!.copyWith(height: 1.5)),
+            child: Text(
+              text,
+              style: context.texts.bodySmall!.copyWith(height: 1.5),
+            ),
           ),
         ],
       ),
@@ -268,12 +273,14 @@ class _Card extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(vertical: 5),
                 child: Row(
                   children: [
-                    Expanded(
-                      child: Text(k, style: context.texts.bodyMedium),
-                    ),
+                    Expanded(child: Text(k, style: context.texts.bodyMedium)),
                     Text(
                       v,
-                      style: mono(context, size: 12.5, color: scheme.onSurfaceVariant),
+                      style: mono(
+                        context,
+                        size: 12.5,
+                        color: scheme.onSurfaceVariant,
+                      ),
                     ),
                   ],
                 ),

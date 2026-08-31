@@ -1,6 +1,7 @@
 import 'dart:ui' show BoxHeightStyle;
 
 import 'package:flutter/foundation.dart' show mapEquals;
+import 'package:flutter/gestures.dart' show computePanSlop;
 import 'package:flutter/material.dart';
 
 import '../../../core/theme/app_theme.dart';
@@ -23,7 +24,7 @@ const TextHeightBehavior _kEvenLeading = TextHeightBehavior(
 /// 下叠 [_FuriganaPainter],按每枚标签**名字范围**把中文当「注音」画在下方。
 /// 二者共用同一套文本布局,故翻译与词严格对齐。
 /// (排序模式由 SortChipsView 整体替换本视图,这里不再承担排序职责。)
-class AnnotatedField extends StatelessWidget {
+class AnnotatedField extends StatefulWidget {
   const AnnotatedField({
     super.key,
     required this.controller,
@@ -32,7 +33,7 @@ class AnnotatedField extends StatelessWidget {
     this.showTrans = true,
     this.showWeightWash = true,
     this.fontSize = 16,
-    this.abnormalThreshold = 10,
+    this.onCursorDrag,
     this.scrollController,
     this.onFoldTap,
   });
@@ -44,15 +45,15 @@ class AnnotatedField extends StatelessWidget {
   /// 注音翻译开关(编辑器设置):关=摘除注音层,行高收紧不再为译文留白。
   final bool showTrans;
 
-  /// 权重底色开关(编辑器设置):关=整层摘除,正文回到纯文本
-  /// (异常权重警示仍在词条栏给出,不靠底色兜底)。
+  /// 权重底色开关(编辑器设置):关=整层摘除,正文回到纯文本。
   final bool showWeightWash;
 
   /// 正文字号(编辑器设置):TextField 与注音测量层必须同字号(布局同构)。
   final double fontSize;
 
-  /// 异常权重阈值(编辑器设置):权重底色层的红色警示判定。
-  final double abnormalThreshold;
+  /// 正在拖水滴手柄挪光标 / 拽选区:true=起拖,false=松手。
+  /// 页面据此把吸底的词条栏收起来 —— 拖光标时它正好压在手指下方那一片。
+  final ValueChanged<bool>? onCursorDrag;
 
   final ScrollController? scrollController;
 
@@ -60,17 +61,82 @@ class AnnotatedField extends StatelessWidget {
   final void Function(String name)? onFoldTap;
 
   @override
+  State<AnnotatedField> createState() => _AnnotatedFieldState();
+}
+
+class _AnnotatedFieldState extends State<AnnotatedField> {
+  /// 底色层 / 注音层是按设置条件挂进 Stack 的,开关一动 TextField 的兄弟下标
+  /// 就变了 —— 没有这把全局 key,框架会按位置改嫁,把输入框连同焦点和选区
+  /// 一起重建。
+  final _fieldKey = GlobalKey();
+
+  late final _handles = _WatchedHandles(this);
+
+  /// 手柄上按住的那根指头起点,以及是否已经越过 slop 判成「在拖」。
+  Offset? _fingerDown;
+  bool _dragging = false;
+
+  void _setDragging(bool v) {
+    if (_dragging == v) return;
+    _dragging = v;
+    widget.onCursorDrag?.call(v);
+  }
+
+  void _pointerDown(PointerDownEvent e) => _fingerDown = e.position;
+
+  /// 按下不等于在拖:点手柄是弹工具栏,不该把词条栏也一起收走。走够
+  /// [computePanSlop] 才算 —— 那正是框架那颗 pan 认账、光标开始跟着走的门槛。
+  void _pointerMove(PointerMoveEvent e) {
+    final from = _fingerDown;
+    if (from == null || _dragging) return;
+    final slop = computePanSlop(e.kind, MediaQuery.gestureSettingsOf(context));
+    if ((e.position - from).distance > slop) _setDragging(true);
+  }
+
+  void _pointerUp() {
+    _fingerDown = null;
+    _setDragging(false);
+  }
+
+  /// 兜底:手柄只在有焦点时挂着,焦点一丢它连同上面那层 [Listener] 一起拆掉,
+  /// 松手事件就没人收了 —— 不在这里补一刀,拖动态会卡住,词条栏再也不出来。
+  void _onFocusChanged() {
+    if (!widget.focusNode.hasFocus) _pointerUp();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    widget.focusNode.addListener(_onFocusChanged);
+  }
+
+  @override
+  void didUpdateWidget(AnnotatedField old) {
+    super.didUpdateWidget(old);
+    if (old.focusNode != widget.focusNode) {
+      old.focusNode.removeListener(_onFocusChanged);
+      widget.focusNode.addListener(_onFocusChanged);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.focusNode.removeListener(_onFocusChanged);
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final pal = context.editor;
     final scaler = MediaQuery.textScalerOf(context);
     final base = kEditorBaseStyle.copyWith(
-      fontSize: fontSize,
-      height: showTrans ? null : 1.5,
+      fontSize: widget.fontSize,
+      height: widget.showTrans ? null : 1.5,
     );
 
     return SingleChildScrollView(
-      controller: scrollController,
+      controller: widget.scrollController,
       padding: const EdgeInsets.fromLTRB(16, 6, 16, 24),
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -82,15 +148,15 @@ class AnnotatedField extends StatelessWidget {
               Positioned.fill(
                 child: IgnorePointer(
                   child: AnimatedBuilder(
-                    animation: controller,
+                    animation: widget.controller,
                     builder: (_, _) => CustomPaint(
                       painter: _FoldPainter(
-                        text: controller.text,
-                        bodies: controller.foldBodies,
+                        text: widget.controller.text,
+                        bodies: widget.controller.foldBodies,
                         base: base,
                         maxWidth: width - _kCaretMargin,
                         scaler: scaler,
-                        withSpacing: showTrans,
+                        withSpacing: widget.showTrans,
                         title: scheme.primary.withValues(alpha: .16),
                         revision: transCacheRev,
                       ),
@@ -100,21 +166,19 @@ class AnnotatedField extends StatelessWidget {
               ),
               // 权重底色层:贴字形高度的圆角色带,范围含权重记号,
               // 组=开记号到闭记号整条;嵌套/叠加权重=多层半透明叠色。
-              if (showWeightWash)
+              if (widget.showWeightWash)
                 Positioned.fill(
                   child: IgnorePointer(
                     child: AnimatedBuilder(
-                      animation: controller,
+                      animation: widget.controller,
                       builder: (_, _) => CustomPaint(
                         painter: _WeightWashPainter(
-                          text: controller.text,
+                          text: widget.controller.text,
                           base: base,
                           maxWidth: width - _kCaretMargin,
                           scaler: scaler,
-                          withSpacing: showTrans,
-                          abnormalThreshold: abnormalThreshold,
+                          withSpacing: widget.showTrans,
                           pal: pal,
-                          errorWash: scheme.error,
                           sdWash: scheme.tertiary,
                           disabledWash: scheme.onSurface,
                           revision: transCacheRev,
@@ -123,14 +187,14 @@ class AnnotatedField extends StatelessWidget {
                     ),
                   ),
                 ),
-              if (showTrans)
+              if (widget.showTrans)
                 Positioned.fill(
                   child: IgnorePointer(
                     child: AnimatedBuilder(
-                      animation: controller,
+                      animation: widget.controller,
                       builder: (_, _) => CustomPaint(
                         painter: _FuriganaPainter(
-                          text: controller.text,
+                          text: widget.controller.text,
                           base: base,
                           // RenderEditable 排版时给光标留 cursorWidth+1 的边距,
                           // 注音层必须用同一宽度重排,否则临界行折点不一致,
@@ -149,12 +213,14 @@ class AnnotatedField extends StatelessWidget {
               DefaultTextHeightBehavior(
                 textHeightBehavior: _kEvenLeading,
                 child: TextField(
-                  controller: controller,
-                  focusNode: focusNode,
+                  key: _fieldKey,
+                  controller: widget.controller,
+                  focusNode: widget.focusNode,
                   style: base.copyWith(color: scheme.onSurface),
                   maxLines: null,
                   cursorColor: pal.cursor,
                   cursorWidth: _kCursorWidth,
+                  selectionControls: _handles,
                   keyboardType: TextInputType.multiline,
                   textInputAction: TextInputAction.newline,
                   decoration: InputDecoration(
@@ -162,7 +228,7 @@ class AnnotatedField extends StatelessWidget {
                     isCollapsed: true,
                     contentPadding: EdgeInsets.zero,
                     border: InputBorder.none,
-                    hintText: hint,
+                    hintText: widget.hint,
                     hintStyle: base.copyWith(color: scheme.outline),
                   ),
                 ),
@@ -173,11 +239,11 @@ class AnnotatedField extends StatelessWidget {
               // 光标。同一 controller 布局,矩形与绘制层严格对齐。
               Positioned.fill(
                 child: AnimatedBuilder(
-                  animation: controller,
+                  animation: widget.controller,
                   builder: (_, _) {
                     final rects = _foldTitleRects(
-                      controller.text,
-                      controller.foldBodies,
+                      widget.controller.text,
+                      widget.controller.foldBodies,
                       base: base,
                       maxWidth: width - _kCaretMargin,
                       scaler: scaler,
@@ -193,7 +259,7 @@ class AnnotatedField extends StatelessWidget {
                             height: r.height,
                             child: GestureDetector(
                               behavior: HitTestBehavior.opaque,
-                              onTap: () => onFoldTap?.call(name),
+                              onTap: () => widget.onFoldTap?.call(name),
                             ),
                           ),
                       ],
@@ -207,11 +273,66 @@ class AnnotatedField extends StatelessWidget {
       ),
     );
   }
+}
 
-  static const _kCursorWidth = 2.0;
+const _kCursorWidth = 2.0;
 
-  /// RenderEditable 的 _caretMargin = cursorWidth + _kCaretGap(1)。
-  static const _kCaretMargin = _kCursorWidth + 1.0;
+/// RenderEditable 的 _caretMargin = cursorWidth + _kCaretGap(1)。
+const _kCaretMargin = _kCursorWidth + 1.0;
+
+/// 手柄的触摸盒。框架会把手柄的可点区域补到 [kMinInteractiveDimension] 见方,
+/// 补出来的那圈内边距不属于 buildHandle 返回的 widget —— 而 [Listener] 只收
+/// 落在自己身上的指头。所以报 48、自己居中放本体,整块触摸盒都在观察范围内。
+const _kHandleTouch = kMinInteractiveDimension;
+
+/// 观察手柄:外观、拖动手感、放大镜、点击弹工具栏,全都是框架原样那一套。
+///
+/// 这里只多套一层 [Listener] —— 它不进手势竞技场,不和框架那颗 pan 抢,
+/// 纯粹是「有没有指头在手柄上拖」的探针,拿来通知页面把词条栏收起来。
+class _WatchedHandles extends MaterialTextSelectionControls
+    with TextSelectionHandleControls {
+  _WatchedHandles(this.owner);
+
+  final _AnnotatedFieldState owner;
+
+  @override
+  Size getHandleSize(double textLineHeight) =>
+      const Size(_kHandleTouch, _kHandleTouch);
+
+  @override
+  Offset getHandleAnchor(TextSelectionHandleType type, double textLineHeight) =>
+      super.getHandleAnchor(type, textLineHeight) + _inset(textLineHeight);
+
+  @override
+  Widget buildHandle(
+    BuildContext context,
+    TextSelectionHandleType type,
+    double textHeight, [
+    VoidCallback? onTap,
+  ]) {
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: owner._pointerDown,
+      onPointerMove: owner._pointerMove,
+      onPointerUp: (_) => owner._pointerUp(),
+      onPointerCancel: (_) => owner._pointerUp(),
+      child: SizedBox.square(
+        dimension: _kHandleTouch,
+        child: Center(
+          child: super.buildHandle(context, type, textHeight, onTap),
+        ),
+      ),
+    );
+  }
+
+  /// 本体居中放进触摸盒后,锚点(与光标重合的那个点)要跟着往右下挪这么多。
+  Offset _inset(double textLineHeight) {
+    final glyph = super.getHandleSize(textLineHeight);
+    return Offset(
+      (_kHandleTouch - glyph.width) / 2,
+      (_kHandleTouch - glyph.height) / 2,
+    );
+  }
 }
 
 /// 折叠标题 `#名字` 的命中矩形(跨行则多条)→ (名字, 行盒)。与绘制层同一
@@ -322,7 +443,7 @@ class _FoldPainter extends CustomPainter {
 /// - 范围**含权重记号**:单词条=整段语法,跨词条组=开记号画到闭记号
 /// - 贴字形高度(tight 字形盒 + 竖向 1.5px 余量 + 圆角),不染注音区
 /// - 嵌套组 / 组内自带权重 = 多条区间半透明叠色,内层自然更深
-/// - 异常权重红 / SD 语法 tertiary 按词条段绘制,优先于权重色带之上
+/// - SD 语法 tertiary 按词条段绘制,优先于权重色带之上
 class _WeightWashPainter extends CustomPainter {
   _WeightWashPainter({
     required this.text,
@@ -330,9 +451,7 @@ class _WeightWashPainter extends CustomPainter {
     required this.maxWidth,
     required this.scaler,
     required this.withSpacing,
-    required this.abnormalThreshold,
     required this.pal,
-    required this.errorWash,
     required this.sdWash,
     required this.disabledWash,
     required this.revision,
@@ -349,12 +468,9 @@ class _WeightWashPainter extends CustomPainter {
   /// 是否启用译文宽度补偿(注音开时必须与 TextField 布局同构)。
   final bool withSpacing;
 
-  final double abnormalThreshold;
-
   /// 权重色相与强度曲线来源([EditorPalette.weightWash])。
   final EditorPalette pal;
 
-  final Color errorWash;
   final Color sdWash;
 
   /// 禁用词条那层中性底色(调用方给 onSurface,这里再压透明度)。
@@ -372,7 +488,7 @@ class _WeightWashPainter extends CustomPainter {
     final spans = <WeightSpan>[];
     final toks = parseToks(text, weightSpans: spans);
 
-    // 词条级警示区间(异常红 / SD tertiary),画在权重色带之上
+    // 词条级警示区间(SD tertiary),画在权重色带之上
     final overlays = <(int, int, Color)>[];
     // 禁用词条的区间。**它们不铺权重色带** —— 一枚关掉的词还顶着一片加权蓝,
     // 说的是两件互相矛盾的事;chip 那边早就是这个规矩(禁用不铺色),正文这边
@@ -381,18 +497,19 @@ class _WeightWashPainter extends CustomPainter {
     for (final t in toks) {
       if (t.disabled) {
         off.add((t.segStart, t.segEnd));
-        overlays.add((t.segStart, t.segEnd, disabledWash.withValues(alpha: .1)));
+        overlays.add((
+          t.segStart,
+          t.segEnd,
+          disabledWash.withValues(alpha: .1),
+        ));
         continue;
       }
-      if (abnormalWeightOf(text, t, threshold: abnormalThreshold) != null) {
-        overlays.add((t.segStart, t.segEnd, errorWash.withValues(alpha: .16)));
-      } else if (isSdWeightSeg(text.substring(t.segStart, t.segEnd))) {
+      if (isSdWeightSeg(text.substring(t.segStart, t.segEnd))) {
         overlays.add((t.segStart, t.segEnd, sdWash.withValues(alpha: .16)));
       }
     }
     if (spans.isEmpty && overlays.isEmpty) return;
-    bool isOff(int a, int b) =>
-        off.any((r) => a >= r.$1 && b <= r.$2);
+    bool isOff(int a, int b) => off.any((r) => a >= r.$1 && b <= r.$2);
 
     final layout = TextPainter(
       text: withSpacing
@@ -458,9 +575,7 @@ class _WeightWashPainter extends CustomPainter {
       old.base != base ||
       old.maxWidth != maxWidth ||
       old.withSpacing != withSpacing ||
-      old.abnormalThreshold != abnormalThreshold ||
       old.pal != pal ||
-      old.errorWash != errorWash ||
       old.sdWash != sdWash ||
       old.disabledWash != disabledWash ||
       old.revision != revision;

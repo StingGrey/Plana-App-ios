@@ -26,9 +26,6 @@ class _TokenMode extends AuthModeNotifier {
 }
 
 void main() {
-  setUp(() => debugDefaultTargetPlatformOverride = TargetPlatform.android);
-  tearDown(() => debugDefaultTargetPlatformOverride = null);
-
   Widget app({required AuthModeNotifier Function() mode}) => ProviderScope(
     overrides: [
       appStoresProvider.overrideWithValue(AppStores.ephemeral()),
@@ -39,6 +36,7 @@ void main() {
   );
 
   testWidgets('首启走欢迎流程,六页依次可达', (tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
     await tester.pumpWidget(app(mode: _NoMode.new));
     await tester.pumpAndSettle();
 
@@ -79,11 +77,14 @@ void main() {
     expect(find.text('全部完成'), findsOneWidget);
     expect(find.widgetWithText(FilledButton, '开始使用'), findsOneWidget);
     expect(find.text('下一步'), findsNothing);
+    debugDefaultTargetPlatformOverride = null;
   });
 
   testWidgets('通知那步没过的老用户也会被引到欢迎流程', (tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
     await tester.pumpWidget(app(mode: _TokenMode.new));
     await tester.pumpAndSettle();
     expect(find.text('欢迎使用 Plana'), findsOneWidget);
+    debugDefaultTargetPlatformOverride = null;
   });
 }

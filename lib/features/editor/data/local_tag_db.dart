@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show compute;
+import 'package:flutter/foundation.dart' show VoidCallback, compute;
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -18,6 +18,7 @@ List<_Entry> _parseTsv(String raw) {
     if (count < 50) continue; // 滤冷门,减内存(与 web <50 剔除一致)
     final zh = LocalTagDb.firstZh(
       (f.length > 2 && f[2].isNotEmpty) ? f[2] : null,
+      tag: f[0],
     );
     final aliases = (f.length > 3 && f[3].isNotEmpty)
         ? [
@@ -47,34 +48,82 @@ class LocalTagDb {
 
   /// 把全库中文/热度灌进 suggestions 反查缓存(注音层/词条栏 sync 查询用)。
   /// 不灌的话翻译只在补全命中时零星回填——手打/带入的既有 prompt 都显示不出。
-  /// 约 9 万条,分片让帧;进编辑器时触发,幂等。
-  Future<void> warmTagMeta() => _warming ??= _warmTagMeta();
+  /// 分片让帧;进编辑器时触发,幂等。
+  ///
+  /// [onChunk]:灌到前几片时各调一次,让调用方**提前刷一次**,不必干等整轮。
+  /// 整轮不便宜 —— 桌面实测读 asset + isolate 解析 195ms、灌注 427ms,手机上
+  /// 一两秒;而词库按热度降序,拿真实提示词量过:前 8000 条(灌注进度 8%)就已经
+  /// 覆盖其中约七成的词。所以头三片各刷一次、剩下的到货再补,首屏观感差很多。
+  ///
+  /// 刷太勤会让注音层反复重排,所以只在 [_warmNotifyAt] 那几个点刷,不是每片都刷。
+  ///
+  /// 多个调用者(编辑器 + 同屏若干 `PromptChips`)各自的 [onChunk] **都会收到** ——
+  /// 灌注本身仍只跑一轮。记忆化写成 `_warming ??=` 的话只有头一个调用者的回调能生效,
+  /// 后来的只能干等整轮,所以回调单独存一份。已经灌完时不再登记(直接 await 那个
+  /// 完成的 future 即可)。
+  Future<void> warmTagMeta({VoidCallback? onChunk}) {
+    if (onChunk != null && !_warmDone) _warmListeners.add(onChunk);
+    return _warming ??= _warmTagMeta();
+  }
+
+  final _warmListeners = <VoidCallback>[];
+  bool _warmDone = false;
+
+  /// 分片大小:每这么多条让一次帧。
+  static const _warmChunk = 8000;
+
+  /// 在这几个进度点回调 [warmTagMeta] 的 `onChunk`。都落在正名那一遍里
+  /// (别名遍从 9 万多开始),因为热度降序的收益全在前面。
+  static const _warmNotifyAt = {8000, 16000, 32000};
+
+  void _notifyWarm() {
+    for (final f in _warmListeners) {
+      f();
+    }
+  }
 
   Future<void> _warmTagMeta() async {
     await _ensureLoaded();
     final entries = _entries;
     if (entries == null) return;
     var i = 0;
+    final taken = <String>{};
     for (final e in entries) {
+      final name = e.tag.replaceAll('_', ' ');
+      taken.add(metaKey(name));
       if (e.zh != null || e.count > 0) {
-        cacheTagMeta(e.tag.replaceAll('_', ' '), trans: e.zh, count: e.count);
+        cacheTagMeta(name, trans: e.zh, count: e.count);
       }
-      if (++i % 8000 == 0) await Future<void>.delayed(Duration.zero);
+      if (++i % _warmChunk == 0) {
+        if (_warmNotifyAt.contains(i)) _notifyWarm();
+        await Future<void>.delayed(Duration.zero);
+      }
     }
+    // 第二遍:别名(第 4 列)。Danbooru 的别名就是同一个标签的另一种写法 ——
+    // 旧名、拼写变体、俗称(`hires`/`high res`→highres、`1girls`→1girl、
+    // `longhair`→long hair、`oppai`/`tits`→breasts),译名和热度都该跟着正名走。
+    // 这些写法在真实提示词里极常见,不认的话整词注音空白,还会被白送去后端问。
+    // 全库能这么捡回 20,966 条,且头部全是百万热度的词。
+    //
+    // 正名优先:与正式标签同名的别名跳过(`taken` 里已有)。别名之间撞车时先到
+    // 先得 —— 词库按热度降序,所以赢的是更热门那个标签,这正是想要的。
+    for (final e in entries) {
+      if (e.zh == null && e.count <= 0) continue;
+      for (final a in e.aliases) {
+        if (!taken.add(metaKey(a))) continue;
+        cacheTagMeta(a, trans: e.zh, count: e.count);
+      }
+      if (++i % _warmChunk == 0) await Future<void>.delayed(Duration.zero);
+    }
+    _warmDone = true;
+    _warmListeners.clear(); // 灌完就不再需要,别攥着已 dispose 的 State 的闭包
   }
 
-  /// 社区词库常一格多译(逗号/顿号/斜杠分隔),注音只取第一个,避免过长。
-  /// 非私有:后台解析的顶层函数 [_parseTsv] 要用。
-  static String? firstZh(String? zh) {
-    if (zh == null) return null;
-    var cut = zh.length;
-    for (final s in const [',', '，', '、', '/', ';', '；']) {
-      final i = zh.indexOf(s);
-      if (i >= 0 && i < cut) cut = i;
-    }
-    final first = zh.substring(0, cut).trim();
-    return first.isEmpty ? null : first;
-  }
+  /// 社区词库常一格多译,注音只取第一段。实现在 [firstTransSegment] ——
+  /// 网络回填那一路(`cacheTagMeta`)用的是同一个,两边分头维护过一次名单,
+  /// 结果 `|` 只补了一处。非私有:后台解析的顶层函数 [_parseTsv] 要用。
+  static String? firstZh(String? zh, {String? tag}) =>
+      firstTransSegment(zh, tag: tag);
 
   Future<void> _load() async {
     // rootBundle 是平台通道,只能在主 isolate 读;解析(9 万行、几十万次字符串

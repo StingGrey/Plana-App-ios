@@ -170,4 +170,142 @@ void main() {
       expect(EditorSettings.fromJson(v.toJson()), v);
     });
   });
+
+  // 芯片模式过去把 `1.3::a, b::` 摊成「每颗各挂一个 ×1.3」——同一件事说 N 遍,
+  // 还看不出这几枚是一起被加权的。改成圈一块、读数只报一次,判据全在 unitGroups。
+  group('unitGroups:一个权重罩住几枚才算组', () {
+    List<UnitGroup> g(String t) => unitGroups(t, topLevelUnits(t, const {}));
+
+    test('罩住两枚以上 = 组,给出首末下标与该层倍率', () {
+      final r = g('1.3::empty eyes, panting::, hello');
+      expect(r.length, 1);
+      expect(r.single.first, 0);
+      expect(r.single.last, 1);
+      expect(r.single.mult, closeTo(1.3, 1e-9));
+      // 原文区间含记号 —— 整组搬动搬的就是这一段
+      expect(
+        '1.3::empty eyes, panting::, hello'.substring(
+          r.single.start,
+          r.single.end,
+        ),
+        '1.3::empty eyes, panting::',
+      );
+    });
+
+    test('只罩住一枚 = 它自己的权重,不成组(芯片照常内联报数)', () {
+      expect(g('1.2::solo::, a'), isEmpty);
+      expect(g('{solo}, a'), isEmpty);
+    });
+
+    test('括号组同样算:{a, b} 也是一块', () {
+      final r = g('{a, b}, c');
+      expect(r.length, 1);
+      expect((r.single.first, r.single.last), (0, 1));
+    });
+
+    test('挨着的两个同倍率组各算各的,不并成一块', () {
+      final r = g('1.3::a, b::, 1.3::c, d::');
+      expect(r.length, 2);
+      expect((r[0].first, r[0].last), (0, 1));
+      expect((r[1].first, r[1].last), (2, 3));
+    });
+
+    // 嵌套只取最外层。内层那点倍率由成员芯片自己内联报出:effMult 除掉
+    // 框已经报掉的部分,合起来仍是它真正的有效权重。
+    test('嵌套只出最外那层,内层留给成员自己报', () {
+      const t = '1.2::a, {b, c}, d::';
+      final r = g(t);
+      expect(r.length, 1);
+      expect((r.single.first, r.single.last), (0, 3));
+      expect(r.single.mult, closeTo(1.2, 1e-9));
+
+      final toks = parseToks(t);
+      final band = r.single.mult;
+      // a / d 被框全额报掉,自己没得报;b / c 还剩那层 {}
+      expect(toks[0].effMult / band, closeTo(1.0, 1e-9));
+      expect(toks[3].effMult / band, closeTo(1.0, 1e-9));
+      expect(toks[1].effMult / band, closeTo(1.05, 1e-9));
+    });
+
+    test('没有权重记号就没有组', () {
+      expect(g('a, b, c'), isEmpty);
+      expect(g('a'), isEmpty);
+      expect(g(''), isEmpty);
+    });
+  });
+
+  // 组记号(`1.3::` 与收尾的 `::`)落在词条 seg **之外**,槽位法只搬各单元
+  // 自己那一格 —— 于是壳子原地不动,谁滑进来谁接管加权。这是选中整组之后
+  // 唯一说不通的一种结果,所以整组搬动单开一条路;只挑组里几枚则维持原样。
+  group('整组搬动带着权重走', () {
+    String mv(String t, Set<int> sel, int to) => moveUnits(t, const {}, sel, to);
+
+    test('选中整组搬到末尾:记号跟着走,不留下来吞别的词', () {
+      expect(mv('1.3::a, b::, c, d', {0, 1}, 4), 'c, d, 1.3::a, b::');
+    });
+
+    test('选中整组搬到中间:落点前后都不被卷进组里', () {
+      expect(mv('1.3::a, b::, c, d', {0, 1}, 3), 'c, 1.3::a, b::, d');
+    });
+
+    test('括号组同样整只走', () {
+      expect(mv('{a, b}, c, d', {0, 1}, 4), 'c, d, {a, b}');
+    });
+
+    test('组不在开头也搬得动', () {
+      expect(mv('x, 1.3::a, b::, y', {1, 2}, 0), '1.3::a, b::, x, y');
+    });
+
+    // 手动只点了组里的一枚 —— 按用户口径维持老行为:把这枚拿出去,
+    // 壳子留在原地(后一枚补进来接管加权)。
+    test('只挑组里一枚:仍是老口径,组留在原地', () {
+      expect(
+        mv('1.3::empty eyes, panting::, hello', {0}, 3),
+        '1.3::panting, hello::, empty eyes',
+      );
+    });
+
+    test('组内换位不受影响', () {
+      expect(
+        mv('1.3::empty eyes, panting::, hello', {1}, 0),
+        '1.3::panting, empty eyes::, hello',
+      );
+    });
+
+    // 单枚自带的权重本来就在自己 seg 里,一直是跟着走的,别改坏了
+    test('单枚自带权重照旧跟着走', () {
+      expect(mv('1.2::solo::, a, b', {0}, 3), 'a, b, 1.2::solo::');
+    });
+
+    test('整组搬动是可逆的:搬走再搬回来还是原样', () {
+      const t = '1.3::a, b::, c, d';
+      final moved = mv(t, {0, 1}, 4);
+      expect(mv(moved, {2, 3}, 0), t);
+    });
+  });
+
+  // 正文与芯片的字号后来拆成了两项。老存档里只有那个合并值:芯片得跟着它,
+  // 不然升一次级,调过字号的人打开芯片模式会发现整片 chip 变了大小。
+  group('正文 / 芯片字号各调各的', () {
+    test('老存档只有 fontSize:芯片跟着它,不回默认', () {
+      final old = EditorSettings.fromJson(const {'fontSize': 22.0});
+      expect(old.fontSize, 22);
+      expect(old.chipFontSize, 22);
+    });
+
+    test('两项都在时各读各的', () {
+      final v = EditorSettings.fromJson(const {
+        'fontSize': 14.0,
+        'chipFontSize': 20.0,
+      });
+      expect(v.fontSize, 14);
+      expect(v.chipFontSize, 20);
+    });
+
+    test('改一项不动另一项', () {
+      final v = const EditorSettings().copyWith(chipFontSize: 24);
+      expect(v.chipFontSize, 24);
+      expect(v.fontSize, 16);
+    });
+  });
 }

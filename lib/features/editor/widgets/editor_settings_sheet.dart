@@ -117,8 +117,8 @@ class EditorSettingsSheet extends ConsumerWidget {
                     ),
                     _StepperRow(
                       icon: Icons.format_size,
-                      title: '编辑器字号',
-                      desc: '正文字号,注音与排版同步',
+                      title: '文本字号',
+                      desc: '文本模式下的文本显示大小',
                       value: s.fontSize,
                       min: EditorSettings.fontSizeMin,
                       max: EditorSettings.fontSizeMax,
@@ -127,16 +127,17 @@ class EditorSettingsSheet extends ConsumerWidget {
                       onChanged: (v) =>
                           notifier.patch((c) => c.copyWith(fontSize: v)),
                     ),
-                    _ChoiceRow<double>(
-                      icon: Icons.report_gmailerrorred,
-                      title: '异常权重阈值',
-                      desc: '词条中段 ≥ 此值的「N::」标红警示',
-                      options: const [(3.0, '3'), (5.0, '5'), (10.0, '10')],
-                      optWidth: 38,
-                      value: s.abnormalThreshold,
-                      onChanged: (v) => notifier.patch(
-                        (c) => c.copyWith(abnormalThreshold: v),
-                      ),
+                    _StepperRow(
+                      icon: Icons.label_outline,
+                      title: '芯片字号',
+                      desc: '芯片模式下的芯片显示大小',
+                      value: s.chipFontSize,
+                      min: EditorSettings.fontSizeMin,
+                      max: EditorSettings.fontSizeMax,
+                      step: EditorSettings.fontSizeStep,
+                      format: (v) => v.toStringAsFixed(0),
+                      onChanged: (v) =>
+                          notifier.patch((c) => c.copyWith(chipFontSize: v)),
                     ),
                     _sectionLabel(context, '补全'),
                     _SettingRow(
@@ -311,6 +312,70 @@ class EditorSettingsSheet extends ConsumerWidget {
 }
 
 /// 无开关的设置入口:点整行进入编辑页/对话框。
+class _ChoiceRow<T> extends StatelessWidget {
+  const _ChoiceRow({
+    required this.icon,
+    required this.title,
+    required this.desc,
+    required this.options,
+    required this.value,
+    required this.onChanged,
+    this.enabled = true,
+    this.optWidth = 48,
+  });
+
+  final IconData icon;
+  final String title;
+  final String desc;
+  final List<(T, String)> options;
+  final T value;
+  final bool enabled;
+  final ValueChanged<T> onChanged;
+  final double optWidth;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return AnimatedOpacity(
+      duration: Motion.fast,
+      opacity: enabled ? 1 : .42,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 10, 16, 10),
+        child: Row(
+          children: [
+            Icon(icon, size: 20, color: scheme.primary),
+            const SizedBox(width: 14),
+            Expanded(child: _RowTexts(title: title, desc: desc)),
+            const SizedBox(width: 8),
+            IgnorePointer(
+              ignoring: !enabled,
+              child: SegmentedButton<T>(
+                segments: [
+                  for (final option in options)
+                    ButtonSegment<T>(
+                      value: option.$1,
+                      label: SizedBox(
+                        width: optWidth,
+                        child: Text(option.$2, textAlign: TextAlign.center),
+                      ),
+                    ),
+                ],
+                selected: {value},
+                onSelectionChanged: (values) => onChanged(values.first),
+                showSelectedIcon: false,
+                style: const ButtonStyle(
+                  visualDensity: VisualDensity.compact,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _ActionRow extends StatelessWidget {
   const _ActionRow({
     required this.icon,
@@ -403,62 +468,6 @@ class _SettingRow extends StatelessWidget {
   }
 }
 
-/// 单行档位选择:左侧标题说明,右侧滑块分段。
-class _ChoiceRow<T> extends StatelessWidget {
-  const _ChoiceRow({
-    required this.icon,
-    required this.title,
-    required this.desc,
-    required this.options,
-    required this.value,
-    required this.onChanged,
-    this.enabled = true,
-    this.optWidth = 48,
-  });
-
-  final IconData icon;
-  final String title;
-  final String desc;
-  final List<(T, String)> options;
-  final T value;
-  final bool enabled;
-  final ValueChanged<T> onChanged;
-
-  /// 单段宽度(短数字标签的 4 段行可收窄防挤压)。
-  final double optWidth;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = context.scheme;
-    return AnimatedOpacity(
-      duration: Motion.fast,
-      opacity: enabled ? 1 : .42,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 10, 16, 10),
-        child: Row(
-          children: [
-            Icon(icon, size: 20, color: scheme.primary),
-            const SizedBox(width: 14),
-            Expanded(
-              child: _RowTexts(title: title, desc: desc),
-            ),
-            const SizedBox(width: 8),
-            IgnorePointer(
-              ignoring: !enabled,
-              child: _MiniSeg<T>(
-                options: options,
-                value: value,
-                optWidth: optWidth,
-                onChanged: onChanged,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 /// 权重步进读数:两位小数去掉尾随的零(0.10 → 0.1,0.05 原样)。
 /// 一列读数里只有它拖着个空转的小数位会很扎眼。
 String _fmtStep(double v) {
@@ -470,7 +479,7 @@ String _fmtStep(double v) {
   return t;
 }
 
-/// 加减调节行:左边同 [_ChoiceRow] 的图标+标题,右边一组 `− 读数 +`。
+/// 加减调节行:左边图标+标题,右边一组 `− 读数 +`。
 ///
 /// 为什么不是档位:字号、权重步进这类偏好没有天然的"三五个正确值" ——
 /// 屏幕尺寸、视力、习惯的加权幅度各不相同,给了三档总有人卡在两档之间。
@@ -588,93 +597,6 @@ class _RowTexts extends StatelessWidget {
           ),
         ),
       ],
-    );
-  }
-}
-
-/// 紧凑滑块分段(与 App 内其他分段切换同款物理:滑块滑动 + 文字渐变)。
-class _MiniSeg<T> extends StatelessWidget {
-  const _MiniSeg({
-    required this.options,
-    required this.value,
-    required this.onChanged,
-    this.optWidth = 48,
-  });
-
-  final List<(T, String)> options;
-  final T value;
-  final ValueChanged<T> onChanged;
-  final double optWidth;
-
-  static const double _h = 28;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = context.scheme;
-    var idx = options.indexWhere((o) => o.$1 == value);
-    if (idx < 0) idx = 0;
-
-    return Container(
-      padding: const EdgeInsets.all(2.5),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(9),
-      ),
-      child: SizedBox(
-        width: optWidth * options.length,
-        height: _h,
-        child: Stack(
-          children: [
-            AnimatedPositioned(
-              duration: Motion.medium,
-              curve: Motion.emphasized,
-              left: idx * optWidth,
-              top: 0,
-              bottom: 0,
-              width: optWidth,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: scheme.primary,
-                  borderRadius: BorderRadius.circular(7),
-                ),
-              ),
-            ),
-            Row(
-              children: [
-                for (final (v, label) in options)
-                  GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: () {
-                      if (v == value) return;
-                      Haptics.selection();
-                      onChanged(v);
-                    },
-                    child: SizedBox(
-                      width: optWidth,
-                      height: _h,
-                      child: Center(
-                        child: AnimatedDefaultTextStyle(
-                          duration: Motion.medium,
-                          curve: Motion.standard,
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: v == value
-                                ? FontWeight.w700
-                                : FontWeight.w500,
-                            color: v == value
-                                ? scheme.onPrimary
-                                : scheme.onSurfaceVariant,
-                          ),
-                          child: Text(label),
-                        ),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ],
-        ),
-      ),
     );
   }
 }

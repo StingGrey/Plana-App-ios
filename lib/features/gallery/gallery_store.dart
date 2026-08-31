@@ -25,17 +25,14 @@ class GalleryStore {
   Directory get _imagesDir => Directory('${_root.path}/images');
   Directory get _thumbsDir => Directory('${_root.path}/thumbs');
   Directory get _inputsDir => Directory('${_root.path}/inputs');
-  Directory get _masksDir => Directory('${_root.path}/masks');
   File get _indexFile => File('${_root.path}/index.json');
 
   File _imageFile(String id) => File('${_imagesDir.path}/$id.png');
   File _thumbFile(String id) => File('${_thumbsDir.path}/$id.png');
   File _inputFile(String id) => File('${_inputsDir.path}/$id.json');
-  File _maskFile(String id) => File('${_masksDir.path}/$id.msk');
 
   /// 重绘产物要继承的源图 id:发起重绘时置,落新图时**消费一次**后清空。
   /// 「只继承一次」的语义就落在这里 —— 此后两张图的蒙版各自独立编辑保存。
-  String? pendingMaskInheritFrom;
 
   /// 启动读出的图库(字节/快照皆空壳,懒读);首启为空。
   List<ResultImage> initialResults = const [];
@@ -49,7 +46,6 @@ class GalleryStore {
       await _imagesDir.create(recursive: true);
       await _thumbsDir.create(recursive: true);
       await _inputsDir.create(recursive: true);
-      await _masksDir.create(recursive: true);
       if (!await _indexFile.exists()) {
         await _rebuildFromDisk(); // 索引缺失但图还在(如首次升级/被误删)
         return;
@@ -301,12 +297,7 @@ class GalleryStore {
     if (ids.isEmpty) return;
     _enqueue(() async {
       for (final id in ids) {
-        for (final f in [
-          _imageFile(id),
-          _thumbFile(id),
-          _inputFile(id),
-          _maskFile(id),
-        ]) {
+        for (final f in [_imageFile(id), _thumbFile(id), _inputFile(id)]) {
           try {
             if (await f.exists()) await f.delete();
           } catch (_) {}
@@ -322,7 +313,7 @@ class GalleryStore {
     _idxItems = null;
     _idxTimer?.cancel();
     _enqueue(() async {
-      for (final d in [_imagesDir, _thumbsDir, _inputsDir, _masksDir]) {
+      for (final d in [_imagesDir, _thumbsDir, _inputsDir]) {
         try {
           await for (final ent in d.list()) {
             try {
@@ -357,43 +348,6 @@ class GalleryStore {
       if (await f.exists()) return await f.readAsBytes();
     } catch (_) {}
     return readImage(id);
-  }
-
-  /// 每张图各自的重绘蒙版(`MaskGrid.encode()` 的字节);没有则 null。
-  Future<Uint8List?> readMask(String id) async {
-    try {
-      final f = _maskFile(id);
-      if (!await f.exists()) return null;
-      return await f.readAsBytes();
-    } catch (_) {
-      return null;
-    }
-  }
-
-  /// 保存/清除某张图的蒙版([bytes] 为 null 或空 = 清除)。
-  /// 蒙版是纯编辑态,写失败只影响下次打开时要重涂,不阻断任何流程。
-  void writeMask(String id, Uint8List? bytes) {
-    _enqueue(() async {
-      final f = _maskFile(id);
-      if (bytes == null || bytes.isEmpty) {
-        try {
-          if (await f.exists()) await f.delete();
-        } catch (_) {}
-        return;
-      }
-      await writeBytesAtomic(f, bytes);
-    });
-  }
-
-  /// 重绘产物继承源图蒙版(整份复制,之后各改各的)。
-  void copyMask(String fromId, String toId) {
-    _enqueue(() async {
-      try {
-        final src = _maskFile(fromId);
-        if (!await src.exists()) return;
-        await writeBytesAtomic(_maskFile(toId), await src.readAsBytes());
-      } catch (_) {}
-    });
   }
 
   // ---- 检索索引(search.json;可重建,容错语义与 index.json 不同) ----

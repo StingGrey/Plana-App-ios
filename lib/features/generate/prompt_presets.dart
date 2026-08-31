@@ -484,32 +484,83 @@ Set<String> _presetIdsFromTagHints(int? qt, int? ucPreset) {
 // 判据只有一条:能不能把某个预设的文本从提示词里**干净剥掉**。
 // 元数据里的 tag_hint 只决定「先试哪个」,不作为结论 —— 同官方做法,省掉一堆特例分支。
 
-/// 按 `,` / `,` 切成 tag 列表并去空白;空段丢弃。
+class _TagPart {
+  const _TagPart(this.text, this.start, this.end);
+
+  final String text;
+  final int start;
+  final int end;
+}
+
+/// 按 `,` / `，` 切成 tag，并保留每段在原文里的位置。
+///
+/// 预设匹配只看 trim 后的正文；命中后的剥离必须回到原字符串操作，否则粘贴或
+/// 手写的换行、空行和间距会被 `join(', ')` 静默压成一行。
+List<_TagPart> _splitTagParts(String text) {
+  final out = <_TagPart>[];
+  var start = 0;
+
+  void add(int end) {
+    final raw = text.substring(start, end);
+    final value = raw.trim();
+    if (value.isEmpty) return;
+    final leading = raw.indexOf(value);
+    final valueStart = start + leading;
+    out.add(_TagPart(value, valueStart, valueStart + value.length));
+  }
+
+  for (final separator in RegExp('[,，]').allMatches(text)) {
+    add(separator.start);
+    start = separator.end;
+  }
+  add(text.length);
+  return out;
+}
+
 List<String> _splitTags(String text) => [
-  for (final t in text.split(RegExp('[,，]')))
-    if (t.trim().isNotEmpty) t.trim(),
+  for (final part in _splitTagParts(text)) part.text,
 ];
 
 /// 从 tag 列表的头部或尾部剥掉 needle 序列;对不上返回 null。
 ///
 /// 按 tag 比而不是按字符串前缀比:我们自己的内置档里就有 `absurdres,very aesthetic`
 /// 这种少一个空格的写法,字符串匹配一碰格式化就废。
-List<String>? _stripTagRun(
-  List<String> tags,
+String? _stripTagRun(
+  String source,
   List<String> needle, {
   required bool suffix,
 }) {
-  if (needle.isEmpty) return tags;
-  if (needle.length > tags.length) return null;
-  final seg = suffix
-      ? tags.sublist(tags.length - needle.length)
-      : tags.sublist(0, needle.length);
+  if (needle.isEmpty) return source;
+  final parts = _splitTagParts(source);
+  if (needle.length > parts.length) return null;
+  final start = suffix ? parts.length - needle.length : 0;
+  final seg = suffix ? parts.sublist(start) : parts.sublist(0, needle.length);
   for (var i = 0; i < needle.length; i++) {
-    if (seg[i].toLowerCase() != needle[i].toLowerCase()) return null;
+    if (seg[i].text.toLowerCase() != needle[i].toLowerCase()) return null;
   }
-  return suffix
-      ? tags.sublist(0, tags.length - needle.length)
-      : tags.sublist(needle.length);
+
+  if (needle.length == parts.length) return '';
+
+  if (suffix) {
+    final kept = parts[start - 1];
+    final removed = parts[start];
+    final between = source.substring(kept.end, removed.start);
+    final separators = RegExp('[,，]').allMatches(between).toList();
+    if (separators.isEmpty) return source.substring(0, kept.end);
+    var whitespace = between.substring(separators.last.end);
+    // applyPromptPreset 插入的是 `, `；只去掉这个连接空格，额外的换行仍归用户。
+    if (whitespace.startsWith(' ')) whitespace = whitespace.substring(1);
+    return '${source.substring(0, kept.end)}$whitespace';
+  }
+
+  final removed = parts[needle.length - 1];
+  final kept = parts[needle.length];
+  final between = source.substring(removed.end, kept.start);
+  final separator = RegExp('[,，]').firstMatch(between);
+  if (separator == null) return source.substring(kept.start);
+  var whitespace = between.substring(separator.end);
+  if (whitespace.startsWith(' ')) whitespace = whitespace.substring(1);
+  return '$whitespace${source.substring(kept.start)}';
 }
 
 /// 认出这张图用的是哪条预设,并把预设文本从提示词里剥回去。
@@ -532,8 +583,6 @@ List<String>? _stripTagRun(
 }) {
   // 与 applyPromptPreset 对称:后缀是拼在 `text:` 之前的,剥的时候也只在那一段里剥
   final (posHead, posTextBlock) = _splitAtTextMarker(positive);
-  final posTags = _splitTags(posHead);
-  final negTags = _splitTags(negative);
   final hinted = _presetIdsFromTagHints(hintQt, hintUcPreset);
 
   final candidates =
@@ -563,18 +612,18 @@ List<String>? _stripTagRun(
     // 放宽到两端不会松掉判据:真正把误判挡住的是「正负两边都要剥得掉」,
     // 而负面一律前缀、从没变过。
     final restPos = wantPos.isEmpty
-        ? posTags
-        : (_stripTagRun(posTags, wantPos, suffix: c.preset.suffixPositive) ??
-              _stripTagRun(posTags, wantPos, suffix: !c.preset.suffixPositive));
+        ? posHead
+        : (_stripTagRun(posHead, wantPos, suffix: c.preset.suffixPositive) ??
+              _stripTagRun(posHead, wantPos, suffix: !c.preset.suffixPositive));
     if (restPos == null) continue;
     final restNeg = wantNeg.isEmpty
-        ? negTags
-        : _stripTagRun(negTags, wantNeg, suffix: false);
+        ? negative
+        : _stripTagRun(negative, wantNeg, suffix: false);
     if (restNeg == null) continue;
     return (
       preset: c.preset,
-      positive: _rejoinTextBlock(restPos.join(', '), posTextBlock),
-      negative: restNeg.join(', '),
+      positive: _rejoinTextBlock(restPos, posTextBlock),
+      negative: restNeg,
     );
   }
   return null;

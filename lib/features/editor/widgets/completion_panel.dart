@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/store/ui_prefs.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../generate/widgets/common.dart' show hintSnack;
 import '../data/completion_source.dart';
@@ -45,7 +46,9 @@ class CompletionPanel extends ConsumerStatefulWidget {
 }
 
 class _CompletionPanelState extends ConsumerState<CompletionPanel> {
-  bool _byHeat = true; // 排序:true=热度 / false=字母
+  // 排序:true=热度 / false=字母。记住上次的 —— 习惯按字母找词的人
+  // 不该每开一次补全都被拨回热度。
+  late bool _byHeat = ref.read(uiPrefsProvider).completionByHeat;
   final Set<SuggestionKind> _collapsed = {}; // 折叠的分节
   String? _wikiOpen; // 当前展开 Wiki 预览的行(按 text 记)
   // text → 预览。**只存拿到的**:以前连 null 一起存,而 _loadWiki 开头是
@@ -61,8 +64,7 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
   @override
   void initState() {
     super.initState();
-    _transSvc = ref.read(tagTranslationServiceProvider)
-      ..addListener(_onTrans);
+    _transSvc = ref.read(tagTranslationServiceProvider)..addListener(_onTrans);
   }
 
   @override
@@ -229,7 +231,12 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
             borderRadius: BorderRadius.circular(10),
             clipBehavior: Clip.antiAlias,
             child: InkWell(
-              onTap: () => setState(() => _byHeat = !_byHeat),
+              onTap: () {
+                ref
+                    .read(uiPrefsProvider.notifier)
+                    .patch((p) => p.copyWith(completionByHeat: !_byHeat));
+                setState(() => _byHeat = !_byHeat);
+              },
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                 child: Row(
