@@ -248,7 +248,11 @@ class OnlineGalleryService {
           .substring(0, 10);
       tags = _join(tags, 'date:>=$date');
     }
-    final url = 'https://gelbooru.com/index.php?page=post&s=list&pid=${(page - 1) * 42}&tags=${Uri.encodeQueryComponent(tags)}';
+    // Gelbooru treats an empty `tags` value as an unfiltered first page and
+    // ignores `pid`. Use its explicit all-posts tag so page 2 advances when
+    // the user has not entered a search term.
+    final requestTags = tags.trim().isEmpty ? 'all' : tags;
+    final url = 'https://gelbooru.com/index.php?page=post&s=list&pid=${(page - 1) * 42}&tags=${Uri.encodeQueryComponent(requestTags)}';
     final html = await _getText(url);
     final items = <OnlineGalleryItem>[];
     final article = RegExp(

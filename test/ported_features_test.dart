@@ -322,6 +322,7 @@ void main() {
     ).join();
     final client = _GalleryClient((request) async {
       expect(request.url.queryParameters['pid'], '0');
+      expect(request.url.queryParameters['tags'], 'rating:general');
       return http.Response(html, 200);
     });
     final service = OnlineGalleryService(client: client);
@@ -334,6 +335,39 @@ void main() {
       blacklist: const {'every_tag'},
     );
     expect(page.hasMore, isTrue);
+    service.dispose();
+  });
+
+  test('Gelbooru 无搜索词翻页使用 all 让 pid 生效', () async {
+    final client = _GalleryClient((request) async {
+      final pid = request.url.queryParameters['pid'];
+      expect(request.url.queryParameters['tags'], 'all');
+      final offset = int.tryParse(pid ?? '') ?? 0;
+      final html = List.generate(
+        20,
+        (index) => '<article class="thumbnail-preview"><div id="p${offset + index + 1}"><img src="https://img.example/${offset + index + 1}.jpg"></article>',
+      ).join();
+      return http.Response(html, 200);
+    });
+    final service = OnlineGalleryService(client: client);
+    final first = await service.fetch(
+      OnlineGallerySource.gelbooru,
+      feed: OnlineGalleryFeed.search,
+      query: '',
+      page: 1,
+      ratings: const {'g', 's', 'q', 'e'},
+      blacklist: const {},
+    );
+    final second = await service.fetch(
+      OnlineGallerySource.gelbooru,
+      feed: OnlineGalleryFeed.search,
+      query: '',
+      page: 2,
+      ratings: const {'g', 's', 'q', 'e'},
+      blacklist: const {},
+    );
+    expect(first.hasMore, isTrue);
+    expect(second.items.first.id, '43');
     service.dispose();
   });
   test('输出过滤只移除精确水印标签', () {
