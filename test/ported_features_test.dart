@@ -169,6 +169,10 @@ void main() {
     expect(page.items.single.stableId, 'danbooru:42');
     expect(page.items.single.tags, ['1girl', 'blue_hair']);
     expect(page.items.single.width, 640);
+    expect(
+      page.items.single.previewUrl,
+      'https://cdn.example/large.jpg',
+    );
     service.dispose();
   });
 
@@ -211,6 +215,75 @@ void main() {
     service.dispose();
   });
 
+
+  test('AI TAG 列表按简化字段补出 CDN 首张预览图', () async {
+    final client = _GalleryClient((request) async {
+      if (request.url.path == '/api/config') {
+        return http.Response(
+          jsonEncode({'asset_base_url': 'https://cdn.example/'}),
+          200,
+        );
+      }
+      return http.Response(
+        jsonEncode({
+          'total': 1,
+          'items': [
+            {
+              'id': 7,
+              'userId': 123,
+              'AI_type': 'NAI',
+              'title': 'derived image',
+            },
+          ],
+        }),
+        200,
+      );
+    });
+    final service = OnlineGalleryService(client: client);
+    final page = await service.fetch(
+      OnlineGallerySource.aiTag,
+      feed: OnlineGalleryFeed.search,
+      query: '',
+      page: 1,
+      ratings: const {'g', 's', 'q', 'e'},
+      blacklist: const {},
+    );
+    expect(
+      page.items.single.previewUrl,
+      'https://cdn.example/NAI/123/7_p0.webp',
+    );
+    service.dispose();
+  });
+
+  test('AI TAG API 被 Cloudflare 拦截时通过 JSON 代理读取', () async {
+    final client = _GalleryClient((request) async {
+      if (request.url.host == 'aitag.win') {
+        return http.Response('cloudflare challenge', 403);
+      }
+      expect(request.url.host, 'r.jina.ai');
+      if (request.url.path.contains('api/config')) {
+        return http.Response(
+          'Title: config\\n\\n{"asset_base_url":"https://cdn.example/"}',
+          200,
+        );
+      }
+      return http.Response(
+        'Title: search\\n\\n{"total":1,"items":[{"id":9,"userId":8,"AI_type":"NAI"}]}',
+        200,
+      );
+    });
+    final service = OnlineGalleryService(client: client);
+    final page = await service.fetch(
+      OnlineGallerySource.aiTag,
+      feed: OnlineGalleryFeed.search,
+      query: '',
+      page: 1,
+      ratings: const {'g', 's', 'q', 'e'},
+      blacklist: const {},
+    );
+    expect(page.items.single.previewUrl, 'https://cdn.example/NAI/8/9_p0.webp');
+    service.dispose();
+  });
   test('输出过滤只移除精确水印标签', () {
     const state = OnlineGalleryState(outputFilter: true);
     expect(

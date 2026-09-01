@@ -292,9 +292,13 @@ class RemoteImageProvider extends ImageProvider<RemoteImageProvider> {
         key.url,
         chunks,
       ).timeout(_timeout);
+      // Decode before caching. A hotlink-protected endpoint may return a 200
+      // HTML page; caching that response would make the broken state survive
+      // even after the request headers are corrected.
+      final codec = await decode(await ui.ImmutableBuffer.fromUint8List(bytes));
       // 落盘是旁路:写失败只是下次还得重下,不该连累这一次显示
       unawaited(RemoteImageStore.write(key.url, bytes, etag: etag));
-      return await decode(await ui.ImmutableBuffer.fromUint8List(bytes));
+      return codec;
     } catch (_) {
       // 与 NetworkImage 同款:微任务里踢缓存,让下次 build 能真的重试
       scheduleMicrotask(() {
@@ -325,6 +329,7 @@ class RemoteImageProvider extends ImageProvider<RemoteImageProvider> {
         return; // 上个进程刚验过(旁文件的 mtime 跨启动还在)
       }
       final req = http.Request('GET', Uri.parse(url));
+      req.headers.addAll(_headersForUrl(url));
       if (v != null) req.headers['If-None-Match'] = v.etag;
       final resp = await _client.send(req).timeout(_revalidateTimeout);
       // 拿到任何一个完整响应就算验过。放在分支之前:非 200 那条也得记,
@@ -336,6 +341,12 @@ class RemoteImageProvider extends ImageProvider<RemoteImageProvider> {
         return;
       }
       if (resp.statusCode != 200) {
+        await resp.stream.drain<void>();
+        return;
+      }
+      final contentType = (resp.headers['content-type'] ?? '').toLowerCase();
+      if (contentType.startsWith('text/html') ||
+          contentType.startsWith('text/plain')) {
         await resp.stream.drain<void>();
         return;
       }
@@ -366,13 +377,44 @@ class RemoteImageProvider extends ImageProvider<RemoteImageProvider> {
     return true;
   }
 
+  /// Some public galleries use hotlink protection. A plain `Image.network`
+  /// request has neither a browser-like user agent nor a referrer, so
+  /// Gelbooru returns its HTML listing page instead of the JPEG. Keep this
+  /// small source-aware header set in the shared provider so cards, detail
+  /// pages and the disk-cache revalidator behave identically.
+  static Map<String, String> _headersForUrl(String url) {
+    final host = Uri.tryParse(url)?.host.toLowerCase() ?? '';
+    final headers = <String, String>{
+      'User-Agent': 'Plana-App/1.1 (mobile online gallery)',
+    };
+    if (host == 'gelbooru.com' || host.endsWith('.gelbooru.com')) {
+      headers['Referer'] = 'https://gelbooru.com/';
+    } else if (host == 'aitag.win' || host.endsWith('.aitag.win')) {
+      headers['Referer'] = 'https://aitag.win/';
+    } else if (host == 'ai-img.10118899.xyz') {
+      headers['Referer'] = 'https://aitag.win/';
+    } else if (host == 'danbooru.donmai.us' ||
+        host.endsWith('.donmai.us')) {
+      headers['Referer'] = 'https://danbooru.donmai.us/';
+    }
+    return headers;
+  }
+
   static Future<({Uint8List bytes, String? etag})> _download(
     String url,
     StreamController<ImageChunkEvent> chunks,
   ) async {
     final uri = Uri.parse(url);
-    final resp = await _client.send(http.Request('GET', uri));
+    final resp = await _client.send(
+      http.Request('GET', uri)..headers.addAll(_headersForUrl(url)),
+    );
     if (resp.statusCode != 200) {
+      throw NetworkImageLoadException(statusCode: resp.statusCode, uri: uri);
+    }
+    final contentType = (resp.headers['content-type'] ?? '').toLowerCase();
+    if (contentType.startsWith('text/html') ||
+        contentType.startsWith('text/plain')) {
+      await resp.stream.drain<void>();
       throw NetworkImageLoadException(statusCode: resp.statusCode, uri: uri);
     }
     final total = resp.contentLength;

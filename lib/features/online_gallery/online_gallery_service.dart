@@ -135,7 +135,12 @@ class OnlineGalleryService {
     final response = await _client
         .get(Uri.parse(url), headers: _headers(url))
         .timeout(_timeout);
-    if (response.statusCode < 200 || response.statusCode >= 300 || response.bodyBytes.isEmpty) {
+    final contentType = (response.headers['content-type'] ?? '').toLowerCase();
+    if (response.statusCode < 200 ||
+        response.statusCode >= 300 ||
+        response.bodyBytes.isEmpty ||
+        contentType.startsWith('text/html') ||
+        contentType.startsWith('text/plain')) {
       throw HttpException('图片下载失败 (${response.statusCode})');
     }
     return response.bodyBytes;
@@ -200,7 +205,11 @@ class OnlineGalleryService {
     return OnlineGalleryItem(
       id: id,
       source: source,
-      previewUrl: preview.isNotEmpty ? preview : (large.isNotEmpty ? large : file),
+      // `preview_file_url` is deliberately tiny (usually 150 px). It looks
+      // soft on a tablet, especially after the gallery is shown in six
+      // columns. The large CDN rendition is still much smaller than the
+      // original and is the right source for a retina-sized card.
+      previewUrl: large.isNotEmpty ? large : (preview.isNotEmpty ? preview : file),
       imageUrl: file.isNotEmpty ? file : (large.isNotEmpty ? large : preview),
       width: _int(j['image_width']),
       height: _int(j['image_height']),
@@ -329,8 +338,9 @@ class OnlineGalleryService {
       final j = Map<String, dynamic>.from(value);
       final id = _string(j['id']);
       if (id.isEmpty) continue;
-      // AI TAG list responses commonly omit the CDN path. Keep the work as a
-      // lazy-detail card instead of silently dropping it from search results.
+      // Search rows do not include image_path, but their user/type/id fields
+      // are enough to address the first WebP on the public CDN. Keep the
+      // lazy-detail fallback for older or incomplete rows.
       final image = _aiTagImageUrl(j, assetBase: assetBase) ?? '';
       final tags = _parseTagValue(j['tags']);
       final promptPair = _parsePromptPair(
@@ -389,11 +399,55 @@ class OnlineGalleryService {
   }
 
   Future<Object?> _getJson(String url) async {
-    final response = await _client.get(Uri.parse(url), headers: _headers(url)).timeout(_timeout);
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw HttpException('在线画廊请求失败 (${response.statusCode})');
+    final uri = Uri.parse(url);
+    final response = await _client
+        .get(uri, headers: _headers(url))
+        .timeout(_timeout);
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      return _decodeJson(response.bodyBytes);
     }
-    return jsonDecode(utf8.decode(response.bodyBytes));
+
+    // aitag.win currently puts /api behind a Cloudflare browser challenge.
+    // A native HTTP client cannot execute that challenge, while the site's
+    // public CDN remains directly readable. Jina Reader is used only as a
+    // JSON transport fallback; the original request is still attempted first
+    // so deployments that allow native API access never leave aitag.win.
+    if (uri.host.toLowerCase() == 'aitag.win' && response.statusCode == 403) {
+      final proxyUrl = _aiTagProxyUrl(uri);
+      final proxy = await _client
+          .get(Uri.parse(proxyUrl), headers: _headers(proxyUrl))
+          .timeout(_timeout);
+      if (proxy.statusCode >= 200 && proxy.statusCode < 300) {
+        return _decodeJson(proxy.bodyBytes);
+      }
+    }
+    throw HttpException('在线画廊请求失败 (${response.statusCode})');
+  }
+
+  String _aiTagProxyUrl(Uri uri) {
+    final query = uri.queryParameters.entries.map((entry) =>
+        '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}').join('&');
+    return 'https://r.jina.ai/http://${uri.host}${uri.path}${query.isEmpty ? '' : '?$query'}';
+  }
+
+  Object? _decodeJson(List<int> bytes) {
+    final text = utf8.decode(bytes, allowMalformed: true).trim();
+    try {
+      return jsonDecode(text);
+    } catch (_) {
+      // Jina prefixes API bodies with a short Markdown envelope. Extract
+      // the JSON object/array without assuming a particular envelope wording.
+      final objectStart = text.indexOf('{');
+      final arrayStart = text.indexOf('[');
+      final start = objectStart < 0
+          ? arrayStart
+          : (arrayStart < 0 ? objectStart : (objectStart < arrayStart ? objectStart : arrayStart));
+      final objectEnd = text.lastIndexOf('}');
+      final arrayEnd = text.lastIndexOf(']');
+      final end = objectEnd > arrayEnd ? objectEnd : arrayEnd;
+      if (start < 0 || end < start) rethrow;
+      return jsonDecode(text.substring(start, end + 1));
+    }
   }
 
   Future<String> _getText(String url) async {
@@ -409,6 +463,8 @@ class OnlineGalleryService {
     'Accept': url.contains('gelbooru.com') ? 'text/html,application/xhtml+xml,application/json' : 'application/json',
     if (url.contains('cdn.donmai.us') || url.contains('donmai.us')) 'Referer': 'https://danbooru.donmai.us/',
     if (url.contains('gelbooru.com')) 'Referer': 'https://gelbooru.com/',
+    if (url.contains('aitag.win') || url.contains('ai-img.10118899.xyz'))
+      'Referer': 'https://aitag.win/',
   };
 
   String _donmaiBase(OnlineGallerySource source) => source == OnlineGallerySource.safebooru
@@ -509,38 +565,60 @@ class OnlineGalleryService {
       j['preview_url'],
       j['cover_url'],
       j['url'],
-    ].map((value) => value?.toString() ?? '').firstWhere(
-      (value) => value.startsWith('http'),
+    ].map((value) => value?.toString().trim() ?? '').firstWhere(
+      (value) {
+        final uri = Uri.tryParse(value);
+        return uri != null &&
+            (uri.scheme == 'http' || uri.scheme == 'https') &&
+            uri.host.isNotEmpty;
+      },
       orElse: () => '',
     );
-    if (direct.startsWith('https://')) return direct;
-    final type = _string(j['image_type']);
-    final author = _string(j['author_id']);
-    final file = _string(j['file_name']);
-    if (type.isEmpty || author.isEmpty || file.isEmpty) return null;
+    if (direct.isNotEmpty) return direct;
+
     final base = assetBase ??
         _string(j['asset_base_url'], 'https://ai-img.10118899.xyz/');
-    try {
-      final uri = Uri.parse(base);
-      final baseSegments = uri.pathSegments
-          .where((segment) => segment.isNotEmpty)
-          .toList(growable: false);
-      final fileName = file.endsWith('.webp') ? file : '$file.webp';
-      return uri
-          .replace(
-            pathSegments: [
-              ...baseSegments,
-              type,
-              author,
-              fileName,
-            ],
-            query: null,
-            fragment: null,
-          )
-          .toString();
-    } catch (_) {
-      return null;
+    final path = _string(j['image_path'], _string(j['imagePath']));
+    if (path.isNotEmpty) {
+      try {
+        return Uri.parse(base).resolve(path).toString();
+      } catch (_) {}
     }
+
+    // Search results use a smaller work schema than /api/work: the fields
+    // are `AI_type` and `userId`, and omit file_name/image_path. The first
+    // CDN rendition is nevertheless deterministic (`<work>_p0.webp`).
+    final type = [
+      _string(j['image_type']),
+      _string(j['ai_type']),
+      _string(j['AI_type']),
+    ].firstWhere((value) => value.isNotEmpty, orElse: () => '');
+    final author = [
+      _string(j['author_id']),
+      _string(j['userId']),
+      _string(j['userid']),
+    ].firstWhere((value) => value.isNotEmpty, orElse: () => '');
+    final workId = _string(j['id']);
+    final file = [
+      _string(j['file_name']),
+      _string(j['fileName']),
+    ].firstWhere((value) => value.isNotEmpty, orElse: () => '');
+    final fileName = file.isNotEmpty
+        ? (file.endsWith('.webp') ? file : '$file.webp')
+        : (workId.isEmpty ? '' : '${workId}_p0.webp');
+    if (type.isEmpty || author.isEmpty || fileName.isEmpty) return null;
+    final uri = Uri.tryParse(base);
+    if (uri == null) return null;
+    final baseSegments = uri.pathSegments
+        .where((segment) => segment.isNotEmpty)
+        .toList(growable: false);
+    return uri
+        .replace(
+          pathSegments: [...baseSegments, type, author, fileName],
+          query: null,
+          fragment: null,
+        )
+        .toString();
   }
 
   String _join(String left, String right) => right.isEmpty ? left : (left.isEmpty ? right : '$left $right');

@@ -439,29 +439,54 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
       child: LayoutBuilder(
         builder: (context, constraints) {
           final columns = (constraints.maxWidth / 170).floor().clamp(2, 6).toInt();
-          return GridView.builder(
+          final buckets = List.generate(columns, (_) => <OnlineGalleryItem>[]);
+          final heights = List<double>.filled(columns, 0);
+          for (final item in displayItems) {
+            var target = 0;
+            for (var i = 1; i < columns; i++) {
+              if (heights[i] < heights[target]) target = i;
+            }
+            buckets[target].add(item);
+            // Use source dimensions when available, so portrait posts do not
+            // create the large empty row imposed by a fixed GridView tile.
+            final ratio = item.aspectRatio.clamp(.3, 3.5).toDouble();
+            heights[target] += 1 / ratio + .22;
+          }
+          return SingleChildScrollView(
             controller: _scroll,
             physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.fromLTRB(10, 6, 10, 24),
-            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: columns,
-              mainAxisSpacing: 8,
-              crossAxisSpacing: 8,
-              childAspectRatio: .72,
+            padding: const EdgeInsets.fromLTRB(6, 6, 6, 24),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (var column = 0; column < columns; column++)
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      child: Column(
+                        children: [
+                          for (final item in buckets[column]) ...[
+                            _OnlineCard(
+                              item: item,
+                              favorite: state.isFavorite(item),
+                              onTap: () => Navigator.of(context).push(
+                                sharedAxisRoute(OnlineGalleryDetailPage(item: item)),
+                              ),
+                              onFavorite: () => _notifier.toggleFavorite(item),
+                            ),
+                            const SizedBox(height: 8),
+                          ],
+                          if (state.loadingMore)
+                            const SizedBox(
+                              height: 120,
+                              child: _LoadingTile(),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
             ),
-            itemCount: displayItems.length + (state.loadingMore ? columns : 0),
-            itemBuilder: (context, index) {
-              if (index >= displayItems.length) return const _LoadingTile();
-              final item = displayItems[index];
-              return _OnlineCard(
-                item: item,
-                favorite: state.isFavorite(item),
-                onTap: () => Navigator.of(context).push(
-                  sharedAxisRoute(OnlineGalleryDetailPage(item: item)),
-                ),
-                onFavorite: () => _notifier.toggleFavorite(item),
-              );
-            },
           );
         },
       ),
@@ -516,57 +541,71 @@ class _OnlineCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
+    final hasDimensions = item.width > 0 && item.height > 0;
+    final ratio = hasDimensions ? item.aspectRatio.clamp(.3, 3.5).toDouble() : .8;
     return Material(
       color: scheme.surfaceContainerLow,
       borderRadius: BorderRadius.circular(10),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
-        child: Stack(
-          fit: StackFit.expand,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+            Stack(
               children: [
-                Expanded(child: _RemoteThumb(url: item.previewUrl, fit: BoxFit.cover)),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(8, 6, 5, 7),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          item.author.isEmpty ? '#${item.id}' : item.author,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: context.texts.labelSmall!.copyWith(fontWeight: FontWeight.w600),
-                        ),
-                      ),
-                      Text('${item.score}', style: context.texts.labelSmall!.copyWith(color: scheme.outline)),
-                      const SizedBox(width: 3),
-                      Icon(Icons.favorite, size: 12, color: favorite ? Colors.amber.shade700 : scheme.outline),
-                    ],
+                AspectRatio(
+                  aspectRatio: ratio,
+                  child: _RemoteThumb(
+                    url: item.previewUrl.isEmpty ? item.imageUrl : item.previewUrl,
+                    fit: hasDimensions ? BoxFit.cover : BoxFit.contain,
+                  ),
+                ),
+                Positioned(
+                  top: 6,
+                  left: 6,
+                  child: _RatingBadge(rating: item.rating),
+                ),
+                Positioned(
+                  top: 2,
+                  right: 2,
+                  child: IconButton(
+                    tooltip: favorite ? '取消收藏' : '收藏',
+                    onPressed: onFavorite,
+                    padding: EdgeInsets.zero,
+                    icon: Icon(
+                      favorite ? Icons.star : Icons.star_border,
+                      color: favorite ? Colors.amber.shade300 : Colors.white,
+                      size: 22,
+                      shadows: const [Shadow(blurRadius: 3, color: Colors.black54)],
+                    ),
                   ),
                 ),
               ],
             ),
-            Positioned(
-              top: 6,
-              left: 6,
-              child: _RatingBadge(rating: item.rating),
-            ),
-            Positioned(
-              top: 2,
-              right: 2,
-              child: IconButton(
-                tooltip: favorite ? '取消收藏' : '收藏',
-                onPressed: onFavorite,
-                padding: EdgeInsets.zero,
-                icon: Icon(
-                  favorite ? Icons.star : Icons.star_border,
-                  color: favorite ? Colors.amber.shade300 : Colors.white,
-                  size: 22,
-                  shadows: const [Shadow(blurRadius: 3, color: Colors.black54)],
-                ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 6, 5, 7),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      item.author.isEmpty ? '#${item.id}' : item.author,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: context.texts.labelSmall!.copyWith(fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  Text(
+                    '${item.score}',
+                    style: context.texts.labelSmall!.copyWith(color: scheme.outline),
+                  ),
+                  const SizedBox(width: 3),
+                  Icon(
+                    Icons.favorite,
+                    size: 12,
+                    color: favorite ? Colors.amber.shade700 : scheme.outline,
+                  ),
+                ],
               ),
             ),
           ],
@@ -576,28 +615,62 @@ class _OnlineCard extends StatelessWidget {
   }
 }
 
-class _RemoteThumb extends StatelessWidget {
-  const _RemoteThumb({required this.url, required this.fit});
+class _RemoteThumb extends StatefulWidget {
+  const _RemoteThumb({
+    required this.url,
+    required this.fit,
+    this.fallbackUrl,
+  });
 
   final String url;
   final BoxFit fit;
+  final String? fallbackUrl;
+
+  @override
+  State<_RemoteThumb> createState() => _RemoteThumbState();
+}
+
+class _RemoteThumbState extends State<_RemoteThumb> {
+  bool _usingFallback = false;
+
+  @override
+  void didUpdateWidget(covariant _RemoteThumb oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.url != widget.url ||
+        oldWidget.fallbackUrl != widget.fallbackUrl) {
+      _usingFallback = false;
+    }
+  }
+
+  Widget _placeholder(BuildContext context, {required bool broken}) => ColoredBox(
+    color: context.scheme.surfaceContainerHigh,
+    child: Icon(
+      broken ? Icons.broken_image_outlined : Icons.image_outlined,
+      color: context.scheme.outline,
+    ),
+  );
 
   @override
   Widget build(BuildContext context) {
-    if (url.isEmpty) {
-      return ColoredBox(
-        color: context.scheme.surfaceContainerHigh,
-        child: Icon(Icons.image_outlined, color: context.scheme.outline),
-      );
-    }
+    final fallback = widget.fallbackUrl;
+    final url = _usingFallback && fallback != null ? fallback : widget.url;
+    if (url.isEmpty) return _placeholder(context, broken: false);
     return RemoteImage(
       url,
-      fit: fit,
+      fit: widget.fit,
       gaplessPlayback: true,
-      errorBuilder: (_, _, _) => ColoredBox(
-        color: context.scheme.surfaceContainerHigh,
-        child: Icon(Icons.broken_image_outlined, color: context.scheme.outline),
-      ),
+      errorBuilder: (_, _, _) {
+        final canFallback =
+            !_usingFallback && fallback != null && fallback != url;
+        if (canFallback) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && !_usingFallback) {
+              setState(() => _usingFallback = true);
+            }
+          });
+        }
+        return _placeholder(context, broken: !canFallback);
+      },
     );
   }
 }
@@ -656,10 +729,17 @@ class _OnlineGalleryDetailPageState extends ConsumerState<OnlineGalleryDetailPag
   }
 
   Future<void> _loadDetail() async {
+    final force = _error != null;
+    if (mounted) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
     try {
       final result = await ref.read(onlineGalleryProvider.notifier).loadDetail(
         widget.item,
-        force: _error != null,
+        force: force,
       );
       if (result == null) throw const FormatException('详情加载失败');
       if (!mounted) return;
@@ -678,10 +758,11 @@ class _OnlineGalleryDetailPageState extends ConsumerState<OnlineGalleryDetailPag
   }
 
   Future<void> _saveLocal() async {
-    if (_saving || _item.imageUrl.isEmpty) return;
+    if (_saving || (_item.imageUrl.isEmpty && _item.previewUrl.isEmpty)) return;
     setState(() => _saving = true);
     try {
-      final bytes = await ref.read(onlineGalleryServiceProvider).download(_item.imageUrl);
+      final url = _item.imageUrl.isEmpty ? _item.previewUrl : _item.imageUrl;
+      final bytes = await ref.read(onlineGalleryServiceProvider).download(url);
       final record = await ref.read(appStoresProvider).localGallery.importBytes(
         bytes,
         '${_item.source.key}_${_item.id}.${_item.fileExtension.isEmpty ? 'jpg' : _item.fileExtension}',
@@ -871,24 +952,50 @@ class _OnlineGalleryDetailPageState extends ConsumerState<OnlineGalleryDetailPag
           ),
         ),
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _error != null
-          ? _detailError(scheme)
-          : _body(scheme),
+      // Keep the list rendition visible while metadata is fetched. Previously
+      // the whole body was replaced by a spinner/error, which made a tap look
+      // like an empty black page when a source detail endpoint was slow or
+      // blocked.
+      body: _body(scheme),
     );
   }
 
   Widget _body(ColorScheme scheme) {
     final item = _item;
+    final imageRatio = item.aspectRatio.clamp(.3, 3.5).toDouble();
     return ListView(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
       children: [
+        if (_loading) const LinearProgressIndicator(minHeight: 2),
+        if (_error != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Material(
+              color: scheme.errorContainer,
+              borderRadius: BorderRadius.circular(10),
+              child: ListTile(
+                dense: true,
+                leading: Icon(Icons.info_outline, color: scheme.onErrorContainer),
+                title: Text(
+                  '详情暂时不可用，先显示预览图',
+                  style: TextStyle(color: scheme.onErrorContainer),
+                ),
+                trailing: TextButton(
+                  onPressed: _loadDetail,
+                  child: Text('重试', style: TextStyle(color: scheme.onErrorContainer)),
+                ),
+              ),
+            ),
+          ),
         AspectRatio(
-          aspectRatio: item.aspectRatio,
+          aspectRatio: imageRatio,
           child: ClipRRect(
             borderRadius: BorderRadius.circular(12),
-            child: _RemoteThumb(url: item.imageUrl.isEmpty ? item.previewUrl : item.imageUrl, fit: BoxFit.contain),
+            child: _RemoteThumb(
+              url: item.imageUrl.isEmpty ? item.previewUrl : item.imageUrl,
+              fit: BoxFit.contain,
+              fallbackUrl: item.previewUrl,
+            ),
           ),
         ),
         const SizedBox(height: 14),
@@ -944,21 +1051,6 @@ class _OnlineGalleryDetailPageState extends ConsumerState<OnlineGalleryDetailPag
     );
   }
 
-  Widget _detailError(ColorScheme scheme) => Center(
-    child: Padding(
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.info_outline, size: 45, color: scheme.outline),
-          const SizedBox(height: 10),
-          const Text('详情加载失败，仍可使用列表预览'),
-          const SizedBox(height: 14),
-          FilledButton.tonal(onPressed: _loadDetail, child: const Text('重试')),
-        ],
-      ),
-    ),
-  );
 }
 
 class _DetailChip extends StatelessWidget {
