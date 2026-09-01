@@ -55,6 +55,7 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
     if (!_scroll.hasClients) return;
     final state = ref.read(onlineGalleryProvider);
     if (state.error != null ||
+        state.feed == OnlineGalleryFeed.favorites ||
         !state.hasMore ||
         state.loading ||
         state.loadingMore ||
@@ -72,6 +73,7 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
       if (!mounted) return;
       final state = ref.read(onlineGalleryProvider);
       if (state.error != null ||
+          state.feed == OnlineGalleryFeed.favorites ||
           !state.hasMore ||
           state.loading ||
           state.loadingMore) {
