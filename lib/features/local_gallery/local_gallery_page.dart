@@ -1011,7 +1011,7 @@ class LocalGalleryDetailPage extends ConsumerWidget {
               if (value == 'import') {
                 final bytes = await store.readImage(item.id);
                 if (bytes == null || !context.mounted) return;
-                Navigator.of(context).push(
+                await Navigator.of(context).push(
                   sharedAxisRoute(
                     ImportImagePanel(
                       bytes: bytes,
