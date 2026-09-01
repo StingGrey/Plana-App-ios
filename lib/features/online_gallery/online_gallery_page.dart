@@ -659,6 +659,16 @@ class _RemoteThumbState extends State<_RemoteThumb> {
       url,
       fit: widget.fit,
       gaplessPlayback: true,
+      loadingBuilder: (context, child, progress) {
+        if (progress == null) return child;
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            _placeholder(context, broken: false),
+            const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+          ],
+        );
+      },
       errorBuilder: (_, _, _) {
         final canFallback =
             !_usingFallback && fallback != null && fallback != url;
@@ -834,12 +844,27 @@ class _OnlineGalleryDetailPageState extends ConsumerState<OnlineGalleryDetailPag
     }
   }
 
+  String _promptCandidate() {
+    final prompt = _item.prompt.trim();
+    if (prompt.isNotEmpty) return prompt;
+
+    final rawPrompt = _detail?.raw['prompt']?.toString().trim() ?? '';
+    if (rawPrompt.isNotEmpty) return rawPrompt;
+
+    // Danbooru/Gelbooru store tags rather than an AI prompt. Use only the
+    // parsed tag list; never use the source HTML as a prompt fallback.
+    final description = _detail?.description.trim() ?? _item.description.trim();
+    if (description.isNotEmpty &&
+        !RegExp(r'<(?:html|head|body|script)\b', caseSensitive: false)
+            .hasMatch(description)) {
+      return description;
+    }
+    return _item.tags.join(', ');
+  }
+
   Future<void> _savePromptToLibrary() async {
     final galleryState = ref.read(onlineGalleryProvider);
-    final raw = _item.prompt.trim().isNotEmpty
-        ? _item.prompt.trim()
-        : (_detail?.description.trim() ?? '');
-    final text = galleryState.filterOutputPrompt(raw);
+    final text = galleryState.filterOutputPrompt(_promptCandidate());
     if (text.isEmpty) {
       hintSnack(context, '这张作品没有可保存的提示词', icon: Icons.info_outline);
       return;
@@ -858,13 +883,7 @@ class _OnlineGalleryDetailPageState extends ConsumerState<OnlineGalleryDetailPag
 
   Future<void> _usePrompt() async {
     final galleryState = ref.read(onlineGalleryProvider);
-    final rawPrompt = _item.prompt.trim().isNotEmpty
-        ? _item.prompt.trim()
-        : (_detail?.raw['prompt']?.toString().trim() ?? '');
-    final description = _detail?.description.trim() ?? _item.description.trim();
-    final text = rawPrompt.isNotEmpty
-        ? galleryState.filterOutputPrompt(rawPrompt)
-        : (description.isNotEmpty ? description : _item.tags.join(', '));
+    final text = galleryState.filterOutputPrompt(_promptCandidate());
     if (text.isEmpty) {
       hintSnack(context, '这张作品没有可用的提示词', icon: Icons.info_outline);
       return;

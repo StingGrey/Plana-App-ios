@@ -128,6 +128,19 @@ abstract final class RemoteImageStore {
       return null;
     }
   }
+  /// 删除无法解码的旧缓存。修复热链请求后，用户设备上可能仍留着
+  /// 之前误缓存的 HTML 错误页；仅 evict 内存缓存不足以触发重新下载。
+  static Future<void> invalidate(String url) async {
+    final f = _fileOf(url);
+    final v = _validatorOf(url);
+    try {
+      if (f != null && await f.exists()) await f.delete();
+      if (v != null && await v.exists()) await v.delete();
+    } catch (_) {}
+    _checkedAt.remove(url);
+  }
+
+
 
   /// 原子写:文件名是 **URL** 的哈希而非内容的,半截文件没法自证损坏,
   /// 会被后续 [read] 当成有效缓存直接喂给解码器。
@@ -282,11 +295,16 @@ class RemoteImageProvider extends ImageProvider<RemoteImageProvider> {
     try {
       final hit = await RemoteImageStore.read(key.url);
       if (hit != null) {
-        // 先拿缓存显示,过期的**在后台**回源验证 —— 阻塞等 304 会把「秒开」
-        // 变成「每张图都先等一个来回」,而作者改图是低频事件。
-        // 真拿到新内容时 write(replaced: true) 会换掉缓存键,屏幕上那张跟着换。
-        unawaited(_revalidate(key.url));
-        return await decode(await ui.ImmutableBuffer.fromUint8List(hit));
+        // 旧版本可能把 Gelbooru 的 HTML 403 页面写进了缓存。缓存命中
+        // 也必须经过解码；失败后删除旧文件并在本次请求中重新下载。
+        try {
+          unawaited(_revalidate(key.url));
+          return await decode(
+            await ui.ImmutableBuffer.fromUint8List(hit),
+          );
+        } catch (_) {
+          await RemoteImageStore.invalidate(key.url);
+        }
       }
       final (:bytes, :etag) = await _download(
         key.url,

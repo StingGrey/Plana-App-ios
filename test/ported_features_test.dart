@@ -284,6 +284,35 @@ void main() {
     expect(page.items.single.previewUrl, 'https://cdn.example/NAI/8/9_p0.webp');
     service.dispose();
   });
+
+  test('Gelbooru 详情只解析图片标签，不把整页 HTML 当提示词', () async {
+    final client = _GalleryClient((request) async {
+      expect(request.url.host, 'gelbooru.com');
+      return http.Response(
+        '''<!doctype html>
+<html><head><title>test</title></head><body><script>evil()</script>
+<section class="image-container note-container" data-id="42" data-tags="1girl blue_hair">
+<img width="400" height="600" id="image" src="https://img4.gelbooru.com/images/test.jpg">
+</section></body></html>''',
+        200,
+      );
+    });
+    final service = OnlineGalleryService(client: client);
+    final detail = await service.detail(
+      const OnlineGalleryItem(
+        id: '42',
+        source: OnlineGallerySource.gelbooru,
+        previewUrl: 'https://img4.gelbooru.com/thumbnails/test.jpg',
+        imageUrl: 'https://img4.gelbooru.com/thumbnails/test.jpg',
+      ),
+    );
+    expect(detail.description, isEmpty);
+    expect(detail.item.imageUrl, 'https://img4.gelbooru.com/images/test.jpg');
+    expect(detail.item.width, 400);
+    expect(detail.item.height, 600);
+    expect(detail.item.tags, ['1girl', 'blue_hair']);
+    service.dispose();
+  });
   test('输出过滤只移除精确水印标签', () {
     const state = OnlineGalleryState(outputFilter: true);
     expect(

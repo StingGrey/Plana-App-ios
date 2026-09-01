@@ -91,7 +91,9 @@ class OnlineGalleryService {
           'https://gelbooru.com/index.php?page=post&s=view&id=${Uri.encodeQueryComponent(item.id)}',
         );
         final parsed = _parseGelbooruDetail(item, html);
-        return OnlineGalleryDetail(item: parsed, description: _htmlText(html));
+        // Gelbooru exposes tags, not an AI prompt. Never pass the complete
+        // HTML document to the prompt editor; the caller falls back to tags.
+        return OnlineGalleryDetail(item: parsed);
       case OnlineGallerySource.aiTag:
         final assetBase = await _getAiTagAssetBase();
         final response = await _getJson('https://aitag.win/api/work/${Uri.encodeComponent(item.id)}');
@@ -281,21 +283,38 @@ class OnlineGalleryService {
   }
 
   OnlineGalleryItem _parseGelbooruDetail(OnlineGalleryItem base, String html) {
-    final image = RegExp(r'''id=["']image["'][^>]+src=["']([^"']+)''', caseSensitive: false).firstMatch(html)?.group(1);
-    final section = RegExp(r'''<section[^>]+class=["\'][^"\']*image-container[^"\']*["\'][^>]*''', caseSensitive: false).firstMatch(html)?.group(0) ?? '';
-    final tags = RegExp(r'''data-tags=["\']([^"']*)''', caseSensitive: false).firstMatch(section)?.group(1);
-    final w = int.tryParse(RegExp(r'''data-width=["\'](\d+)''', caseSensitive: false).firstMatch(section)?.group(1) ?? '') ?? base.width;
-    final h = int.tryParse(RegExp(r'''data-height=["\'](\d+)''', caseSensitive: false).firstMatch(section)?.group(1) ?? '') ?? base.height;
+    final section = RegExp(
+      r'''<section\b[^>]*\bclass=["'][^"']*\bimage-container\b[^"']*["'][^>]*>''',
+      caseSensitive: false,
+    ).firstMatch(html)?.group(0) ?? '';
+    final imageTag = RegExp(
+      r'''<img\b[^>]*\bid\s*=\s*["']image["'][^>]*>''',
+      caseSensitive: false,
+    ).firstMatch(html)?.group(0) ?? '';
+    String attribute(String name, String source) =>
+        RegExp("$name\\s*=\\s*[\\\"']([^\\\"']*)", caseSensitive: false)
+                .firstMatch(source)
+                ?.group(1) ??
+            '';
+
+    final image = attribute('src', imageTag);
+    final tags = attribute('data-tags', section);
+    final w = int.tryParse(attribute('data-width', section)) ??
+        int.tryParse(attribute('width', imageTag)) ??
+        base.width;
+    final h = int.tryParse(attribute('data-height', section)) ??
+        int.tryParse(attribute('height', imageTag)) ??
+        base.height;
     return base.copyWith(
-      imageUrl: image == null
+      imageUrl: image.isEmpty
           ? base.imageUrl
           : _normalizeImageUrl(_decodeHtml(image)),
-      previewUrl: image == null
+      previewUrl: image.isEmpty
           ? base.previewUrl
           : _normalizeImageUrl(_decodeHtml(image)),
       width: w,
       height: h,
-      tags: tags == null ? base.tags : _gelTags(tags),
+      tags: tags.isEmpty ? base.tags : _gelTags(_decodeHtml(tags)),
     );
   }
 
@@ -632,7 +651,6 @@ class OnlineGalleryService {
 
   String _plainText(String value) =>
       value.replaceAll(RegExp(r'<[^>]+>'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
-  String _htmlText(String value) => _plainText(value);
   String _string(Object? value, [String fallback = '']) => value?.toString() ?? fallback;
   int _int(Object? value) => value is num ? value.toInt() : int.tryParse('$value') ?? 0;
 }
