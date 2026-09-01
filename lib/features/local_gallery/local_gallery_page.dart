@@ -15,7 +15,8 @@ import '../../core/util/gallery_save.dart';
 import '../../core/util/file_read.dart';
 import '../../core/util/image_pick.dart';
 import '../generate/generate_state.dart';
-import '../generate/widgets/common.dart' show confirmDialog, hintSnack, sharedAxisRoute;
+import '../generate/widgets/common.dart'
+    show confirmDialog, hintSnack, sharedAxisRoute;
 import '../import/import_panel.dart';
 import '../inspiration/prompt_library_save.dart';
 import '../shell/shell_state.dart';
@@ -58,13 +59,17 @@ class _LocalGalleryPageState extends ConsumerState<LocalGalleryPage> {
     for (final file in picked.files) {
       try {
         final bytes = await readPickedBytes(file);
-        final before = ref.read(appStoresProvider).localGallery.initialItems.length;
-        await ref.read(appStoresProvider).localGallery.importBytes(
-          bytes,
-          file.name,
-          sourcePath: file.path,
-        );
-        if (ref.read(appStoresProvider).localGallery.initialItems.length > before) {
+        final before = ref
+            .read(appStoresProvider)
+            .localGallery
+            .initialItems
+            .length;
+        await ref
+            .read(appStoresProvider)
+            .localGallery
+            .importBytes(bytes, file.name, sourcePath: file.path);
+        if (ref.read(appStoresProvider).localGallery.initialItems.length >
+            before) {
           count++;
         }
       } catch (_) {}
@@ -83,9 +88,7 @@ class _LocalGalleryPageState extends ConsumerState<LocalGalleryPage> {
     if (_busy || Platform.isIOS) return;
     String? path;
     try {
-      path = await FilePicker.platform.getDirectoryPath(
-        dialogTitle: '选择作品文件夹',
-      );
+      path = await FilePicker.platform.getDirectoryPath(dialogTitle: '选择作品文件夹');
     } catch (error) {
       if (mounted) {
         hintSnack(context, '当前平台无法选择文件夹：$error', icon: Icons.info_outline);
@@ -184,7 +187,9 @@ class _LocalGalleryPageState extends ConsumerState<LocalGalleryPage> {
     setState(() => _busy = true);
     final files = <XFile>[];
     try {
-      final dir = Directory('${(await getTemporaryDirectory()).path}/plana_local_share');
+      final dir = Directory(
+        '${(await getTemporaryDirectory()).path}/plana_local_share',
+      );
       if (await dir.exists()) await dir.delete(recursive: true);
       await dir.create(recursive: true);
       final store = ref.read(appStoresProvider).localGallery;
@@ -381,7 +386,10 @@ class _LocalGalleryPageState extends ConsumerState<LocalGalleryPage> {
           onSubmitted: (value) => Navigator.pop(ctx, value),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, controller.text),
             child: const Text('确定'),
@@ -453,7 +461,9 @@ class _LocalGalleryPageState extends ConsumerState<LocalGalleryPage> {
           _toolbar(state, scheme),
           if (state.scanning) ...[
             LinearProgressIndicator(
-              value: state.scanTotal > 0 ? state.scanDone / state.scanTotal : null,
+              value: state.scanTotal > 0
+                  ? state.scanDone / state.scanTotal
+                  : null,
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(14, 5, 14, 0),
@@ -463,16 +473,14 @@ class _LocalGalleryPageState extends ConsumerState<LocalGalleryPage> {
                   state.scanTotal > 0
                       ? '正在扫描 ${state.scanDone}/${state.scanTotal}'
                       : '正在扫描文件夹…',
-                  style: context.texts.labelSmall!.copyWith(color: scheme.outline),
+                  style: context.texts.labelSmall!.copyWith(
+                    color: scheme.outline,
+                  ),
                 ),
               ),
             ),
           ],
-          Expanded(
-            child: items.isEmpty
-                ? _empty(state, scheme)
-                : _grid(items),
-          ),
+          Expanded(child: items.isEmpty ? _empty(state, scheme) : _grid(items)),
         ],
       ),
       bottomNavigationBar: _selectionMode && _selected.isNotEmpty
@@ -554,7 +562,9 @@ class _LocalGalleryPageState extends ConsumerState<LocalGalleryPage> {
                     selected: state.collectionId != null,
                     icon: Icons.collections_bookmark_outlined,
                     onTap: () async {
-                      final id = await _chooseCollectionFilter(state.collections);
+                      final id = await _chooseCollectionFilter(
+                        state.collections,
+                      );
                       if (id != null) _notifier.setCollection(id);
                     },
                   ),
@@ -592,7 +602,9 @@ class _LocalGalleryPageState extends ConsumerState<LocalGalleryPage> {
             for (final days in const [0, 1, 7, 30])
               ListTile(
                 leading: const Icon(Icons.date_range_outlined),
-                title: Text(days == 0 ? '全部日期' : (days == 1 ? '今天' : '近 $days 天')),
+                title: Text(
+                  days == 0 ? '全部日期' : (days == 1 ? '今天' : '近 $days 天'),
+                ),
                 onTap: () => Navigator.pop(ctx, days),
               ),
             const SizedBox(height: 8),
@@ -644,7 +656,10 @@ class _LocalGalleryPageState extends ConsumerState<LocalGalleryPage> {
   Widget _grid(List<LocalGalleryRecord> items) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final columns = (constraints.maxWidth / 155).floor().clamp(2, 6).toInt();
+        final columns = (constraints.maxWidth / 155)
+            .floor()
+            .clamp(2, 6)
+            .toInt();
         return GridView.builder(
           padding: const EdgeInsets.fromLTRB(12, 5, 12, 18),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
@@ -684,14 +699,18 @@ class _LocalGalleryPageState extends ConsumerState<LocalGalleryPage> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              filtered ? Icons.filter_alt_off_outlined : Icons.photo_library_outlined,
+              filtered
+                  ? Icons.filter_alt_off_outlined
+                  : Icons.photo_library_outlined,
               size: 56,
               color: scheme.outlineVariant,
             ),
             const SizedBox(height: 12),
             Text(
               filtered ? '没有匹配的作品' : '本地图库还是空的',
-              style: context.texts.titleMedium!.copyWith(fontWeight: FontWeight.w700),
+              style: context.texts.titleMedium!.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
             ),
             const SizedBox(height: 6),
             Text(
@@ -732,24 +751,30 @@ class _LocalGalleryPageState extends ConsumerState<LocalGalleryPage> {
               _actionPill(Icons.download_outlined, '保存', _saveSelected),
               _actionPill(Icons.share_outlined, '分享', _shareSelected),
               _actionPill(Icons.folder_outlined, '分类', _setCategory),
+              _actionPill(Icons.star_outline, '收藏', () {
+                final allFavorite = _selected.every(
+                  (id) =>
+                      ref
+                          .read(localGalleryProvider)
+                          .items
+                          .where((item) => item.id == id)
+                          .firstOrNull
+                          ?.favorite ==
+                      true,
+                );
+                _notifier.setFavoriteFor(_selected, !allFavorite);
+              }),
               _actionPill(
-                Icons.star_outline,
-                '收藏',
-                () {
-                  final allFavorite = _selected.every(
-                    (id) => ref
-                        .read(localGalleryProvider)
-                        .items
-                        .where((item) => item.id == id)
-                        .firstOrNull
-                        ?.favorite ==
-                        true,
-                  );
-                  _notifier.setFavoriteFor(_selected, !allFavorite);
-                },
+                Icons.collections_bookmark_outlined,
+                '集合',
+                _addCollection,
               ),
-              _actionPill(Icons.collections_bookmark_outlined, '集合', _addCollection),
-              _actionPill(Icons.delete_outline, '删除', _deleteSelected, danger: true),
+              _actionPill(
+                Icons.delete_outline,
+                '删除',
+                _deleteSelected,
+                danger: true,
+              ),
             ],
           ),
         ),
@@ -763,7 +788,9 @@ class _LocalGalleryPageState extends ConsumerState<LocalGalleryPage> {
     VoidCallback onTap, {
     bool danger = false,
   }) {
-    final color = danger ? context.scheme.error : context.scheme.onSurfaceVariant;
+    final color = danger
+        ? context.scheme.error
+        : context.scheme.onSurfaceVariant;
     return ActionChip(
       avatar: Icon(icon, size: 17, color: color),
       label: Text(label),
@@ -809,7 +836,9 @@ class _LocalGalleryCard extends ConsumerWidget {
               children: [
                 Expanded(
                   child: ClipRRect(
-                    borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+                    borderRadius: const BorderRadius.vertical(
+                      top: Radius.circular(12),
+                    ),
                     child: _LocalThumb(id: item.id, fit: BoxFit.cover),
                   ),
                 ),
@@ -822,7 +851,9 @@ class _LocalGalleryCard extends ConsumerWidget {
                           item.name,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: context.texts.bodySmall!.copyWith(fontWeight: FontWeight.w600),
+                          style: context.texts.bodySmall!.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                       ),
                       if (!selectionMode)
@@ -836,7 +867,9 @@ class _LocalGalleryCard extends ConsumerWidget {
                             icon: Icon(
                               item.favorite ? Icons.star : Icons.star_border,
                               size: 18,
-                              color: item.favorite ? Colors.amber.shade700 : scheme.outline,
+                              color: item.favorite
+                                  ? Colors.amber.shade700
+                                  : scheme.outline,
                             ),
                           ),
                         ),
@@ -855,7 +888,10 @@ class _LocalGalleryCard extends ConsumerWidget {
               Positioned(
                 left: 7,
                 bottom: 42,
-                child: _Badge(label: item.category, color: Colors.black.withValues(alpha: .62)),
+                child: _Badge(
+                  label: item.category,
+                  color: Colors.black.withValues(alpha: .62),
+                ),
               ),
             if (selected)
               Positioned.fill(
@@ -876,10 +912,16 @@ class _LocalGalleryCard extends ConsumerWidget {
                   height: 24,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color: selected ? scheme.primary : Colors.black.withValues(alpha: .45),
-                    border: Border.all(color: Colors.white.withValues(alpha: .85)),
+                    color: selected
+                        ? scheme.primary
+                        : Colors.black.withValues(alpha: .45),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: .85),
+                    ),
                   ),
-                  child: selected ? Icon(Icons.check, size: 16, color: scheme.onPrimary) : null,
+                  child: selected
+                      ? Icon(Icons.check, size: 16, color: scheme.onPrimary)
+                      : null,
                 ),
               ),
           ],
@@ -899,7 +941,8 @@ class _LocalThumb extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final async = ref.watch(localGalleryThumbProvider(id));
     return async.when(
-      loading: () => const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+      loading: () =>
+          const Center(child: CircularProgressIndicator(strokeWidth: 2)),
       error: (_, _) => ColoredBox(
         color: context.scheme.surfaceContainerHigh,
         child: Icon(Icons.broken_image_outlined, color: context.scheme.outline),
@@ -907,7 +950,10 @@ class _LocalThumb extends ConsumerWidget {
       data: (bytes) => bytes == null
           ? ColoredBox(
               color: context.scheme.surfaceContainerHigh,
-              child: Icon(Icons.broken_image_outlined, color: context.scheme.outline),
+              child: Icon(
+                Icons.broken_image_outlined,
+                color: context.scheme.outline,
+              ),
             )
           : Image.memory(bytes, fit: fit, gaplessPlayback: true),
     );
@@ -923,12 +969,19 @@ class _Badge extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-    decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(5)),
+    decoration: BoxDecoration(
+      color: color,
+      borderRadius: BorderRadius.circular(5),
+    ),
     child: Text(
       label,
       maxLines: 1,
       overflow: TextOverflow.ellipsis,
-      style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.w700),
+      style: const TextStyle(
+        color: Colors.white,
+        fontSize: 9,
+        fontWeight: FontWeight.w700,
+      ),
     ),
   );
 }
@@ -949,7 +1002,8 @@ class LocalGalleryDetailPage extends ConsumerWidget {
           IconButton(
             tooltip: item.favorite ? '取消收藏' : '收藏',
             icon: Icon(item.favorite ? Icons.star : Icons.star_border),
-            onPressed: () => ref.read(localGalleryProvider.notifier).toggleFavorite(item.id),
+            onPressed: () =>
+                ref.read(localGalleryProvider.notifier).toggleFavorite(item.id),
           ),
           PopupMenuButton<String>(
             tooltip: '更多操作',
@@ -1035,11 +1089,22 @@ class LocalGalleryDetailPage extends ConsumerWidget {
               ],
               if (item.negativePrompt.isNotEmpty) ...[
                 const SizedBox(height: 14),
-                _copyBlock(context, '负向提示词', item.negativePrompt, scheme, danger: true),
+                _copyBlock(
+                  context,
+                  '负向提示词',
+                  item.negativePrompt,
+                  scheme,
+                  danger: true,
+                ),
               ],
               if (item.characters.isNotEmpty) ...[
                 const SizedBox(height: 16),
-                Text('角色提示词', style: context.texts.titleSmall!.copyWith(fontWeight: FontWeight.w700)),
+                Text(
+                  '角色提示词',
+                  style: context.texts.titleSmall!.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
                 const SizedBox(height: 7),
                 for (var i = 0; i < item.characters.length; i++)
                   Padding(
@@ -1061,10 +1126,7 @@ class LocalGalleryDetailPage extends ConsumerWidget {
     );
   }
 
-  Future<void> _savePromptToLibrary(
-    BuildContext context,
-    WidgetRef ref,
-  ) async {
+  Future<void> _savePromptToLibrary(BuildContext context, WidgetRef ref) async {
     final saved = await savePromptToTagLibrary(
       context,
       ref,
@@ -1077,15 +1139,9 @@ class LocalGalleryDetailPage extends ConsumerWidget {
     }
   }
 
-  Future<void> _loadToCreate(
-    BuildContext context,
-    WidgetRef ref,
-  ) async {
+  Future<void> _loadToCreate(BuildContext context, WidgetRef ref) async {
     final notifier = ref.read(generateProvider.notifier);
-    notifier.setPrompts(
-      positive: item.prompt,
-      negative: item.negativePrompt,
-    );
+    notifier.setPrompts(positive: item.prompt, negative: item.negativePrompt);
     notifier.applyImportedSettings(
       model: _supportedModelFromLabel(item.model),
       width: item.width > 0 ? item.width : null,
@@ -1095,17 +1151,14 @@ class LocalGalleryDetailPage extends ConsumerWidget {
     );
     if (item.hasMetadata) notifier.clearCharacters();
     if (item.characters.isNotEmpty) {
-      notifier.addCharactersFrom(
-        [
-          for (final character in item.characters)
-            (
-              positive: character.prompt,
-              negative: character.negativePrompt,
-              position: null,
-            ),
-        ],
-        replace: true,
-      );
+      notifier.addCharactersFrom([
+        for (final character in item.characters)
+          (
+            positive: character.prompt,
+            negative: character.negativePrompt,
+            position: null,
+          ),
+      ], replace: true);
     }
     ref.read(shellIndexProvider.notifier).select(kTabCreate);
     Navigator.of(context).pop();
@@ -1137,7 +1190,12 @@ class LocalGalleryDetailPage extends ConsumerWidget {
     children: [
       Row(
         children: [
-          Text(title, style: context.texts.labelLarge!.copyWith(fontWeight: FontWeight.w700)),
+          Text(
+            title,
+            style: context.texts.labelLarge!.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
+          ),
           const Spacer(),
           IconButton(
             tooltip: '复制',
@@ -1186,9 +1244,19 @@ class _InfoTile extends StatelessWidget {
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: context.texts.labelSmall!.copyWith(color: context.scheme.outline)),
+        Text(
+          label,
+          style: context.texts.labelSmall!.copyWith(
+            color: context.scheme.outline,
+          ),
+        ),
         const SizedBox(height: 2),
-        Text(value, maxLines: 1, overflow: TextOverflow.ellipsis, style: context.texts.bodySmall),
+        Text(
+          value,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: context.texts.bodySmall,
+        ),
       ],
     ),
   );
@@ -1196,7 +1264,9 @@ class _InfoTile extends StatelessWidget {
 
 String _extension(String name) {
   final match = RegExp(r'\.([A-Za-z0-9]+)$').firstMatch(name);
-  return match?.group(1)?.toLowerCase() == 'jpeg' ? 'jpg' : (match?.group(1)?.toLowerCase() ?? 'png');
+  return match?.group(1)?.toLowerCase() == 'jpeg'
+      ? 'jpg'
+      : (match?.group(1)?.toLowerCase() ?? 'png');
 }
 
 String _formatBytes(int bytes) {
