@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../../features/gallery/gallery_store.dart';
 import '../../features/generate/workspace_store.dart';
+import '../../features/local_gallery/local_gallery_store.dart';
 import '../../features/stats/key_ledger.dart';
 import '../net/remote_image.dart';
 import 'blob_store.dart';
@@ -20,6 +21,7 @@ class AppStores {
     this.blobs,
     this.workspace,
     this.gallery,
+    this.localGallery,
     this.ledger,
     this.prefs,
   );
@@ -27,6 +29,7 @@ class AppStores {
   final BlobStore blobs;
   final WorkspaceStore workspace;
   final GalleryStore gallery;
+  final LocalGalleryStore localGallery;
   final KeyLedgerStore ledger;
 
   /// 非机密设置(主题/生成参数/编辑器…),见 [PrefsStore]。
@@ -41,6 +44,7 @@ class AppStores {
       blobs,
       WorkspaceStore(blobs, root),
       GalleryStore(blobs, root),
+      LocalGalleryStore(root),
       KeyLedgerStore(root),
       PrefsStore.emptyForTest(root),
     );
@@ -64,6 +68,7 @@ class AppStores {
     final blobs = BlobStore(root);
     final workspace = WorkspaceStore(blobs, root);
     final gallery = GalleryStore(blobs, root);
+    final localGallery = LocalGalleryStore(root);
     final ledger = KeyLedgerStore(root);
     try {
       await blobs.ensureReady();
@@ -72,14 +77,27 @@ class AppStores {
     final prefs = await PrefsStore.open(root);
     await workspace.load();
     await gallery.load();
+    try {
+      await localGallery.load();
+    } catch (_) {
+      // A missing/unsupported local-gallery directory must not block startup.
+    }
     await ledger.load();
-    return AppStores._(blobs, workspace, gallery, ledger, prefs);
+    return AppStores._(
+      blobs,
+      workspace,
+      gallery,
+      localGallery,
+      ledger,
+      prefs,
+    );
   }
 
   /// 退后台/失焦即刻把防抖窗口里的挂起状态落盘(进程被杀不丢)。
   void flushNow() {
     workspace.flush();
     gallery.flushIndex();
+    localGallery.flushIndex();
     ledger.flush();
   }
 

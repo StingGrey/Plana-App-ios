@@ -28,6 +28,7 @@ import '../save_settings.dart';
 import '../upscale_model.dart';
 import '../upscale_nai.dart';
 import 'save_sheet.dart';
+import '../result_detail_page.dart';
 
 /// 持久大图层:有字节 → `Image.memory`(gaplessPlayback);否则画一个目标尺寸的空画框。
 /// 生成/查看全程复用同一个 Image widget,借 gaplessPlayback 桥接逐帧预览与终图,消除切换闪烁。
@@ -389,6 +390,14 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
           onTap: () => _import(context, ref),
         ),
         _RailButton(
+          label: '详情',
+          icon: Icons.info_outline,
+          compact: true,
+          onTap: () => Navigator.of(context).push(
+            sharedAxisRoute(ResultDetailPage(result: result)),
+          ),
+        ),
+        _RailButton(
           label: '混淆',
           icon: Icons.shuffle_rounded,
           compact: true,
@@ -475,6 +484,14 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
                       label: '导入',
                       icon: Icons.input,
                       onTap: () => _import(context, ref),
+                    ),
+                    const SizedBox(height: 10),
+                    _RailButton(
+                      label: '详情',
+                      icon: Icons.info_outline,
+                      onTap: () => Navigator.of(context).push(
+                        sharedAxisRoute(ResultDetailPage(result: result)),
+                      ),
                     ),
                     const SizedBox(height: 10),
                     _RailButton(

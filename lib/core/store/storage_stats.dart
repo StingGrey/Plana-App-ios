@@ -71,7 +71,7 @@ Future<int?> _countIn(Directory d, {String? suffix}) async {
 }
 
 /// 全量扫描。key 清单:gallery / blobs / vibeLib / vibeEnc / charLib /
-/// imgCache / codexCache / tagPrev / models / temp。
+/// localGallery / preciseRef / imgCache / codexCache / tagPrev / models / temp。
 ///
 /// 分类要跟着新目录一起加 —— 漏一个,那块占用就只能沉进 [StorageReport.otherBytes]
 /// 里,用户看着「其他」莫名涨几十 MB 又找不到清理入口(法典缓存单部最大 ~11 MB,
@@ -130,6 +130,16 @@ Future<StorageReport> scanStorage() async {
       key: 'charLib',
       bytes: await _sizeOf(sub('charref_library')),
       count: await _countIn(Directory('${sup.path}/charref_library/files')),
+    ),
+    StorageCategory(
+      key: 'localGallery',
+      bytes: await _sizeOf(sub('local_gallery')),
+      count: await _countIn(Directory('${sup.path}/local_gallery/images')),
+    ),
+    StorageCategory(
+      key: 'preciseRef',
+      bytes: await _sizeOf(sub('precise_reference_library')),
+      count: await _countIn(Directory('${sup.path}/precise_reference_library/files')),
     ),
     StorageCategory(
       key: 'imgCache',

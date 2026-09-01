@@ -9,13 +9,15 @@ import '../cost.dart';
 import '../gen_modules.dart';
 import '../generate_state.dart';
 import '../generation_controller.dart';
+import '../gen_queue.dart';
 import '../loop_controller.dart';
 import '../models.dart' show GenParams, kBatchMax, stepsRangeOf;
 import '../vibe_encoder.dart';
 import '../../import/import_panel.dart';
 import 'advanced_sheet.dart';
-import 'common.dart' show hintSnack;
+import 'common.dart' show hintSnack, sharedAxisRoute;
 import 'loop_sheet.dart';
+import '../queue_management_page.dart';
 import 'resolution_sheet.dart';
 
 /// 吸底栏上方那一处浮动控件,现在是**谁开着**。
@@ -235,6 +237,37 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
                                 ? scheme.onPrimaryContainer
                                 : scheme.primary,
                           ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                // 队列按钮:点按把当前参数快照加入队列,长按打开管理页。
+                // 生成中的任务与排队快照是两套状态,这里不复用循环按钮,避免用户
+                // 误把「之后继续出图」和「保存一份任务」混为一件事。
+                Tooltip(
+                  message: '加入生成队列',
+                  child: SizedBox(
+                    width: 52,
+                    height: 52,
+                    child: Material(
+                      color: Colors.transparent,
+                      borderRadius: BorderRadius.circular(16),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(16),
+                        onTap: () {
+                          final ok = ref.read(genQueueProvider.notifier).enqueue();
+                          if (!ok) {
+                            hintSnack(context, '队列最多保留 ${GenQueueNotifier.cap} 项', icon: Icons.block_outlined);
+                            return;
+                          }
+                          hintSnack(context, '已加入生成队列', icon: Icons.playlist_add_check);
+                        },
+                        onLongPress: () => Navigator.of(context).push(
+                          sharedAxisRoute(const QueueManagementPage()),
+                        ),
+                        child: Center(
+                          child: Icon(Icons.queue_play_next_outlined, size: 22, color: scheme.primary),
                         ),
                       ),
                     ),

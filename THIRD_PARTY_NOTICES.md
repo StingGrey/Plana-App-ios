@@ -30,6 +30,15 @@ Flutter SDK 及其自带组件遵循 BSD 3-Clause(Copyright 2014 The Flutter Aut
 
 ---
 
+## 功能移植说明
+
+本版本的本地图库、在线画廊、生成队列管理、固定词库与精准参考库在功能
+设计上参考了 [Aaalice_NAI_Launcher](https://github.com/Aaalice233/Aaalice_NAI_Launcher)
+的公开实现与产品说明。当前仓库中的移动端实现使用本项目自身的状态、存储与
+网络层重写；如后续直接引入该项目的代码，须继续保留其 MIT License 版权与许可
+声明。在线画廊所展示的图片与标签仍归各来源站点及其作者所有，本项目不随包分发
+这些第三方内容。
+
 ## 算法实现
 
 图片混淆与解混淆功能的 Gilbert 曲线像素置换算法参考

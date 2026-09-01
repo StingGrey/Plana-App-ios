@@ -286,7 +286,7 @@ class RemoteImageProvider extends ImageProvider<RemoteImageProvider> {
         // 变成「每张图都先等一个来回」,而作者改图是低频事件。
         // 真拿到新内容时 write(replaced: true) 会换掉缓存键,屏幕上那张跟着换。
         unawaited(_revalidate(key.url));
-        return decode(await ui.ImmutableBuffer.fromUint8List(hit));
+        return await decode(await ui.ImmutableBuffer.fromUint8List(hit));
       }
       final (:bytes, :etag) = await _download(
         key.url,
@@ -294,7 +294,7 @@ class RemoteImageProvider extends ImageProvider<RemoteImageProvider> {
       ).timeout(_timeout);
       // 落盘是旁路:写失败只是下次还得重下,不该连累这一次显示
       unawaited(RemoteImageStore.write(key.url, bytes, etag: etag));
-      return decode(await ui.ImmutableBuffer.fromUint8List(bytes));
+      return await decode(await ui.ImmutableBuffer.fromUint8List(bytes));
     } catch (_) {
       // 与 NetworkImage 同款:微任务里踢缓存,让下次 build 能真的重试
       scheduleMicrotask(() {

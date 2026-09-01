@@ -6,6 +6,7 @@ import '../../core/live_progress/live_progress.dart';
 import '../shell/shell_state.dart';
 import 'gen_queue.dart';
 import 'generate_state.dart';
+import '../fixed_tags/fixed_tags.dart';
 import 'generation_controller.dart';
 
 /// 循环生成状态。batch 为当前第几张(1-based);total 0 表示无限;
@@ -50,6 +51,9 @@ class LoopNotifier extends Notifier<LoopStatus> {
     // 手动生成中不再让位:并行之后手动那条只是池子里的一员,循环照常投。
     if (state.active || ref.read(genQueueProvider).active) return;
     final total = ref.read(generateProvider).params.loop.count; // 开跑时锁档位
+    // Treat reusable prompt fragments like the other loop settings: edits made
+    // while the loop is running affect the next loop, not the current one.
+    final fixedTags = ref.read(fixedTagsProvider);
     state = LoopStatus(active: true, total: total);
     // 手机只在开跑时切一次图库;平板首页已经常驻画布,留在三栏工作台。
     if (!ref.read(tabletWorkspaceProvider)) {
@@ -68,7 +72,7 @@ class LoopNotifier extends Notifier<LoopStatus> {
       while (ok && !state.stopping && (total == 0 || dispatched < total)) {
         dispatched++;
         // 非 ok 一律停(含用户取消):挂机连续失败无意义,也不该替用户决定重试
-        if (await gen.generate() != GenOutcome.ok) {
+        if (await gen.generate(fixedTags: fixedTags) != GenOutcome.ok) {
           ok = false;
           break;
         }

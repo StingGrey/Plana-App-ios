@@ -23,6 +23,7 @@ import '../gallery_dates.dart';
 import '../gallery_search.dart';
 import '../gallery_state.dart';
 import '../models.dart';
+import '../result_detail_page.dart';
 import '../save_pipeline.dart';
 import '../save_settings.dart';
 import 'album_name_sheet.dart';
@@ -540,6 +541,13 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet> {
     );
     if (picked == null || !mounted) return;
     switch (picked) {
+      case 'detail':
+        final r = _resultOf(id);
+        if (r == null) return;
+        nav.pop();
+        unawaited(
+          nav.push(sharedAxisRoute(ResultDetailPage(result: r))),
+        );
       case 'import':
         await _importOne(id);
       case 'save':
@@ -1290,7 +1298,7 @@ class _LiftedThumb extends ConsumerWidget {
   static const _menuW = 200.0;
   static const _itemH = 46.0;
   static const _dividerH = 9.0;
-  static const _menuH = _itemH * 3 + _dividerH + 16;
+  static const _menuH = _itemH * 4 + _dividerH + 16;
 
   /// 抬起的图占「可用框」(去掉边距与菜单之后那块)的面积比例。
   static const _fill = .42;
@@ -1430,6 +1438,7 @@ class _LiftedThumb extends ConsumerWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           const SizedBox(height: 8),
+          _item(context, Icons.info_outline, '详情', 'detail'),
           _item(context, Icons.input, '导入', 'import'),
           _item(context, Icons.download, '保存', 'save'),
           // 删除排最后并单独隔一条线:菜单就在手指底下,不可撤销的那项

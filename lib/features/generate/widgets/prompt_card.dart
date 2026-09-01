@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../fixed_tags/fixed_tags.dart';
+import '../../fixed_tags/fixed_tags_page.dart';
 import '../../../core/util/nai_tokenizer.dart';
 import '../../../core/util/prompt_convert.dart';
 import '../../editor/editor_page.dart';
@@ -35,15 +37,21 @@ class _PromptCardState extends ConsumerState<PromptCard> {
     final tok = ref.watch(naiTokenizerProvider).value;
     final preset = ref.watch(promptPresetsProvider).value?.active;
     final chars = ref.watch(countedCharactersProvider);
+    final fixed = ref.watch(fixedTagsProvider);
+    final promptForCount = fixed.apply(state.prompt, FixedTagSide.positive);
+    final negativeForCount = fixed.apply(
+      state.negativePrompt,
+      FixedTagSide.negative,
+    );
     final promptTokens = totalPromptTokens(
       tok,
-      main: state.prompt,
+      main: promptForCount,
       parts: [for (final c in chars) c.positive],
       preset: preset?.positive ?? '',
     );
     final negTokens = totalPromptTokens(
       tok,
-      main: state.negativePrompt,
+      main: negativeForCount,
       parts: [for (final c in chars) c.negative],
       preset: preset?.negative ?? '',
     );
@@ -90,6 +98,15 @@ class _PromptCardState extends ConsumerState<PromptCard> {
                   ).copyWith(color: scheme.outline),
                 ),
                 const Spacer(),
+                RoundIconBtn(
+                  Icons.push_pin_outlined,
+                  tooltip: '固定词库',
+                  color: scheme.onSurfaceVariant,
+                  onTap: () => Navigator.of(context).push(
+                    sharedAxisRoute(const FixedTagsPage()),
+                  ),
+                ),
+                const SizedBox(width: 6),
                 RoundIconBtn(
                   Icons.delete_sweep_outlined,
                   tooltip: '清空正向提示词',

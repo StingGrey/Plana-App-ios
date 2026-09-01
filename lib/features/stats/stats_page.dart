@@ -11,6 +11,7 @@ import '../generate/gpu_rental.dart' show fmtYuan;
 import '../generate/widgets/common.dart' show sharedAxisRoute;
 import 'day_detail_page.dart';
 import 'gpu_bills_page.dart';
+import 'gallery_stats_page.dart';
 import 'key_ledger.dart';
 import 'ledger_page.dart';
 import 'platform_page.dart';
@@ -66,6 +67,11 @@ class _StatsPageState extends ConsumerState<StatsPage> {
       appBar: AppBar(
         title: const Text('统计'),
         actions: [
+          IconButton(
+            tooltip: '图库分析',
+            icon: const Icon(Icons.bar_chart_outlined),
+            onPressed: () => _push(const GalleryStatsPage()),
+          ),
           _ModePill(
             bot: _bot,
             onChanged: (v) => setState(() {

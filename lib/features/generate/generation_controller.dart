@@ -34,6 +34,7 @@ import 'gen_modules.dart';
 import 'gen_queue.dart';
 import 'generate_state.dart';
 import 'loop_controller.dart';
+import '../fixed_tags/fixed_tags.dart';
 import 'models.dart';
 import 'nai_request.dart';
 import 'prompt_presets.dart';
@@ -362,17 +363,30 @@ class GenerationNotifier extends Notifier<GenPool> {
   /// 当前模型看不到的档(切了模型但档没跟着换)先映射到同强度的那一档 ——
   /// 否则 4.5 的质量词会被拼进 V5 的请求里。
   Future<({GenerateState state, String presetId, bool qualityToggle})>
-  _applyPreset(GenerateState s) async {
+  _applyPreset(
+    GenerateState s, {
+    FixedTagsState? fixedTags,
+  }) async {
     final ps = await ref.read(promptPresetsProvider.future);
+    final FixedTagsState fixed =
+        fixedTags ?? ref.read(fixedTagsProvider);
+    final prepared = s.copyWith(
+      prompt: fixed.apply(s.prompt, FixedTagSide.positive),
+      negativePrompt: fixed.apply(s.negativePrompt, FixedTagSide.negative),
+    );
     final id = remapPromptPresetId(ps.activeId, ps.presets, s.params.model);
     final p = ps.presets.where((e) => e.id == id).firstOrNull;
     final qt = p != null && p.positive.isNotEmpty;
     if (p == null || (p.positive.isEmpty && p.negative.isEmpty)) {
-      return (state: s, presetId: id, qualityToggle: qt);
+      return (state: prepared, presetId: id, qualityToggle: qt);
     }
-    final merged = applyPromptPreset(p, s.prompt, s.negativePrompt);
+    final merged = applyPromptPreset(
+      p,
+      prepared.prompt,
+      prepared.negativePrompt,
+    );
     return (
-      state: s.copyWith(
+      state: prepared.copyWith(
         prompt: merged.positive,
         negativePrompt: merged.negative,
       ),
@@ -383,7 +397,10 @@ class GenerationNotifier extends Notifier<GenPool> {
 
   /// [using] 非空时用该快照跑(图库「重新生成」按本图参数复现),不动用户当前编辑器状态。
   /// 返回本张的结局:循环据此决定续跑/中止,队列据此决定能不能安全重试。
-  Future<GenOutcome> generate({GenerateState? using}) async {
+  Future<GenOutcome> generate({
+    GenerateState? using,
+    FixedTagsState? fixedTags,
+  }) async {
     // 池满拒收。守卫与建卡之间**不能有 await**:按钮不再禁用,连点两下会各自
     // 走一遍这里,中间插一个 await 就等于没守。
     if (state.jobs.length >= kMaxPoolJobs) {
@@ -489,8 +506,8 @@ class GenerationNotifier extends Notifier<GenPool> {
         (j) => j.copyWith(stage: GenJobStage.preparing, clearNote: true),
       );
       return isBot
-          ? await _generateViaBot(s, job.id, run)
-          : await _generateDirect(s, job.id, run);
+          ? await _generateViaBot(s, job.id, run, fixedTags: fixedTags)
+          : await _generateDirect(s, job.id, run, fixedTags: fixedTags);
     } finally {
       if (isBot) {
         _releaseSlot(run.slot);
@@ -537,8 +554,9 @@ class GenerationNotifier extends Notifier<GenPool> {
   Future<GenOutcome> _generateDirect(
     GenerateState s,
     String jobId,
-    _JobRun run,
-  ) async {
+    _JobRun run, {
+    FixedTagsState? fixedTags,
+  }) async {
     // 等 storage 读完再判(懒加载 AsyncNotifier 冷启动首读是 loading,
     // 直接取 .value 会把「还没读出来」误判成「没配置」)。
     // 用哪把由闸门在取槽时一并定了(它按可用集合挑,顺序即优先级),
@@ -580,7 +598,7 @@ class GenerationNotifier extends Notifier<GenPool> {
         // 3. 角色参考:contain 处理底图(无编码调用,载荷层按模型 gate)
         final charRefs = await _processCharRefs(s);
         // 4. 拼载荷 + 流式生成
-        final preset = await _applyPreset(s);
+        final preset = await _applyPreset(s, fixedTags: fixedTags);
         built = buildNaiPayload(
           preset.state,
           presetId: preset.presetId,
@@ -868,8 +886,9 @@ class GenerationNotifier extends Notifier<GenPool> {
   Future<GenOutcome> _generateViaBot(
     GenerateState s,
     String jobId,
-    _JobRun run,
-  ) async {
+    _JobRun run, {
+    FixedTagsState? fixedTags,
+  }) async {
     // 同 generate():await future,避免冷启动 loading 态误报未授权/未配置。
     // 同样在主 try 之外,读失败要就地转成错误态,不能让异常逃出去。
     final BotSession? session;
@@ -908,7 +927,7 @@ class GenerationNotifier extends Notifier<GenPool> {
         final charRefs = await _processCharRefs(s);
         final prepared = await _prepareVibes(s);
         final styleRefs = await _processKreaStyleRefs(s);
-        final preset = await _applyPreset(s);
+        final preset = await _applyPreset(s, fixedTags: fixedTags);
         final params = buildBotParams(
           preset.state,
           seed: seed,

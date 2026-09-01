@@ -9,6 +9,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/util/image_pick.dart';
 import '../../char_library/char_library.dart';
 import '../../char_library/char_library_page.dart';
+import '../../precise_ref/precise_ref_library_page.dart';
 import '../generate_state.dart';
 import '../models.dart';
 import 'common.dart';
@@ -110,6 +111,14 @@ class _CharRefCardState extends ConsumerState<CharRefCard> {
       reorderIndex: widget.reorderIndex,
       badge: refs.isEmpty ? null : CountBadge('${refs.length}'),
       actions: [
+        RoundIconBtn(
+          Icons.center_focus_strong,
+          tooltip: '精准参考库',
+          color: scheme.onSurfaceVariant,
+          onTap: () => Navigator.of(context).push(
+            sharedAxisRoute(const PreciseRefLibraryPage()),
+          ),
+        ),
         RoundIconBtn(
           Icons.grid_view,
           tooltip: '参考图库',

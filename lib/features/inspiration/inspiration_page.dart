@@ -19,6 +19,7 @@ import '../generate/generate_state.dart';
 import '../generate/models.dart' show maxCharactersOf;
 import '../generate/widgets/common.dart'
     show confirmDialog, hintSnack, sharedAxisRoute;
+import '../online_gallery/online_gallery_page.dart';
 import '../shell/shell_state.dart';
 import 'codex/codex_view.dart';
 import 'artist_models.dart';
@@ -437,6 +438,13 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
         children: [
           _categoryPill(scheme, lib),
           const Spacer(),
+          IconButton(
+            tooltip: '在线画廊',
+            icon: const Icon(Icons.public),
+            onPressed: () => Navigator.of(context).push(
+              sharedAxisRoute(const OnlineGalleryPage()),
+            ),
+          ),
           IconButton(
             tooltip: '数据备份',
             icon: const Icon(Icons.cloud_outlined),

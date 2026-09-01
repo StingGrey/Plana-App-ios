@@ -4,6 +4,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/ui/scroll_memory.dart';
 import '../generate/preset_manage_page.dart';
+import '../generate/queue_management_page.dart';
+import '../inspiration/inspiration_page.dart';
+import '../local_gallery/local_gallery_page.dart';
+import '../online_gallery/online_gallery_page.dart';
+import '../precise_ref/precise_ref_library_page.dart';
+import '../fixed_tags/fixed_tags_page.dart';
+import '../char_library/char_library_page.dart';
+import '../vibe_library/vibe_library_page.dart';
 import '../generate/widgets/common.dart' show sharedAxisRoute;
 import '../migrate/web_backup_page.dart';
 import '../stats/stats_page.dart';
@@ -76,10 +84,66 @@ class ProfilePage extends ConsumerWidget {
                 ),
                 const SizedBox(height: 10),
                 _EntryCard(
+                  icon: Icons.photo_library_outlined,
+                  title: '本地图库',
+                  subtitle: '扫描作品 · 搜索元数据 · 分类与集合',
+                  onTap: () => push(const LocalGalleryPage()),
+                ),
+                const SizedBox(height: 10),
+                _EntryCard(
+                  icon: Icons.queue_outlined,
+                  title: '生成队列',
+                  subtitle: '批量任务 · 暂停继续 · 失败重试',
+                  onTap: () => push(const QueueManagementPage()),
+                ),
+                const SizedBox(height: 10),
+                _EntryCard(
+                  icon: Icons.public,
+                  title: '在线画廊',
+                  subtitle: 'Danbooru · Safebooru · Gelbooru · AI TAG',
+                  onTap: () => push(const OnlineGalleryPage()),
+                ),
+                const SizedBox(height: 10),
+                _EntryCard(
+                  icon: Icons.menu_book_outlined,
+                  title: '标签与法典',
+                  subtitle: '角色、画风、场景、法典图鉴',
+                  onTap: () => push(const InspirationPage()),
+                ),
+                const SizedBox(height: 10),
+                _EntryCard(
+                  icon: Icons.style_outlined,
+                  title: 'Vibe 资源库',
+                  subtitle: '导入、收藏、编码与批量导出',
+                  onTap: () => push(const VibeLibraryPage()),
+                ),
+                const SizedBox(height: 10),
+                _EntryCard(
+                  icon: Icons.face_retouching_natural,
+                  title: '角色参考图库',
+                  subtitle: '保存常用角色参考图',
+                  onTap: () => push(const CharLibraryPage()),
+                ),
+                const SizedBox(height: 10),
+                _EntryCard(
                   icon: Icons.query_stats,
                   title: '统计',
                   subtitle: '用量 · 账单 · 全平台统计',
                   onTap: () => push(const StatsPage()),
+                ),
+                const SizedBox(height: 10),
+                _EntryCard(
+                  icon: Icons.push_pin_outlined,
+                  title: '固定词库',
+                  subtitle: '自动拼入正向或负向提示词',
+                  onTap: () => push(const FixedTagsPage()),
+                ),
+                const SizedBox(height: 10),
+                _EntryCard(
+                  icon: Icons.center_focus_strong,
+                  title: '精准参考库',
+                  subtitle: '保存类型、强度与保真度设置',
+                  onTap: () => push(const PreciseRefLibraryPage()),
                 ),
                 const SizedBox(height: 10),
                 _EntryCard(

@@ -9,6 +9,8 @@ import '../../core/store/storage_settings.dart';
 import '../../core/store/storage_stats.dart';
 import '../../core/theme/app_theme.dart';
 import '../char_library/char_library.dart';
+import '../local_gallery/local_gallery_state.dart';
+import '../precise_ref/precise_ref_library.dart';
 import '../gallery/gallery_state.dart';
 import '../generate/vibe_cache.dart';
 import '../generate/widgets/common.dart' show confirmDialog, hintSnack;
@@ -55,6 +57,8 @@ const _cleanable = <_CatSpec>[
   _CatSpec(['gallery'], Icons.photo_library_outlined, '图库作品', '清空'),
   _CatSpec(['vibeLib'], Icons.palette_outlined, 'Vibe 库', '清空'),
   _CatSpec(['charLib'], Icons.person_outline, '角色参考库', '清空'),
+  _CatSpec(['localGallery'], Icons.photo_library_outlined, '本地图库', '清空'),
+  _CatSpec(['preciseRef'], Icons.center_focus_strong, '精准参考库', '清空'),
 ];
 
 class _StoragePageState extends ConsumerState<StoragePage> {
@@ -96,6 +100,7 @@ class _StoragePageState extends ConsumerState<StoragePage> {
       await job();
       // 等 store 的串行删除链走完再重扫,数字才准
       await ref.read(appStoresProvider).gallery.idle;
+      await ref.read(appStoresProvider).localGallery.idle;
       await Future<void>.delayed(const Duration(milliseconds: 300));
       final rep = await scanStorage();
       if (!mounted) return;
@@ -225,6 +230,26 @@ class _StoragePageState extends ConsumerState<StoragePage> {
         await _run([
           key,
         ], () => ref.read(charLibraryProvider.notifier).clearAll());
+      case 'localGallery':
+        final n = _report?['localGallery']?.count;
+        final ok = await confirmDialog(
+          context,
+          title: '清空本地图库',
+          message: '将删除本地图库中的${n == null ? '' : ' $n 张'}副本，不影响原文件。',
+          confirmLabel: '清空',
+        );
+        if (!ok) return;
+        await _run([key], () => ref.read(localGalleryProvider.notifier).clearAll());
+      case 'preciseRef':
+        final n = _report?['preciseRef']?.count;
+        final ok = await confirmDialog(
+          context,
+          title: '清空精准参考库',
+          message: '将删除库内${n == null ? '' : ' $n 张'}参考图，不影响系统相册。',
+          confirmLabel: '清空',
+        );
+        if (!ok) return;
+        await _run([key], () => ref.read(preciseRefProvider.notifier).clearAll());
       case 'models':
         final ok = await confirmDialog(
           context,

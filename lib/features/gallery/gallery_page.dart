@@ -6,7 +6,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/store/app_stores.dart';
 import '../../core/theme/app_theme.dart';
 import '../generate/generation_controller.dart';
-import '../generate/widgets/common.dart' show hintSnack;
+import '../generate/widgets/common.dart' show hintSnack, sharedAxisRoute;
+import '../local_gallery/local_gallery_page.dart';
 import '../inpaint/inpaint_overlay.dart';
 import 'gallery_state.dart';
 import 'models.dart';
@@ -260,6 +261,25 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
               bytes: bridge,
               width: selected?.width ?? 0,
               height: selected?.height ?? 0,
+            ),
+          ),
+        // 本地作品库是独立于生成历史的整理入口；放在画布顶部而不是底部
+        // 操作轨，避免和保存/重绘等对当前图片的动作混在一起。
+        if (!showGen)
+          Positioned(
+            top: 8,
+            right: 10,
+            child: Material(
+              color: context.scheme.surface.withValues(alpha: .9),
+              shape: const CircleBorder(),
+              elevation: 1.5,
+              child: IconButton(
+                tooltip: '本地图库',
+                icon: const Icon(Icons.folder_copy_outlined),
+                onPressed: () => Navigator.of(context).push(
+                  sharedAxisRoute(const LocalGalleryPage()),
+                ),
+              ),
             ),
           ),
         // 生成视角:预览层盖住分页画布。预览没有邻居语义,不参与翻页;

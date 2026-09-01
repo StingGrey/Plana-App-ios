@@ -675,6 +675,10 @@ class GenerateNotifier extends Notifier<GenerateState> {
   // ---- 参数 ----
   void applyParams(GenParams params) => state = state.copyWith(params: params);
 
+  /// 将一条队列快照载入创作页，供队列管理中的「编辑」使用。
+  /// 这是显式的整状态替换，不会偷偷合并当前页面的旧角色或参考图。
+  void loadSnapshot(GenerateState snapshot) => state = snapshot;
+
   /// 参数导入:按元数据回填生成参数(仅传入非空字段生效,copyWith 忽略 null)。
   /// 元数据导入落地。只传要改的字段,null = 保持不动。
   ///

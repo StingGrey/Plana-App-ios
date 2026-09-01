@@ -331,6 +331,16 @@ class GalleryStore {
 
   // ---- 懒读 ----
 
+  Future<int?> imageLength(String id) async {
+    try {
+      final file = _imageFile(id);
+      if (!await file.exists()) return null;
+      return await file.length();
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<Uint8List?> readImage(String id) async {
     try {
       final f = _imageFile(id);
