@@ -308,9 +308,32 @@ void main() {
     );
     expect(detail.description, isEmpty);
     expect(detail.item.imageUrl, 'https://img4.gelbooru.com/images/test.jpg');
+    expect(detail.item.previewUrl, 'https://img4.gelbooru.com/thumbnails/test.jpg');
     expect(detail.item.width, 400);
     expect(detail.item.height, 600);
     expect(detail.item.tags, ['1girl', 'blue_hair']);
+    service.dispose();
+  });
+
+  test('Gelbooru 翻页依据源卡片数量，不因本地筛选过严提前结束', () async {
+    final html = List.generate(
+      20,
+      (index) => '<article class="thumbnail-preview"><div id="p${index + 1}"><img src="https://img.example/${index + 1}.jpg"></article>',
+    ).join();
+    final client = _GalleryClient((request) async {
+      expect(request.url.queryParameters['pid'], '0');
+      return http.Response(html, 200);
+    });
+    final service = OnlineGalleryService(client: client);
+    final page = await service.fetch(
+      OnlineGallerySource.gelbooru,
+      feed: OnlineGalleryFeed.search,
+      query: '',
+      page: 1,
+      ratings: const {'g'},
+      blacklist: const {'every_tag'},
+    );
+    expect(page.hasMore, isTrue);
     service.dispose();
   });
   test('输出过滤只移除精确水印标签', () {

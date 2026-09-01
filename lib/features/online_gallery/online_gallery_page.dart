@@ -49,14 +49,38 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
 
   OnlineGalleryNotifier get _notifier => ref.read(onlineGalleryProvider.notifier);
 
-  void _onScroll() {
+  void _onScroll() => _maybeLoadMore();
+
+  void _maybeLoadMore() {
     if (!_scroll.hasClients) return;
-    if (_scroll.position.extentAfter < 700) {
-      final state = ref.read(onlineGalleryProvider);
-      if (state.hasMore && !state.loading && !state.loadingMore) {
-        _notifier.load(append: true);
-      }
+    final state = ref.read(onlineGalleryProvider);
+    if (state.error != null ||
+        !state.hasMore ||
+        state.loading ||
+        state.loadingMore ||
+        _scroll.position.extentAfter >= 1000) {
+      return;
     }
+    unawaited(_notifier.load(append: true));
+  }
+
+  /// A masonry page can be shorter than the viewport (especially on an iPad
+  /// in landscape), so there may be no user scroll event to trigger pagination.
+  /// Check after layout and keep filling until the viewport has a useful tail.
+  void _scheduleLoadMoreCheck() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final state = ref.read(onlineGalleryProvider);
+      if (state.error != null ||
+          !state.hasMore ||
+          state.loading ||
+          state.loadingMore) {
+        return;
+      }
+      if (!_scroll.hasClients || _scroll.position.extentAfter < 1000) {
+        unawaited(_notifier.load(append: true));
+      }
+    });
   }
 
   void _onSearchChanged(String value) {
@@ -406,6 +430,7 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
     if (state.error != null && state.items.isEmpty) {
       return _error(state.error!, scheme);
     }
+    _scheduleLoadMoreCheck();
     if (displayItems.isEmpty) {
       if (state.outputFilter && state.items.isNotEmpty) {
         return Center(
@@ -915,9 +940,11 @@ class _OnlineGalleryDetailPageState extends ConsumerState<OnlineGalleryDetailPag
         ],
       ),
       bottomNavigationBar: SafeArea(
+        key: const ValueKey('online-gallery-detail-actions'),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(14, 6, 14, 10),
           child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
               Row(
                 children: [
@@ -1007,14 +1034,16 @@ class _OnlineGalleryDetailPageState extends ConsumerState<OnlineGalleryDetailPag
             ),
           ),
         AspectRatio(
+          key: const ValueKey('online-gallery-detail-image'),
           aspectRatio: imageRatio,
           child: ClipRRect(
             borderRadius: BorderRadius.circular(12),
             child: _RemoteThumb(
-              url: item.imageUrl.isEmpty ? item.previewUrl : item.imageUrl,
+              // Load the large preview first. Full originals can be very large
+              // or hotlink-protected; actions below still download imageUrl.
+              url: item.previewUrl.isEmpty ? item.imageUrl : item.previewUrl,
               fit: BoxFit.contain,
-              fallbackUrl: item.previewUrl,
-            ),
+              fallbackUrl: item.imageUrl,
           ),
         ),
         const SizedBox(height: 14),

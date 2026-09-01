@@ -255,7 +255,8 @@ class OnlineGalleryService {
       r'''<article[^>]*class=["']thumbnail-preview["'][\s\S]*?</article>''',
       caseSensitive: false,
     );
-    for (final match in article.allMatches(html)) {
+    final articles = article.allMatches(html).toList(growable: false);
+    for (final match in articles) {
       final block = match.group(0) ?? '';
       final id = RegExp(r'''id=["']p([^"']+)''', caseSensitive: false).firstMatch(block)?.group(1) ?? '';
       final image = RegExp(r'''<img[^>]+src=["']([^"']+)''', caseSensitive: false).firstMatch(block)?.group(1) ?? '';
@@ -279,7 +280,10 @@ class OnlineGalleryService {
         items.add(item);
       }
     }
-    return OnlineGalleryPageResult(items: items, hasMore: items.length >= 20);
+    // Pagination is based on the number of source cards, not the number
+    // surviving local filters. Otherwise a blacklist/rating selection can
+    // incorrectly make page one look like the end of the Gelbooru feed.
+    return OnlineGalleryPageResult(items: items, hasMore: articles.length >= 20);
   }
 
   OnlineGalleryItem _parseGelbooruDetail(OnlineGalleryItem base, String html) {
@@ -309,9 +313,13 @@ class OnlineGalleryService {
       imageUrl: image.isEmpty
           ? base.imageUrl
           : _normalizeImageUrl(_decodeHtml(image)),
-      previewUrl: image.isEmpty
+      // Keep the list thumbnail as a reliable fallback. The detail `src` is
+      // often a protected/original rendition and should not replace it.
+      previewUrl: base.previewUrl.isNotEmpty
           ? base.previewUrl
-          : _normalizeImageUrl(_decodeHtml(image)),
+          : image.isEmpty
+              ? base.previewUrl
+              : _normalizeImageUrl(_decodeHtml(image)),
       width: w,
       height: h,
       tags: tags.isEmpty ? base.tags : _gelTags(_decodeHtml(tags)),
@@ -646,8 +654,12 @@ class OnlineGalleryService {
   int _scoreFromText(String value) => int.tryParse(RegExp(r'score:(-?\d+)').firstMatch(value)?.group(1) ?? '') ?? 0;
   List<String> _gelTags(String value) => value.replaceAll(RegExp(r'\brating:\w+|\bscore:-?\d+', caseSensitive: false), '').split(RegExp(r'[ ,]+')).where((x) => x.isNotEmpty).toList();
   String _decodeHtml(String value) => value.replaceAll('&amp;', '&').replaceAll('&quot;', '"').replaceAll('&#39;', "'").replaceAll('&lt;', '<').replaceAll('&gt;', '>');
-  String _normalizeImageUrl(String value) =>
-      value.startsWith('//') ? 'https:$value' : value;
+  String _normalizeImageUrl(String value) {
+    final decoded = value.trim();
+    if (decoded.startsWith('//')) return 'https:$decoded';
+    if (decoded.startsWith('/')) return 'https://gelbooru.com$decoded';
+    return decoded;
+  }
 
   String _plainText(String value) =>
       value.replaceAll(RegExp(r'<[^>]+>'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
