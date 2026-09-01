@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -6,8 +8,6 @@ import '../../core/store/app_stores.dart';
 import '../../core/theme/app_theme.dart';
 import '../generate/generate_state.dart';
 import '../generate/models.dart' show GenerateState;
-import '../local_gallery/local_gallery_state.dart';
-import '../local_gallery/local_gallery_store.dart';
 import '../shell/shell_state.dart';
 
 import '../generate/widgets/common.dart' show hintSnack, sharedAxisRoute;
@@ -41,7 +41,8 @@ class _ResultDetailPageState extends ConsumerState<ResultDetailPage> {
   Future<void> _load() async {
     final store = ref.read(appStoresProvider).gallery;
     final bytes = result.bytes ?? await store.readImage(result.id);
-    final input = result.input ??
+    final input =
+        result.input ??
         (result.hasInput ? await store.readInput(result.id) : null);
     if (!mounted) return;
     setState(() {
@@ -103,33 +104,6 @@ class _ResultDetailPageState extends ConsumerState<ResultDetailPage> {
     }
   }
 
-  Future<void> _saveLocal() async {
-    final bytes = _bytes;
-    if (bytes == null) return;
-    final input = _input;
-    final item = await ref.read(appStoresProvider).localGallery.importBytes(
-      bytes,
-      'plana_${result.seed}.png',
-      promptOverride: input?.prompt,
-      negativePromptOverride: input?.negativePrompt,
-      modelOverride: input?.params.model,
-      samplerOverride: input?.params.sampler,
-      seedOverride: '${result.seed}',
-      stepsOverride: input?.params.activeSteps,
-      charactersOverride: input == null
-          ? null
-          : [
-              for (final character in input.characters)
-                LocalGalleryCharacter(
-                  prompt: character.positive,
-                  negativePrompt: character.negative,
-                ),
-            ],
-    );
-    ref.read(localGalleryProvider.notifier).refreshFromStore();
-    if (mounted) hintSnack(context, '已保存到本地图库：${item.name}', icon: Icons.check);
-  }
-
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
@@ -142,11 +116,6 @@ class _ResultDetailPageState extends ConsumerState<ResultDetailPage> {
             tooltip: '导入参数 / 用作参考',
             icon: const Icon(Icons.input),
             onPressed: _loading ? null : _openImport,
-          ),
-          IconButton(
-            tooltip: '保存到本地图库',
-            icon: const Icon(Icons.save_alt),
-            onPressed: _loading ? null : _saveLocal,
           ),
           PopupMenuButton<String>(
             tooltip: '更多操作',
@@ -171,87 +140,161 @@ class _ResultDetailPageState extends ConsumerState<ResultDetailPage> {
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : ListView(
-              padding: const EdgeInsets.fromLTRB(14, 8, 14, 24),
+          : LayoutBuilder(
+              builder: (context, constraints) {
+                final tablet = constraints.maxWidth >= 700;
+                if (!tablet) {
+                  return ListView(
+                    padding: const EdgeInsets.fromLTRB(14, 8, 14, 24),
+                    children: [
+                      _image(scheme),
+                      const SizedBox(height: 15),
+                      ..._parameterSections(input, scheme),
+                    ],
+                  );
+                }
+                return _tabletBody(input, scheme, constraints);
+              },
+            ),
+    );
+  }
+
+  List<Widget> _parameterSections(GenerateState? input, ColorScheme scheme) => [
+    _overview(input, scheme),
+    if (input != null && input.prompt.isNotEmpty) ...[
+      const SizedBox(height: 18),
+      _textSection('正向提示词', input.prompt, scheme),
+    ],
+    if (input != null && input.negativePrompt.isNotEmpty) ...[
+      const SizedBox(height: 14),
+      _textSection('负向提示词', input.negativePrompt, scheme, danger: true),
+    ],
+    if (input != null && input.characters.isNotEmpty) ...[
+      const SizedBox(height: 18),
+      Text(
+        '角色提示词',
+        style: context.texts.titleSmall!.copyWith(fontWeight: FontWeight.w700),
+      ),
+      const SizedBox(height: 8),
+      for (var i = 0; i < input.characters.length; i++)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: _textSection(
+            '角色 ${i + 1}${input.characters[i].enabled ? '' : ' · 已停用'}',
+            input.characters[i].positive,
+            scheme,
+            compact: true,
+          ),
+        ),
+    ],
+    if (input != null && input.negativePrompt.isNotEmpty) ...[
+      const SizedBox(height: 4),
+      Text(
+        '角色负向提示词包含在参数快照中，可通过导入面板逐项查看。',
+        style: context.texts.labelSmall!.copyWith(color: scheme.outline),
+      ),
+    ],
+    if (input != null && input.loras.isNotEmpty) ...[
+      const SizedBox(height: 18),
+      _resourceSection('LoRA (${input.loras.length})', [
+        for (final lora in input.loras)
+          '${lora.displayName} · ${lora.weight.toStringAsFixed(2)}',
+      ], scheme),
+    ],
+    if (input != null && input.vibes.isNotEmpty) ...[
+      const SizedBox(height: 14),
+      _resourceSection('Vibe Transfer (${input.vibes.length})', [
+        for (final vibe in input.vibes)
+          '${vibe.name.isEmpty ? 'Vibe' : vibe.name} · 强度 ${vibe.strength.toStringAsFixed(2)}',
+      ], scheme),
+    ],
+    if (input != null && input.charRefs.isNotEmpty) ...[
+      const SizedBox(height: 14),
+      _resourceSection('角色参考 (${input.charRefs.length})', [
+        for (final reference in input.charRefs)
+          '${reference.name.isEmpty ? '参考图' : reference.name} · ${reference.mode.label}',
+      ], scheme),
+    ],
+  ];
+
+  Widget _tabletBody(
+    GenerateState? input,
+    ColorScheme scheme,
+    BoxConstraints constraints,
+  ) {
+    final availableHeight = constraints.hasBoundedHeight
+        ? math.max(0.0, constraints.maxHeight - 32)
+        : MediaQuery.sizeOf(context).height;
+    // Keep the picture visually subordinate to the parameter pane on a
+    // landscape tablet instead of letting a portrait image consume the whole
+    // vertical viewport.
+    final maxImageHeight = math.min(
+      availableHeight,
+      MediaQuery.sizeOf(context).height * .82,
+    );
+    return Row(
+      key: const ValueKey('tablet-result-detail'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Expanded(
+          flex: 5,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: 560,
+                  maxHeight: maxImageHeight,
+                ),
+                child: _image(scheme),
+              ),
+            ),
+          ),
+        ),
+        VerticalDivider(width: 1, thickness: 1, color: scheme.outlineVariant),
+        Expanded(
+          flex: 6,
+          child: SingleChildScrollView(
+            key: const ValueKey('tablet-result-detail-parameters'),
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _image(scheme),
-                const SizedBox(height: 15),
-                _overview(input, scheme),
-                if (input != null && input.prompt.isNotEmpty) ...[
-                  const SizedBox(height: 18),
-                  _textSection('正向提示词', input.prompt, scheme),
-                ],
-                if (input != null && input.negativePrompt.isNotEmpty) ...[
-                  const SizedBox(height: 14),
-                  _textSection('负向提示词', input.negativePrompt, scheme, danger: true),
-                ],
-                if (input != null && input.characters.isNotEmpty) ...[
-                  const SizedBox(height: 18),
-                  Text('角色提示词', style: context.texts.titleSmall!.copyWith(fontWeight: FontWeight.w700)),
-                  const SizedBox(height: 8),
-                  for (var i = 0; i < input.characters.length; i++)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: _textSection(
-                        '角色 ${i + 1}${input.characters[i].enabled ? '' : ' · 已停用'}',
-                        input.characters[i].positive,
-                        scheme,
-                        compact: true,
-                      ),
-                    ),
-                ],
-                if (input != null && input.negativePrompt.isNotEmpty) ...[
-                  const SizedBox(height: 4),
-                  Text(
-                    '角色负向提示词包含在参数快照中，可通过导入面板逐项查看。',
-                    style: context.texts.labelSmall!.copyWith(color: scheme.outline),
+                Text(
+                  '参数与提示词',
+                  style: context.texts.titleMedium!.copyWith(
+                    fontWeight: FontWeight.w700,
                   ),
-                ],
-                if (input != null && input.loras.isNotEmpty) ...[
-                  const SizedBox(height: 18),
-                  _resourceSection(
-                    'LoRA (${input.loras.length})',
-                    [
-                      for (final lora in input.loras)
-                        '${lora.displayName} · ${lora.weight.toStringAsFixed(2)}',
-                    ],
-                    scheme,
-                  ),
-                ],
-                if (input != null && input.vibes.isNotEmpty) ...[
-                  const SizedBox(height: 14),
-                  _resourceSection(
-                    'Vibe Transfer (${input.vibes.length})',
-                    [
-                      for (final vibe in input.vibes)
-                        '${vibe.name.isEmpty ? 'Vibe' : vibe.name} · 强度 ${vibe.strength.toStringAsFixed(2)}',
-                    ],
-                    scheme,
-                  ),
-                ],
-                if (input != null && input.charRefs.isNotEmpty) ...[
-                  const SizedBox(height: 14),
-                  _resourceSection(
-                    '角色参考 (${input.charRefs.length})',
-                    [
-                      for (final reference in input.charRefs)
-                        '${reference.name.isEmpty ? '参考图' : reference.name} · ${reference.mode.label}',
-                    ],
-                    scheme,
-                  ),
-                ],
+                ),
+                const SizedBox(height: 10),
+                ..._parameterSections(input, scheme),
               ],
             ),
+          ),
+        ),
+      ],
     );
   }
 
   Widget _image(ColorScheme scheme) => AspectRatio(
     aspectRatio: result.width > 0 && result.height > 0 ? result.aspect : 1,
     child: DecoratedBox(
-      decoration: BoxDecoration(color: scheme.surfaceContainerHigh, borderRadius: BorderRadius.circular(14)),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(14),
+      ),
       child: _bytes == null
-          ? Center(child: Icon(Icons.broken_image_outlined, size: 45, color: scheme.outline))
-          : ClipRRect(borderRadius: BorderRadius.circular(14), child: Image.memory(_bytes!, fit: BoxFit.contain)),
+          ? Center(
+              child: Icon(
+                Icons.broken_image_outlined,
+                size: 45,
+                color: scheme.outline,
+              ),
+            )
+          : ClipRRect(
+              borderRadius: BorderRadius.circular(14),
+              child: Image.memory(_bytes!, fit: BoxFit.contain),
+            ),
     ),
   );
 
@@ -270,7 +313,9 @@ class _ResultDetailPageState extends ConsumerState<ResultDetailPage> {
     return Wrap(
       spacing: 8,
       runSpacing: 8,
-      children: [for (final (label, value) in values) _Info(label: label, value: value)],
+      children: [
+        for (final (label, value) in values) _Info(label: label, value: value),
+      ],
     );
   }
 
@@ -318,7 +363,12 @@ class _ResultDetailPageState extends ConsumerState<ResultDetailPage> {
     children: [
       Row(
         children: [
-          Text(title, style: context.texts.labelLarge!.copyWith(fontWeight: FontWeight.w700)),
+          Text(
+            title,
+            style: context.texts.labelLarge!.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
+          ),
           const Spacer(),
           IconButton(
             tooltip: '复制',
@@ -331,10 +381,16 @@ class _ResultDetailPageState extends ConsumerState<ResultDetailPage> {
       Container(
         width: double.infinity,
         padding: EdgeInsets.all(compact ? 10 : 12),
-        decoration: BoxDecoration(color: scheme.surfaceContainerHigh, borderRadius: BorderRadius.circular(10)),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(10),
+        ),
         child: SelectableText(
           text.isEmpty ? '(空)' : text,
-          style: context.texts.bodySmall!.copyWith(height: 1.55, color: danger ? scheme.error : scheme.onSurface),
+          style: context.texts.bodySmall!.copyWith(
+            height: 1.55,
+            color: danger ? scheme.error : scheme.onSurface,
+          ),
         ),
       ),
     ],
@@ -351,13 +407,26 @@ class _Info extends StatelessWidget {
   Widget build(BuildContext context) => Container(
     constraints: const BoxConstraints(minWidth: 88, maxWidth: 220),
     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-    decoration: BoxDecoration(color: context.scheme.surfaceContainerLow, borderRadius: BorderRadius.circular(8)),
+    decoration: BoxDecoration(
+      color: context.scheme.surfaceContainerLow,
+      borderRadius: BorderRadius.circular(8),
+    ),
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: context.texts.labelSmall!.copyWith(color: context.scheme.outline)),
+        Text(
+          label,
+          style: context.texts.labelSmall!.copyWith(
+            color: context.scheme.outline,
+          ),
+        ),
         const SizedBox(height: 2),
-        Text(value, maxLines: 1, overflow: TextOverflow.ellipsis, style: context.texts.bodySmall),
+        Text(
+          value,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: context.texts.bodySmall,
+        ),
       ],
     ),
   );

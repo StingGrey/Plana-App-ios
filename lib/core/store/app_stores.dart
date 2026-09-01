@@ -40,11 +40,13 @@ class AppStores {
     final root = Directory.systemTemp.createTempSync('plana_stores');
     RemoteImageStore.bind(root);
     final blobs = BlobStore(root);
+    final workspace = WorkspaceStore(blobs, root);
+    final gallery = GalleryStore(blobs, root);
     return AppStores._(
       blobs,
-      WorkspaceStore(blobs, root),
-      GalleryStore(blobs, root),
-      LocalGalleryStore(root),
+      workspace,
+      gallery,
+      LocalGalleryStore(root, historyStore: gallery),
       KeyLedgerStore(root),
       PrefsStore.emptyForTest(root),
     );
@@ -68,7 +70,7 @@ class AppStores {
     final blobs = BlobStore(root);
     final workspace = WorkspaceStore(blobs, root);
     final gallery = GalleryStore(blobs, root);
-    final localGallery = LocalGalleryStore(root);
+    final localGallery = LocalGalleryStore(root, historyStore: gallery);
     final ledger = KeyLedgerStore(root);
     try {
       await blobs.ensureReady();
@@ -83,14 +85,7 @@ class AppStores {
       // A missing/unsupported local-gallery directory must not block startup.
     }
     await ledger.load();
-    return AppStores._(
-      blobs,
-      workspace,
-      gallery,
-      localGallery,
-      ledger,
-      prefs,
-    );
+    return AppStores._(blobs, workspace, gallery, localGallery, ledger, prefs);
   }
 
   /// 退后台/失焦即刻把防抖窗口里的挂起状态落盘(进程被杀不丢)。

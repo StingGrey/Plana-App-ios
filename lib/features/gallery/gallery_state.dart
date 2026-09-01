@@ -167,13 +167,16 @@ class GalleryNotifier extends Notifier<GalleryState> {
           i < _keepBytesFor ? list[i] : list[i].stripped(),
       ];
     }
+    // Queue ownership before publishing the state. Listeners such as the
+    // local catalog can then wait on this store's queue instead of racing a
+    // result/snapshot write that has not been enqueued yet.
+    ref.read(appStoresProvider).gallery.persistResult(r);
     state = state.copyWith(
       results: list,
       selectedId: select ? r.id : state.selectedId,
     );
     // 蒙版不再按图存盘:它跟着创作页的重绘状态走(见 InpaintJob.grid),
     // 所以这里也没有「产物继承源图蒙版」这回事了。
-    ref.read(appStoresProvider).gallery.persistResult(r);
     _persistIndex();
     enforceCap();
     return r;

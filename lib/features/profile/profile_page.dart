@@ -5,9 +5,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/ui/scroll_memory.dart';
 import '../generate/preset_manage_page.dart';
 import '../generate/queue_management_page.dart';
-import '../inspiration/inspiration_page.dart';
 import '../local_gallery/local_gallery_page.dart';
-import '../online_gallery/online_gallery_page.dart';
 import '../precise_ref/precise_ref_library_page.dart';
 import '../fixed_tags/fixed_tags_page.dart';
 import '../char_library/char_library_page.dart';
@@ -86,7 +84,7 @@ class ProfilePage extends ConsumerWidget {
                 _EntryCard(
                   icon: Icons.photo_library_outlined,
                   title: '本地图库',
-                  subtitle: '扫描作品 · 搜索元数据 · 分类与集合',
+                  subtitle: '历史记录与外部图片 · 搜索元数据 · 分类与集合',
                   onTap: () => push(const LocalGalleryPage()),
                 ),
                 const SizedBox(height: 10),
@@ -95,20 +93,6 @@ class ProfilePage extends ConsumerWidget {
                   title: '生成队列',
                   subtitle: '批量任务 · 暂停继续 · 失败重试',
                   onTap: () => push(const QueueManagementPage()),
-                ),
-                const SizedBox(height: 10),
-                _EntryCard(
-                  icon: Icons.public,
-                  title: '在线画廊',
-                  subtitle: 'Danbooru · Safebooru · Gelbooru · AI TAG',
-                  onTap: () => push(const OnlineGalleryPage()),
-                ),
-                const SizedBox(height: 10),
-                _EntryCard(
-                  icon: Icons.menu_book_outlined,
-                  title: '标签与法典',
-                  subtitle: '角色、画风、场景、法典图鉴',
-                  onTap: () => push(const InspirationPage()),
                 ),
                 const SizedBox(height: 10),
                 _EntryCard(

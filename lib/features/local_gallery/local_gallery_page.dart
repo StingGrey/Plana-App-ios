@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -14,6 +15,8 @@ import '../../core/theme/app_theme.dart';
 import '../../core/util/gallery_save.dart';
 import '../../core/util/file_read.dart';
 import '../../core/util/image_pick.dart';
+import '../gallery/gallery_state.dart';
+import '../gallery/result_detail_page.dart';
 import '../generate/generate_state.dart';
 import '../generate/widgets/common.dart'
     show confirmDialog, hintSnack, sharedAxisRoute;
@@ -25,10 +28,9 @@ import 'local_gallery_store.dart';
 
 /// Full local-work gallery inspired by NAI Launcher.
 ///
-/// It is intentionally separate from the generated-result gallery: users can
-/// scan an existing folder without copying those files into the generation
-/// history, while imported files are still copied into app storage so iOS
-/// security-scoped URLs do not expire underneath the UI.
+/// Catalog view for generated history plus files imported from Photos/Files.
+/// Generated entries are metadata-only references to GalleryStore; only external
+/// files are copied into local_gallery, so one generated image has one owner.
 class LocalGalleryPage extends ConsumerStatefulWidget {
   const LocalGalleryPage({super.key});
 
@@ -49,6 +51,53 @@ class _LocalGalleryPageState extends ConsumerState<LocalGalleryPage> {
   }
 
   LocalGalleryNotifier get _notifier => ref.read(localGalleryProvider.notifier);
+
+  Future<void> _restoreHistory() async {
+    final gallery = ref.read(galleryProvider);
+    final hidden = [
+      for (final result in gallery.results)
+        if (ref
+            .read(appStoresProvider)
+            .localGallery
+            .hiddenHistoryIds
+            .contains(result.id))
+          result,
+    ];
+    if (hidden.isEmpty || !mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.sizeOf(context).height * .75,
+      ),
+      builder: (ctx) => SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.only(bottom: 12),
+          children: [
+            const ListTile(
+              leading: Icon(Icons.history),
+              title: Text('从历史记录添加'),
+              subtitle: Text('只添加引用，不会复制图片文件'),
+            ),
+            for (final result in hidden)
+              ListTile(
+                leading: const Icon(Icons.photo_outlined),
+                title: Text(
+                  result.seed == 0 ? result.id : 'Seed ${result.seed}',
+                ),
+                subtitle: Text('${result.width} × ${result.height}'),
+                onTap: () {
+                  ref
+                      .read(localGalleryProvider.notifier)
+                      .restoreHistory(result.id);
+                  Navigator.pop(ctx);
+                },
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 
   Future<void> _import() async {
     if (_busy) return;
@@ -79,7 +128,7 @@ class _LocalGalleryPageState extends ConsumerState<LocalGalleryPage> {
     setState(() => _busy = false);
     hintSnack(
       context,
-      count == 0 ? '没有新增图片' : '已导入 $count 张图片',
+      count == 0 ? '没有新增图片' : '已加入图库 $count 张图片',
       icon: count == 0 ? Icons.info_outline : Icons.check_circle_outline,
     );
   }
@@ -143,9 +192,9 @@ class _LocalGalleryPageState extends ConsumerState<LocalGalleryPage> {
     if (_selected.isEmpty) return;
     final ok = await confirmDialog(
       context,
-      title: '删除 ${_selected.length} 张图片',
-      message: '仅删除应用图库中的副本，不会删除原文件。此操作不可撤销。',
-      confirmLabel: '删除',
+      title: '移出 ${_selected.length} 张图片',
+      message: '只从本地图库移出。历史记录和外部原文件都不会被删除。',
+      confirmLabel: '移出',
     );
     if (!ok || !mounted) return;
     await _notifier.delete(_selected);
@@ -406,6 +455,11 @@ class _LocalGalleryPageState extends ConsumerState<LocalGalleryPage> {
     final state = ref.watch(localGalleryProvider);
     final items = state.filteredItems;
     final scheme = context.scheme;
+    final hiddenHistoryCount = ref
+        .read(appStoresProvider)
+        .localGallery
+        .hiddenHistoryIds
+        .length;
     return Scaffold(
       appBar: AppBar(
         title: _selectionMode
@@ -441,6 +495,15 @@ class _LocalGalleryPageState extends ConsumerState<LocalGalleryPage> {
               icon: const Icon(Icons.add_photo_alternate_outlined),
               onPressed: _import,
             ),
+            if (!_selectionMode && hiddenHistoryCount > 0)
+              IconButton(
+                tooltip: '从历史记录添加',
+                icon: Badge(
+                  label: Text('$hiddenHistoryCount'),
+                  child: const Icon(Icons.history),
+                ),
+                onPressed: _restoreHistory,
+              ),
             if (!_selectionMode)
               IconButton(
                 tooltip: '管理集合',
@@ -676,11 +739,23 @@ class _LocalGalleryPageState extends ConsumerState<LocalGalleryPage> {
             onTap: () {
               if (_selectionMode) {
                 _toggleSelection(items[index].id);
-              } else {
-                Navigator.of(context).push(
-                  sharedAxisRoute(LocalGalleryDetailPage(item: items[index])),
-                );
+                return;
               }
+              final item = items[index];
+              final history = item.historyId == null
+                  ? null
+                  : ref
+                        .read(galleryProvider)
+                        .results
+                        .where((result) => result.id == item.historyId)
+                        .firstOrNull;
+              Navigator.of(context).push(
+                sharedAxisRoute(
+                  history == null
+                      ? LocalGalleryDetailPage(item: item)
+                      : ResultDetailPage(result: history),
+                ),
+              );
             },
             onLongPress: () => _toggleSelection(items[index].id),
             onFavorite: () => _notifier.toggleFavorite(items[index].id),
@@ -714,7 +789,7 @@ class _LocalGalleryPageState extends ConsumerState<LocalGalleryPage> {
             ),
             const SizedBox(height: 6),
             Text(
-              filtered ? '调整搜索或筛选条件' : '导入图片，或扫描已有的作品文件夹',
+              filtered ? '调整搜索或筛选条件' : '历史记录会自动显示，也可导入外部图片',
               textAlign: TextAlign.center,
               style: context.texts.bodySmall!.copyWith(color: scheme.outline),
             ),
@@ -770,8 +845,8 @@ class _LocalGalleryPageState extends ConsumerState<LocalGalleryPage> {
                 _addCollection,
               ),
               _actionPill(
-                Icons.delete_outline,
-                '删除',
+                Icons.remove_circle_outline,
+                '移出',
                 _deleteSelected,
                 danger: true,
               ),
@@ -1057,74 +1132,134 @@ class LocalGalleryDetailPage extends ConsumerWidget {
         future: store.readImage(item.id),
         builder: (context, snapshot) {
           final bytes = snapshot.data;
-          return ListView(
-            padding: const EdgeInsets.fromLTRB(14, 8, 14, 28),
-            children: [
-              AspectRatio(
-                aspectRatio: item.aspect,
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: scheme.surfaceContainerHigh,
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: bytes == null
-                      ? const Center(child: CircularProgressIndicator())
-                      : ClipRRect(
-                          borderRadius: BorderRadius.circular(14),
-                          child: Image.memory(bytes, fit: BoxFit.contain),
-                        ),
-                ),
-              ),
-              const SizedBox(height: 16),
-              _detailHeader(context, scheme),
-              if (item.prompt.isNotEmpty) ...[
-                const SizedBox(height: 18),
-                _copyBlock(
-                  context,
-                  '正向提示词',
-                  item.prompt,
-                  scheme,
-                  danger: false,
-                ),
-              ],
-              if (item.negativePrompt.isNotEmpty) ...[
-                const SizedBox(height: 14),
-                _copyBlock(
-                  context,
-                  '负向提示词',
-                  item.negativePrompt,
-                  scheme,
-                  danger: true,
-                ),
-              ],
-              if (item.characters.isNotEmpty) ...[
-                const SizedBox(height: 16),
-                Text(
-                  '角色提示词',
-                  style: context.texts.titleSmall!.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 7),
-                for (var i = 0; i < item.characters.length; i++)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 7),
-                    child: _copyBlock(
-                      context,
-                      '角色 ${i + 1}',
-                      item.characters[i].prompt,
-                      scheme,
-                      danger: false,
-                      compact: true,
-                    ),
-                  ),
-              ],
-            ],
-          );
+          return _detailBody(context, scheme, bytes);
         },
       ),
     );
   }
+
+  Widget _detailBody(
+    BuildContext context,
+    ColorScheme scheme,
+    Uint8List? bytes,
+  ) {
+    final sections = <Widget>[
+      _detailHeader(context, scheme),
+      if (item.prompt.isNotEmpty) ...[
+        const SizedBox(height: 18),
+        _copyBlock(context, '正向提示词', item.prompt, scheme, danger: false),
+      ],
+      if (item.negativePrompt.isNotEmpty) ...[
+        const SizedBox(height: 14),
+        _copyBlock(context, '负向提示词', item.negativePrompt, scheme, danger: true),
+      ],
+      if (item.characters.isNotEmpty) ...[
+        const SizedBox(height: 16),
+        Text(
+          '角色提示词',
+          style: context.texts.titleSmall!.copyWith(
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 7),
+        for (var i = 0; i < item.characters.length; i++)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 7),
+            child: _copyBlock(
+              context,
+              '角色 ${i + 1}',
+              item.characters[i].prompt,
+              scheme,
+              danger: false,
+              compact: true,
+            ),
+          ),
+      ],
+    ];
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < 700) {
+          return ListView(
+            padding: const EdgeInsets.fromLTRB(14, 8, 14, 28),
+            children: [
+              _detailImage(scheme, bytes),
+              const SizedBox(height: 16),
+              ...sections,
+            ],
+          );
+        }
+        final availableHeight = constraints.hasBoundedHeight
+            ? math.max(0.0, constraints.maxHeight - 32)
+            : MediaQuery.sizeOf(context).height;
+        // Keep tall images from pushing the parameter pane below the fold.
+        final maxImageHeight = math.min(
+          availableHeight,
+          MediaQuery.sizeOf(context).height * .82,
+        );
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(
+              flex: 5,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxWidth: 560,
+                      maxHeight: maxImageHeight,
+                    ),
+                    child: _detailImage(scheme, bytes),
+                  ),
+                ),
+              ),
+            ),
+            VerticalDivider(
+              width: 1,
+              thickness: 1,
+              color: scheme.outlineVariant,
+            ),
+            Expanded(
+              flex: 6,
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '参数与提示词',
+                      style: context.texts.titleMedium!.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    ...sections,
+                  ],
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _detailImage(ColorScheme scheme, Uint8List? bytes) => AspectRatio(
+    aspectRatio: item.aspect,
+    child: DecoratedBox(
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: bytes == null
+          ? const Center(child: CircularProgressIndicator())
+          : ClipRRect(
+              borderRadius: BorderRadius.circular(14),
+              child: Image.memory(bytes, fit: BoxFit.contain),
+            ),
+    ),
+  );
 
   Future<void> _savePromptToLibrary(BuildContext context, WidgetRef ref) async {
     final saved = await savePromptToTagLibrary(

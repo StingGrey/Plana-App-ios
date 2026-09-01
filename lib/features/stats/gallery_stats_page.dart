@@ -31,7 +31,9 @@ class GalleryAnalytics {
   final int anlas;
 }
 
-final galleryAnalyticsProvider = FutureProvider.autoDispose<GalleryAnalytics>((ref) async {
+final galleryAnalyticsProvider = FutureProvider.autoDispose<GalleryAnalytics>((
+  ref,
+) async {
   final local = ref.watch(localGalleryProvider).items;
   final generated = ref.watch(galleryProvider).results;
   final store = ref.read(appStoresProvider).gallery;
@@ -75,6 +77,10 @@ final galleryAnalyticsProvider = FutureProvider.autoDispose<GalleryAnalytics>((r
   }
 
   for (final item in local) {
+    // History entries are references to the generated gallery, not another
+    // image. Count them in the generated pass below so statistics stay
+    // one-row/one-file even though the local catalog exposes them too.
+    if (item.isHistoryReference) continue;
     add(
       width: item.width,
       height: item.height,
@@ -86,7 +92,8 @@ final galleryAnalyticsProvider = FutureProvider.autoDispose<GalleryAnalytics>((r
     );
   }
   for (final result in generated) {
-    final input = result.input ??
+    final input =
+        result.input ??
         (result.hasInput ? await store.readInput(result.id) : null);
     add(
       width: result.width,
@@ -163,28 +170,69 @@ class _Dashboard extends StatelessWidget {
               spacing: 8,
               runSpacing: 8,
               children: [
-                _Metric(label: '作品总数', value: '${data.totalImages}', icon: Icons.photo_library_outlined, width: width),
-                _Metric(label: '有元数据', value: '${data.withMetadata}', icon: Icons.description_outlined, width: width),
-                _Metric(label: '图库占用', value: _bytes(data.totalBytes), icon: Icons.storage_outlined, width: width),
-                _Metric(label: 'Anlas 消耗', value: '${data.anlas}', icon: Icons.toll_outlined, width: width),
+                _Metric(
+                  label: '作品总数',
+                  value: '${data.totalImages}',
+                  icon: Icons.photo_library_outlined,
+                  width: width,
+                ),
+                _Metric(
+                  label: '有元数据',
+                  value: '${data.withMetadata}',
+                  icon: Icons.description_outlined,
+                  width: width,
+                ),
+                _Metric(
+                  label: '图库占用',
+                  value: _bytes(data.totalBytes),
+                  icon: Icons.storage_outlined,
+                  width: width,
+                ),
+                _Metric(
+                  label: 'Anlas 消耗',
+                  value: '${data.anlas}',
+                  icon: Icons.toll_outlined,
+                  width: width,
+                ),
               ],
             );
           },
         ),
         const SizedBox(height: 20),
-        _Section(title: '尺寸分布', icon: Icons.aspect_ratio, child: _Distribution(data.resolutions)),
+        _Section(
+          title: '尺寸分布',
+          icon: Icons.aspect_ratio,
+          child: _Distribution(data.resolutions),
+        ),
         const SizedBox(height: 14),
-        _Section(title: '模型分布', icon: Icons.auto_awesome_outlined, child: _Distribution(data.models)),
+        _Section(
+          title: '模型分布',
+          icon: Icons.auto_awesome_outlined,
+          child: _Distribution(data.models),
+        ),
         const SizedBox(height: 14),
-        _Section(title: '采样器分布', icon: Icons.tune, child: _Distribution(data.samplers)),
+        _Section(
+          title: '采样器分布',
+          icon: Icons.tune,
+          child: _Distribution(data.samplers),
+        ),
         const SizedBox(height: 14),
-        _Section(title: '按时间', icon: Icons.schedule_outlined, child: _TimeChart(hours: data.hours)),
+        _Section(
+          title: '按时间',
+          icon: Icons.schedule_outlined,
+          child: _TimeChart(hours: data.hours),
+        ),
         const SizedBox(height: 14),
         _Section(
           title: '最近活动',
           icon: Icons.calendar_month_outlined,
           child: data.days.isEmpty
-              ? Text('还没有可统计的活动', style: context.texts.bodySmall!.copyWith(color: scheme.outline))
+              ? Text(
+                  '还没有可统计的活动',
+                  style: context.texts.bodySmall!.copyWith(
+                    color: scheme.outline,
+                  ),
+                )
               : _Distribution(data.days),
         ),
       ],
@@ -193,7 +241,12 @@ class _Dashboard extends StatelessWidget {
 }
 
 class _Metric extends StatelessWidget {
-  const _Metric({required this.label, required this.value, required this.icon, required this.width});
+  const _Metric({
+    required this.label,
+    required this.value,
+    required this.icon,
+    required this.width,
+  });
 
   final String label;
   final String value;
@@ -216,9 +269,19 @@ class _Metric extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(label, style: context.texts.labelSmall!.copyWith(color: context.scheme.outline)),
+                  Text(
+                    label,
+                    style: context.texts.labelSmall!.copyWith(
+                      color: context.scheme.outline,
+                    ),
+                  ),
                   const SizedBox(height: 2),
-                  Text(value, maxLines: 1, overflow: TextOverflow.ellipsis, style: mono(context, size: 17, weight: FontWeight.w700)),
+                  Text(
+                    value,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: mono(context, size: 17, weight: FontWeight.w700),
+                  ),
                 ],
               ),
             ),
@@ -230,7 +293,11 @@ class _Metric extends StatelessWidget {
 }
 
 class _Section extends StatelessWidget {
-  const _Section({required this.title, required this.icon, required this.child});
+  const _Section({
+    required this.title,
+    required this.icon,
+    required this.child,
+  });
 
   final String title;
   final IconData icon;
@@ -244,7 +311,12 @@ class _Section extends StatelessWidget {
         children: [
           Icon(icon, size: 18, color: context.scheme.onSurfaceVariant),
           const SizedBox(width: 7),
-          Text(title, style: context.texts.titleSmall!.copyWith(fontWeight: FontWeight.w700)),
+          Text(
+            title,
+            style: context.texts.titleSmall!.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
+          ),
         ],
       ),
       const SizedBox(height: 8),
@@ -266,7 +338,10 @@ class _Distribution extends StatelessWidget {
         style: context.texts.bodySmall!.copyWith(color: context.scheme.outline),
       );
     }
-    final max = values.values.fold<int>(0, (current, value) => value > current ? value : current);
+    final max = values.values.fold<int>(
+      0,
+      (current, value) => value > current ? value : current,
+    );
     return Column(
       children: [
         for (final entry in values.entries)
@@ -274,16 +349,34 @@ class _Distribution extends StatelessWidget {
             padding: const EdgeInsets.only(bottom: 8),
             child: Row(
               children: [
-                SizedBox(width: 105, child: Text(entry.key, maxLines: 1, overflow: TextOverflow.ellipsis, style: context.texts.bodySmall)),
+                SizedBox(
+                  width: 105,
+                  child: Text(
+                    entry.key,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: context.texts.bodySmall,
+                  ),
+                ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(3),
-                    child: LinearProgressIndicator(value: max == 0 ? 0 : entry.value / max, minHeight: 8),
+                    child: LinearProgressIndicator(
+                      value: max == 0 ? 0 : entry.value / max,
+                      minHeight: 8,
+                    ),
                   ),
                 ),
                 const SizedBox(width: 8),
-                SizedBox(width: 30, child: Text('${entry.value}', textAlign: TextAlign.end, style: mono(context, size: 11))),
+                SizedBox(
+                  width: 30,
+                  child: Text(
+                    '${entry.value}',
+                    textAlign: TextAlign.end,
+                    style: mono(context, size: 11),
+                  ),
+                ),
               ],
             ),
           ),
@@ -299,7 +392,10 @@ class _TimeChart extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final max = hours.values.fold<int>(0, (current, value) => value > current ? value : current);
+    final max = hours.values.fold<int>(
+      0,
+      (current, value) => value > current ? value : current,
+    );
     return SizedBox(
       height: 100,
       child: Row(
@@ -320,14 +416,22 @@ class _TimeChart extends StatelessWidget {
                           child: DecoratedBox(
                             decoration: BoxDecoration(
                               color: context.scheme.primary,
-                              borderRadius: const BorderRadius.vertical(top: Radius.circular(3)),
+                              borderRadius: const BorderRadius.vertical(
+                                top: Radius.circular(3),
+                              ),
                             ),
                           ),
                         ),
                       ),
                     ),
                     const SizedBox(height: 4),
-                    Text(hour % 4 == 0 ? '$hour' : '', style: context.texts.labelSmall!.copyWith(color: context.scheme.outline, fontSize: 9)),
+                    Text(
+                      hour % 4 == 0 ? '$hour' : '',
+                      style: context.texts.labelSmall!.copyWith(
+                        color: context.scheme.outline,
+                        fontSize: 9,
+                      ),
+                    ),
                   ],
                 ),
               ),

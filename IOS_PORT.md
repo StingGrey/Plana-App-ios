@@ -10,7 +10,7 @@
 - iOS Live Activity / Dynamic Island；
 - 从 GitHub Release 下载 Android APK 的应用内更新流程。
 
-当前 iOS 前台版另外提供：本地作品库（照片/Files 导入、元数据搜索、分类、收藏、集合与批量操作）、
+当前 iOS 前台版另外提供：本地图库（自动汇总生成历史，也支持照片/Files 导入、元数据搜索、分类、收藏、集合与批量操作）、
 在线画廊（Danbooru / Safebooru / Gelbooru / AI TAG / 法典图鉴）、生成队列管理、生成结果详情、
 固定词库与精准参考库。文件夹扫描依赖桌面/Android 文件选择器；iOS 上使用系统 Files 多选导入，
 避免承诺不存在的长期目录访问权限。

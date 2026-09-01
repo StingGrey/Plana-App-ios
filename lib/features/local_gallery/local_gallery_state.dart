@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -5,9 +6,26 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/store/app_stores.dart';
 import '../../core/util/image_pick.dart';
+import '../gallery/gallery_state.dart';
+import '../gallery/models.dart';
+import '../generate/models.dart' show GenerateState;
 import 'local_gallery_store.dart';
 
 const Object _unset = Object();
+
+String _historySignatureOf(Iterable<ResultImage> results) => [
+  for (final result in results)
+    [
+      result.id,
+      result.width,
+      result.height,
+      result.seed,
+      result.createdAt,
+      result.badge.name,
+      result.batchIndex,
+      result.hasInput,
+    ].join(':'),
+].join('|');
 
 class LocalGalleryState {
   const LocalGalleryState({
@@ -58,7 +76,8 @@ class LocalGalleryState {
       for (final item in items)
         if ((category == null || item.category == category) &&
             (!favoritesOnly || item.favorite) &&
-            (collectionId == null || item.collectionIds.contains(collectionId)) &&
+            (collectionId == null ||
+                item.collectionIds.contains(collectionId)) &&
             _passesDate(item) &&
             terms.every(item.searchableText.contains))
           item,
@@ -122,25 +141,41 @@ final localGalleryThumbProvider = FutureProvider.autoDispose
 
 class LocalGalleryNotifier extends Notifier<LocalGalleryState> {
   LocalGalleryStore get _store => ref.read(appStoresProvider).localGallery;
+  int _historySyncToken = 0;
+  String? _historySignature;
 
   @override
-  LocalGalleryState build() => LocalGalleryState(
-    items: _store.initialItems,
-    categories: _store.initialCategories,
-    collections: _store.initialCollections,
-  );
+  LocalGalleryState build() {
+    ref.listen<GalleryState>(galleryProvider, (_, next) {
+      final signature = _historySignatureOf(next.results);
+      if (signature == _historySignature) return;
+      unawaited(_syncHistory(next.results));
+    });
+    // AppStores loads the generated gallery before this provider is mounted.
+    // Hydrate its references after the first frame so the local page immediately
+    // includes history without making startup depend on snapshot decoding.
+    Future.microtask(() {
+      if (ref.mounted) unawaited(_primeHistory());
+    });
+    return LocalGalleryState(
+      items: _store.initialItems,
+      categories: _store.initialCategories,
+      collections: _store.initialCollections,
+    );
+  }
 
   void setQuery(String value) => state = state.copyWith(query: value);
 
   void setCategory(String? value) => state = state.copyWith(category: value);
 
-  void toggleFavoritesOnly() => state = state.copyWith(
-    favoritesOnly: !state.favoritesOnly,
-  );
+  void toggleFavoritesOnly() =>
+      state = state.copyWith(favoritesOnly: !state.favoritesOnly);
 
-  void setCollection(String? value) => state = state.copyWith(collectionId: value);
+  void setCollection(String? value) =>
+      state = state.copyWith(collectionId: value);
 
-  void setDateDays(int value) => state = state.copyWith(dateDays: value < 0 ? 0 : value);
+  void setDateDays(int value) =>
+      state = state.copyWith(dateDays: value < 0 ? 0 : value);
 
   void clearFilters() => state = state.copyWith(
     query: '',
@@ -150,7 +185,10 @@ class LocalGalleryNotifier extends Notifier<LocalGalleryState> {
     favoritesOnly: false,
   );
 
-  void refreshFromStore() => _syncFromStore();
+  void refreshFromStore() {
+    _syncFromStore();
+    unawaited(_syncHistory(ref.read(galleryProvider).results));
+  }
 
   Future<int> importPicked(Iterable<PickedImage> picked) async {
     var imported = 0;
@@ -235,7 +273,8 @@ class LocalGalleryNotifier extends Notifier<LocalGalleryState> {
   void addToCollection(Iterable<String> ids, String collectionId) {
     final selected = ids.toSet();
     for (final item in state.items) {
-      if (!selected.contains(item.id) || item.collectionIds.contains(collectionId)) {
+      if (!selected.contains(item.id) ||
+          item.collectionIds.contains(collectionId)) {
         continue;
       }
       _store.replaceItem(
@@ -274,15 +313,146 @@ class LocalGalleryNotifier extends Notifier<LocalGalleryState> {
   }
 
   Future<void> delete(Iterable<String> ids) async {
-    for (final id in ids.toSet()) {
-      await _store.delete(id);
+    final selected = ids.toSet();
+    for (final id in selected) {
+      final item = _item(id);
+      if (item?.isHistoryReference == true) {
+        // Removing a catalog reference must not destroy the generated result.
+        _store.removeHistoryReference(id);
+      } else {
+        await _store.delete(id);
+      }
     }
     _syncFromStore();
   }
 
   Future<void> clearAll() async {
+    // clearAll is a local-catalog operation. History references are hidden and
+    // their source images/snapshots remain available in the main history tab.
     await _store.clearAll();
     _syncFromStore();
+  }
+
+  Future<void> clearImported() async {
+    await _store.clearImported();
+    _syncFromStore();
+  }
+
+  void restoreHistory(String historyId) {
+    _store.restoreHistory(historyId);
+    _historySignature = null;
+    unawaited(_syncHistory(ref.read(galleryProvider).results));
+  }
+
+  Future<void> _primeHistory() async {
+    await _store.migrateGeneratedCopies();
+    if (!ref.mounted) return;
+    await _syncHistory(ref.read(galleryProvider).results);
+  }
+
+  /// Keep generated history in the local catalog as metadata-only references.
+  /// The bytes and thumbnails are always read from GalleryStore, so saving a
+  /// generated result to history never creates a second image file.
+  Future<void> _syncHistory(Iterable<ResultImage> results) async {
+    final list = results.toList();
+    final signature = _historySignatureOf(list);
+    if (signature == _historySignature) return;
+    final token = ++_historySyncToken;
+    final gallery = ref.read(appStoresProvider).gallery;
+
+    LocalGalleryRecord? oldFor(String id) {
+      for (final item in _store.initialItems) {
+        if (item.isHistoryReference && item.historyId == id) return item;
+      }
+      return null;
+    }
+
+    // Publish lightweight references first. The local page can show the
+    // history immediately; snapshot decoding and file sizing continue below.
+    final quick = [
+      for (final result in list)
+        _historyRecord(
+          result,
+          result.input,
+          oldFor(result.id),
+          result.bytes?.length ?? oldFor(result.id)?.sizeBytes ?? 0,
+        ),
+    ];
+    if (!ref.mounted || token != _historySyncToken) return;
+    _store.syncHistory(quick);
+    _syncFromStore();
+
+    final references = <LocalGalleryRecord>[];
+    for (final result in list) {
+      if (!ref.mounted || token != _historySyncToken) return;
+      // Read current metadata again: a user may have favorited or categorized
+      // the quick reference while the snapshot was being decoded.
+      final old = oldFor(result.id);
+      GenerateState? input = result.input;
+      if (input == null && result.hasInput) {
+        input = await gallery.readInput(result.id);
+        // The result and its snapshot are queued independently. If the first
+        // read races the atomic snapshot write, wait for that owner's queue
+        // once instead of permanently publishing a blank prompt index.
+        if (input == null) {
+          await gallery.idle;
+          input = await gallery.readInput(result.id);
+        }
+      }
+      if (!ref.mounted || token != _historySyncToken) return;
+      final oldSize = old?.sizeBytes ?? 0;
+      final size = oldSize > 0
+          ? oldSize
+          : (await gallery.imageLength(result.id) ?? result.bytes?.length ?? 0);
+      if (!ref.mounted || token != _historySyncToken) return;
+      references.add(_historyRecord(result, input, old, size));
+    }
+    if (!ref.mounted || token != _historySyncToken) return;
+    _store.syncHistory(references);
+    _historySignature = signature;
+    _syncFromStore();
+  }
+
+  LocalGalleryRecord _historyRecord(
+    ResultImage result,
+    GenerateState? input,
+    LocalGalleryRecord? old,
+    int sizeBytes,
+  ) {
+    final seed = result.seed == 0 ? (old?.seed ?? '') : '${result.seed}';
+    return LocalGalleryRecord(
+      id: old?.id ?? 'history_${result.id}',
+      name: old?.name ?? (seed.isEmpty ? '历史记录' : 'Seed $seed'),
+      // This is only a display/export name. No file with this name is created
+      // under local_gallery for a history reference.
+      fileName: old?.fileName ?? '${result.id}.png',
+      contentHash: old?.contentHash ?? '',
+      createdAt: result.createdAt > 0
+          ? result.createdAt
+          : (old?.createdAt ?? 0),
+      sizeBytes: sizeBytes,
+      width: result.width,
+      height: result.height,
+      historyId: result.id,
+      prompt: input?.prompt ?? old?.prompt ?? '',
+      negativePrompt: input?.negativePrompt ?? old?.negativePrompt ?? '',
+      model: input?.params.model ?? old?.model ?? '',
+      sampler: input?.params.sampler ?? old?.sampler ?? '',
+      seed: seed,
+      steps: input?.params.activeSteps ?? old?.steps ?? 0,
+      category: old?.category ?? '未分类',
+      favorite: old?.favorite ?? false,
+      collectionIds: old?.collectionIds ?? const [],
+      characters: input == null
+          ? (old?.characters ?? const [])
+          : [
+              for (final character in input.characters)
+                LocalGalleryCharacter(
+                  prompt: character.positive,
+                  negativePrompt: character.negative,
+                ),
+            ],
+    );
   }
 
   LocalGalleryRecord? _item(String id) {

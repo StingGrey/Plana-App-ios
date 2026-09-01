@@ -7,13 +7,15 @@ import 'package:crypto/crypto.dart';
 
 import '../../core/store/atomic_file.dart';
 import '../../core/util/image_ops.dart';
+import '../gallery/gallery_store.dart';
+import '../gallery/models.dart';
 import '../import/image_metadata.dart';
 
-/// A local image that has been copied into the app-managed gallery.
+/// A catalog entry for an imported image or a generated-history reference.
 ///
-/// The source file is copied rather than referenced directly. This keeps the
-/// gallery usable after an iOS document-provider session expires and makes the
-/// data model identical for imported files and scanned folders.
+/// External files are copied into app storage so an iOS document-provider URL
+/// cannot expire underneath the UI. Generated results instead keep a
+/// [historyId] and read their pixels from [GalleryStore], avoiding a duplicate.
 class LocalGalleryRecord {
   const LocalGalleryRecord({
     required this.id,
@@ -25,6 +27,7 @@ class LocalGalleryRecord {
     required this.width,
     required this.height,
     this.sourcePath = '',
+    this.historyId,
     this.prompt = '',
     this.negativePrompt = '',
     this.model = '',
@@ -46,6 +49,11 @@ class LocalGalleryRecord {
   final int width;
   final int height;
   final String sourcePath;
+
+  /// Generated-history records point at GalleryStore instead of owning another
+  /// copy of the image. Imported files keep this null and live in the local
+  /// gallery's own image directory.
+  final String? historyId;
   final String prompt;
   final String negativePrompt;
   final String model;
@@ -58,7 +66,9 @@ class LocalGalleryRecord {
   final List<LocalGalleryCharacter> characters;
 
   double get aspect => width > 0 && height > 0 ? width / height : 1;
-  bool get hasMetadata => prompt.isNotEmpty || model.isNotEmpty || seed.isNotEmpty;
+  bool get isHistoryReference => historyId?.isNotEmpty == true;
+  bool get hasMetadata =>
+      prompt.isNotEmpty || model.isNotEmpty || seed.isNotEmpty;
 
   String get searchableText => [
     name,
@@ -96,6 +106,7 @@ class LocalGalleryRecord {
     width: width ?? this.width,
     height: height ?? this.height,
     sourcePath: sourcePath,
+    historyId: historyId,
     prompt: prompt ?? this.prompt,
     negativePrompt: negativePrompt ?? this.negativePrompt,
     model: model ?? this.model,
@@ -111,13 +122,14 @@ class LocalGalleryRecord {
   Map<String, dynamic> toJson() => {
     'id': id,
     'name': name,
-    'file': fileName,
+    if (!isHistoryReference) 'file': fileName,
     'hash': contentHash,
     'createdAt': createdAt,
     'size': sizeBytes,
     'width': width,
     'height': height,
     if (sourcePath.isNotEmpty) 'sourcePath': sourcePath,
+    if (historyId != null && historyId!.isNotEmpty) 'historyId': historyId,
     'prompt': prompt,
     'negativePrompt': negativePrompt,
     'model': model,
@@ -128,17 +140,22 @@ class LocalGalleryRecord {
     'favorite': favorite,
     'collections': collectionIds,
     if (characters.isNotEmpty)
-      'characters': [
-        for (final c in characters) c.toJson(),
-      ],
+      'characters': [for (final c in characters) c.toJson()],
   };
 
   static LocalGalleryRecord? fromJson(Map<dynamic, dynamic> j) {
     final id = j['id'];
     final file = j['file'];
-    if (id is! String || id.isEmpty || file is! String || file.isEmpty) {
+    final historyId = _string(j['historyId']);
+    // A history reference intentionally has no file in local_gallery/images.
+    if (id is! String ||
+        id.isEmpty ||
+        ((file is! String || file.isEmpty) && historyId.isEmpty)) {
       return null;
     }
+    final fileName = file is String && file.isNotEmpty
+        ? file
+        : '${historyId.isEmpty ? id : historyId}.png';
     final rawChars = j['characters'];
     final characters = <LocalGalleryCharacter>[];
     if (rawChars is List) {
@@ -150,14 +167,15 @@ class LocalGalleryRecord {
     }
     return LocalGalleryRecord(
       id: id,
-      name: _string(j['name'], file),
-      fileName: file,
+      name: _string(j['name'], fileName),
+      fileName: fileName,
       contentHash: _string(j['hash']),
       createdAt: _int(j['createdAt']),
       sizeBytes: _int(j['size']),
       width: _int(j['width']),
       height: _int(j['height']),
       sourcePath: _string(j['sourcePath']),
+      historyId: historyId.isEmpty ? null : historyId,
       prompt: _string(j['prompt']),
       negativePrompt: _string(j['negativePrompt']),
       model: _string(j['model']),
@@ -225,11 +243,15 @@ class LocalGalleryCollection {
   }
 }
 
-/// Persistent storage for the local-work gallery.
+/// Persistent catalog for local imports and generated-history references.
 class LocalGalleryStore {
-  LocalGalleryStore(Directory supportRoot)
+  LocalGalleryStore(Directory supportRoot, {this.historyStore})
     : _root = Directory('${supportRoot.path}/local_gallery');
 
+  /// The generated gallery is the owner of history pixels. This optional
+  /// dependency keeps the store usable in isolation (including old tests and
+  /// migrations), while production reads history references from one source.
+  final GalleryStore? historyStore;
   final Directory _root;
   Directory get _images => Directory('${_root.path}/images');
   Directory get _thumbs => Directory('${_root.path}/thumbs');
@@ -238,6 +260,10 @@ class LocalGalleryStore {
   List<LocalGalleryRecord> initialItems = const [];
   List<LocalGalleryCollection> initialCollections = const [];
   List<String> initialCategories = const ['未分类', '角色', '风景', '灵感'];
+
+  /// History ids explicitly removed from the local catalog. Keeping this
+  /// separate from GalleryStore makes "移出本地图库" non-destructive.
+  Set<String> hiddenHistoryIds = <String>{};
   int seq = 0;
 
   Future<void> load() async {
@@ -260,7 +286,8 @@ class LocalGalleryStore {
         for (final item in rawItems) {
           if (item is Map) {
             final value = LocalGalleryRecord.fromJson(item);
-            if (value != null && await _fileFor(value).exists()) {
+            if (value != null &&
+                (value.isHistoryReference || await _fileFor(value).exists())) {
               items.add(value);
             }
           }
@@ -278,24 +305,43 @@ class LocalGalleryStore {
       }
       final rawCategories = decoded['categories'];
       final categories = rawCategories is List
-          ? [for (final c in rawCategories) if (c is String && c.trim().isNotEmpty) c]
+          ? [
+              for (final c in rawCategories)
+                if (c is String && c.trim().isNotEmpty) c,
+            ]
           : initialCategories;
+      final rawHidden = decoded['hiddenHistoryIds'];
+      hiddenHistoryIds = {
+        for (final id in rawHidden is List ? rawHidden : const [])
+          if (id is String && id.trim().isNotEmpty) id,
+      };
       initialItems = List.unmodifiable(items);
       initialCollections = List.unmodifiable(collections);
       initialCategories = _mergeCategories(categories);
       seq = seq > _nextSeq(items) ? seq : _nextSeq(items);
-      await _repairIndexIfNeeded(items.length != (rawItems is List ? rawItems.length : 0));
+      await _repairIndexIfNeeded(
+        items.length != (rawItems is List ? rawItems.length : 0),
+      );
     } catch (_) {
       await _rebuild();
     }
   }
 
-  File _fileFor(LocalGalleryRecord item) => File('${_images.path}/${item.fileName}');
-  File thumbFor(LocalGalleryRecord item) => File('${_thumbs.path}/${item.id}.png');
+  File _fileFor(LocalGalleryRecord item) =>
+      File('${_images.path}/${item.fileName}');
+  File thumbFor(LocalGalleryRecord item) =>
+      File('${_thumbs.path}/${item.id}.png');
 
   Future<Uint8List?> readImage(String id) async {
     final item = _find(id);
     if (item == null) return null;
+    if (item.isHistoryReference) {
+      final source = historyStore;
+      final historyId = item.historyId;
+      return source == null || historyId == null
+          ? null
+          : source.readImage(historyId);
+    }
     try {
       return await _fileFor(item).readAsBytes();
     } catch (_) {
@@ -306,6 +352,13 @@ class LocalGalleryStore {
   Future<Uint8List?> readThumb(String id) async {
     final item = _find(id);
     if (item == null) return null;
+    if (item.isHistoryReference) {
+      final source = historyStore;
+      final historyId = item.historyId;
+      return source == null || historyId == null
+          ? null
+          : source.readThumb(historyId);
+    }
     try {
       final thumb = thumbFor(item);
       if (await thumb.exists()) return await thumb.readAsBytes();
@@ -338,6 +391,52 @@ class LocalGalleryStore {
   }) async {
     if (bytes.isEmpty) throw const FormatException('图片为空');
     final hash = sha256.convert(bytes).toString();
+
+    // Importing a file that is already in generated history should create a
+    // catalog reference, not a third copy under local_gallery. This also
+    // covers a user re-importing an image exported from the app.
+    final history = await _historyForHash(hash);
+    if (history != null) {
+      for (final item in initialItems) {
+        if (item.historyId == history.id) return item;
+      }
+      // An explicit re-import is also the opt-in path for a previously hidden
+      // history entry.
+      hiddenHistoryIds.remove(history.id);
+      final legacy = initialItems
+          .where((item) => !item.isHistoryReference && item.contentHash == hash)
+          .firstOrNull;
+      final reference = legacy == null
+          ? LocalGalleryRecord(
+              id: 'history_${history.id}',
+              name: _displayName(fileName, history.id),
+              fileName: '${history.id}.png',
+              contentHash: hash,
+              createdAt: history.createdAt,
+              sizeBytes: bytes.length,
+              width: history.width,
+              height: history.height,
+              historyId: history.id,
+              prompt: promptOverride ?? '',
+              negativePrompt: negativePromptOverride ?? '',
+              model: modelOverride ?? '',
+              sampler: samplerOverride ?? '',
+              seed:
+                  seedOverride ?? (history.seed == 0 ? '' : '${history.seed}'),
+              steps: stepsOverride ?? 0,
+              characters: charactersOverride ?? const [],
+            )
+          : _asHistoryReference(legacy, history);
+      if (legacy != null) await _deleteLocalFiles(legacy);
+      initialItems = List.unmodifiable([
+        reference,
+        for (final item in initialItems)
+          if (item.id != legacy?.id) item,
+      ]);
+      _scheduleIndex();
+      return reference;
+    }
+
     for (final item in initialItems) {
       if (item.contentHash == hash && hash.isNotEmpty) {
         if (promptOverride != null ||
@@ -395,11 +494,16 @@ class LocalGalleryStore {
       sampler: samplerOverride ?? meta?.sampler ?? '',
       seed: seedOverride ?? meta?.seed ?? '',
       steps: stepsOverride ?? int.tryParse(meta?.steps ?? '') ?? 0,
-      characters: charactersOverride ?? [
-        if (meta != null)
-          for (final c in meta.characters)
-            LocalGalleryCharacter(prompt: c.prompt, negativePrompt: c.uc ?? ''),
-      ],
+      characters:
+          charactersOverride ??
+          [
+            if (meta != null)
+              for (final c in meta.characters)
+                LocalGalleryCharacter(
+                  prompt: c.prompt,
+                  negativePrompt: c.uc ?? '',
+                ),
+          ],
     );
     await writeBytesAtomic(_fileFor(item), bytes);
     try {
@@ -434,12 +538,14 @@ class LocalGalleryStore {
       for (final x in initialItems)
         if (x.id != id) x,
     ]);
-    try {
-      await _fileFor(item).delete();
-    } catch (_) {}
-    try {
-      await thumbFor(item).delete();
-    } catch (_) {}
+    if (!item.isHistoryReference) {
+      try {
+        await _fileFor(item).delete();
+      } catch (_) {}
+      try {
+        await thumbFor(item).delete();
+      } catch (_) {}
+    }
     _scheduleIndex();
   }
 
@@ -448,6 +554,148 @@ class LocalGalleryStore {
       for (final x in initialItems) x.id == item.id ? item : x,
     ]);
     _scheduleIndex();
+  }
+
+  /// Replace the generated-history part of the catalog without touching
+  /// imported files. The records contain only metadata and a [historyId]; no
+  /// image or thumbnail is copied into local_gallery for those references.
+  void syncHistory(Iterable<LocalGalleryRecord> references) {
+    final liveHistoryIds = {
+      for (final item in references)
+        if (item.historyId != null) item.historyId!,
+    };
+    // IDs are never reused by GalleryStore, so an exclusion for a deleted
+    // history result is no longer useful and should not leave a dead badge.
+    hiddenHistoryIds.removeWhere((id) => !liveHistoryIds.contains(id));
+    final visible = [
+      for (final item in references)
+        if (!hiddenHistoryIds.contains(item.historyId)) item,
+    ];
+    final imported = [
+      for (final item in initialItems)
+        if (!item.isHistoryReference) item,
+    ];
+    final merged = [...visible, ...imported]
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    initialItems = List.unmodifiable(merged);
+    _scheduleIndex();
+  }
+
+  /// Remove a history item from this catalog without deleting its source image
+  /// or parameter snapshot. It can be restored by [restoreHistory].
+  void removeHistoryReference(String localId) {
+    final item = _find(localId);
+    final historyId = item?.historyId;
+    if (historyId == null || historyId.isEmpty) return;
+    hiddenHistoryIds.add(historyId);
+    initialItems = List.unmodifiable([
+      for (final value in initialItems)
+        if (value.id != localId) value,
+    ]);
+    _scheduleIndex();
+  }
+
+  void restoreHistory(String historyId) {
+    if (historyId.trim().isEmpty || !hiddenHistoryIds.remove(historyId)) return;
+    _scheduleIndex();
+  }
+
+  /// Convert copies made by older versions' "save to local gallery" action
+  /// into references before the catalog is displayed. Matching is by content
+  /// hash, so the migration also handles renamed legacy files. The generated
+  /// GalleryStore remains the sole pixel owner after this finishes.
+  Future<int> migrateGeneratedCopies() async {
+    final source = historyStore;
+    if (source == null ||
+        initialItems.isEmpty ||
+        source.initialResults.isEmpty ||
+        !initialItems.any((item) => !item.isHistoryReference)) {
+      return 0;
+    }
+    final byHash = <String, ResultImage>{};
+    for (final result in source.initialResults) {
+      final bytes = await source.readImage(result.id);
+      if (bytes == null || bytes.isEmpty) continue;
+      byHash[sha256.convert(bytes).toString()] = result;
+    }
+    if (byHash.isEmpty) return 0;
+
+    final existingHistoryIds = {
+      for (final item in initialItems)
+        if (item.isHistoryReference && item.historyId != null) item.historyId!,
+    };
+    final seen = {...existingHistoryIds};
+    final next = <LocalGalleryRecord>[];
+    var migrated = 0;
+    for (final item in initialItems) {
+      if (item.isHistoryReference) {
+        next.add(item);
+        continue;
+      }
+      final result = byHash[item.contentHash];
+      if (result == null) {
+        next.add(item);
+        continue;
+      }
+      // A reference already present wins; otherwise preserve the user's local
+      // labels/favorites while changing only the ownership relation.
+      if (seen.add(result.id)) {
+        next.add(_asHistoryReference(item, result));
+      }
+      await _deleteLocalFiles(item);
+      migrated++;
+    }
+    if (migrated == 0) return 0;
+    next.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    initialItems = List.unmodifiable(next);
+    _scheduleIndex();
+    return migrated;
+  }
+
+  LocalGalleryRecord _asHistoryReference(
+    LocalGalleryRecord item,
+    ResultImage result,
+  ) => LocalGalleryRecord(
+    id: item.id,
+    name: item.name,
+    fileName: item.fileName,
+    contentHash: item.contentHash,
+    createdAt: result.createdAt > 0 ? result.createdAt : item.createdAt,
+    sizeBytes: item.sizeBytes,
+    width: result.width > 0 ? result.width : item.width,
+    height: result.height > 0 ? result.height : item.height,
+    sourcePath: item.sourcePath,
+    historyId: result.id,
+    prompt: item.prompt,
+    negativePrompt: item.negativePrompt,
+    model: item.model,
+    sampler: item.sampler,
+    seed: item.seed,
+    steps: item.steps,
+    category: item.category,
+    favorite: item.favorite,
+    collectionIds: item.collectionIds,
+    characters: item.characters,
+  );
+
+  Future<void> _deleteLocalFiles(LocalGalleryRecord item) async {
+    for (final file in [_fileFor(item), thumbFor(item)]) {
+      try {
+        if (await file.exists()) await file.delete();
+      } catch (_) {}
+    }
+  }
+
+  Future<ResultImage?> _historyForHash(String hash) async {
+    final source = historyStore;
+    if (source == null || hash.isEmpty) return null;
+    for (final result in source.initialResults) {
+      final bytes = await source.readImage(result.id);
+      if (bytes != null && sha256.convert(bytes).toString() == hash) {
+        return result;
+      }
+    }
+    return null;
   }
 
   LocalGalleryCollection createCollection(String name) {
@@ -460,10 +708,7 @@ class LocalGalleryStore {
       name: clean.isEmpty ? '未命名集合' : clean,
       createdAt: DateTime.now().millisecondsSinceEpoch,
     );
-    initialCollections = List.unmodifiable([
-      ...initialCollections,
-      collection,
-    ]);
+    initialCollections = List.unmodifiable([...initialCollections, collection]);
     _scheduleIndex();
     return collection;
   }
@@ -492,7 +737,10 @@ class LocalGalleryStore {
     initialItems = List.unmodifiable([
       for (final item in initialItems)
         item.copyWith(
-          collectionIds: [for (final c in item.collectionIds) if (c != id) c],
+          collectionIds: [
+            for (final c in item.collectionIds)
+              if (c != id) c,
+          ],
         ),
     ]);
     _scheduleIndex();
@@ -503,7 +751,34 @@ class LocalGalleryStore {
     _scheduleIndex();
   }
 
+  /// Delete only copied external files. History references remain in
+  /// the catalog and their source files in GalleryStore are untouched.
+  Future<void> clearImported() async {
+    initialItems = List.unmodifiable([
+      for (final item in initialItems)
+        if (item.isHistoryReference) item,
+    ]);
+    _scheduleIndex();
+    for (final dir in [_images, _thumbs]) {
+      try {
+        if (await dir.exists()) {
+          await for (final entry in dir.list()) {
+            try {
+              await entry.delete(recursive: true);
+            } catch (_) {}
+          }
+        }
+      } catch (_) {}
+    }
+    flushIndex();
+    await idle;
+  }
+
   Future<void> clearAll() async {
+    hiddenHistoryIds.addAll([
+      for (final item in initialItems)
+        if (item.isHistoryReference && item.historyId != null) item.historyId!,
+    ]);
     initialItems = const [];
     initialCollections = const [];
     _scheduleIndex();
@@ -564,6 +839,7 @@ class LocalGalleryStore {
     final payload = jsonEncode({
       'version': 1,
       'seq': seq,
+      'hiddenHistoryIds': hiddenHistoryIds.toList(),
       'categories': initialCategories,
       'collections': [for (final c in initialCollections) c.toJson()],
       'items': [for (final item in initialItems) item.toJson()],
@@ -643,6 +919,7 @@ class LocalGalleryStore {
     } catch (_) {}
     records.sort((a, b) => b.createdAt.compareTo(a.createdAt));
     initialItems = List.unmodifiable(records);
+    hiddenHistoryIds = <String>{};
     seq = _nextSeq(records);
     _scheduleIndex();
     flushIndex();
@@ -668,10 +945,8 @@ class LocalGalleryStore {
   }
 }
 
-bool _isImageName(String path) => RegExp(
-  r'\.(png|jpe?g|webp|gif|bmp)$',
-  caseSensitive: false,
-).hasMatch(path);
+bool _isImageName(String path) =>
+    RegExp(r'\.(png|jpe?g|webp|gif|bmp)$', caseSensitive: false).hasMatch(path);
 
 bool _isThumbnailPath(String path) {
   final parts = path.split(RegExp(r'[/\\]'));
@@ -709,8 +984,12 @@ String _displayName(String name, String fallback) {
 String _string(Object? value, [String fallback = '']) =>
     value?.toString() ?? fallback;
 
-int _int(Object? value) => value is num ? value.toInt() : int.tryParse('$value') ?? 0;
+int _int(Object? value) =>
+    value is num ? value.toInt() : int.tryParse('$value') ?? 0;
 
 List<String> _strings(Object? value) => value is List
-    ? [for (final item in value) if (item is String && item.isNotEmpty) item]
+    ? [
+        for (final item in value)
+          if (item is String && item.isNotEmpty) item,
+      ]
     : const [];

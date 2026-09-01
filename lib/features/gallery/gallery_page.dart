@@ -263,8 +263,8 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
               height: selected?.height ?? 0,
             ),
           ),
-        // 本地作品库是独立于生成历史的整理入口；放在画布顶部而不是底部
-        // 操作轨，避免和保存/重绘等对当前图片的动作混在一起。
+        // 本地图库是生成历史与外部导入作品的整理入口；放在画布顶部而不是
+        // 底部操作轨，避免和保存/重绘等对当前图片的动作混在一起。
         if (!showGen)
           Positioned(
             top: 8,
@@ -276,9 +276,9 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
               child: IconButton(
                 tooltip: '本地图库',
                 icon: const Icon(Icons.folder_copy_outlined),
-                onPressed: () => Navigator.of(context).push(
-                  sharedAxisRoute(const LocalGalleryPage()),
-                ),
+                onPressed: () => Navigator.of(
+                  context,
+                ).push(sharedAxisRoute(const LocalGalleryPage())),
               ),
             ),
           ),
@@ -368,8 +368,7 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
                 child: Column(
                   children: [
                     Expanded(child: canvas),
-                    if (showChrome)
-                      TabletResultToolbar(result: selected),
+                    if (showChrome) TabletResultToolbar(result: selected),
                   ],
                 ),
               ),

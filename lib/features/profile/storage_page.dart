@@ -57,7 +57,7 @@ const _cleanable = <_CatSpec>[
   _CatSpec(['gallery'], Icons.photo_library_outlined, '图库作品', '清空'),
   _CatSpec(['vibeLib'], Icons.palette_outlined, 'Vibe 库', '清空'),
   _CatSpec(['charLib'], Icons.person_outline, '角色参考库', '清空'),
-  _CatSpec(['localGallery'], Icons.photo_library_outlined, '本地图库', '清空'),
+  _CatSpec(['localGallery'], Icons.photo_library_outlined, '外部导入图片', '清空'),
   _CatSpec(['preciseRef'], Icons.center_focus_strong, '精准参考库', '清空'),
 ];
 
@@ -234,12 +234,16 @@ class _StoragePageState extends ConsumerState<StoragePage> {
         final n = _report?['localGallery']?.count;
         final ok = await confirmDialog(
           context,
-          title: '清空本地图库',
-          message: '将删除本地图库中的${n == null ? '' : ' $n 张'}副本，不影响原文件。',
+          title: '清空外部导入图片',
+          message:
+              '将删除本地图库中的${n == null ? '' : ' $n 张'}外部导入副本，'
+              '生成历史和原文件不受影响。',
           confirmLabel: '清空',
         );
         if (!ok) return;
-        await _run([key], () => ref.read(localGalleryProvider.notifier).clearAll());
+        await _run([
+          key,
+        ], () => ref.read(localGalleryProvider.notifier).clearImported());
       case 'preciseRef':
         final n = _report?['preciseRef']?.count;
         final ok = await confirmDialog(
@@ -249,7 +253,9 @@ class _StoragePageState extends ConsumerState<StoragePage> {
           confirmLabel: '清空',
         );
         if (!ok) return;
-        await _run([key], () => ref.read(preciseRefProvider.notifier).clearAll());
+        await _run([
+          key,
+        ], () => ref.read(preciseRefProvider.notifier).clearAll());
       case 'models':
         final ok = await confirmDialog(
           context,

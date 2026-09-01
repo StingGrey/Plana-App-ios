@@ -202,6 +202,11 @@ class GalleryStore {
 
   Future<void> _chain = Future.value();
 
+  /// Bytes waiting behind the serialized disk write. This closes the small
+  /// window in which a reference view could otherwise read null and copy the
+  /// same generated image into another store.
+  final Map<String, Uint8List> _pendingImages = {};
+
   /// 写入队列排空(存储管理在清空后等它,再做 GC/重扫)。
   Future<void> get idle => _chain;
 
@@ -217,22 +222,35 @@ class GalleryStore {
     final bytes = r.bytes;
     if (bytes == null) return;
     final input = r.input;
+    // Keep a lightweight known-result entry immediately. This lets other
+    // views discover a just-created result before its queued bytes finish
+    // writing, without retaining the full in-memory snapshot here.
+    initialResults = List.unmodifiable([
+      r.stripped(),
+      for (final existing in initialResults)
+        if (existing.id != r.id) existing,
+    ]);
+    _pendingImages[r.id] = bytes;
     _enqueue(() async {
-      // 全部走原子写:半截 PNG 会变成永远打不开的坏图,半截快照 JSON 会让
-      // 「重新生成」读不出参数(见 atomic_file.dart)
-      await writeBytesAtomic(_imageFile(r.id), bytes);
       try {
-        await writeBytesAtomic(
-          _thumbFile(r.id),
-          await coverResizePng(bytes, 256, 256, keepAlpha: true),
-        );
-      } catch (_) {} // 缩略图失败不阻断,读取端退回原图
-      if (input != null) {
-        final enc = await encodeGenerateState(input, _blobs);
-        await writeStringAtomic(
-          _inputFile(r.id),
-          jsonEncode({'v': 1, 'refs': enc.refs.toList(), 'state': enc.json}),
-        );
+        // 全部走原子写:半截 PNG 会变成永远打不开的坏图,半截快照 JSON 会让
+        // 「重新生成」读不出参数(见 atomic_file.dart)
+        await writeBytesAtomic(_imageFile(r.id), bytes);
+        try {
+          await writeBytesAtomic(
+            _thumbFile(r.id),
+            await coverResizePng(bytes, 256, 256, keepAlpha: true),
+          );
+        } catch (_) {} // 缩略图失败不阻断,读取端退回原图
+        if (input != null) {
+          final enc = await encodeGenerateState(input, _blobs);
+          await writeStringAtomic(
+            _inputFile(r.id),
+            jsonEncode({'v': 1, 'refs': enc.refs.toList(), 'state': enc.json}),
+          );
+        }
+      } finally {
+        _pendingImages.remove(r.id);
       }
     });
   }
@@ -295,6 +313,14 @@ class GalleryStore {
   /// 索引由调用方随后 scheduleIndex 重写。
   void deleteResultFiles(List<String> ids) {
     if (ids.isEmpty) return;
+    final drop = ids.toSet();
+    initialResults = List.unmodifiable([
+      for (final result in initialResults)
+        if (!drop.contains(result.id)) result,
+    ]);
+    for (final id in drop) {
+      _pendingImages.remove(id);
+    }
     _enqueue(() async {
       for (final id in ids) {
         for (final f in [_imageFile(id), _thumbFile(id), _inputFile(id)]) {
@@ -312,6 +338,9 @@ class GalleryStore {
   void clearAllFiles({required int seq}) {
     _idxItems = null;
     _idxTimer?.cancel();
+    initialResults = const [];
+    initialSelectedId = null;
+    _pendingImages.clear();
     _enqueue(() async {
       for (final d in [_imagesDir, _thumbsDir, _inputsDir]) {
         try {
@@ -334,21 +363,21 @@ class GalleryStore {
   Future<int?> imageLength(String id) async {
     try {
       final file = _imageFile(id);
-      if (!await file.exists()) return null;
-      return await file.length();
-    } catch (_) {
-      return null;
-    }
+      if (await file.exists()) return await file.length();
+    } catch (_) {}
+    final pending = _pendingImages[id];
+    if (pending != null) return pending.length;
+    return null;
   }
 
   Future<Uint8List?> readImage(String id) async {
     try {
       final f = _imageFile(id);
-      if (!await f.exists()) return null;
-      return await f.readAsBytes();
-    } catch (_) {
-      return null;
-    }
+      if (await f.exists()) return await f.readAsBytes();
+    } catch (_) {}
+    // A just-produced result may not have reached disk yet. Its bytes are
+    // already owned by this store, so returning them is still single-source.
+    return _pendingImages[id];
   }
 
   /// 缩略图;缺失(旧数据/生成失败)退回原图。
