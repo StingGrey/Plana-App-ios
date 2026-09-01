@@ -1046,6 +1046,7 @@ class _OnlineGalleryDetailPageState extends ConsumerState<OnlineGalleryDetailPag
               fallbackUrl: item.imageUrl,
           ),
         ),
+        ),
         const SizedBox(height: 14),
         Wrap(
           spacing: 7,
