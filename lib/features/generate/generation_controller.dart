@@ -214,6 +214,9 @@ class _JobRun {
 
   /// 直连:闸门在取槽时一并定下的令牌(bot 线为 null)。
   String? token;
+
+  /// 直连令牌对应的接口地址。
+  String base = '';
 }
 
 class GenerationNotifier extends Notifier<GenPool> {
@@ -400,6 +403,8 @@ class GenerationNotifier extends Notifier<GenPool> {
   Future<GenOutcome> generate({
     GenerateState? using,
     FixedTagsState? fixedTags,
+    bool stay = false,
+    void Function(String jobId)? onJob,
   }) async {
     // 池满拒收。守卫与建卡之间**不能有 await**:按钮不再禁用,连点两下会各自
     // 走一遍这里,中间插一个 await 就等于没守。
@@ -456,6 +461,7 @@ class GenerationNotifier extends Notifier<GenPool> {
         _ => null,
       },
     );
+    onJob?.call(job.id);
     final run = _JobRun(GenAbort());
     _runs[job.id] = run;
     state = state.copyWith(
@@ -468,7 +474,7 @@ class GenerationNotifier extends Notifier<GenPool> {
     // 每点一次都强拉一次等于把人按在图库页上 —— 想连投几条再回创作页改参数
     // 都做不到。池子空了之后的下一条重新算作头一条,又会切一次。
     // 循环/队列续张同样不强拉(循环开始时已切过一次,期间允许自由切页,真机反馈)。
-    if (firstOfBatch && !_inFlow && !ref.read(tabletWorkspaceProvider)) {
+    if (firstOfBatch && !_inFlow && !stay && !ref.read(tabletWorkspaceProvider)) {
       ref.read(shellIndexProvider.notifier).select(kTabGallery);
     }
 
@@ -483,6 +489,7 @@ class GenerationNotifier extends Notifier<GenPool> {
             .acquire(paid: _isPaid(s), abort: run.abort);
         run.slot = pass.slot;
         run.token = pass.token;
+        run.base = pass.base;
         // 一把可用的都没有 → 闸门给 -1 + null。不能当成「被取消」静静收掉,
         // 那样点了生成什么都不会发生。
         //
@@ -615,7 +622,7 @@ class GenerationNotifier extends Notifier<GenPool> {
         Uint8List? last;
         await for (final f
             in ref
-                .read(naiClientProvider)
+                .read(naiClientProvider(run.base))
                 .generateImageStream(
                   token: token,
                   body: built.body,
@@ -646,7 +653,7 @@ class GenerationNotifier extends Notifier<GenPool> {
         if ((e.status == 404 || e.status == 405) && built != null) {
           try {
             final bytes = await ref
-                .read(naiClientProvider)
+                .read(naiClientProvider(run.base))
                 .generateImage(token: token, body: built.body);
             await finish(bytes, built.seed);
             return GenOutcome.ok;

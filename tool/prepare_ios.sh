@@ -69,22 +69,22 @@ plist_bool "ITSAppUsesNonExemptEncryption" false
 "$PB" -c "Delete :NSAppTransportSecurity:NSAllowsLocalNetworking" "$PLIST" >/dev/null 2>&1 || true
 "$PB" -c "Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true" "$PLIST"
 
-# 这些插件均支持 iOS 13；统一 Runner、测试 target 与 Flutter framework 的下限。
+# flutter_onnxruntime 的 iOS 包要求 iOS 16；统一 Runner、测试 target 与 Flutter framework 的下限。
 if [[ -f ios/Podfile ]]; then
   if grep -Eq '^#?platform :ios' ios/Podfile; then
-    sed -i '' -E "s/^#?platform :ios, .*/platform :ios, '13.0'/" ios/Podfile
+    sed -i '' -E "s/^#?platform :ios, .*/platform :ios, '16.0'/" ios/Podfile
   else
-    printf "platform :ios, '13.0'\n\n" | cat - ios/Podfile > ios/Podfile.tmp
+    printf "platform :ios, '16.0'\n\n" | cat - ios/Podfile > ios/Podfile.tmp
     mv ios/Podfile.tmp ios/Podfile
   fi
 fi
 PBX="ios/Runner.xcodeproj/project.pbxproj"
 if [[ -f "$PBX" ]]; then
-  perl -0pi -e 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]+;/IPHONEOS_DEPLOYMENT_TARGET = 13.0;/g; s/com\.sora214\.planaApp/com.sora214.plana.app/g; s/com\.sora214\.plana_app/com.sora214.plana.app/g' "$PBX"
+  perl -0pi -e 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]+;/IPHONEOS_DEPLOYMENT_TARGET = 16.0;/g; s/com\.sora214\.planaApp/com.sora214.plana.app/g; s/com\.sora214\.plana_app/com.sora214.plana.app/g' "$PBX"
 fi
 FRAMEWORK_PLIST="ios/Flutter/AppFrameworkInfo.plist"
 if [[ -f "$FRAMEWORK_PLIST" ]]; then
-  "$PB" -c "Set :MinimumOSVersion 13.0" "$FRAMEWORK_PLIST" >/dev/null 2>&1 || true
+  "$PB" -c "Set :MinimumOSVersion 16.0" "$FRAMEWORK_PLIST" >/dev/null 2>&1 || true
 fi
 
 flutter pub get

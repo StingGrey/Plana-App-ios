@@ -565,7 +565,7 @@ class _AccessStepState extends ConsumerState<_AccessStep>
   late final Animation<double> _tokenExpand = ReverseAnimation(_botExpand);
 
   late final TokenProbe _probe = TokenProbe(
-    (t) => ref.read(naiClientProvider).subscription(t),
+    (t) => ref.read(naiClientProvider('')).subscription(t),
   );
 
   @override

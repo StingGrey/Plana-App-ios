@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../core/store/app_stores.dart';
 import '../../core/theme/app_theme.dart';
@@ -11,6 +13,8 @@ import '../local_gallery/local_gallery_page.dart';
 import '../inpaint/inpaint_overlay.dart';
 import 'gallery_state.dart';
 import 'models.dart';
+import 'save_settings.dart';
+import 'share_pipeline.dart';
 import 'widgets/film_strip.dart';
 import 'widgets/result_canvas.dart';
 import 'widgets/result_thumb.dart';
@@ -149,6 +153,23 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
       });
       return; // 一次一条
     }
+  }
+
+  void _shareResult(String id) {
+    unawaited(_shareResultAsync(id));
+  }
+
+  Future<void> _shareResultAsync(String id) async {
+    final result = ref.read(galleryProvider).results.where((r) => r.id == id).firstOrNull;
+    if (result == null) return;
+    final settings = await ref.read(saveSettingsProvider.future);
+    final prepared = await prepareShareFiles(
+      [result],
+      store: ref.read(appStoresProvider).gallery,
+      settings: settings,
+    );
+    if (!mounted || prepared.files.isEmpty) return;
+    await SharePlus.instance.share(ShareParams(files: prepared.files));
   }
 
   @override
@@ -391,6 +412,7 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
                 results: state.results,
                 selectedId: state.selectedId,
                 onSelect: selectResult,
+                onShare: _shareResult,
                 onDelete: (id) =>
                     ref.read(galleryProvider.notifier).deleteResults([id]),
                 jobs: pool.newestFirst,

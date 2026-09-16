@@ -11,7 +11,6 @@ import '../../core/util/prompt_convert.dart' show replacePromptUnderscores;
 import '../../core/theme/editor_theme.dart';
 import '../generate/generate_state.dart';
 import '../generate/widgets/common.dart' show hintSnack;
-import 'data/local_tag_db.dart';
 import 'data/suggestions.dart';
 import 'data/tag_completion.dart';
 import 'data/tag_translation_service.dart';
@@ -148,16 +147,10 @@ class _EditorPageState extends ConsumerState<EditorPage>
     // 一两秒,干等完才刷的话首屏是"提示词先出来、注音过一会儿整片冒出来" ——
     // 所以灌到前几片就各刷一次(词库按热度降序,前 8000 条已覆盖真实提示词约七成),
     // 整轮完再刷最后一次收尾。幂等,重复进编辑器不重复灌。
-    ref
-        .read(localTagDbProvider)
-        .warmTagMeta(
-          onChunk: () {
-            if (mounted) _refreshAnnotations();
-          },
-        )
-        .then((_) {
-          if (mounted) _refreshAnnotations();
-        });
+    // 离线索引已在 main() 启动阶段安装；此处只刷新一次注音层。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _refreshAnnotations();
+    });
     // 增强模式的后端翻译通道:回填到货即刷新注音。
     _transSvc = ref.read(tagTranslationServiceProvider);
     _transSvc.addListener(_refreshAnnotations);
@@ -1383,17 +1376,15 @@ class _EditorPageState extends ConsumerState<EditorPage>
     final t = _tokAtCursor();
     if (t == null) return;
     // 拖动/连点合并入撤销栈,不逐步刷屏
-    _applyText(
-      setTokMult(_controller.text, t, m),
-      t.innerStart,
-      structural: false,
-    );
+    final (text, cursor) = setTokMult(_controller.text, t, m);
+    _applyText(text, cursor, structural: false);
   }
 
   void _clearWeight() {
     final t = _tokAtCursor();
     if (t == null) return;
-    _applyText(clearWeight(_controller.text, t), t.coreStart);
+    final (text, cursor) = clearWeight(_controller.text, t);
+    _applyText(text, cursor);
   }
 
   /// 关联标签:插到当前词之后,光标留在原词条上(面板不跳)

@@ -8,26 +8,34 @@ import 'core/store/app_stores.dart';
 import 'core/store/gen_settings.dart';
 import 'core/theme/app_theme.dart';
 import 'core/theme/theme_settings.dart';
+import 'core/ui/input_focus_guard.dart';
 import 'core/util/haptics.dart';
 import 'core/util/image_scramble.dart' show registerPngPkgLicense;
 import 'features/generate/widgets/common.dart' show sharedAxisRoute;
 import 'features/import/import_panel.dart';
 import 'features/onboarding/welcome_page.dart';
 import 'features/shell/app_shell.dart';
+import 'features/editor/data/local_tag_db.dart';
+
+final _inputFocusGuard = InputFocusGuard();
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   registerPngPkgLicense();
+  final tagDb = LocalTagDb();
+  final tagDbReady = tagDb.install();
   // 启动装载持久化状态(工作台存档 + 图库索引 + 设置;失败按首启空档降级)。
   // 外观预读(首帧不闪色)现在直接取内存态 —— 设置已随 AppStores 一次读全,
   // 不再需要第二笔 I/O,也不必再解一次 Keystore。
   final stores = await AppStores.open();
+  await tagDbReady;
   final themeInit = loadThemeSettings(stores.prefs);
   runApp(
     ProviderScope(
       overrides: [
         appStoresProvider.overrideWithValue(stores),
         themeInitProvider.overrideWithValue(themeInit),
+        localTagDbProvider.overrideWithValue(tagDb),
       ],
       child: const PlanaApp(),
     ),
@@ -113,6 +121,7 @@ class _PlanaAppState extends ConsumerState<PlanaApp> {
       theme: AppTheme.light(ts.seed.color),
       darkTheme: AppTheme.dark(ts.seed.color),
       themeMode: ts.mode,
+      navigatorObservers: [_inputFocusGuard],
       home: const _AuthGate(),
       builder: (context, child) => Stack(
         fit: StackFit.expand,
