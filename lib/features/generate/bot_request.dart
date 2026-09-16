@@ -64,7 +64,7 @@ Map<String, dynamic> buildBotParams(
                 },
               ),
           ],
-          useCoords: chars.isNotEmpty,
+          useCoords: s.params.useCoords,
         )
       : s.prompt;
   final tagHints = promptPresetTagHints(presetId);
@@ -111,6 +111,10 @@ Map<String, dynamic> buildBotParams(
           'position': c.position ?? '',
         },
     ],
+    // 角色定位:AI 自选 / 用我摆的位置(官方 use_coords,默认 false)。
+    // 服务端 app.py 已跟着读这个字段(没摆站位的角色回落正中,不再按下标从写死
+    // 的表里代坐标),bot 线与直连同结果 —— 跑在旧版服务端上时才会回到老行为。
+    'useCoords': s.params.useCoords,
   };
 
   // 角色参考(CR / Precise Reference):仅 4.5;后端算 secondary = 1 - informationExtracted

@@ -9,7 +9,7 @@ import '../editor_state.dart';
 /// 从前一边写死 36、一边靠 9px 上下内边距把文字行高(bodyMedium 14×1.43≈20)
 /// 撑成 38 —— 差这 2px 就已经看得出左右不齐;更麻烦的是系统字号一放大,只有
 /// 药丸会跟着长,滑块纹丝不动,差距越拉越大。两边都钉死才不会各长各的。
-const double _kBarH = 38;
+const double _kBarH = 36;
 
 /// 标红模式的待处理提示。删除仍由页面按完整 tag 执行，
 /// 这里只呈现命中数和明确的一键操作。
@@ -78,7 +78,7 @@ class EditorBottomBar extends ConsumerWidget {
     return Material(
       color: scheme.surface,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 8, 12, 8),
+        padding: const EdgeInsets.fromLTRB(16, 6, 12, 6),
         child: Row(
           children: [
             _PosNegToggle(

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../../features/assistant/session_store.dart';
 import '../../features/gallery/gallery_store.dart';
 import '../../features/generate/workspace_store.dart';
 import '../../features/local_gallery/local_gallery_store.dart';
@@ -23,6 +24,7 @@ class AppStores {
     this.gallery,
     this.localGallery,
     this.ledger,
+    this.assistant,
     this.prefs,
   );
 
@@ -31,6 +33,7 @@ class AppStores {
   final GalleryStore gallery;
   final LocalGalleryStore localGallery;
   final KeyLedgerStore ledger;
+  final AssistantStore assistant;
 
   /// 非机密设置(主题/生成参数/编辑器…),见 [PrefsStore]。
   final PrefsStore prefs;
@@ -48,6 +51,7 @@ class AppStores {
       gallery,
       LocalGalleryStore(root, historyStore: gallery),
       KeyLedgerStore(root),
+      AssistantStore(blobs, root),
       PrefsStore.emptyForTest(root),
     );
   }
@@ -72,6 +76,7 @@ class AppStores {
     final gallery = GalleryStore(blobs, root);
     final localGallery = LocalGalleryStore(root, historyStore: gallery);
     final ledger = KeyLedgerStore(root);
+    final assistant = AssistantStore(blobs, root);
     try {
       await blobs.ensureReady();
     } catch (_) {}
@@ -85,7 +90,16 @@ class AppStores {
       // A missing/unsupported local-gallery directory must not block startup.
     }
     await ledger.load();
-    return AppStores._(blobs, workspace, gallery, localGallery, ledger, prefs);
+    await assistant.load();
+    return AppStores._(
+      blobs,
+      workspace,
+      gallery,
+      localGallery,
+      ledger,
+      assistant,
+      prefs,
+    );
   }
 
   /// 退后台/失焦即刻把防抖窗口里的挂起状态落盘(进程被杀不丢)。
@@ -94,6 +108,7 @@ class AppStores {
     gallery.flushIndex();
     localGallery.flushIndex();
     ledger.flush();
+    assistant.flush();
   }
 
   /// 启动后台维护(避开首帧,延迟几秒):清选图器缓存垃圾 + 远端图缓存裁剪
@@ -108,6 +123,7 @@ class AppStores {
         final live = <String>{
           ...await workspace.liveRefs(),
           ...await gallery.liveRefs(),
+          ...await assistant.liveRefs(),
         };
         await blobs.gc(live);
       } catch (_) {}

@@ -321,6 +321,80 @@ void main() {
       expect(resolveCharacterCenter('C4'), (x: 0.5, y: 0.7));
     });
 
+    // ── 对齐官方的角色定位模型(2026-09-04)──────────────────────────
+    //
+    // 官方没有「每角色 AUTO」:每个角色**建出来就有具体坐标**,而「要不要按坐标
+    // 出图」是位置区块上的全局二选一(AI's Choice / Custom = `use_coords`),
+    // 默认 false。我们早先恒发 true、用 position==null 表示 AUTO,那是自造的模型。
+    group('新角色的出生位置照官方的候选序挑', () {
+      String posAt(List<String?> taken) =>
+          nextSpawnPosition(taken, freeform: false);
+
+      test('第一个落正中,之后由内向外铺开', () {
+        // 官方 lc 表:中间横排由内向外 → 其余按到画面中心的距离铺开。
+        //
+        // ⚠ C4 排在 C2 **前面**看着别扭,但那是照抄官方比较器的必然结果:
+        //   `0.7 - 0.5 = 0.19999999999999996`,比 `0.5 - 0.3 = 0.2` 小一丁点,
+        //   于是下半边先于上半边。官方那句 hypot 相减吃的是同一个浮点误差,
+        //   照着"整齐"的直觉改反而会和官方错开。
+        const want = ['C3', 'B3', 'D3', 'A3', 'E3', 'C4', 'C2', 'D4'];
+        final got = <String?>[];
+        for (var i = 0; i < want.length; i++) {
+          got.add(posAt(got));
+        }
+        expect(got, want);
+      });
+
+      test('不挑已经被占的格子', () {
+        expect(posAt(['C3']), 'B3');
+        expect(posAt(['C3', 'B3']), 'D3');
+        // 中间空着就先补中间,不管已有的是谁
+        expect(posAt(['B3', 'D3']), 'C3');
+      });
+
+      test('V5 的自由坐标按距离判占用(< 0.1),不是按格子', () {
+        // 0.52,0.5 离正中只有 0.02,正中算被占了
+        expect(nextSpawnPosition(['0.5200,0.5000'], freeform: true), 'B3');
+        // 离得够远就不算
+        expect(nextSpawnPosition(['0.9000,0.9000'], freeform: true), 'C3');
+      });
+    });
+
+    group('use_coords 是全局开关,默认关', () {
+      test('默认 false —— 与官方一致(早先我们恒发 true)', () {
+        expect(const GenParams().useCoords, isFalse);
+      });
+
+      test('发送时照实发,且坐标只认角色自己的(不再按下标代入)', () {
+        final chars = [
+          const CharacterPrompt(id: 'a', name: 'a', positive: 'x', position: 'A1'),
+          const CharacterPrompt(id: 'b', name: 'b', positive: 'y', position: 'E5'),
+        ];
+        for (final on in [false, true]) {
+          final body = buildNaiPayload(
+            GenerateState.initial().copyWith(
+              prompt: '1girl',
+              characters: chars,
+              params: const GenParams().copyWith(
+                model: 'NAI 4.5 Full',
+                useCoords: on,
+              ),
+            ),
+            presetId: 'none',
+          ).body;
+          final v4 = (body['parameters'] as Map)['v4_prompt'] as Map;
+          expect(v4['use_coords'], on);
+          final caps = (v4['caption'] as Map)['char_captions'] as List;
+          expect((caps[0] as Map)['centers'], [
+            {'x': 0.1, 'y': 0.1},
+          ]);
+          expect((caps[1] as Map)['centers'], [
+            {'x': 0.9, 'y': 0.9},
+          ]);
+        }
+      });
+    });
+
     test('positionChipLabel:grid 模式显示会被吸附到的那一格', () {
       expect(positionChipLabel('0.4200,0.6700'), '42,67%');
       expect(positionChipLabel('0.4200,0.6700', grid: true), 'C4');

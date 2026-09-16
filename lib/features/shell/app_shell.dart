@@ -11,6 +11,7 @@ import '../../core/platform/platform_support.dart';
 import '../../core/store/app_stores.dart';
 import '../../core/store/prefs_store.dart';
 import '../../core/theme/app_theme.dart';
+import '../assistant/assistant_page.dart';
 import '../gallery/gallery_page.dart';
 import '../generate/generate_page.dart';
 import '../generate/generation_controller.dart';
@@ -21,7 +22,7 @@ import '../update/update_service.dart';
 import '../update/update_sheet.dart' show showUpdateSheet;
 import 'shell_state.dart';
 
-/// 全局骨架:4 tab 底部导航 + PageView 切页。
+/// 全局骨架:5 tab 底部导航 + PageView 切页。
 ///
 /// **横滑翻 tab 已关掉**(physics 恒为 NeverScrollable),切页只认底部导航点按与
 /// 程序跳转(生成完跳图库、缺 token 跳我的)。PageView 留着只为那段横向推移动画。
@@ -43,6 +44,7 @@ class _AppShellState extends ConsumerState<AppShell> {
   static const _phonePages = [
     GeneratePage(),
     GalleryPage(),
+    AssistantPage(),
     InspirationPage(),
     ProfilePage(),
   ];
@@ -50,6 +52,7 @@ class _AppShellState extends ConsumerState<AppShell> {
   static const _tabletPages = [
     _TabletWorkspace(),
     GalleryPage(tabletMode: true),
+    AssistantPage(),
     InspirationPage(),
     ProfilePage(),
   ];
@@ -210,6 +213,11 @@ class _AppShellState extends ConsumerState<AppShell> {
                     label: Text('图库'),
                   ),
                   NavigationRailDestination(
+                    icon: Icon(Icons.auto_awesome_outlined),
+                    selectedIcon: Icon(Icons.auto_awesome),
+                    label: Text('AI'),
+                  ),
+                  NavigationRailDestination(
                     icon: Icon(Icons.lightbulb_outline),
                     selectedIcon: Icon(Icons.lightbulb),
                     label: Text('灵感'),
@@ -251,6 +259,11 @@ class _AppShellState extends ConsumerState<AppShell> {
             icon: Icon(Icons.photo_library_outlined),
             selectedIcon: Icon(Icons.photo_library),
             label: '图库',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.auto_awesome_outlined),
+            selectedIcon: Icon(Icons.auto_awesome),
+            label: 'AI',
           ),
           NavigationDestination(
             icon: Icon(Icons.lightbulb_outline),

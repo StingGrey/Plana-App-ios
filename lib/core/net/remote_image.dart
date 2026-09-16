@@ -420,7 +420,7 @@ class RemoteImageProvider extends ImageProvider<RemoteImageProvider> {
 
   static Future<({Uint8List bytes, String? etag})> _download(
     String url,
-    StreamController<ImageChunkEvent> chunks,
+    StreamController<ImageChunkEvent>? chunks,
   ) async {
     final uri = Uri.parse(url);
     final resp = await _client.send(
@@ -439,7 +439,7 @@ class RemoteImageProvider extends ImageProvider<RemoteImageProvider> {
     final buf = BytesBuilder(copy: false);
     await for (final part in resp.stream) {
       buf.add(part);
-      if (!chunks.isClosed) {
+      if (chunks != null && !chunks.isClosed) {
         chunks.add(
           ImageChunkEvent(
             cumulativeBytesLoaded: buf.length,
@@ -465,6 +465,36 @@ class RemoteImageProvider extends ImageProvider<RemoteImageProvider> {
 
   @override
   String toString() => 'RemoteImageProvider("$url")';
+}
+
+/// 取一张远端图的原始字节，与 [RemoteImageProvider] 共用磁盘缓存。
+/// 这条路径用于需要保留原始 PNG/JPEG 元数据的导入场景。
+Future<Uint8List> fetchRemoteImageBytes(
+  String url, {
+  void Function(int received, int? total)? onProgress,
+  Duration timeout = const Duration(seconds: 60),
+}) async {
+  final hit = await RemoteImageStore.read(url);
+  if (hit != null) return hit;
+  StreamController<ImageChunkEvent>? chunks;
+  StreamSubscription<ImageChunkEvent>? sub;
+  if (onProgress != null) {
+    chunks = StreamController<ImageChunkEvent>();
+    sub = chunks.stream.listen(
+      (e) => onProgress(e.cumulativeBytesLoaded, e.expectedTotalBytes),
+    );
+  }
+  try {
+    final (:bytes, :etag) = await RemoteImageProvider._download(
+      url,
+      chunks,
+    ).timeout(timeout);
+    unawaited(RemoteImageStore.write(url, bytes, etag: etag));
+    return bytes;
+  } finally {
+    unawaited(sub?.cancel());
+    unawaited(chunks?.close());
+  }
 }
 
 /// `Image.network` 的替代:磁盘缓存 + 按布局宽限制解码尺寸。

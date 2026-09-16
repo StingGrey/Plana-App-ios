@@ -93,8 +93,16 @@ const _samplerMap = <String, String>{
   'DPM++ SDE': 'k_dpmpp_sde',
 };
 
-/// AUTO(未指定站位)角色按序轮换的中心点(对齐 web `novelai.ts`,避免多角色叠在中心)。
-const _autoCenters = <Map<String, double>>[
+/// 存量存档迁移用的旧「AUTO」坐标表 —— **不要用在新逻辑里**。
+///
+/// 2026-09-04 之前没有全局 use_coords 开关:恒发 `true`,而「AUTO」是每个角色
+/// 各自的一个档位,发送时按角色下标从这张表里代一个坐标进去。那是我们自己发明
+/// 的模型,官方没有(官方是位置区块上的 AI's Choice / Custom 全局二选一,新角色
+/// 建的时候就有具体坐标)。
+///
+/// 现在只剩一个用途:把老存档里 `position == null` 的角色**按原样**补回坐标,
+/// 让老提示词还能复现出同一张图。新角色一律走 [nextSpawnPosition]。
+const kLegacyAutoCenters = <Map<String, double>>[
   {'x': 0.3, 'y': 0.5},
   {'x': 0.7, 'y': 0.5},
   {'x': 0.5, 'y': 0.3},
@@ -103,13 +111,14 @@ const _autoCenters = <Map<String, double>>[
   {'x': 0.7, 'y': 0.7},
 ];
 
-/// 角色中心点:网格 id('A1'..'E5')与自由坐标串('x,y',V5)统一解析(见
-/// [resolveCharacterCenter]);AUTO/无位置 → 按角色序 [index] 轮换 [_autoCenters]。
-/// 与 web `novelai.ts` 一致。
-Map<String, double> _center(String? pos, int index) {
+/// 角色中心点:网格 id('A1'..'E5')与自由坐标串('x,y',V5)统一解析。
+///
+/// 角色建出来就带坐标(见 GenerateNotifier._spawnPos),所以正常不会走到兜底;
+/// 真解不出来时回落正中 —— 官方 25 格占满时也是这么兜的。
+/// 「不指定站位」现在由全局 `use_coords=false` 表达,不再靠每个角色的空值。
+Map<String, double> _center(String? pos) {
   final c = resolveCharacterCenter(pos);
-  if (c != null) return {'x': c.x, 'y': c.y};
-  return _autoCenters[index % _autoCenters.length];
+  return c != null ? {'x': c.x, 'y': c.y} : {'x': 0.5, 'y': 0.5};
 }
 
 /// 由创作页状态构造 NAI `/ai/generate-image-stream` 请求体(镜像 web `services/novelai.ts`)。
@@ -155,11 +164,10 @@ Map<String, double> _center(String? pos, int index) {
   final chars = s.characters
       .where((c) => c.enabled && c.positive.trim().isNotEmpty)
       .toList();
-  // web: use_coords = 有启用角色即 true(不看是否指定站位)
-  final useCoords = chars.isNotEmpty;
-  final centers = [
-    for (var i = 0; i < chars.length; i++) _center(chars[i].position, i),
-  ];
+  // 官方的 use_coords 是位置区块上的 AI's Choice / Custom 全局二选一,**默认
+  // false**。早先这里恒发 `chars.isNotEmpty`,那是我们自己的模型,不是官方行为。
+  final useCoords = s.params.useCoords;
+  final centers = [for (final c in chars) _center(c.position)];
   // 只有 V5 吃自由坐标(官方能力位 freeformCharacterPosition);其余模型官方在
   // 发送前把坐标吸附到 5×5 格心,存着的值不动。char_captions 发吸附后的,
   // characterPrompts 仍发原始坐标 —— 那是给导入回放用的,不该被这次请求对模型
