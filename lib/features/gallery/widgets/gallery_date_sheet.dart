@@ -100,9 +100,21 @@ class _DateFilterSheet extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text(
-              '按日期筛选',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+            Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    '按日期筛选',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                  ),
+                ),
+                TextButton(
+                  onPressed: current.active
+                      ? () => Navigator.pop(context, GalleryDateKind.all)
+                      : null,
+                  child: const Text('重置'),
+                ),
+              ],
             ),
             const SizedBox(height: 12),
             // 与历史筛选胶囊同字号和高度；按文字宽度排布，窄屏自然换行。

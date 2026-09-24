@@ -103,6 +103,17 @@ void main() {
       container.read(uiPrefsProvider).dateFilter.kind,
       GalleryDateKind.range,
     );
+
+    await tester.tap(find.byKey(const ValueKey('gallery-date-filter')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('重置'));
+    await tester.pumpAndSettle();
+    expect(find.byType(ResultThumb), findsNWidgets(2));
+    expect(find.text('日期'), findsOneWidget);
+    expect(
+      container.read(uiPrefsProvider).dateFilter.kind,
+      GalleryDateKind.all,
+    );
     expect(tester.takeException(), isNull);
   });
 
