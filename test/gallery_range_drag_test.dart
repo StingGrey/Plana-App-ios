@@ -105,6 +105,35 @@ void main() {
     expect(find.text('取消'), findsOneWidget);
   });
 
+  testWidgets('端点圆叠在色带上面，色带与圆同高', (tester) async {
+    await mount(
+      tester,
+      start: DateTime(2026, 9, 14),
+      end: DateTime(2026, 9, 20),
+    );
+    final week = tester.renderObject(
+      find.ancestor(of: day(14), matching: find.byType(CustomPaint)).first,
+    );
+    Rect? bandRect;
+    double? radius;
+    // 这一周只有色带是矩形;端点圆必须排在它之后画。
+    expect(
+      week,
+      paints
+        ..something((method, args) {
+          if (method != #drawRect) return false;
+          bandRect = args[0] as Rect;
+          return true;
+        })
+        ..something((method, args) {
+          if (method != #drawCircle) return false;
+          radius = args[1] as double;
+          return true;
+        }),
+    );
+    expect(bandRect!.height, moreOrLessEquals(radius! * 2));
+  });
+
   testWidgets('直接拖动终点，月份不动', (tester) async {
     await mount(tester);
     final before = tester.getTopLeft(day(3));

@@ -695,14 +695,14 @@ class _GalleryRangePickerState extends State<GalleryRangePicker> {
             customBorder: shape,
             containedInkWell: true,
             overlayColor: picker.dayOverlayColor ?? defaults.dayOverlayColor,
-            child: Ink(
+            // 不能用 Ink:Ink 画在底下的 Material 上,会被这一行的色带盖住半边。
+            child: Container(
               decoration: decoration,
-              child: Center(
-                child: Text(
-                  dayText,
-                  style: (picker.dayStyle ?? defaults.dayStyle)?.apply(
-                    color: foreground,
-                  ),
+              alignment: Alignment.center,
+              child: Text(
+                dayText,
+                style: (picker.dayStyle ?? defaults.dayStyle)?.apply(
+                  color: foreground,
                 ),
               ),
             ),
@@ -785,13 +785,16 @@ class _RangeBand extends CustomPainter {
         : to == 6
         ? size.width
         : x(to + 1.0);
+    // 色带与端点圆同高:圆的直径取格子较短边,色带高了接头处会比圆粗一圈。
+    final height = math.min(tile, size.height) - pad * 2;
+    final top = (size.height - height) / 2;
     final rtl = direction == TextDirection.rtl;
     canvas.drawRect(
       Rect.fromLTRB(
         rtl ? size.width - right : left,
-        pad,
+        top,
         rtl ? size.width - left : right,
-        size.height - pad,
+        top + height,
       ),
       Paint()..color = color,
     );
