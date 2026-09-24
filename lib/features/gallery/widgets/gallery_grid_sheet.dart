@@ -1724,51 +1724,56 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
             // 分组 + 筛选 chips + 检索索引回填进度
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: [
-                    _chip(
-                      scheme,
-                      label: _groupBy.label,
-                      active: _groupBy != GalleryGroupBy.day,
-                      onTap: _pickGroupBy,
-                    ),
-                    const SizedBox(width: 8),
-                    _chip(
-                      scheme,
-                      label: _modelFilter == null
-                          ? '模型'
-                          : (_modelFilter!.isEmpty ? '未知' : _modelFilter!),
-                      active: _modelFilter != null,
-                      onTap: () => _pickModelFilter(results, search.byId),
-                    ),
-                    const SizedBox(width: 8),
-                    _chip(
-                      scheme,
-                      key: const ValueKey('gallery-date-filter'),
-                      label: _dateFilter.label(now),
-                      active: _dateFilter.active,
-                      onTap: _pickTimeFilter,
-                    ),
-                    if (search.building || grouping) ...[
-                      const SizedBox(width: 12),
-                      const SizedBox(
-                        width: 12,
-                        height: 12,
-                        child: CircularProgressIndicator(strokeWidth: 1.8),
+              // Column 默认把按内容收缩的横向滚动视图居中；占满行宽后
+              // chips 从左侧 16px 起排，长日期标签仍可横向滚动。
+              child: SizedBox(
+                width: double.infinity,
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      _chip(
+                        scheme,
+                        label: _groupBy.label,
+                        active: _groupBy != GalleryGroupBy.day,
+                        onTap: _pickGroupBy,
                       ),
-                      const SizedBox(width: 6),
-                      Text(
-                        search.building
-                            ? '索引 ${search.done}/${search.total}'
-                            : '分组中',
-                        style: context.texts.bodySmall!.copyWith(
-                          color: scheme.outline,
+                      const SizedBox(width: 8),
+                      _chip(
+                        scheme,
+                        label: _modelFilter == null
+                            ? '模型'
+                            : (_modelFilter!.isEmpty ? '未知' : _modelFilter!),
+                        active: _modelFilter != null,
+                        onTap: () => _pickModelFilter(results, search.byId),
+                      ),
+                      const SizedBox(width: 8),
+                      _chip(
+                        scheme,
+                        key: const ValueKey('gallery-date-filter'),
+                        label: _dateFilter.label(now),
+                        active: _dateFilter.active,
+                        onTap: _pickTimeFilter,
+                      ),
+                      if (search.building || grouping) ...[
+                        const SizedBox(width: 12),
+                        const SizedBox(
+                          width: 12,
+                          height: 12,
+                          child: CircularProgressIndicator(strokeWidth: 1.8),
                         ),
-                      ),
+                        const SizedBox(width: 6),
+                        Text(
+                          search.building
+                              ? '索引 ${search.done}/${search.total}'
+                              : '分组中',
+                          style: context.texts.bodySmall!.copyWith(
+                            color: scheme.outline,
+                          ),
+                        ),
+                      ],
                     ],
-                  ],
+                  ),
                 ),
               ),
             ),

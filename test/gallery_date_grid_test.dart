@@ -68,6 +68,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(ResultThumb), findsNWidgets(2));
     expect(find.text('按时间'), findsOneWidget);
+    expect(tester.getTopLeft(find.text('按时间')).dx, closeTo(28, 1));
 
     await tester.tap(find.byKey(const ValueKey('gallery-date-filter')));
     await tester.pumpAndSettle();

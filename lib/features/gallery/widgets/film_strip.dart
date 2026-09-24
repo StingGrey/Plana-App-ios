@@ -117,9 +117,13 @@ class _FilmStripState extends State<FilmStrip> {
   @override
   void didUpdateWidget(FilmStrip old) {
     super.didUpdateWidget(old);
-    if (old.selectedId != widget.selectedId ||
-        old.results.length != widget.results.length ||
-        old.jobs.length != widget.jobs.length) {
+    // 删除后保持用户正在看的胶片位置。即使删的是选中图，状态会自动改选相邻图，
+    // 此时也不能把手动滚开的胶片条重新拉回选中项。
+    final deleted = widget.results.length < old.results.length;
+    if (!deleted &&
+        (old.selectedId != widget.selectedId ||
+            old.results.length != widget.results.length ||
+            old.jobs.length != widget.jobs.length)) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _reveal());
     }
   }

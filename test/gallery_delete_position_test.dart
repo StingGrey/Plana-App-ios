@@ -79,4 +79,63 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pumpAndSettle();
   });
+
+  testWidgets('删除图片后胶片条不滚回选中项', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final stores = AppStores.ephemeral();
+    final container = ProviderContainer(
+      overrides: [appStoresProvider.overrideWithValue(stores)],
+    );
+    addTearDown(container.dispose);
+    final gallery = container.read(galleryProvider.notifier);
+    final bytes = File('assets/app_icon.png').readAsBytesSync();
+    final ids = [
+      for (var i = 0; i < 16; i++)
+        gallery.addResult(bytes: bytes, width: 64, height: 64, seed: i).id,
+    ];
+    gallery.select(ids.last);
+    await tester.runAsync(() async {
+      await stores.prefs.write(key: 'hint_save_longpress', value: '1');
+      await stores.prefs.write(key: 'hint_strip_swipe', value: '1');
+    });
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp(
+          theme: AppTheme.light(),
+          home: const Scaffold(body: GalleryPage()),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final strip = find.byType(FilmStrip);
+    final list = find.descendant(of: strip, matching: find.byType(ListView));
+    final scroll = tester.widget<ListView>(list).controller!;
+    scroll.jumpTo(500);
+    await tester.pumpAndSettle();
+    expect(scroll.offset, closeTo(500, 1));
+
+    tester.widget<FilmStrip>(strip).onDelete(ids[5]);
+    await tester.pumpAndSettle();
+    expect(container.read(galleryProvider).selectedId, ids.last);
+    expect(scroll.offset, closeTo(500, 1));
+
+    tester.widget<FilmStrip>(strip).onDelete(ids.last);
+    await tester.pumpAndSettle();
+    expect(container.read(galleryProvider).selectedId, ids[14]);
+    expect(scroll.offset, closeTo(500, 1));
+
+    tester.widget<FilmStrip>(strip).onSelect(ids.first);
+    await tester.pumpAndSettle();
+    expect(scroll.offset, greaterThan(500)); // 主动选图仍会定位到选中项。
+
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+  });
 }
