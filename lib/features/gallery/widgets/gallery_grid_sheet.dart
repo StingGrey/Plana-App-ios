@@ -1511,9 +1511,10 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
 
     // 筛选管线(先廉价的时间,再查表)
     final terms = searchTerms(_query);
+    final inDate = _dateFilter.matcher(now);
     final filtered = <ResultImage>[
       for (final r in results)
-        if (_dateFilter.matches(r.createdAt, now) &&
+        if (inDate(r.createdAt) &&
             _passModel(r, search.byId) &&
             _passQuery(r, search.byId, terms))
           r,

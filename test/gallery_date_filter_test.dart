@@ -60,19 +60,34 @@ void main() {
     );
     expect(const GalleryDateFilter.all().matches(0, now), isTrue);
   });
+  test('预先算好的边界逐张判断，和单次判断一致', () {
+    final f = GalleryDateFilter(
+      GalleryDateKind.range,
+      start: DateTime(2026, 9, 3),
+      end: DateTime(2026, 9, 11),
+    );
+    final inRange = f.matcher(now);
+    for (final d in [
+      DateTime(2026, 9, 2, 23, 59),
+      DateTime(2026, 9, 3),
+      DateTime(2026, 9, 11, 23, 59),
+      DateTime(2026, 9, 12),
+    ]) {
+      expect(inRange(d.millisecondsSinceEpoch), matches(f, d));
+    }
+    expect(inRange(0), isFalse);
+  });
   test('旧偏好迁移，新日期按年月日往返，坏值不破坏其他偏好', () {
     expect(
       UiPrefs.fromJson({'galleryDaysFilter': 7}).dateFilter.kind,
       GalleryDateKind.week,
     );
-    final p = UiPrefs(
-      galleryDateFilter: GalleryDateFilter(
-        GalleryDateKind.range,
-        start: DateTime(2026, 9, 1),
-        end: DateTime(2026, 9, 9),
-      ),
+    final range = GalleryDateFilter(
+      GalleryDateKind.range,
+      start: DateTime(2026, 9, 1),
+      end: DateTime(2026, 9, 9),
     );
-    final back = UiPrefs.fromJson(p.toJson()).dateFilter;
+    final back = GalleryDateFilter.fromJson(range.toJson());
     expect(back.start, DateTime(2026, 9, 1));
     expect(back.end, DateTime(2026, 9, 9));
     for (final raw in [
@@ -87,12 +102,34 @@ void main() {
       },
       {'kind': 'day', 'start': 'bad'},
     ]) {
+      expect(GalleryDateFilter.fromJson(raw).kind, GalleryDateKind.all);
       final invalid = UiPrefs.fromJson({
         'galleryDateFilter': raw,
         'galleryColumns': 4,
       });
       expect(invalid.dateFilter.kind, GalleryDateKind.all);
       expect(invalid.galleryColumns, 4);
+    }
+  });
+  test('重启后指定日期不再生效，相对日期照旧', () {
+    UiPrefs reload(GalleryDateFilter f) =>
+        UiPrefs.fromJson(UiPrefs(galleryDateFilter: f).toJson());
+    for (final fixed in [
+      GalleryDateFilter(GalleryDateKind.day, start: DateTime(2026, 9, 9)),
+      GalleryDateFilter(
+        GalleryDateKind.range,
+        start: DateTime(2026, 9, 1),
+        end: DateTime(2026, 9, 9),
+      ),
+    ]) {
+      expect(reload(fixed).dateFilter.kind, GalleryDateKind.all);
+    }
+    for (final kind in [
+      GalleryDateKind.today,
+      GalleryDateKind.week,
+      GalleryDateKind.month,
+    ]) {
+      expect(reload(GalleryDateFilter(kind)).dateFilter.kind, kind);
     }
   });
 }

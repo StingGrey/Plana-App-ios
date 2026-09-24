@@ -1,13 +1,32 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show RenderMetaData;
-import 'package:flutter/scheduler.dart' show Ticker;
 
 import '../../../core/util/haptics.dart';
 
-/// Material 风格的范围日历；只有蓝色端点接管拖动，其余位置仍交给月份滚动。
+// 尺寸与行高取 showDatePicker(Material 3)的数值:和「指定日期」那只弹窗
+// 并排看是同一套东西。Flutter 自带的范围日历只有全屏一种,所以这里自己画。
+const _portraitSize = Size(360, 568);
+const _landscapeSize = Size(496, 346);
+const _headerHeight = 120.0;
+const _headerLandscapeWidth = 152.0;
+const _subHeaderHeight = 52.0;
+const _actionsHeight = 52.0;
+// 字号上限同 showDateRangePicker;再大六周排不下。
+const _maxTextScale = 1.3;
+const _monthDuration = Duration(milliseconds: 200);
+// 端点拖出日历后先停一下再翻,免得拖过头一路翻走;按住不放则接着翻。
+const _flipDelay = Duration(milliseconds: 450);
+const _flipRepeat = Duration(milliseconds: 700);
+
+/// 日期范围弹窗:标题、年月切换、按月翻页、取消 / 应用,版式同单日选择器。
+///
+/// 点选:先点起点再点终点;范围完整时再点一天就从那天重新开始。
+/// 蓝色端点按下即可拖动;拖到日历上方 / 下方停一下,翻到上 / 下个月接着拖。
+/// 其余位置照常左右滑动翻月。
 class GalleryRangePicker extends StatefulWidget {
   const GalleryRangePicker({
     super.key,
@@ -25,39 +44,42 @@ class GalleryRangePicker extends StatefulWidget {
   State<GalleryRangePicker> createState() => _GalleryRangePickerState();
 }
 
-class _GalleryRangePickerState extends State<GalleryRangePicker>
-    with SingleTickerProviderStateMixin {
+class _GalleryRangePickerState extends State<GalleryRangePicker> {
   late DateTime _start = DateUtils.dateOnly(widget.initialRange.start);
   late DateTime? _end = DateUtils.dateOnly(widget.initialRange.end);
   late final DateTime _today = DateUtils.dateOnly(
     widget.currentDate ?? DateTime.now(),
   );
-  late final int _initialMonth = DateUtils.monthDelta(widget.firstDate, _start);
-  final _scroll = ScrollController();
-  final _viewport = GlobalKey();
-  final _after = UniqueKey();
-  late final Ticker _ticker;
-  Duration _lastTick = Duration.zero;
+  late final DateTime _first = DateUtils.dateOnly(widget.firstDate);
+  late final DateTime _last = DateUtils.dateOnly(widget.lastDate);
+  late final int _monthCount = DateUtils.monthDelta(_first, _last) + 1;
+  late PageController _pages = _pagesAt(_pageOf(_start));
+  late DateTime _month = _monthAt(_pages.initialPage);
+  bool _years = false;
+  final _grid = GlobalKey();
+  Timer? _flip;
+  int _flipDir = 0;
   Offset? _pointer, _down;
   DateTime? _anchor, _origin, _lastDragDay;
   (DateTime, DateTime?)? _beforeDrag;
   bool _dragging = false, _moved = false;
 
-  @override
-  void initState() {
-    super.initState();
-    _ticker = createTicker(_autoScroll);
-  }
+  int _pageOf(DateTime day) =>
+      DateUtils.monthDelta(_first, day).clamp(0, _monthCount - 1);
+  DateTime _monthAt(int page) => DateUtils.addMonthsToMonthDate(_first, page);
+
+  // 从年份列表回来要换新控制器;keepPage 关掉,免得被 PageStorage 拉回旧页。
+  PageController _pagesAt(int page) =>
+      PageController(initialPage: page, keepPage: false);
 
   @override
   void dispose() {
-    _ticker.dispose();
-    _scroll.dispose();
+    _flip?.cancel();
+    _pages.dispose();
     super.dispose();
   }
 
-  bool _enabled(DateTime day) =>
-      !day.isBefore(widget.firstDate) && !day.isAfter(widget.lastDate);
+  bool _enabled(DateTime day) => !day.isBefore(_first) && !day.isAfter(_last);
 
   DateTime? _dayAt(Offset position) {
     final hit = HitTestResult();
@@ -77,7 +99,7 @@ class _GalleryRangePickerState extends State<GalleryRangePicker>
   }
 
   bool _canDrag(Offset position) {
-    if (_dragging) return false;
+    if (_dragging || _years) return false;
     final day = _dayAt(position);
     return day != null && (day == _start || day == _end);
   }
@@ -86,19 +108,18 @@ class _GalleryRangePickerState extends State<GalleryRangePicker>
     final day = _dayAt(position)!;
     _beforeDrag = (_start, _end);
     _origin = _lastDragDay = day;
-    // 固定另一端；越过它时自动交换起止，不产生反向或无效范围。
+    // 固定另一端;越过它时自动交换起止,不产生反向或无效范围。
     _anchor = day == _start && _end != null && _end != _start ? _end : _start;
     _pointer = _down = position;
     _moved = false;
-    _lastTick = Duration.zero;
     setState(() => _dragging = true);
-    _ticker.start();
   }
 
   void _moveDrag(Offset position) {
     _pointer = position;
     _moved = _moved || (position - _down!).distance > kTouchSlop;
     if (!_moved) return;
+    _updateFlip(position);
     final day = _dayAt(position);
     if (day == null || day == _lastDragDay) return;
     _lastDragDay = day;
@@ -112,7 +133,7 @@ class _GalleryRangePickerState extends State<GalleryRangePicker>
 
   void _endDrag(Offset position) {
     _moveDrag(position);
-    _ticker.stop();
+    _stopFlip();
     final tap = !_moved;
     final origin = _origin!;
     setState(() => _dragging = false);
@@ -120,7 +141,7 @@ class _GalleryRangePickerState extends State<GalleryRangePicker>
   }
 
   void _cancelDrag() {
-    _ticker.stop();
+    _stopFlip();
     final previous = _beforeDrag;
     if (!mounted || previous == null) return;
     setState(() {
@@ -130,33 +151,42 @@ class _GalleryRangePickerState extends State<GalleryRangePicker>
     });
   }
 
-  void _autoScroll(Duration elapsed) {
-    final dt = (elapsed - _lastTick).inMicroseconds / 1000000;
-    _lastTick = elapsed;
-    if (!_moved || !_scroll.hasClients) return;
-    final box = _viewport.currentContext?.findRenderObject();
-    if (box is! RenderBox || !box.hasSize) return;
-    final point = _pointer!;
-    final bounds = box.localToGlobal(Offset.zero) & box.size;
-    if (point.dx < bounds.left || point.dx > bounds.right) return;
-    const edge = 48.0;
-    final speed = point.dy < bounds.top + edge
-        ? -280 * ((bounds.top + edge - point.dy) / edge).clamp(0.0, 1.0)
-        : point.dy > bounds.bottom - edge
-        ? 280 * ((point.dy - bounds.bottom + edge) / edge).clamp(0.0, 1.0)
-        : 0.0;
-    if (speed == 0) return;
-    final position = _scroll.position;
-    final next = (position.pixels + speed * math.min(dt, .05)).clamp(
-      position.minScrollExtent,
-      position.maxScrollExtent,
-    );
-    if (next == position.pixels) return;
-    _scroll.jumpTo(next);
-    // 滚动布局完成后再按实际命中的日期更新，避免使用旧格子坐标。
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && _dragging) _moveDrag(_pointer!);
-    });
+  /// 手指在日历上方 → 往前翻,在下方 → 往后翻,回到日历里就停。
+  void _updateFlip(Offset position) {
+    final box = _grid.currentContext?.findRenderObject();
+    var dir = 0;
+    if (box is RenderBox && box.hasSize) {
+      final rect = box.localToGlobal(Offset.zero) & box.size;
+      dir = position.dy < rect.top
+          ? -1
+          : position.dy > rect.bottom
+          ? 1
+          : 0;
+    }
+    if (dir == _flipDir) return;
+    _stopFlip();
+    _flipDir = dir;
+    if (dir != 0) _flip = Timer(_flipDelay, _flipMonth);
+  }
+
+  void _stopFlip() {
+    _flip?.cancel();
+    _flip = null;
+    _flipDir = 0;
+  }
+
+  void _flipMonth() {
+    if (!mounted || !_dragging || !_pages.hasClients) return;
+    final page = _pages.page!.round() + _flipDir;
+    if (page < 0 || page >= _monthCount) return;
+    Haptics.selection();
+    _pages
+        .animateToPage(page, duration: _monthDuration, curve: Curves.ease)
+        .then((_) {
+          // 翻完按手指实际压着的那天再算一次,不沿用翻页前的格子。
+          if (mounted && _dragging) _moveDrag(_pointer!);
+        });
+    _flip = Timer(_flipRepeat, _flipMonth);
   }
 
   void _pick(DateTime day) {
@@ -172,18 +202,30 @@ class _GalleryRangePickerState extends State<GalleryRangePicker>
     });
   }
 
+  void _showMonth(DateTime month) {
+    // 年份列表期间月份页不在树上,旧控制器已脱离,可以直接换掉。
+    final old = _pages;
+    final page = _pageOf(month);
+    setState(() {
+      _years = false;
+      _pages = _pagesAt(page);
+      _month = _monthAt(page);
+    });
+    old.dispose();
+  }
+
   Future<void> _input() async {
     final pickerContext = context;
     final range = await showDateRangePicker(
       context: context,
       builder: (_, child) =>
           Localizations.override(context: pickerContext, child: child),
-      firstDate: widget.firstDate,
-      lastDate: widget.lastDate,
+      firstDate: _first,
+      lastDate: _last,
       currentDate: _today,
       initialDateRange: DateTimeRange(start: _start, end: _end ?? _start),
       initialEntryMode: DatePickerEntryMode.inputOnly,
-      helpText: '选择起止日期（包含结束当天）',
+      helpText: '选择日期范围',
       cancelText: '返回日历',
       confirmText: '应用',
       fieldStartLabelText: '开始日期',
@@ -194,173 +236,166 @@ class _GalleryRangePickerState extends State<GalleryRangePicker>
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colors = DatePickerTheme.of(context);
+    final picker = DatePickerTheme.of(context);
     final defaults = DatePickerTheme.defaults(context);
-    final localizations = MaterialLocalizations.of(context);
-    final header =
-        colors.rangePickerHeaderForegroundColor ??
-        defaults.rangePickerHeaderForegroundColor;
-    final textStyle =
-        colors.rangePickerHeaderHeadlineStyle ??
-        defaults.rangePickerHeaderHeadlineStyle;
     final landscape =
         MediaQuery.orientationOf(context) == Orientation.landscape;
-    String dateLabel(DateTime day) =>
+    final scale =
+        MediaQuery.textScalerOf(
+          context,
+        ).clamp(maxScaleFactor: _maxTextScale).scale(14) /
+        14;
+    final size = (landscape ? _landscapeSize : _portraitSize) * scale;
+    return Dialog(
+      backgroundColor: picker.backgroundColor ?? defaults.backgroundColor,
+      elevation: picker.elevation ?? defaults.elevation,
+      shadowColor: picker.shadowColor ?? defaults.shadowColor,
+      surfaceTintColor: picker.surfaceTintColor ?? defaults.surfaceTintColor,
+      shape: picker.shape ?? defaults.shape,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+      clipBehavior: Clip.antiAlias,
+      child: SizedBox(
+        width: size.width,
+        height: size.height,
+        child: MediaQuery.withClampedTextScaling(
+          maxScaleFactor: _maxTextScale,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final calendar = Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _monthBar(),
+                  Expanded(child: _years ? _yearList() : _pager(landscape)),
+                  _actions(),
+                ],
+              );
+              if (landscape) {
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _header(landscape: true),
+                    VerticalDivider(width: 0, color: picker.dividerColor),
+                    Expanded(child: calendar),
+                  ],
+                );
+              }
+              // 分屏之类的矮窗口先让出标题栏,日历本身保持能用。
+              final roomy =
+                  constraints.maxHeight >=
+                  _headerHeight + _subHeaderHeight + _actionsHeight + 7 * 32;
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (roomy) ...[
+                    _header(landscape: false),
+                    Divider(height: 0, color: picker.dividerColor),
+                  ],
+                  Expanded(child: calendar),
+                ],
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _header({required bool landscape}) {
+    final picker = DatePickerTheme.of(context);
+    final defaults = DatePickerTheme.defaults(context);
+    final labels = MaterialLocalizations.of(context);
+    final foreground =
+        picker.headerForegroundColor ?? defaults.headerForegroundColor;
+    final help = Text(
+      '选择日期范围',
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: (picker.headerHelpStyle ?? defaults.headerHelpStyle)?.copyWith(
+        color: foreground,
+      ),
+    );
+    String label(DateTime day) =>
         day.year == _today.year && _start.year == (_end ?? _start).year
-        ? localizations.formatShortMonthDay(day)
-        : localizations.formatShortDate(day);
+        ? labels.formatShortMonthDay(day)
+        : labels.formatShortDate(day);
+    final text =
+        '${label(_start)} – ${_end == null ? labels.dateRangeEndLabel : label(_end!)}';
+    final titleStyle = (picker.headerHeadlineStyle ?? defaults.headerHeadlineStyle)
+        ?.copyWith(color: foreground);
     final input = IconButton(
-      tooltip: localizations.inputDateModeButtonLabel,
+      tooltip: labels.inputDateModeButtonLabel,
+      color: foreground,
       onPressed: _dragging ? null : _input,
       icon: const Icon(Icons.edit_outlined),
     );
-    final monthCount =
-        DateUtils.monthDelta(widget.firstDate, widget.lastDate) + 1;
-    final calendarWidth = landscape ? 384.0 : 480.0;
-    return Dialog.fullscreen(
-      child: Scaffold(
-        backgroundColor:
-            colors.rangePickerBackgroundColor ??
-            defaults.rangePickerBackgroundColor,
-        appBar: AppBar(
-          backgroundColor:
-              colors.rangePickerHeaderBackgroundColor ??
-              defaults.rangePickerHeaderBackgroundColor,
-          foregroundColor: header,
-          elevation: 0,
-          scrolledUnderElevation: 0,
-          leading: IconButton(
-            tooltip: '取消',
-            onPressed: () => Navigator.pop(context),
-            icon: const Icon(Icons.close),
-          ),
-          actions: [
-            if (landscape) input,
-            TextButton(
-              style: TextButton.styleFrom(foregroundColor: header),
-              onPressed: _end == null || _dragging
-                  ? null
-                  : () => Navigator.pop(
-                      context,
-                      DateTimeRange(start: _start, end: _end!),
-                    ),
-              child: const Text('应用'),
-            ),
-            const SizedBox(width: 8),
-          ],
-          bottom: PreferredSize(
-            preferredSize: Size.fromHeight(
-              math.max(
-                80,
-                80 * MediaQuery.textScalerOf(context).scale(14) / 14,
+    final background =
+        picker.headerBackgroundColor ?? defaults.headerBackgroundColor;
+    if (landscape) {
+      return SizedBox(
+        width: _headerLandscapeWidth,
+        child: Material(
+          color: background,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SizedBox(height: 16),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: help,
               ),
-            ),
-            child: Padding(
-              padding: EdgeInsets.only(
-                left: MediaQuery.sizeOf(context).width < 360 ? 24 : 56,
-                right: 8,
-                bottom: 16,
-              ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '选择起止日期（包含结束当天）',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style:
-                              (colors.rangePickerHeaderHelpStyle ??
-                                      defaults.rangePickerHeaderHelpStyle)
-                                  ?.copyWith(color: header),
-                        ),
-                        const SizedBox(height: 8),
-                        FittedBox(
-                          fit: BoxFit.scaleDown,
-                          alignment: AlignmentDirectional.centerStart,
-                          child: Text(
-                            '${dateLabel(_start)} – ${_end == null ? '结束日期' : dateLabel(_end!)}',
-                            style: textStyle?.copyWith(color: header),
-                          ),
-                        ),
-                      ],
-                    ),
+              const SizedBox(height: 24),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Text(
+                    text,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: titleStyle,
                   ),
-                  if (!landscape) input,
-                ],
+                ),
               ),
-            ),
+              Padding(
+                padding: const EdgeInsetsDirectional.only(
+                  start: 8,
+                  end: 4,
+                  bottom: 6,
+                ),
+                child: input,
+              ),
+            ],
           ),
         ),
-        body: SafeArea(
-          top: false,
+      );
+    }
+    return SizedBox(
+      height: _headerHeight,
+      child: Material(
+        color: background,
+        child: Padding(
+          padding: const EdgeInsetsDirectional.only(
+            start: 24,
+            end: 12,
+            bottom: 12,
+          ),
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Center(
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(maxWidth: calendarWidth),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    child: SizedBox(
-                      height: 42,
-                      child: Row(
-                        children: [
-                          for (var i = 0; i < 7; i++)
-                            Expanded(
-                              child: ExcludeSemantics(
-                                child: Center(
-                                  child: Text(
-                                    localizations.narrowWeekdays[(i +
-                                            localizations.firstDayOfWeekIndex) %
-                                        7],
-                                    style: theme.textTheme.titleSmall,
-                                  ),
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
+              const SizedBox(height: 16),
+              help,
+              const Flexible(child: SizedBox(height: 38)),
+              Row(
+                children: [
+                  Expanded(
+                    // 跨年时两端都带年份,缩一号也不折行。
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: AlignmentDirectional.centerStart,
+                      child: Text(text, style: titleStyle),
                     ),
                   ),
-                ),
-              ),
-              const Divider(height: 1),
-              Expanded(
-                child: RawGestureDetector(
-                  gestures: {
-                    _EndpointDrag:
-                        GestureRecognizerFactoryWithHandlers<_EndpointDrag>(
-                          _EndpointDrag.new,
-                          (gesture) => gesture
-                            ..canStart = _canDrag
-                            ..onStart = _startDrag
-                            ..onMove = _moveDrag
-                            ..onEnd = _endDrag
-                            ..onCancel = _cancelDrag,
-                        ),
-                  },
-                  child: CustomScrollView(
-                    key: _viewport,
-                    controller: _scroll,
-                    center: _after,
-                    slivers: [
-                      SliverList.builder(
-                        itemCount: _initialMonth,
-                        itemBuilder: (_, index) =>
-                            _month(_initialMonth - index - 1, calendarWidth),
-                      ),
-                      SliverList.builder(
-                        key: _after,
-                        itemCount: monthCount - _initialMonth,
-                        itemBuilder: (_, index) =>
-                            _month(_initialMonth + index, calendarWidth),
-                      ),
-                    ],
-                  ),
-                ),
+                  input,
+                ],
               ),
             ],
           ),
@@ -369,78 +404,238 @@ class _GalleryRangePickerState extends State<GalleryRangePicker>
     );
   }
 
-  Widget _month(int index, double maxWidth) {
-    final month = DateUtils.addMonthsToMonthDate(widget.firstDate, index);
+  Widget _monthBar() {
+    final picker = DatePickerTheme.of(context);
+    final defaults = DatePickerTheme.defaults(context);
     final labels = MaterialLocalizations.of(context);
-    final offset = DateUtils.firstDayOffset(month.year, month.month, labels);
-    final days = DateUtils.getDaysInMonth(month.year, month.month);
-    final rows = (offset + days + 6) ~/ 7;
-    final height = math.max(
-      42.0,
-      MediaQuery.textScalerOf(context).scale(20) + 16,
-    );
-    return Center(
-      child: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: maxWidth),
-        child: Column(
+    final color =
+        picker.subHeaderForegroundColor ?? defaults.subHeaderForegroundColor;
+    final page = _pageOf(_month);
+    return SizedBox(
+      height: _subHeaderHeight,
+      child: Padding(
+        padding: const EdgeInsetsDirectional.only(start: 16, end: 4),
+        child: Row(
           children: [
-            Container(
-              height: 58,
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              alignment: AlignmentDirectional.centerStart,
-              child: Text(labels.formatMonthYear(month)),
-            ),
-            for (var row = 0; row < rows; row++)
-              Padding(
-                padding: EdgeInsets.only(bottom: row == rows - 1 ? 12 : 8),
-                child: SizedBox(
-                  height: height,
-                  child: CustomPaint(
-                    painter: _RangeBand(
-                      start: _start,
-                      end: _end,
-                      month: month,
-                      firstDay: row * 7 - offset + 1,
-                      daysInMonth: days,
-                      color:
-                          DatePickerTheme.of(
-                            context,
-                          ).rangeSelectionBackgroundColor ??
-                          DatePickerTheme.defaults(
-                            context,
-                          ).rangeSelectionBackgroundColor!,
-                      direction: Directionality.of(context),
-                    ),
-                    child: Row(
-                      children: [
-                        const SizedBox(width: 8),
-                        for (var column = 0; column < 7; column++)
-                          Expanded(
-                            child:
-                                row * 7 + column - offset + 1 < 1 ||
-                                    row * 7 + column - offset + 1 > days
-                                ? const SizedBox.shrink()
-                                : _day(
-                                    DateTime(
-                                      month.year,
-                                      month.month,
-                                      row * 7 + column - offset + 1,
-                                    ),
-                                  ),
-                          ),
-                        const SizedBox(width: 8),
-                      ],
+            Expanded(
+              child: Align(
+                alignment: AlignmentDirectional.centerStart,
+                child: Semantics(
+                  label: labels.selectYearSemanticsLabel,
+                  button: true,
+                  child: InkWell(
+                    onTap: _dragging
+                        ? null
+                        : _years
+                        ? () => _showMonth(_month)
+                        : () => setState(() => _years = true),
+                    child: SizedBox(
+                      height: _subHeaderHeight,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Flexible(
+                              child: Text(
+                                labels.formatMonthYear(_month),
+                                overflow: TextOverflow.ellipsis,
+                                style:
+                                    (picker.toggleButtonTextStyle ??
+                                            defaults.toggleButtonTextStyle)
+                                        ?.apply(color: color),
+                              ),
+                            ),
+                            Icon(
+                              _years
+                                  ? Icons.arrow_drop_up
+                                  : Icons.arrow_drop_down,
+                              color: color,
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
                   ),
                 ),
               ),
+            ),
+            if (!_years) ...[
+              IconButton(
+                color: color,
+                tooltip: page == 0 ? null : labels.previousMonthTooltip,
+                onPressed: page == 0 || _dragging
+                    ? null
+                    : () => _pages.previousPage(
+                        duration: _monthDuration,
+                        curve: Curves.ease,
+                      ),
+                icon: const Icon(Icons.chevron_left),
+              ),
+              IconButton(
+                color: color,
+                tooltip: page == _monthCount - 1
+                    ? null
+                    : labels.nextMonthTooltip,
+                onPressed: page == _monthCount - 1 || _dragging
+                    ? null
+                    : () => _pages.nextPage(
+                        duration: _monthDuration,
+                        curve: Curves.ease,
+                      ),
+                icon: const Icon(Icons.chevron_right),
+              ),
+            ],
           ],
         ),
       ),
     );
   }
 
-  Widget _day(DateTime day) {
+  Widget _yearList() => YearPicker(
+    currentDate: _today,
+    firstDate: _first,
+    lastDate: _last,
+    selectedDate: _month,
+    onChanged: _showMonth,
+  );
+
+  Widget _pager(bool landscape) => RawGestureDetector(
+    key: _grid,
+    gestures: {
+      _EndpointDrag: GestureRecognizerFactoryWithHandlers<_EndpointDrag>(
+        _EndpointDrag.new,
+        (gesture) => gesture
+          ..canStart = _canDrag
+          ..onStart = _startDrag
+          ..onMove = _moveDrag
+          ..onEnd = _endDrag
+          ..onCancel = _cancelDrag,
+      ),
+    },
+    // 墨水涟漪画在透明 Material 上,翻页过渡时不越出日历。
+    child: Material(
+      type: MaterialType.transparency,
+      child: PageView.builder(
+        controller: _pages,
+        itemCount: _monthCount,
+        onPageChanged: (page) => setState(() => _month = _monthAt(page)),
+        itemBuilder: (_, page) => _monthGrid(_monthAt(page), landscape),
+      ),
+    ),
+  );
+
+  Widget _monthGrid(DateTime month, bool landscape) {
+    final picker = DatePickerTheme.of(context);
+    final defaults = DatePickerTheme.defaults(context);
+    final labels = MaterialLocalizations.of(context);
+    final offset = DateUtils.firstDayOffset(month.year, month.month, labels);
+    final days = DateUtils.getDaysInMonth(month.year, month.month);
+    final rows = (offset + days + 6) ~/ 7;
+    final inset = landscape ? 8.0 : 12.0;
+    final pad = landscape ? 2.0 : 4.0;
+    final band =
+        picker.rangeSelectionBackgroundColor ??
+        defaults.rangeSelectionBackgroundColor!;
+    DateTime? dayAt(int row, int column) {
+      final n = row * 7 + column - offset + 1;
+      return n < 1 || n > days ? null : DateTime(month.year, month.month, n);
+    }
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // 表头 + 最多六周;放不下时按高度均分,和 showDatePicker 一样。
+        final rowHeight = math.min(
+          landscape ? 42.0 : 48.0,
+          constraints.maxHeight / 7,
+        );
+        return Column(
+          children: [
+            SizedBox(
+              height: rowHeight,
+              child: Padding(
+                padding: EdgeInsets.symmetric(horizontal: inset),
+                child: Row(
+                  children: [
+                    for (var i = 0; i < 7; i++)
+                      Expanded(
+                        child: ExcludeSemantics(
+                          child: Center(
+                            child: Text(
+                              labels.narrowWeekdays[(i +
+                                      labels.firstDayOfWeekIndex) %
+                                  7],
+                              style:
+                                  picker.weekdayStyle ?? defaults.weekdayStyle,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            for (var row = 0; row < rows; row++)
+              SizedBox(
+                height: rowHeight,
+                child: CustomPaint(
+                  painter: _bandFor(
+                    [for (var c = 0; c < 7; c++) dayAt(row, c)],
+                    inset: inset,
+                    pad: pad,
+                    color: band,
+                  ),
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(horizontal: inset),
+                    child: Row(
+                      children: [
+                        for (var c = 0; c < 7; c++)
+                          Expanded(
+                            child: switch (dayAt(row, c)) {
+                              final day? => _day(day, pad),
+                              null => const SizedBox.shrink(),
+                            },
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
+
+  _RangeBand? _bandFor(
+    List<DateTime?> week, {
+    required double inset,
+    required double pad,
+    required Color color,
+  }) {
+    final end = _end;
+    if (end == null || end == _start) return null;
+    int? from, to;
+    for (var c = 0; c < 7; c++) {
+      final day = week[c];
+      if (day == null || day.isBefore(_start) || day.isAfter(end)) continue;
+      from ??= c;
+      to = c;
+    }
+    if (from == null) return null;
+    return _RangeBand(
+      from: from,
+      to: to!,
+      openStart: week[from] != _start,
+      openEnd: week[to] != end,
+      inset: inset,
+      pad: pad,
+      color: color,
+      direction: Directionality.of(context),
+    );
+  }
+
+  Widget _day(DateTime day, double pad) {
     final theme = Theme.of(context);
     final picker = DatePickerTheme.of(context);
     final defaults = DatePickerTheme.defaults(context);
@@ -449,21 +644,34 @@ class _GalleryRangePickerState extends State<GalleryRangePicker>
     final start = day == _start, end = day == _end;
     final selected = start || end;
     final inside = _end != null && !day.isBefore(_start) && !day.isAfter(_end!);
+    final today = day == _today;
     final states = {
       if (selected) WidgetState.selected,
       if (!enabled) WidgetState.disabled,
     };
-    final shape =
-        picker.dayShape?.resolve(states) ??
-        defaults.dayShape?.resolve(states) ??
-        const CircleBorder();
-    final color =
-        picker.dayForegroundColor?.resolve(states) ??
-        defaults.dayForegroundColor?.resolve(states);
-    final background =
-        picker.dayBackgroundColor?.resolve(states) ??
-        defaults.dayBackgroundColor?.resolve(states);
-    final today = day == _today;
+    T? resolve<T>(
+      WidgetStateProperty<T>? Function(DatePickerThemeData theme) property,
+    ) => (property(picker) ?? property(defaults))?.resolve(states);
+    final shape = resolve((t) => t.dayShape) ?? const CircleBorder();
+    final foreground = inside && !selected && enabled
+        ? theme.colorScheme.onSecondaryContainer
+        : resolve(
+            (t) => today ? t.todayForegroundColor : t.dayForegroundColor,
+          );
+    final background = resolve(
+      (t) => today ? t.todayBackgroundColor : t.dayBackgroundColor,
+    );
+    final decoration = selected
+        ? ShapeDecoration(color: background, shape: shape)
+        : today && !inside
+        ? ShapeDecoration(
+            shape: shape.copyWith(
+              side: (picker.todayBorder ?? defaults.todayBorder!).copyWith(
+                color: foreground,
+              ),
+            ),
+          )
+        : null;
     final dayText = labels.formatDecimal(day.day);
     var semantics = '$dayText, ${labels.formatFullDate(day)}';
     if (today) semantics += ', ${labels.currentDateLabel}';
@@ -473,45 +681,67 @@ class _GalleryRangePickerState extends State<GalleryRangePicker>
       key: ValueKey<DateTime>(day),
       metaData: _RangeDay(day),
       behavior: HitTestBehavior.opaque,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          Material(
-            color: Colors.transparent,
-            child: InkResponse(
-              onTap: enabled ? () => _pick(day) : null,
-              customBorder: shape,
-              containedInkWell: true,
-              child: Container(
-                alignment: Alignment.center,
-                decoration: selected
-                    ? ShapeDecoration(color: background, shape: shape)
-                    : today && !inside
-                    ? ShapeDecoration(
-                        shape: shape.copyWith(
-                          side: picker.todayBorder ?? defaults.todayBorder!,
-                        ),
-                      )
-                    : null,
-                child: Semantics(
-                  label: semantics,
-                  hint: selected ? '可直接拖动调整日期' : null,
-                  selected: selected,
-                  child: ExcludeSemantics(
-                    child: Text(
-                      dayText,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: today && !inside && !selected
-                            ? theme.colorScheme.primary
-                            : color,
-                      ),
-                    ),
+      child: Padding(
+        padding: EdgeInsets.all(pad),
+        child: Semantics(
+          label: semantics,
+          hint: selected ? '可直接拖动调整日期' : null,
+          button: true,
+          selected: selected,
+          enabled: enabled,
+          excludeSemantics: true,
+          child: InkResponse(
+            onTap: enabled ? () => _pick(day) : null,
+            customBorder: shape,
+            containedInkWell: true,
+            overlayColor: picker.dayOverlayColor ?? defaults.dayOverlayColor,
+            child: Ink(
+              decoration: decoration,
+              child: Center(
+                child: Text(
+                  dayText,
+                  style: (picker.dayStyle ?? defaults.dayStyle)?.apply(
+                    color: foreground,
                   ),
                 ),
               ),
             ),
           ),
-        ],
+        ),
+      ),
+    );
+  }
+
+  Widget _actions() {
+    final picker = DatePickerTheme.of(context);
+    final defaults = DatePickerTheme.defaults(context);
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: _actionsHeight),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        child: Align(
+          alignment: AlignmentDirectional.centerEnd,
+          child: OverflowBar(
+            spacing: 8,
+            children: [
+              TextButton(
+                style: picker.cancelButtonStyle ?? defaults.cancelButtonStyle,
+                onPressed: () => Navigator.pop(context),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                style: picker.confirmButtonStyle ?? defaults.confirmButtonStyle,
+                onPressed: _end == null || _dragging
+                    ? null
+                    : () => Navigator.pop(
+                        context,
+                        DateTimeRange(start: _start, end: _end!),
+                      ),
+                child: const Text('应用'),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -522,53 +752,46 @@ class _RangeDay {
   final DateTime date;
 }
 
-/// 每周只画一条连续色带，避免半透明格子边缘叠色，并延伸到周行边缘。
+/// 每周一条连续色带,垫在端点圆后面。端点从格子中心起画;范围延续到
+/// 上 / 下一周时画到弹窗边缘,月头月尾不满一周时停在最后一个日期格。
 class _RangeBand extends CustomPainter {
   const _RangeBand({
-    required this.start,
-    required this.end,
-    required this.month,
-    required this.firstDay,
-    required this.daysInMonth,
+    required this.from,
+    required this.to,
+    required this.openStart,
+    required this.openEnd,
+    required this.inset,
+    required this.pad,
     required this.color,
     required this.direction,
   });
-  final DateTime start, month;
-  final DateTime? end;
-  final int firstDay, daysInMonth;
+  final int from, to;
+  final bool openStart, openEnd;
+  final double inset, pad;
   final Color color;
   final TextDirection direction;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final end = this.end;
-    if (end == null || end == start) return;
-    final first = DateTime(month.year, month.month, math.max(1, firstDay));
-    final last = DateTime(
-      month.year,
-      month.month,
-      math.min(daysInMonth, firstDay + 6),
-    );
-    if (end.isBefore(first) || start.isAfter(last)) return;
-    final tile = (size.width - 16) / 7;
-    final firstColumn = first.day - firstDay;
-    final lastColumn = last.day - firstDay;
-    final left = !start.isBefore(first)
-        ? 8 + (start.day - firstDay + .5) * tile
-        : firstColumn == 0
+    final tile = (size.width - inset * 2) / 7;
+    double x(double column) => inset + column * tile;
+    final left = !openStart
+        ? x(from + .5)
+        : from == 0
         ? 0.0
-        : 8 + firstColumn * tile;
-    final right = !end.isAfter(last)
-        ? 8 + (end.day - firstDay + .5) * tile
-        : lastColumn == 6
+        : x(from.toDouble());
+    final right = !openEnd
+        ? x(to + .5)
+        : to == 6
         ? size.width
-        : 8 + (lastColumn + 1) * tile;
+        : x(to + 1.0);
+    final rtl = direction == TextDirection.rtl;
     canvas.drawRect(
       Rect.fromLTRB(
-        direction == TextDirection.rtl ? size.width - right : left,
-        0,
-        direction == TextDirection.rtl ? size.width - left : right,
-        size.height,
+        rtl ? size.width - right : left,
+        pad,
+        rtl ? size.width - left : right,
+        size.height - pad,
       ),
       Paint()..color = color,
     );
@@ -576,17 +799,18 @@ class _RangeBand extends CustomPainter {
 
   @override
   bool shouldRepaint(_RangeBand old) =>
-      old.start != start ||
-      old.end != end ||
-      old.month != month ||
-      old.firstDay != firstDay ||
-      old.daysInMonth != daysInMonth ||
+      old.from != from ||
+      old.to != to ||
+      old.openStart != openStart ||
+      old.openEnd != openEnd ||
+      old.inset != inset ||
+      old.pad != pad ||
       old.color != color ||
       old.direction != direction;
 }
 
-/// 端点按下即接管指针，避免纵向拖动被月份 Scrollable 抢走。
-/// 识别器挂在视口上，端点随拖动换格或滚出屏幕时不会丢失手势。
+/// 端点按下即接管指针,不让左右翻月的 PageView 抢走这一笔。
+/// 识别器挂在整个日历上,端点随拖动换格、甚至翻到别的月时也不会丢失手势。
 class _EndpointDrag extends OneSequenceGestureRecognizer {
   bool Function(Offset)? canStart;
   ValueChanged<Offset>? onStart, onMove, onEnd;
@@ -609,7 +833,7 @@ class _EndpointDrag extends OneSequenceGestureRecognizer {
 
   @override
   void handleNonAllowedPointer(PointerDownEvent event) {
-    // 普通日期不入场；额外手指也不能取消已经接管的端点指针。
+    // 普通日期不入场;额外手指也不能取消已经接管的端点指针。
   }
 
   @override

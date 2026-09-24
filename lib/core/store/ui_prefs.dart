@@ -121,12 +121,13 @@ class UiPrefs {
     galleryDaysFilter: const {0, 1, 7, 30}.contains(j['galleryDaysFilter'])
         ? j['galleryDaysFilter'] as int
         : 0,
+    // 指定日期 / 日期范围只在本次运行内有效,见 GalleryDateFilter.restored
     galleryDateFilter: GalleryDateFilter.fromJson(
       j['galleryDateFilter'],
       legacyDays: j['galleryDaysFilter'] is int
           ? j['galleryDaysFilter'] as int
           : 0,
-    ),
+    ).restored,
     galleryGroupBy: j['galleryGroupBy'] is String
         ? j['galleryGroupBy'] as String
         : 'day',
