@@ -107,11 +107,12 @@ class AssistantSettings {
   /// 上下文轮数的默认值与可调范围。
   ///
   /// 默认 20 与服务端原先写死的窗口一样(`history_adapter.WEB_HISTORY_MAX_TURNS`)。
-  /// 上界 50 是服务端肯收的上限:走后端渠道时 token 是服务端付的,再往上一个请求
-  /// 光历史就上万。自定义接口那条没人替它截,也按同一个上限走。
+  /// 上界 100 对齐服务端肯收的上限(`WEB_HISTORY_TURNS_MAX`):走后端渠道时 token 是
+  /// 服务端付的,拉满一个请求光历史就近两万;老版服务端封顶 50,要多了照样截回 50。
+  /// 自定义接口那条没人替它截,也按同一个上限走。
   static const historyTurnsDefault = 20;
   static const historyTurnsMin = 1;
-  static const historyTurnsMax = 50;
+  static const historyTurnsMax = 100;
 
   /// 消息字号的默认值、可调范围与步长。
   ///
