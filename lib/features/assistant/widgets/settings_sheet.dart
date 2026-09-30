@@ -111,7 +111,7 @@ class _SettingsSheet extends ConsumerWidget {
             value: s.historyTurns.toDouble(),
             min: AssistantSettings.historyTurnsMin.toDouble(),
             max: AssistantSettings.historyTurnsMax.toDouble(),
-            step: 1,
+            step: AssistantSettings.historyTurnsStep.toDouble(),
             format: (v) => v.toStringAsFixed(0),
             onChanged: (v) =>
                 n.patch((o) => o.copyWith(historyTurns: v.round())),

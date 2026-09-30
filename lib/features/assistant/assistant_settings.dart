@@ -104,15 +104,18 @@ class AssistantSettings {
     this.stream = true,
   });
 
-  /// 上下文轮数的默认值与可调范围。
+  /// 上下文轮数的默认值、可调范围与步长。
   ///
   /// 默认 20 与服务端原先写死的窗口一样(`history_adapter.WEB_HISTORY_MAX_TURNS`)。
   /// 上界 200 对齐服务端肯收的上限(`WEB_HISTORY_TURNS_MAX`):走后端渠道时 token 是
   /// 服务端付的,拉满一个请求光历史就三万多;老版服务端封顶更低,要多了照样截回去。
   /// 自定义接口那条没人替它截,也按同一个上限走。
+  ///
+  /// 十轮一档:两百轮的范围,一轮一轮地按太碎。
   static const historyTurnsDefault = 20;
-  static const historyTurnsMin = 1;
+  static const historyTurnsMin = 10;
   static const historyTurnsMax = 200;
+  static const historyTurnsStep = 10;
 
   /// 消息字号的默认值、可调范围与步长。
   ///
@@ -246,11 +249,13 @@ class AssistantSettings {
             v.toDouble().clamp(fontSizeMin, fontSizeMax).toDouble(),
           _ => fontSizeDefault,
         },
+        // 以前一轮一轮调出来的(比如 35)就近落到档上,不然按一下加减会跳两档
         historyTurns: switch (j['historyTurns']) {
-          final num v when v.isFinite => v.round().clamp(
-            historyTurnsMin,
-            historyTurnsMax,
-          ),
+          final num v when v.isFinite =>
+            ((v / historyTurnsStep).round() * historyTurnsStep).clamp(
+              historyTurnsMin,
+              historyTurnsMax,
+            ),
           _ => historyTurnsDefault,
         },
       );

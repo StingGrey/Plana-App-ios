@@ -2202,14 +2202,22 @@ void main() {
       );
     });
 
-    test('上下文轮数:默认 20 与服务端一致,存得下读得回来,越界夹回范围', () {
+    test('上下文轮数:默认 20 与服务端一致,存得下读得回来,零头落到十轮一档,越界夹回范围', () {
       expect(const AssistantSettings().historyTurns, 20);
       expect(AssistantSettings.fromJson(const {}).historyTurns, 20);
       expect(
         AssistantSettings.fromJson(
-          const AssistantSettings(historyTurns: 35).toJson(),
+          const AssistantSettings(historyTurns: 130).toJson(),
         ).historyTurns,
-        35,
+        130,
+      );
+      expect(
+        AssistantSettings.fromJson(const {'historyTurns': 35}).historyTurns,
+        40,
+      );
+      expect(
+        AssistantSettings.fromJson(const {'historyTurns': 3}).historyTurns,
+        AssistantSettings.historyTurnsMin,
       );
       expect(
         AssistantSettings.fromJson(const {'historyTurns': 999}).historyTurns,
