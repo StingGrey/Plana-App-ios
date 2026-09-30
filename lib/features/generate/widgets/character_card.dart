@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/util/nai_tokenizer.dart';
 import '../../editor/editor_page.dart';
+import '../../inspiration/widgets/char_pick_sheet.dart';
+import '../../inspiration/widgets/tag_card.dart' show TagCardPreview;
 import '../char_position.dart';
 import '../generate_state.dart';
 import '../models.dart';
@@ -11,9 +13,10 @@ import 'common.dart';
 import 'position_grid_dialog.dart';
 import 'section_card.dart';
 
-/// 角色面板(定稿版):每个角色一张内嵌圆角小卡。
-/// 行 1:电源开关 · 名称(点名字改名,+状态说明)· 站位徽章 · 删除
-/// 行 2:提示词单行预览 + token 计数
+/// 角色面板:每个角色一张内嵌圆角小卡。
+/// 左:头像位(库里选来的显示预览图,否则虚线「选角色」;点它从灵感角色库换人)
+/// 右行 1:名称(点名字改名)· 站位徽章 · 电源开关 · 删除
+/// 右行 2:提示词两行预览 + token 计数(写了负面才标「负 N」)
 class CharacterCard extends ConsumerWidget {
   const CharacterCard({super.key, this.reorderIndex});
 
@@ -45,6 +48,13 @@ class CharacterCard extends ConsumerWidget {
             color: scheme.onSurfaceVariant,
             onTap: () => _confirmClear(context, notifier),
           ),
+        // 与 Vibe / 角色参考卡头的「库」同一枚图标、同一个位置
+        RoundIconBtn(
+          Icons.grid_view,
+          tooltip: '角色库',
+          color: canAdd ? scheme.onSurfaceVariant : scheme.outline,
+          onTap: canAdd ? () => _addFromLibrary(context, ref) : null,
+        ),
         RoundIconBtn(
           Icons.add,
           tooltip: '添加角色',
@@ -80,6 +90,24 @@ class CharacterCard extends ConsumerWidget {
               ],
             ),
     );
+  }
+
+  /// 卡头「角色库」:多选追加,可选数 = 剩下的槽位(只剩一个就是点一下即加)。
+  Future<void> _addFromLibrary(BuildContext context, WidgetRef ref) async {
+    final s = ref.read(generateProvider);
+    final room = maxCharactersOf(s.params.model) - s.characters.length;
+    if (room <= 0) return;
+    final picked = await showCharPickSheet(context, max: room);
+    if (picked == null || picked.isEmpty || !context.mounted) return;
+    ref.read(generateProvider.notifier).addNamedCharactersFrom([
+      for (final p in picked)
+        (
+          name: p.entry.name,
+          positive: p.entry.positive,
+          negative: p.entry.negative,
+          avatar: p.preview,
+        ),
+    ]);
   }
 
   Future<void> _confirmClear(
@@ -160,6 +188,41 @@ class _CharacterTile extends ConsumerWidget {
     );
   }
 
+  /// 点头像:从灵感角色库挑一个换进这张卡(名字、正负向、头像;站位和开关不动)。
+  Future<void> _pickFromLibrary(BuildContext context, WidgetRef ref) async {
+    final picked = await showCharPickSheet(context);
+    if (picked == null || picked.isEmpty || !context.mounted) return;
+    final p = picked.first;
+    // 读最新的:面板开着的这段时间里,这张卡可能被改过,甚至被删了
+    final cur = ref
+        .read(generateProvider)
+        .characters
+        .where((c) => c.id == char.id)
+        .firstOrNull;
+    if (cur == null) return;
+    // 没头像又写了字 = 手写的内容,换之前问一句,别一下冲掉。带头像的本就是
+    // 库里选来的,点头像就是要换人,不再多问。
+    if (cur.avatar == null &&
+        (cur.positive.trim().isNotEmpty || cur.negative.trim().isNotEmpty)) {
+      final ok = await confirmDialog(
+        context,
+        title: '替换「${cur.name}」?',
+        message: '提示词将换成「${p.entry.name}」的。',
+        confirmLabel: '替换',
+      );
+      if (!ok || !context.mounted) return;
+    }
+    ref
+        .read(generateProvider.notifier)
+        .fillCharacterFrom(
+          char.id,
+          name: p.entry.name,
+          positive: p.entry.positive,
+          negative: p.entry.negative,
+          avatar: p.preview,
+        );
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final notifier = ref.read(generateProvider.notifier);
@@ -174,213 +237,278 @@ class _CharacterTile extends ConsumerWidget {
     final autoPos = ref.watch(
       generateProvider.select((s) => !s.params.useCoords),
     );
-    final tokens = totalPromptTokens(
-      ref.watch(naiTokenizerProvider).value,
-      main: char.positive,
-    );
+    final tokenizer = ref.watch(naiTokenizerProvider).value;
+    final tokens = totalPromptTokens(tokenizer, main: char.positive);
+    // 负面写了才标,没写不占地方
+    final negTokens = char.negative.trim().isEmpty
+        ? null
+        : totalPromptTokens(tokenizer, main: char.negative);
+    // 停用只灰掉头像和文字,电源键保持清晰 —— 它是把角色叫回来的唯一入口
+    final posColor = !enabled
+        ? scheme.outline
+        : (autoPos ? scheme.onSurfaceVariant : scheme.primary);
+    final countStyle = mono(
+      context,
+      size: 11,
+      weight: FontWeight.w500,
+    ).copyWith(color: scheme.outline);
+    final promptStyle = context.texts.bodyMedium!;
 
-    return AnimatedOpacity(
-      duration: Motion.fast,
-      opacity: enabled ? 1 : .5,
-      child: Material(
-        color: scheme.surfaceContainerHigh,
-        borderRadius: BorderRadius.circular(12),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: () => Navigator.of(
-            context,
-          ).push(sharedAxisRoute(EditorPage(positive: true, charId: char.id))),
-          child: Padding(
-            // 上边距保持 10:行 1 高度由那枚删除按钮(40)定死,加了也只是把
-            // 开关和名字整体往下推。加高的是下边距,见行 2 那里。
-            padding: const EdgeInsets.fromLTRB(12, 10, 8, 14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
+    return Material(
+      color: scheme.surfaceContainerHigh,
+      borderRadius: BorderRadius.circular(12),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => Navigator.of(
+          context,
+        ).push(sharedAxisRoute(EditorPage(positive: true, charId: char.id))),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(10, 10, 6, 10),
+          child: Row(
+            children: [
+              _Avatar(
+                url: char.avatar,
+                name: char.name,
+                enabled: enabled,
+                onTap: () => _pickFromLibrary(context, ref),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    // 电源开关(裸图标)
-                    IconButton(
-                      onPressed: () =>
-                          notifier.updateCharacter(char.id, enabled: !enabled),
-                      icon: Icon(
-                        Icons.power_settings_new,
-                        size: 24,
-                        color: enabled ? scheme.primary : scheme.outline,
-                      ),
-                      // 与参考图那枚同款:字号 + 启用时的主色底托(见 RefEnableToggle)
-                      style: IconButton.styleFrom(
-                        backgroundColor: enabled
-                            ? scheme.primary.withValues(alpha: .12)
-                            : Colors.transparent,
-                      ),
-                      tooltip: enabled ? '停用(保留配置)' : '启用',
-                      visualDensity: const VisualDensity(
-                        horizontal: -3,
-                        vertical: -3,
-                      ),
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(
-                        minWidth: 38,
-                        minHeight: 38,
-                      ),
-                    ),
-                    // 名称 + 状态说明:占满中间,把尾部(徽章+删除)顶到最右
-                    Expanded(
-                      child: Row(
-                        children: [
-                          Flexible(
-                            // 点名字改名:热区只包名字本身,外层那圈照旧点开编辑器
-                            // (里层先拿到这一下)。长按是整卡拖排序,这里不接。
-                            // 开关与名字之间原先的 4px 挪进内边距,名字位置不变。
-                            child: InkWell(
-                              onTap: () => _rename(context, notifier),
-                              borderRadius: BorderRadius.circular(8),
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 4,
-                                  vertical: 4,
-                                ),
-                                child: Text(
-                                  char.name,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: context.texts.bodyLarge!.copyWith(
-                                    fontWeight: FontWeight.w700,
-                                    color: enabled
-                                        ? scheme.onSurface
-                                        : scheme.outline,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                          if (!enabled) ...[
-                            const SizedBox(width: 4),
-                            // 不给 Flexible:状态标签是定长的,该让角色名去挤。
-                            // 原先两个都 flex:1 平分,标签分到的一半装不下,
-                            // 就从尾巴开始吃 —— 屏幕上只剩「已禁用 ·…」。
-                            Text(
-                              '已禁用',
-                              style: context.texts.labelSmall!.copyWith(
-                                color: scheme.outline,
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    // 站位徽章
-                    Material(
-                      color: scheme.surfaceContainerHighest,
-                      borderRadius: BorderRadius.circular(17),
-                      clipBehavior: Clip.antiAlias,
-                      child: InkWell(
-                        onTap: () => showPositionGridDialog(context, char.id),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 7,
-                          ),
+                    Row(
+                      children: [
+                        // 名称占满中间,把尾部(徽章 + 开关 + 删除)顶到最右
+                        Expanded(
                           child: Row(
-                            mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(
-                                Icons.grid_on,
-                                size: 15,
-                                color: autoPos
-                                    ? scheme.onSurfaceVariant
-                                    : scheme.primary,
-                              ),
-                              const SizedBox(width: 5),
-                              SizedBox(
-                                width: 48,
-                                child: Text(
-                                  // AUTO 是整张图的档(use_coords=false):这时
-                                  // 坐标还在,只是模型不理会,徽章统一写 AUTO。
-                                  // 否则网格模型(V4/V4.5)下显示它实际会被吸附到
-                                  // 的那一格 —— 徽章写 '42,67%'、请求里发的却是
-                                  // C4 的格心,两边对不上(见 quantizeCenterToGrid)。
-                                  autoPos
-                                      ? 'AUTO'
-                                      : positionChipLabel(
-                                          char.position,
-                                          grid: !isV5,
-                                        ),
-                                  textAlign: TextAlign.center,
-                                  style:
-                                      mono(
-                                        context,
-                                        size: 12,
-                                        weight: FontWeight.w700,
-                                      ).copyWith(
-                                        color: autoPos
-                                            ? scheme.onSurfaceVariant
-                                            : scheme.primary,
+                              Flexible(
+                                // 点名字改名:热区只包名字本身,外层那圈照旧点开
+                                // 编辑器(里层先拿到这一下)。长按是整卡拖排序,
+                                // 这里不接。
+                                child: InkWell(
+                                  onTap: () => _rename(context, notifier),
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(4),
+                                    child: Text(
+                                      char.name,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: context.texts.bodyLarge!.copyWith(
+                                        fontWeight: FontWeight.w700,
+                                        color: enabled
+                                            ? scheme.onSurface
+                                            : scheme.outline,
                                       ),
+                                    ),
+                                  ),
                                 ),
                               ),
                             ],
                           ),
                         ),
-                      ),
-                    ),
-                    const SizedBox(width: 2),
-                    SizedBox(
-                      width: 40,
-                      height: 40,
-                      child: IconButton(
-                        onPressed: () => notifier.removeCharacter(char.id),
-                        icon: Icon(
-                          Icons.delete_outline,
-                          size: 20,
-                          color: scheme.error.withValues(alpha: .85),
+                        const SizedBox(width: 4),
+                        _PositionChip(
+                          // AUTO 是整张图的档(use_coords=false):这时坐标还在,
+                          // 只是模型不理会,徽章统一写 AUTO。否则网格模型
+                          // (V4/V4.5)下显示它实际会被吸附到的那一格 —— 徽章写
+                          // '42,67%'、请求里发的却是 C4 的格心,两边对不上
+                          // (见 quantizeCenterToGrid)。
+                          label: autoPos
+                              ? 'AUTO'
+                              : positionChipLabel(char.position, grid: !isV5),
+                          color: posColor,
+                          onTap: () => showPositionGridDialog(context, char.id),
                         ),
-                        tooltip: '删除角色',
-                        padding: EdgeInsets.zero,
-                        visualDensity: VisualDensity.compact,
+                        const SizedBox(width: 4),
+                        RefEnableToggle(
+                          enabled: enabled,
+                          onTap: () => notifier.updateCharacter(
+                            char.id,
+                            enabled: !enabled,
+                          ),
+                          onTooltip: '停用(保留配置)',
+                        ),
+                        SizedBox(
+                          width: 36,
+                          height: 38,
+                          child: IconButton(
+                            onPressed: () => notifier.removeCharacter(char.id),
+                            icon: Icon(
+                              Icons.delete_outline,
+                              size: 20,
+                              color: scheme.error.withValues(alpha: .85),
+                            ),
+                            tooltip: '删除角色',
+                            padding: EdgeInsets.zero,
+                            visualDensity: VisualDensity.compact,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Padding(
+                      padding: const EdgeInsets.only(left: 4, right: 6),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Expanded(
+                            child: Stack(
+                              children: [
+                                // 空行撑满两行高:短提示词 / 空卡也和别的卡
+                                // 一样高,一列卡片不参差
+                                Text('\n', style: promptStyle),
+                                Text(
+                                  char.positive.isEmpty
+                                      ? '点击编辑提示词…'
+                                      : char.positive,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: promptStyle.copyWith(
+                                    color: char.positive.isEmpty || !enabled
+                                        ? scheme.outline
+                                        : scheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              if (negTokens != null)
+                                Text('负 $negTokens', style: countStyle),
+                              Text('$tokens', style: countStyle),
+                            ],
+                          ),
+                        ],
                       ),
                     ),
                   ],
                 ),
-                // 行 2 是点进编辑器的主要落点(行 1 那排全是各管各的按钮),
-                // 所以空当只往它上下加:4 → 8、下边距 10 → 14,这条带子 42 → 50。
-                const SizedBox(height: 8),
-                Padding(
-                  padding: const EdgeInsets.only(left: 4, right: 6),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          char.positive.isEmpty ? '点击编辑提示词…' : char.positive,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: context.texts.bodyMedium!.copyWith(
-                            color: char.positive.isEmpty
-                                ? scheme.outline
-                                : (enabled
-                                      ? scheme.onSurfaceVariant
-                                      : scheme.outline),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        '$tokens',
-                        style: mono(
-                          context,
-                          size: 11,
-                          weight: FontWeight.w500,
-                        ).copyWith(color: scheme.outline),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// 站位徽章:点开站位网格。宽度随字走(C3 / AUTO / 42,67%),给名字多留地方。
+class _PositionChip extends StatelessWidget {
+  const _PositionChip({
+    required this.label,
+    required this.color,
+    required this.onTap,
+  });
+
+  final String label;
+  final Color color;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: context.scheme.surfaceContainerHighest,
+      borderRadius: BorderRadius.circular(17),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.grid_on, size: 14, color: color),
+              const SizedBox(width: 4),
+              Text(
+                label,
+                style: mono(
+                  context,
+                  size: 12,
+                  weight: FontWeight.w700,
+                ).copyWith(color: color),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 停用时头像去色。
+const _greyscale = ColorFilter.matrix(<double>[
+  0.2126, 0.7152, 0.0722, 0, 0, //
+  0.2126, 0.7152, 0.0722, 0, 0, //
+  0.2126, 0.7152, 0.0722, 0, 0, //
+  0, 0, 0, 1, 0,
+]);
+
+/// 头像位:库里选来的角色显示它的预览图(比例同灵感库角色图 832:1216);
+/// 没有就是虚线「选角色」占位,图读不出来也退回占位。点它从灵感角色库挑人。
+class _Avatar extends StatelessWidget {
+  const _Avatar({
+    required this.url,
+    required this.name,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  final String? url;
+  final String name;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  static const _w = 46.0, _h = 66.0, _r = 10.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    final slot = CustomPaint(
+      painter: DashedBorderPainter(scheme.outline, radius: _r),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.person_search_outlined, size: 20, color: scheme.primary),
+          const SizedBox(height: 3),
+          Text(
+            '选角色',
+            style: context.texts.labelSmall!.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+    );
+    Widget child = url == null
+        ? slot
+        : ClipRRect(
+            borderRadius: BorderRadius.circular(_r),
+            child: TagCardPreview(
+              url: url,
+              name: name,
+              decodeWidth: _w,
+              placeholder: slot,
+            ),
+          );
+    if (!enabled) {
+      child = Opacity(
+        opacity: .55,
+        child: ColorFiltered(colorFilter: _greyscale, child: child),
+      );
+    }
+    return Tooltip(
+      message: url == null ? '从角色库选' : '换角色',
+      child: GestureDetector(
+        onTap: onTap,
+        behavior: HitTestBehavior.opaque,
+        child: SizedBox(width: _w, height: _h, child: child),
       ),
     );
   }

@@ -99,6 +99,7 @@ Future<EncodedState> encodeGenerateState(
           'enabled': c.enabled,
           if (c.position != null) 'position': c.position,
           'activeTab': c.activeTab.name,
+          if (c.avatar != null) 'avatar': c.avatar,
         },
     ],
     'vibes': vibes,
@@ -284,6 +285,7 @@ Future<GenerateState> decodeGenerateState(
           position: e['position'] as String?,
           activeTab:
               _enumByName(CharTab.values, e['activeTab']) ?? CharTab.positive,
+          avatar: e['avatar'] is String ? e['avatar'] as String : null,
         ),
       );
     }

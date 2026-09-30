@@ -142,6 +142,7 @@ class PromptSnapshot {
           'negative': c.negative,
           'enabled': c.enabled,
           if (c.position != null) 'position': c.position,
+          if (c.avatar != null) 'avatar': c.avatar,
         },
     ],
   };
@@ -161,6 +162,7 @@ class PromptSnapshot {
             enabled: e['enabled'] != false,
             position: e['position'] as String?,
             activeTab: CharTab.positive,
+            avatar: e['avatar'] as String?,
           ),
     ],
   );

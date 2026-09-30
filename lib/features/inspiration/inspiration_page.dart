@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -7,10 +6,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
-import '../../core/net/remote_image.dart';
 import '../../core/store/ui_prefs.dart';
 import '../../core/theme/app_theme.dart';
-import '../../core/ui/fade_in_once.dart';
 import '../../core/ui/pinch_columns.dart';
 import '../../core/ui/scroll_memory.dart';
 import '../../core/ui/selection_bar.dart';
@@ -27,6 +24,8 @@ import 'public_tags.dart';
 import 'tag_editor_page.dart';
 import 'tag_library.dart';
 import 'tag_models.dart';
+import 'widgets/scope_seg_tabs.dart';
+import 'widgets/tag_card.dart';
 import 'widgets/tag_filter_sheet.dart';
 import 'widgets/tag_sheets.dart';
 import '../../core/util/haptics.dart';
@@ -268,32 +267,12 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   /// 「我的」的完整来源 = 本地条目 + 公共库里我发布的(本地没副本的补进来,
   /// 标 created;对齐 web mineAll)。归属判定优先 owner_id,与服务端一致。
   List<TagEntry> _mineAll(TagLibraryState lib) => _def.hasPublic
-      ? _mergeMine(
+      ? mergeMineTags(
           lib.of(_cat),
           ref.watch(botSessionProvider).value?.botUserId,
           ref.watch(publicTagsProvider(_cat)).value,
         )
       : lib.of(_cat);
-
-  /// [_mineAll] 的纯函数体 —— 筛选弹层要在 build 之外拿同一份来源点候选作者,
-  /// 那里不能 watch,只能把读来的值喂进来。
-  static List<TagEntry> _mergeMine(
-    List<TagEntry> local,
-    String? myId,
-    List<TagEntry>? pub,
-  ) {
-    if (myId == null || pub == null) return local;
-    final haveId = {for (final e in local) e.publicId};
-    final haveName = {for (final e in local) e.name};
-    return [
-      ...local,
-      for (final p in pub)
-        if (p.createdBy == myId &&
-            !haveId.contains(p.publicId) &&
-            !haveName.contains(p.name))
-          p.copyWith(origin: TagOrigin.created),
-    ];
-  }
 
   List<TagEntry> _mineList(TagLibraryState lib) {
     final q = _search.trim().toLowerCase();
@@ -398,9 +377,17 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     final entries = _resolveSelected(lib);
     if (entries.isEmpty) return;
     final cap = maxCharactersOf(ref.read(generateProvider).params.model);
+    final pubPreview = publicPreviewsOf(
+      ref.read(publicTagsProvider(_cat)).value,
+    );
     final added = ref.read(generateProvider.notifier).addNamedCharactersFrom([
       for (final e in entries)
-        (name: e.name, positive: e.positive, negative: e.negative),
+        (
+          name: e.name,
+          positive: e.positive,
+          negative: e.negative,
+          avatar: tagPreviewOf(e, pubPreview),
+        ),
     ]);
     if (added == 0) {
       hintSnack(context, '角色已满 $cap 个', icon: Icons.block_outlined);
@@ -502,7 +489,10 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
                 _kEdge,
                 _tabIndex == 0 ? 0 : 8,
               ),
-              child: _segTabs(scheme, lib.of(_cat).length),
+              child: ScopeSegTabs(
+                controller: _tab,
+                mineCount: lib.of(_cat).length,
+              ),
             ),
           if (_tabIndex == 0 || !def.hasPublic) _filterChips(lib),
           Expanded(
@@ -728,108 +718,6 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     ],
   );
 
-  Widget _segTabs(ColorScheme scheme, int mineCount) {
-    return SizedBox(
-      height: 42,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: scheme.surfaceContainerHigh,
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Stack(
-          children: [
-            // 视觉层:滑动指示器 + 渐变标签(随 tab 动画重建,无手势)。
-            Positioned.fill(
-              child: AnimatedBuilder(
-                animation: _tab.animation!,
-                builder: (context, _) {
-                  final t = _tab.animation!.value.clamp(0.0, 1.0);
-                  return LayoutBuilder(
-                    builder: (context, c) {
-                      final segW = c.maxWidth / 2;
-                      return Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          Positioned(
-                            top: 3,
-                            bottom: 3,
-                            left: 3 + t * segW,
-                            width: segW - 6,
-                            child: DecoratedBox(
-                              decoration: BoxDecoration(
-                                color: scheme.surface,
-                                borderRadius: BorderRadius.circular(9),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withValues(alpha: .06),
-                                    blurRadius: 4,
-                                    offset: const Offset(0, 1),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          Row(
-                            children: [
-                              _segLabel(
-                                0,
-                                Icons.bookmark_outline,
-                                '我的 · $mineCount',
-                                t,
-                              ),
-                              _segLabel(1, Icons.public, '公共库', t),
-                            ],
-                          ),
-                        ],
-                      );
-                    },
-                  );
-                },
-              ),
-            ),
-            // 手势层:稳定不重建,整段任意位置可点。
-            Positioned.fill(
-              child: Row(
-                children: [
-                  for (var i = 0; i < 2; i++)
-                    Expanded(
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () => _tab.animateTo(i),
-                        child: const SizedBox.expand(),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _segLabel(int i, IconData icon, String label, double t) {
-    final scheme = context.scheme;
-    final sel = i == 0 ? 1 - t : t;
-    final color = Color.lerp(scheme.onSurfaceVariant, scheme.primary, sel);
-    return Expanded(
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, size: 15, color: color),
-          const SizedBox(width: 6),
-          Text(
-            label,
-            style: context.texts.labelLarge!.copyWith(
-              fontWeight: FontWeight.w700,
-              color: color,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   /// 当前模型筛选的显示名;null = 全部。
   String? get _modelFilterLabel {
     final f = _modelFilter;
@@ -922,7 +810,7 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     final pub = ref.read(publicTagsProvider(_cat)).value;
     final scope = _tabIndex == 1 && _def.hasPublic
         ? (pub ?? const <TagEntry>[])
-        : _mergeMine(
+        : mergeMineTags(
             lib.of(_cat),
             ref.read(botSessionProvider).value?.botUserId,
             pub,
@@ -1274,14 +1162,9 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   double get _cardAspect => _def.previewAspect;
 
   Widget _grid(List<_Group> groups, ScrollController ctrl, bool isPublic) {
-    // 有 publicId 的条目(收藏/我发布的)一律用当前公共库的 http 预览:
-    // 随当前后端地址,不受备份剥离本机预览、也不受端口变化影响。
-    final pubPreview = <String, String>{
-      for (final p
-          in ref.read(publicTagsProvider(_cat)).value ?? const <TagEntry>[])
-        if (p.publicId != null && p.previewUrl != null)
-          p.publicId!: p.previewUrl!,
-    };
+    final pubPreview = publicPreviewsOf(
+      ref.read(publicTagsProvider(_cat)).value,
+    );
     // 分组、预览表在外面算好;捏合与过渡只重建下面这一块(见 pinchBuilder)
     return pinchBuilder((_) {
       // 远端预览按**落定**列数下的格宽解码(gridColumns 在换档过渡中是起点那一档)。
@@ -1312,13 +1195,10 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
                 ),
                 delegate: SliverChildBuilderDelegate((context, i) {
                   final e = g.items[i];
-                  final preview =
-                      (e.publicId != null ? pubPreview[e.publicId] : null) ??
-                      e.previewUrl;
-                  return _TagCard(
+                  return TagCard(
                     key: ValueKey(e.id),
                     entry: e,
-                    previewUrl: preview,
+                    previewUrl: tagPreviewOf(e, pubPreview),
                     decodeWidth: decodeW,
                     selected: _sel.contains(e.id),
                     isPublic: isPublic,
@@ -1736,382 +1616,6 @@ class _SkeletonGridState extends State<_SkeletonGrid>
       ],
     );
   }
-}
-
-/// 卡片预览图:无图 = 名称定色相的斜纹占位;http 走磁盘缓存;本机路径直读。
-/// 加载完淡入,让预览逐张柔和显现而非硬蹦(只淡第一次,见 [FadeInOnce])。
-class _CardPreview extends StatelessWidget {
-  const _CardPreview({required this.url, required this.name, this.decodeWidth});
-
-  final String? url;
-  final String name;
-
-  /// 远端图的解码宽(逻辑像素);null = 按布局宽。
-  final double? decodeWidth;
-
-  Widget _stripes(BuildContext context, Object error, StackTrace? stack) =>
-      _HueStripes(name: name);
-
-  @override
-  Widget build(BuildContext context) => switch (url) {
-    null => _HueStripes(name: name),
-    final u => FadeInOnce(
-      source: u,
-      builder: (_, frame) => u.startsWith('http')
-          ? RemoteImage(
-              u,
-              fit: BoxFit.cover,
-              decodeWidth: decodeWidth,
-              gaplessPlayback: true,
-              frameBuilder: frame,
-              errorBuilder: _stripes,
-            )
-          : Image.file(
-              File(u),
-              fit: BoxFit.cover,
-              gaplessPlayback: true,
-              frameBuilder: frame,
-              errorBuilder: _stripes,
-            ),
-    ),
-  };
-}
-
-/// 网格卡:预览图(无图=名称定色相的斜纹占位)+ 底部名称条 + 来源角标;
-/// 左上选择圈,右上 ⋮(我的)/ ❤ 收藏(公共)。点卡选择,长按看详情。
-class _TagCard extends StatelessWidget {
-  const _TagCard({
-    super.key,
-    required this.entry,
-    this.previewUrl,
-    required this.selected,
-    required this.isPublic,
-    this.collected = false,
-    required this.onTap,
-    required this.onLongPress,
-    this.onCollect,
-    this.onMenu,
-    this.decodeWidth,
-  });
-
-  final TagEntry entry;
-
-  /// 实际渲染的预览(可能是按 publicId 从公共库补的 http,覆盖 entry 自身)。
-  final String? previewUrl;
-  final bool selected;
-  final bool isPublic;
-  final bool collected;
-  final VoidCallback onTap;
-  final VoidCallback onLongPress;
-  final VoidCallback? onCollect;
-  final ValueChanged<String>? onMenu;
-
-  /// 远端预览的解码宽(逻辑像素)。
-  final double? decodeWidth;
-
-  @override
-  Widget build(BuildContext context) => LayoutBuilder(
-    // 捏到三四列以后卡片很小,角上两颗按钮和名字条照原尺寸画会把图盖满:收小
-    // 一档,型号角标也收掉。按实测尺寸判,换档过渡途中越过门槛就换。
-    builder: (context, c) =>
-        _card(context, compact: c.maxWidth < 100 || c.maxHeight < 100),
-  );
-
-  Widget _card(BuildContext context, {required bool compact}) {
-    final scheme = context.scheme;
-    final modelGroups = artistModelGroups(entry.models);
-    // 角上两颗按钮的边长与离边距离
-    final btn = compact ? 30.0 : 40.0;
-    final inset = compact ? 4.0 : 6.0;
-    return AnimatedContainer(
-      duration: Motion.fast,
-      clipBehavior: Clip.antiAlias,
-      decoration: BoxDecoration(borderRadius: BorderRadius.circular(16)),
-      foregroundDecoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: selected ? scheme.primary : scheme.outlineVariant,
-          width: selected ? 1.8 : 1,
-        ),
-      ),
-      child: Material(
-        color: scheme.surfaceContainer,
-        child: InkWell(
-          onTap: onTap,
-          onLongPress: onLongPress,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              _CardPreview(
-                url: previewUrl,
-                name: entry.name,
-                decodeWidth: decodeWidth,
-              ),
-              Positioned(
-                left: 0,
-                right: 0,
-                bottom: 0,
-                child: Container(
-                  padding: compact
-                      ? const EdgeInsets.fromLTRB(7, 10, 6, 5)
-                      : const EdgeInsets.fromLTRB(10, 14, 8, 7),
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        Colors.transparent,
-                        Colors.black.withValues(alpha: .62),
-                      ],
-                    ),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      // 适用模型角标(按分档归并:标了 V5 Full + Curated 只出一个)。
-                      // 没标注的不画 —— 「通用」是默认档,给每张卡都挂一个反而是噪音。
-                      if (modelGroups.isNotEmpty && !compact) ...[
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            for (final g in modelGroups.take(2))
-                              Container(
-                                margin: const EdgeInsets.only(right: 4),
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 5,
-                                  vertical: 1,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withValues(alpha: .22),
-                                  borderRadius: BorderRadius.circular(4),
-                                ),
-                                child: Text(
-                                  g.label,
-                                  style: const TextStyle(
-                                    fontSize: 9,
-                                    fontWeight: FontWeight.w700,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                              ),
-                            if (modelGroups.length > 2)
-                              Text(
-                                '+${modelGroups.length - 2}',
-                                style: const TextStyle(
-                                  fontSize: 9,
-                                  fontWeight: FontWeight.w700,
-                                  color: Colors.white70,
-                                ),
-                              ),
-                          ],
-                        ),
-                        const SizedBox(height: 3),
-                      ],
-                      Text(
-                        entry.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: compact ? 11.5 : 13,
-                          fontWeight: FontWeight.w800,
-                          color: selected ? scheme.primary : Colors.white,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              Positioned(
-                top: compact ? 5 : 7,
-                left: compact ? 5 : 7,
-                child: AnimatedContainer(
-                  duration: Motion.fast,
-                  width: compact ? 20 : 24,
-                  height: compact ? 20 : 24,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: selected
-                        ? scheme.primary
-                        : Colors.black.withValues(alpha: .3),
-                    border: selected
-                        ? null
-                        : Border.all(color: Colors.white70, width: 1.5),
-                  ),
-                  child: selected
-                      ? Icon(
-                          Icons.check,
-                          size: compact ? 13 : 16,
-                          color: scheme.onPrimary,
-                        )
-                      : null,
-                ),
-              ),
-              // 公共卡:右上角收藏钮(40px 圆钮 + 半透明底,已收藏=实心红心);
-              // 我的卡:右上角 ⋮ 菜单。
-              if (isPublic)
-                Positioned(
-                  right: inset,
-                  top: inset,
-                  child: Material(
-                    color: collected
-                        ? Colors.white.withValues(alpha: .92)
-                        : Colors.black.withValues(alpha: .42),
-                    shape: const CircleBorder(),
-                    clipBehavior: Clip.antiAlias,
-                    child: InkWell(
-                      onTap: onCollect,
-                      child: SizedBox(
-                        width: btn,
-                        height: btn,
-                        child: Icon(
-                          collected ? Icons.favorite : Icons.favorite_border,
-                          size: compact ? 17 : 21,
-                          color: collected ? scheme.error : Colors.white,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              if (!isPublic)
-                Positioned(
-                  right: inset,
-                  top: inset,
-                  child: Material(
-                    color: Colors.black.withValues(alpha: .42),
-                    shape: const CircleBorder(),
-                    clipBehavior: Clip.antiAlias,
-                    child: SizedBox(
-                      width: btn,
-                      height: btn,
-                      child: PopupMenuButton<String>(
-                        onSelected: onMenu,
-                        padding: EdgeInsets.zero,
-                        icon: Icon(
-                          Icons.more_vert,
-                          size: compact ? 17 : 20,
-                          color: Colors.white,
-                        ),
-                        itemBuilder: (_) => [
-                          const PopupMenuItem(
-                            value: 'edit',
-                            child: _MenuRow(Icons.edit_outlined, '编辑'),
-                          ),
-                          const PopupMenuItem(
-                            value: 'copy',
-                            child: _MenuRow(Icons.copy, '复制提示词'),
-                          ),
-                          const PopupMenuItem(
-                            value: 'delete',
-                            child: _MenuRow(
-                              Icons.delete_outline,
-                              '删除',
-                              danger: true,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _MenuRow extends StatelessWidget {
-  const _MenuRow(this.icon, this.label, {this.danger = false});
-
-  final IconData icon;
-  final String label;
-  final bool danger;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = danger ? context.scheme.error : context.scheme.onSurfaceVariant;
-    return Row(
-      children: [
-        Icon(icon, size: 18, color: c),
-        const SizedBox(width: 10),
-        Text(label, style: TextStyle(color: danger ? c : null)),
-      ],
-    );
-  }
-}
-
-/// 无预览图的占位:名称哈希定色相的深色渐变 + 斜纹 + 名称水印
-/// (对齐 web HorizontalCard 的 hashHue 占位,同名恒同色)。
-class _HueStripes extends StatelessWidget {
-  const _HueStripes({required this.name});
-
-  final String name;
-
-  @override
-  Widget build(BuildContext context) {
-    var h = 0;
-    for (final c in name.codeUnits) {
-      h = (h * 31 + c) & 0x7fffffff;
-    }
-    final hue = (h % 360).toDouble();
-    return CustomPaint(
-      painter: _HueStripePainter(hue),
-      child: Center(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10),
-          child: Text(
-            name.toUpperCase(),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 4,
-              color: Colors.white.withValues(alpha: .2),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _HueStripePainter extends CustomPainter {
-  const _HueStripePainter(this.hue);
-
-  final double hue;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final a = HSLColor.fromAHSL(1, hue, .38, .20).toColor();
-    final b = HSLColor.fromAHSL(1, (hue + 24) % 360, .42, .13).toColor();
-    canvas.drawRect(
-      Offset.zero & size,
-      Paint()
-        ..shader = LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [a, b],
-        ).createShader(Offset.zero & size),
-    );
-    final stripe = Paint()..color = Colors.black.withValues(alpha: .16);
-    const w = 14.0;
-    for (double x = -size.height; x < size.width; x += w * 2.4) {
-      final path = Path()
-        ..moveTo(x, size.height)
-        ..lineTo(x + size.height, 0)
-        ..lineTo(x + size.height + w, 0)
-        ..lineTo(x + w, size.height)
-        ..close();
-      canvas.drawPath(path, stripe);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _HueStripePainter old) => old.hue != hue;
 }
 
 /// 右缘字母导航条(画风):按住/竖向拖动跳转到该字母首个条目,

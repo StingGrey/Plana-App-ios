@@ -722,10 +722,10 @@ class RefDetailHeader extends StatelessWidget {
 
 /// 虚线圆角边框
 class DashedBorderPainter extends CustomPainter {
-  const DashedBorderPainter(this.color);
+  const DashedBorderPainter(this.color, {this.radius = 14});
 
   final Color color;
-  static const double radius = 14;
+  final double radius;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -735,10 +735,7 @@ class DashedBorderPainter extends CustomPainter {
       ..color = color;
     final path = Path()
       ..addRRect(
-        RRect.fromRectAndRadius(
-          Offset.zero & size,
-          const Radius.circular(radius),
-        ),
+        RRect.fromRectAndRadius(Offset.zero & size, Radius.circular(radius)),
       );
     const dash = 5.0, gap = 4.0;
     for (final metric in path.computeMetrics()) {
@@ -754,7 +751,8 @@ class DashedBorderPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant DashedBorderPainter old) => old.color != color;
+  bool shouldRepaint(covariant DashedBorderPainter old) =>
+      old.color != color || old.radius != radius;
 }
 
 /// 通用确认弹窗(破坏性操作用红色确认键)。返回 true = 确认。

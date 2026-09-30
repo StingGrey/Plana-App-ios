@@ -30,12 +30,17 @@ class CharacterPrompt {
     this.enabled = true,
     this.position, // 'A1'..'E5';null = AUTO
     this.activeTab = CharTab.positive,
+    this.avatar,
   });
 
   final String id;
   final String name;
   final String positive;
   final String negative;
+
+  /// 头像:从灵感角色库选来时带上的预览图(http URL 或本机文件路径)。
+  /// 只在角色卡上显示,不进载荷;null = 没有(手写 / AI 写的 / 导入的角色)。
+  final String? avatar;
 
   /// 编辑器原文草稿(含禁用 `~tag~` / 折叠 `<#名字: …>` 等仅编辑期语法),
   /// 空 = 与定稿无差别,不必单独存。有效性由读取侧判定,见 [pickEditorText]。
@@ -55,6 +60,7 @@ class CharacterPrompt {
     bool? enabled,
     Object? position = _unset,
     CharTab? activeTab,
+    Object? avatar = _unset,
   }) {
     return CharacterPrompt(
       id: id,
@@ -66,6 +72,7 @@ class CharacterPrompt {
       enabled: enabled ?? this.enabled,
       position: position == _unset ? this.position : position as String?,
       activeTab: activeTab ?? this.activeTab,
+      avatar: avatar == _unset ? this.avatar : avatar as String?,
     );
   }
 }
