@@ -153,7 +153,10 @@ class PromptCard extends ConsumerWidget {
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          _negPreview(state.negativePrompt),
+                          switch (negativePreview(state.negativePrompt)) {
+                            '' => '点击编辑负面提示词…',
+                            final s => s,
+                          },
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: context.texts.bodyMedium!.copyWith(
@@ -181,20 +184,20 @@ class PromptCard extends ConsumerWidget {
     );
   }
 
-  /// 负面预览:前 3 个 tag + "+N" 溢出提示
-  static String _negPreview(String neg) {
-    final tags = neg
-        .split(',')
-        .map((e) => e.trim())
-        .where((e) => e.isNotEmpty)
-        .toList();
-    if (tags.isEmpty) return '点击编辑负面提示词…';
-    final shown = tags.take(3).join(', ');
-    final extra = tags.length - 3;
-    return extra > 0 ? '$shown +$extra' : shown;
-  }
-
   void _openEditor(BuildContext context, {required bool positive}) {
     Navigator.of(context).push(sharedAxisRoute(EditorPage(positive: positive)));
   }
+}
+
+/// 负面预览:前 3 个 tag + "+N" 溢出提示;没写返回空串。提示词卡与角色卡共用。
+String negativePreview(String neg) {
+  final tags = neg
+      .split(',')
+      .map((e) => e.trim())
+      .where((e) => e.isNotEmpty)
+      .toList();
+  if (tags.isEmpty) return '';
+  final shown = tags.take(3).join(', ');
+  final extra = tags.length - 3;
+  return extra > 0 ? '$shown +$extra' : shown;
 }

@@ -11,12 +11,13 @@ import '../generate_state.dart';
 import '../models.dart';
 import 'common.dart';
 import 'position_grid_dialog.dart';
+import 'prompt_card.dart' show negativePreview;
 import 'section_card.dart';
 
 /// 角色面板:每个角色一张内嵌圆角小卡。
-/// 左:头像位(库里选来的显示预览图,否则虚线「选角色」;点它从灵感角色库换人)
+/// 左:头像位(库里选来的显示预览图,否则灰底人像图标;点它从灵感角色库换人)
 /// 右行 1:名称(点名字改名)· 站位徽章 · 电源开关 · 删除
-/// 右行 2:提示词两行预览 + token 计数(写了负面才标「负 N」)
+/// 右下:正向预览 + token 计数;写了负面再跟一行负面(与提示词卡同写法)
 class CharacterCard extends ConsumerWidget {
   const CharacterCard({super.key, this.reorderIndex});
 
@@ -223,6 +224,11 @@ class _CharacterTile extends ConsumerWidget {
         );
   }
 
+  void _openEditor(BuildContext context, {required bool positive}) =>
+      Navigator.of(
+        context,
+      ).push(sharedAxisRoute(EditorPage(positive: positive, charId: char.id)));
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final notifier = ref.read(generateProvider.notifier);
@@ -238,32 +244,29 @@ class _CharacterTile extends ConsumerWidget {
       generateProvider.select((s) => !s.params.useCoords),
     );
     final tokenizer = ref.watch(naiTokenizerProvider).value;
-    final tokens = totalPromptTokens(tokenizer, main: char.positive);
-    // 负面写了才标,没写不占地方
-    final negTokens = char.negative.trim().isEmpty
-        ? null
-        : totalPromptTokens(tokenizer, main: char.negative);
+    final hasNeg = char.negative.trim().isNotEmpty;
     // 停用只灰掉头像和文字,电源键保持清晰 —— 它是把角色叫回来的唯一入口
     final posColor = !enabled
         ? scheme.outline
         : (autoPos ? scheme.onSurfaceVariant : scheme.primary);
+    final negColor = enabled ? scheme.error : scheme.outline;
+    final promptStyle = context.texts.bodyMedium!;
     final countStyle = mono(
       context,
       size: 11,
       weight: FontWeight.w500,
     ).copyWith(color: scheme.outline);
-    final promptStyle = context.texts.bodyMedium!;
 
     return Material(
       color: scheme.surfaceContainerHigh,
       borderRadius: BorderRadius.circular(12),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        onTap: () => Navigator.of(
-          context,
-        ).push(sharedAxisRoute(EditorPage(positive: true, charId: char.id))),
+        onTap: () => _openEditor(context, positive: true),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(10, 10, 6, 10),
+          // 卡高由头像定,文字块在它旁边垂直居中:空卡、短提示词的卡也和别的
+          // 卡一样高,不会在底下空出一截
           child: Row(
             children: [
               _Avatar(
@@ -272,9 +275,10 @@ class _CharacterTile extends ConsumerWidget {
                 enabled: enabled,
                 onTap: () => _pickFromLibrary(context, ref),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 10),
               Expanded(
                 child: Column(
+                  mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     Row(
@@ -349,45 +353,64 @@ class _CharacterTile extends ConsumerWidget {
                       ],
                     ),
                     const SizedBox(height: 2),
+                    // 正向:没写负面时给两行;写了负面就一行,底下跟一行负面
+                    // (与提示词卡同一种写法)。空卡不标计数。
                     Padding(
                       padding: const EdgeInsets.only(left: 4, right: 6),
                       child: Row(
                         crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
                           Expanded(
-                            child: Stack(
-                              children: [
-                                // 空行撑满两行高:短提示词 / 空卡也和别的卡
-                                // 一样高,一列卡片不参差
-                                Text('\n', style: promptStyle),
-                                Text(
-                                  char.positive.isEmpty
-                                      ? '点击编辑提示词…'
-                                      : char.positive,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: promptStyle.copyWith(
-                                    color: char.positive.isEmpty || !enabled
-                                        ? scheme.outline
-                                        : scheme.onSurfaceVariant,
-                                  ),
-                                ),
-                              ],
+                            child: Text(
+                              char.positive.isEmpty
+                                  ? '点击编辑提示词…'
+                                  : char.positive,
+                              maxLines: hasNeg ? 1 : 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: promptStyle.copyWith(
+                                color: char.positive.isEmpty || !enabled
+                                    ? scheme.outline
+                                    : scheme.onSurfaceVariant,
+                              ),
                             ),
                           ),
-                          const SizedBox(width: 8),
-                          Column(
-                            mainAxisSize: MainAxisSize.min,
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: [
-                              if (negTokens != null)
-                                Text('负 $negTokens', style: countStyle),
-                              Text('$tokens', style: countStyle),
-                            ],
-                          ),
+                          if (char.positive.isNotEmpty) ...[
+                            const SizedBox(width: 8),
+                            Text(
+                              '${totalPromptTokens(tokenizer, main: char.positive)}',
+                              style: countStyle,
+                            ),
+                          ],
                         ],
                       ),
                     ),
+                    if (hasNeg)
+                      InkWell(
+                        onTap: () => _openEditor(context, positive: false),
+                        borderRadius: BorderRadius.circular(6),
+                        child: Padding(
+                          padding: const EdgeInsets.only(left: 4, right: 6),
+                          child: Row(
+                            children: [
+                              Icon(Icons.block, size: 15, color: negColor),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  negativePreview(char.negative),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: promptStyle.copyWith(color: negColor),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                '${totalPromptTokens(tokenizer, main: char.negative)}',
+                                style: countStyle,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -451,7 +474,8 @@ const _greyscale = ColorFilter.matrix(<double>[
 ]);
 
 /// 头像位:库里选来的角色显示它的预览图(比例同灵感库角色图 832:1216);
-/// 没有就是虚线「选角色」占位,图读不出来也退回占位。点它从灵感角色库挑人。
+/// 没有就是灰底人像图标(与站位徽章同一个底色),图读不出来也退回它。
+/// 点它从灵感角色库挑人。
 class _Avatar extends StatelessWidget {
   const _Avatar({
     required this.url,
@@ -465,38 +489,32 @@ class _Avatar extends StatelessWidget {
   final bool enabled;
   final VoidCallback onTap;
 
-  static const _w = 46.0, _h = 66.0, _r = 10.0;
+  static const _w = 55.0, _h = 80.0;
 
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    final slot = CustomPaint(
-      painter: DashedBorderPainter(scheme.outline, radius: _r),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.person_search_outlined, size: 20, color: scheme.primary),
-          const SizedBox(height: 3),
-          Text(
-            '选角色',
-            style: context.texts.labelSmall!.copyWith(
-              color: scheme.onSurfaceVariant,
-            ),
-          ),
-        ],
+    final slot = ColoredBox(
+      color: scheme.surfaceContainerHighest,
+      child: Center(
+        child: Icon(
+          Icons.person_search_outlined,
+          size: 24,
+          color: scheme.onSurfaceVariant,
+        ),
       ),
     );
-    Widget child = url == null
-        ? slot
-        : ClipRRect(
-            borderRadius: BorderRadius.circular(_r),
-            child: TagCardPreview(
+    Widget child = ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: url == null
+          ? slot
+          : TagCardPreview(
               url: url,
               name: name,
               decodeWidth: _w,
               placeholder: slot,
             ),
-          );
+    );
     if (!enabled) {
       child = Opacity(
         opacity: .55,
