@@ -378,7 +378,8 @@ class _PresetCard extends StatelessWidget {
       ),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        // 点卡片 = 支持的模型都改用这份。两个模型想分开用的,走右边菜单里的「用于」
+        // 点卡片 = 支持的模型都改用这份。两个模型想分开用的,点完再点另一个模型
+        // 要用的那张卡(比如它的默认规则),那个模型就换回去了
         onTap: notInUse.isEmpty
             ? null
             : () {
@@ -390,8 +391,8 @@ class _PresetCard extends StatelessWidget {
           children: [
             Padding(
               // 上下对称,标题那两行在卡片里垂直居中。角标是叠在上面的
-              // (Positioned),不占高度;躲它靠的是把右边菜单按钮收小,不是加边距
-              padding: const EdgeInsets.fromLTRB(16, 10, 2, 10),
+              // (Positioned),不占高度;上边距留够了,它压不到标题和右边的按钮
+              padding: const EdgeInsets.fromLTRB(16, 16, 6, 16),
               child: Row(
                 children: [
                   Expanded(
@@ -415,7 +416,7 @@ class _PresetCard extends StatelessWidget {
                               if (models.contains(f)) _Tag(rulesFamilyLabel(f)),
                           ],
                         ),
-                        const SizedBox(height: 2),
+                        const SizedBox(height: 3),
                         Text(
                           subtitle,
                           style: context.texts.labelSmall!.copyWith(
@@ -425,44 +426,39 @@ class _PresetCard extends StatelessWidget {
                       ],
                     ),
                   ),
-                  PopupMenuButton<String>(
-                    tooltip: '更多',
-                    // 自带的是 48 见方的图标按钮,在这么矮的卡里会顶到右上角的
-                    // 角标;换成 36 见方,整张卡本身也能点,够用
-                    child: Padding(
-                      padding: const EdgeInsets.all(8),
-                      child: Icon(
-                        Icons.more_vert,
-                        size: 20,
-                        color: scheme.onSurfaceVariant,
+                  // 与提示词预设页同一排按钮:编辑、导出直接摆出来,不收进菜单
+                  const SizedBox(width: 4),
+                  IconButton(
+                    tooltip: '编辑',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: onEdit,
+                    icon: Icon(
+                      Icons.edit_outlined,
+                      size: 19,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: '导出',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: onExport,
+                    icon: Icon(
+                      Icons.ios_share,
+                      size: 19,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                  if (onDelete != null)
+                    IconButton(
+                      tooltip: '删除',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: onDelete,
+                      icon: Icon(
+                        Icons.delete_outline,
+                        size: 19,
+                        color: scheme.error.withValues(alpha: .85),
                       ),
                     ),
-                    onSelected: (v) => switch (v) {
-                      'delete' => onDelete?.call(),
-                      'edit' => onEdit(),
-                      'export' => onExport(),
-                      _ => onUse(RulesFamily.values.byName(v)),
-                    },
-                    itemBuilder: (_) => [
-                      // 单模型的点卡片就够了;两个模型的才需要分开指定
-                      if (models.length > 1)
-                        for (final f in notInUse)
-                          PopupMenuItem(
-                            value: f.name,
-                            child: Text('用于 ${rulesFamilyLabel(f)}'),
-                          ),
-                      const PopupMenuItem(value: 'edit', child: Text('编辑')),
-                      const PopupMenuItem(value: 'export', child: Text('导出')),
-                      if (onDelete != null)
-                        PopupMenuItem(
-                          value: 'delete',
-                          child: Text(
-                            '删除',
-                            style: TextStyle(color: scheme.error),
-                          ),
-                        ),
-                    ],
-                  ),
                 ],
               ),
             ),
@@ -685,7 +681,6 @@ class _RulesEditorPageState extends State<_RulesEditorPage> {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = context.scheme;
     return PopScope(
       canPop: !_dirty,
       onPopInvokedWithResult: (didPop, _) {
@@ -702,32 +697,25 @@ class _RulesEditorPageState extends State<_RulesEditorPage> {
             ),
           ],
         ),
+        // 文本直接铺在页面上,不再套一层底色框:整页就是编辑区
         body: SafeArea(
           top: false,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(14, 4, 14, 12),
-            child: TextField(
-              controller: _ctl,
-              expands: true,
-              maxLines: null,
-              keyboardType: TextInputType.multiline,
-              textAlignVertical: TextAlignVertical.top,
-              // YAML 靠缩进和原样的键名,输入法的自动更正只会帮倒忙
-              autocorrect: false,
-              enableSuggestions: false,
-              style: mono(context, size: 13, weight: FontWeight.w400),
-              onChanged: (_) {
-                if (!_dirty) setState(() => _dirty = true);
-              },
-              decoration: InputDecoration(
-                filled: true,
-                fillColor: scheme.surfaceContainerLow,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14),
-                  borderSide: BorderSide.none,
-                ),
-                contentPadding: const EdgeInsets.all(12),
-              ),
+          child: TextField(
+            controller: _ctl,
+            expands: true,
+            maxLines: null,
+            keyboardType: TextInputType.multiline,
+            textAlignVertical: TextAlignVertical.top,
+            // YAML 靠缩进和原样的键名,输入法的自动更正只会帮倒忙
+            autocorrect: false,
+            enableSuggestions: false,
+            style: mono(context, size: 13, weight: FontWeight.w400),
+            onChanged: (_) {
+              if (!_dirty) setState(() => _dirty = true);
+            },
+            decoration: const InputDecoration(
+              border: InputBorder.none,
+              contentPadding: EdgeInsets.fromLTRB(16, 4, 16, 16),
             ),
           ),
         ),
