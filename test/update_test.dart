@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plana_app/core/store/prefs_store.dart';
+import 'package:plana_app/features/update/release_notes.dart';
 import 'package:plana_app/features/update/update_service.dart';
 
 /// 更新判定的纯逻辑。错了不会崩,只会"永远不提示"或"反复提示已装的版本" ——
@@ -145,5 +146,27 @@ void main() {
       await prefs.write(key: 'update_last_check', value: 'oops');
       expect(shouldAutoCheck(prefs), isTrue);
     });
+  });
+
+  test('更新说明按块切:标题 / 粗体小标题 / 列表 / 正文', () {
+    // 照 v1.1.0 的写法,GitHub 存的是 \r\n
+    const raw =
+        '## 新增\r\n\r\n**AI 助手(BETA)**\r\n\r\n- 底栏新增「AI」页\r\n'
+        '- 支持 `1.2::a::` 写法\r\n  续一行\r\n\r\n---\r\n'
+        '本次更新**旧版本**无法使用\r\n1. 第一步';
+    final b = parseReleaseNotes(raw);
+    expect(b.map((e) => e.kind).toList(), [
+      NoteKind.heading,
+      NoteKind.sub,
+      NoteKind.item,
+      NoteKind.item,
+      NoteKind.para,
+      NoteKind.item,
+    ]);
+    expect(b[0].text, '新增');
+    expect(b[1].text, 'AI 助手(BETA)');
+    expect(b[3].text, '支持 `1.2::a::` 写法\n续一行');
+    expect(b[4].text, '本次更新**旧版本**无法使用'); // 行内粗体留给渲染
+    expect(b[5].marker, '1.');
   });
 }
