@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'app_stores.dart';
+import 'prefs_store.dart';
 
 /// 生成设置(持久化)。
 /// [retryOn429]:被限流(HTTP 429)时自动重试当张,默认开;
@@ -111,6 +112,20 @@ class GenSettings {
 }
 
 const _key = 'gen_settings';
+
+/// 首启引导走完过没有 —— 同步读内存态,给 ProviderScope 建立之前的启动检查用
+/// (见 `CredentialStore`)。解析口径与 [GenSettingsNotifier.build] 一致。
+bool notifyPrimedIn(PrefsStore prefs) {
+  try {
+    final raw = prefs.get(_key);
+    if (raw == null || raw.isEmpty) return false;
+    return GenSettings.fromJson(
+      jsonDecode(raw) as Map<String, dynamic>,
+    ).notifyPrimed;
+  } catch (_) {
+    return false;
+  }
+}
 
 final genSettingsProvider =
     AsyncNotifierProvider<GenSettingsNotifier, GenSettings>(

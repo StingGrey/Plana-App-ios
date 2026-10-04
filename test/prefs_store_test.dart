@@ -124,9 +124,15 @@ void main() {
     expect(await prefs.read(key: 'theme_settings'), isNull);
   });
 
-  test('凭据三项不在迁移名单里(防止有人手滑加进去)', () {
-    expect(PrefsStore.migrateKeys, isNot(contains('nai_access_token')));
-    expect(PrefsStore.migrateKeys, isNot(contains('bot_session')));
-    expect(PrefsStore.migrateKeys, isNot(contains('auth_mode')));
+  test('凭据不在迁移名单里(防止有人手滑加进去);接入方式不是凭据,要迁', () {
+    for (final k in const [
+      'nai_access_token',
+      'nai_access_keys',
+      'bot_session',
+      'assistant_endpoints',
+    ]) {
+      expect(PrefsStore.migrateKeys, isNot(contains(k)));
+    }
+    expect(PrefsStore.migrateKeys, contains('auth_mode'));
   });
 }
