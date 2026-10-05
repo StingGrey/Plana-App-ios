@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/editor_theme.dart';
+import '../chrome_scroll.dart';
 import '../editor_models.dart';
 import 'rich_tag_controller.dart';
 import '../../../core/util/haptics.dart';
@@ -212,6 +213,30 @@ class _ChipFlowViewState extends State<ChipFlowView>
 
   Set<int> get _sel => widget.selection;
 
+  /// 权重面板弹出把视口压矮时,刚点的那颗别被盖住。见 [KeepInViewTracker]。
+  final _keep = KeepInViewTracker();
+  int? _focusChip;
+
+  void _focusOn(int i) {
+    _focusChip = i;
+    _keep.arm();
+  }
+
+  void _revealFocusChip() {
+    final i = _focusChip;
+    if (i == null || !_sel.contains(i) || i >= _chipKeys.length) return;
+    final b = _chipKeys[i].currentContext?.findRenderObject() as RenderBox?;
+    if (b == null || !b.attached || !b.hasSize) return;
+    b.showOnScreen(
+      rect: const EdgeInsets.all(12).inflateRect(Offset.zero & b.size),
+    );
+  }
+
+  void _longPressChip(int i) {
+    _focusOn(i);
+    widget.onLongPressChip(i);
+  }
+
   void _tapChip(int i) {
     Haptics.selection();
     // 在途滑动先归位并清位移,保证下次插入量到干净布局
@@ -220,7 +245,10 @@ class _ChipFlowViewState extends State<ChipFlowView>
       _startOffsets = const {};
     }
     final next = {...widget.selection};
-    if (!next.remove(i)) next.add(i);
+    if (!next.remove(i)) {
+      next.add(i);
+      _focusOn(i);
+    }
     widget.onSelectionChanged(next);
   }
 
@@ -351,38 +379,44 @@ class _ChipFlowViewState extends State<ChipFlowView>
           // 选中着东西时它什么也不做 —— 理由见 [_tapBlank]。
           behavior: HitTestBehavior.opaque,
           onTap: _tapBlank,
-          child: SingleChildScrollView(
-            // 一屏放得下也照样接拖动:编辑页滚动收起顶栏后,靠「顶上往下拽」
-            // 放出来(见 ChromeScrollTracker)
-            physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.fromLTRB(16, 6, 16, 24),
-            child: Stack(
-              key: _stackKey,
-              clipBehavior: Clip.none,
-              children: [
-                Align(
-                  alignment: Alignment.topLeft,
-                  child: Wrap(
-                    // 缝只要够把两颗分开就行:chip 自带底色和边框,靠不上
-                    // 留白来断句。横向比纵向再紧一档 —— 一行里缝出现的次数
-                    // 多得多,同样的数看着就更松。
-                    spacing: 6,
-                    runSpacing: 8,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      ..._rows(text, units, sel, pendingOf, t),
-                      _inputBox(units.isEmpty),
-                    ],
-                  ),
-                ),
-                if (sel.isNotEmpty)
-                  for (final (g, pos) in _anchors)
-                    Positioned(
-                      left: pos.dx - 15,
-                      top: pos.dy - 15,
-                      child: _PlusDot(onTap: () => _insert(g)),
+          child: NotificationListener<Notification>(
+            onNotification: (n) {
+              if (_keep.update(n)) _revealFocusChip();
+              return false;
+            },
+            child: SingleChildScrollView(
+              // 一屏放得下也照样接拖动:编辑页滚动收起顶栏后,靠「顶上往下拽」
+              // 放出来(见 ChromeScrollTracker)
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.fromLTRB(16, 6, 16, 24),
+              child: Stack(
+                key: _stackKey,
+                clipBehavior: Clip.none,
+                children: [
+                  Align(
+                    alignment: Alignment.topLeft,
+                    child: Wrap(
+                      // 缝只要够把两颗分开就行:chip 自带底色和边框,靠不上
+                      // 留白来断句。横向比纵向再紧一档 —— 一行里缝出现的次数
+                      // 多得多,同样的数看着就更松。
+                      spacing: 6,
+                      runSpacing: 8,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        ..._rows(text, units, sel, pendingOf, t),
+                        _inputBox(units.isEmpty),
+                      ],
                     ),
-              ],
+                  ),
+                  if (sel.isNotEmpty)
+                    for (final (g, pos) in _anchors)
+                      Positioned(
+                        left: pos.dx - 15,
+                        top: pos.dy - 15,
+                        child: _PlusDot(onTap: () => _insert(g)),
+                      ),
+                ],
+              ),
             ),
           ),
         );
@@ -471,7 +505,7 @@ class _ChipFlowViewState extends State<ChipFlowView>
         fontSize: widget.fontSize,
         selected: sel.contains(i),
         onTap: () => _tapChip(i),
-        onLongPress: () => widget.onLongPressChip(i),
+        onLongPress: () => _longPressChip(i),
       );
     }
     final tok = u.tok!;
@@ -486,7 +520,7 @@ class _ChipFlowViewState extends State<ChipFlowView>
       band: band,
       selected: sel.contains(i),
       onTap: () => _tapChip(i),
-      onLongPress: () => widget.onLongPressChip(i),
+      onLongPress: () => _longPressChip(i),
     );
   }
 

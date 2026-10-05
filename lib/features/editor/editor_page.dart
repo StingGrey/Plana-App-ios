@@ -1430,6 +1430,10 @@ class _EditorPageState extends ConsumerState<EditorPage>
     // 即触发本 build 重灌 + 重绘。
     final foldBodies = ref.watch(editorProvider.select((s) => s.foldBodies));
     _controller.foldBodies = foldBodies;
+    // 权重面板(词条栏 / 批量面板)一弹出,顶栏就让位;补全条不算。
+    // 拖光标期间 dock 是冻住的那份,顶栏跟着不动,松手再定。
+    final dock = _dock();
+    final weightDock = dock is TagPanel || dock is BatchPanel;
 
     return Theme(
       data: editorTheme(context),
@@ -1453,14 +1457,14 @@ class _EditorPageState extends ConsumerState<EditorPage>
             body: SafeArea(
               child: Column(
                 children: [
-                  // 滚动正文时整栏收起:贴底对齐 + 裁切,读起来是往上滑走。
-                  // 见 [_onContentScroll]。
+                  // 滚动正文时、或权重面板在时整栏收起:贴底对齐 + 裁切,
+                  // 读起来是往上滑走。见 [_onContentScroll]。
                   ClipRect(
                     child: AnimatedAlign(
                       duration: Motion.fast,
                       curve: Motion.standard,
                       alignment: Alignment.bottomCenter,
-                      heightFactor: _chromeHidden ? 0 : 1,
+                      heightFactor: _chromeHidden || weightDock ? 0 : 1,
                       child: EditorTopBar(
                         charName: _charName,
                         onBack: () {
@@ -1556,7 +1560,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
                                         child: child,
                                       ),
                                     ),
-                                child: _dock(),
+                                child: dock,
                               ),
                         ),
                       ),
