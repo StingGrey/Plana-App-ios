@@ -97,6 +97,7 @@ class AssistantSettings {
     this.autoImport = false,
     this.thinkLevel = ThinkLevel.auto,
     this.libraryScope = LibraryScope.local,
+    this.ocPlaceholders = false,
     this.noDraw = false,
     this.introVersion = 0,
     this.fontSize = fontSizeDefault,
@@ -155,6 +156,9 @@ class AssistantSettings {
   /// 拿全量去和一句话做匹配,捞上来的多半是他没见过的东西。
   final LibraryScope libraryScope;
 
+  /// 自定义接口渠道：本地和公共库 OC 只给 AI 占位符，结果落地前展开。默认关闭。
+  final bool ocPlaceholders;
+
   /// 纯文本格式:AI 照常写提示词,提议只显示成纯文本给复制,不出结果卡、不导入、不出图
   /// (见 [AssistantMsg.promptAsText])。什么都不发给模型。
   ///
@@ -193,6 +197,7 @@ class AssistantSettings {
     bool? autoImport,
     ThinkLevel? thinkLevel,
     LibraryScope? libraryScope,
+    bool? ocPlaceholders,
     bool? noDraw,
     int? introVersion,
     double? fontSize,
@@ -204,6 +209,7 @@ class AssistantSettings {
     autoImport: autoImport ?? this.autoImport,
     thinkLevel: thinkLevel ?? this.thinkLevel,
     libraryScope: libraryScope ?? this.libraryScope,
+    ocPlaceholders: ocPlaceholders ?? this.ocPlaceholders,
     noDraw: noDraw ?? this.noDraw,
     introVersion: introVersion ?? this.introVersion,
     fontSize: fontSize ?? this.fontSize,
@@ -217,6 +223,7 @@ class AssistantSettings {
     'autoImport': autoImport,
     'thinkLevel': thinkLevel.name,
     'libraryScope': libraryScope.name,
+    'ocPlaceholders': ocPlaceholders,
     'noDraw': noDraw,
     'introVersion': introVersion,
     'fontSize': fontSize,
@@ -236,6 +243,7 @@ class AssistantSettings {
         libraryScope:
             LibraryScope.values.asNameMap()[j['libraryScope']] ??
             LibraryScope.local,
+        ocPlaceholders: j['ocPlaceholders'] == true,
         noDraw: j['noDraw'] == true,
         // 缺键 = 老存档,按开算:新行为更好,不必等用户自己去翻设置
         stream: j['stream'] != false,

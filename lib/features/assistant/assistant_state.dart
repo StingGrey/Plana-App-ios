@@ -559,6 +559,8 @@ class AssistantNotifier extends Notifier<AssistantState> {
       'mode_keys': modeKeys,
       'no_draw': noDraw,
       'library_scope': scope.name,
+      'oc_placeholders':
+          endpoint != null && assistantSettingsOf(ref).ocPlaceholders,
       'history_turns': assistantSettingsOf(ref).historyTurns,
       'history_entries': history.length,
       'with_canvas': canvas,
@@ -586,6 +588,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
             // 不发给后端(见 local_library.dart)
             webArtists: lib.artists,
             webOcs: lib.ocs,
+            ocPlaceholders: assistantSettingsOf(ref).ocPlaceholders,
             resources: latestResources(state.msgs),
             libraryScope: libraryScopeWire(scope),
             chosenModes: modeKeys,
