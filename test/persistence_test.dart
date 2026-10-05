@@ -297,7 +297,7 @@ void main() {
     final aFile = File('${root.path}/gallery/images/${a.id}.png');
     expect(aFile.existsSync(), isTrue);
 
-    gal.clearAll();
+    await gal.clearAll();
     await stores.gallery.idle;
     expect(aFile.existsSync(), isFalse);
     expect(c.read(galleryProvider).results, isEmpty);

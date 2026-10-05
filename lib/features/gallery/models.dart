@@ -45,6 +45,7 @@ class ResultImage {
     this.bytes,
     this.input,
     this.inpaintFrom,
+    this.saved = false,
     bool? hasInput,
   }) : hasInput = hasInput ?? input != null;
 
@@ -59,6 +60,9 @@ class ResultImage {
   /// 只存 id 不存字节:源图本来就在库里,复制一份等于把每张重绘图的占用翻倍。
   /// 源图被删了就取不到 —— 那时「按住对比」自己消失,不报错。
   final String? inpaintFrom;
+
+  /// 存进过手机相册(任一保存入口成功过一次)。只是提示,不拦再存。
+  final bool saved;
 
   /// 生成时刻(ms epoch)。0 = 未知(升级前的老索引由文件 mtime 回填,
   /// 回填也失败才会留 0,展开页归入「更早」段)。
@@ -97,6 +101,7 @@ class ResultImage {
           createdAt: createdAt,
           batchIndex: batchIndex,
           inpaintFrom: inpaintFrom,
+          saved: saved,
           hasInput: hasInput,
         );
 
@@ -110,8 +115,27 @@ class ResultImage {
     createdAt: t,
     batchIndex: batchIndex,
     inpaintFrom: inpaintFrom,
+    saved: saved,
     bytes: bytes,
     input: input,
     hasInput: hasInput,
   );
+
+  /// 标成已存进相册的副本(其余字段原样)。
+  ResultImage asSaved() => saved
+      ? this
+      : ResultImage(
+          id: id,
+          width: width,
+          height: height,
+          seed: seed,
+          badge: badge,
+          createdAt: createdAt,
+          batchIndex: batchIndex,
+          inpaintFrom: inpaintFrom,
+          saved: true,
+          bytes: bytes,
+          input: input,
+          hasInput: hasInput,
+        );
 }

@@ -24,7 +24,8 @@ class UiPrefs {
     this.completionByHeat = true,
     this.galleryDaysFilter = 0,
     this.galleryDateFilter,
-    this.galleryGroupBy = 'day',
+    this.galleryBrowseAlbum = '',
+    this.gallerySaveAlbum = '',
     this.galleryColumns = 3,
     this.inspirationColumns = const {},
   });
@@ -48,9 +49,9 @@ class UiPrefs {
   GalleryDateFilter get dateFilter =>
       galleryDateFilter ?? GalleryDateFilter.legacy(galleryDaysFilter);
 
-  /// 图库网格的分组维度(`GalleryGroupBy` 的 name:`day` / `character` / `style`)。
-  /// 存字符串而不是下标 —— 将来插一个维度不会把老用户的选择挪到别的档去。
-  final String galleryGroupBy;
+  /// 空字符串代表全部相册；浏览与新图保存位置分别记录。
+  final String galleryBrowseAlbum;
+  final String gallerySaveAlbum;
 
   /// 图库网格的列数(双指捏合调,2~5)。与分组维度共用一个值 ——
   /// 系统相册也只有一个缩放档,分开记两份只会让人捏完切个分组又变回去。
@@ -70,7 +71,8 @@ class UiPrefs {
     bool? completionByHeat,
     int? galleryDaysFilter,
     GalleryDateFilter? galleryDateFilter,
-    String? galleryGroupBy,
+    String? galleryBrowseAlbum,
+    String? gallerySaveAlbum,
     int? galleryColumns,
     Map<String, int>? inspirationColumns,
   }) => UiPrefs(
@@ -84,7 +86,8 @@ class UiPrefs {
         (galleryDaysFilter != null
             ? GalleryDateFilter.legacy(galleryDaysFilter)
             : this.galleryDateFilter),
-    galleryGroupBy: galleryGroupBy ?? this.galleryGroupBy,
+    galleryBrowseAlbum: galleryBrowseAlbum ?? this.galleryBrowseAlbum,
+    gallerySaveAlbum: gallerySaveAlbum ?? this.gallerySaveAlbum,
     galleryColumns: galleryColumns ?? this.galleryColumns,
     inspirationColumns: inspirationColumns ?? this.inspirationColumns,
   );
@@ -96,7 +99,8 @@ class UiPrefs {
     'completionByHeat': completionByHeat,
     'galleryDaysFilter': galleryDaysFilter,
     'galleryDateFilter': dateFilter.toJson(),
-    'galleryGroupBy': galleryGroupBy,
+    'galleryBrowseAlbum': galleryBrowseAlbum,
+    'gallerySaveAlbum': gallerySaveAlbum,
     'galleryColumns': galleryColumns,
     'inspirationColumns': inspirationColumns,
   };
@@ -128,9 +132,12 @@ class UiPrefs {
           ? j['galleryDaysFilter'] as int
           : 0,
     ).restored,
-    galleryGroupBy: j['galleryGroupBy'] is String
-        ? j['galleryGroupBy'] as String
-        : 'day',
+    galleryBrowseAlbum: j['galleryBrowseAlbum'] is String
+        ? j['galleryBrowseAlbum'] as String
+        : '',
+    gallerySaveAlbum: j['gallerySaveAlbum'] is String
+        ? j['gallerySaveAlbum'] as String
+        : '',
     galleryColumns: j['galleryColumns'] is num
         ? (j['galleryColumns'] as num).toInt().clamp(
             kGalleryMinColumns,

@@ -12,11 +12,9 @@ void main() {
       genSettingsTab: 'comfy',
       completionByHeat: false,
       galleryDaysFilter: 7,
-      galleryGroupBy: 'style',
       galleryColumns: 5,
     );
     final back = UiPrefs.fromJson(p.toJson());
-    expect(back.galleryGroupBy, 'style');
     expect(back.galleryColumns, 5);
     expect(back.galleryDaysFilter, 7);
     expect(back.statsRange, 'month');
@@ -51,11 +49,5 @@ void main() {
     expect(bad.galleryColumns, 4, reason: '一项是垃圾值不该连累其余项');
     expect(UiPrefs.fromJson({'inspirationColumns': 7}).inspirationColumns, {});
     expect(UiPrefs.fromJson(const {}).inspirationColumns, {});
-  });
-
-  test('分组维度认不出的值回「按时间」,不连累别的项', () {
-    final p = UiPrefs.fromJson({'galleryGroupBy': 42, 'galleryColumns': 4});
-    expect(p.galleryGroupBy, 'day');
-    expect(p.galleryColumns, 4, reason: '一项是垃圾值不该连累其余项');
   });
 }

@@ -425,6 +425,8 @@ class _FilmThumb extends StatelessWidget {
                   top: 4,
                   child: ResultBadgeChip(badge: result.badge),
                 ),
+              if (result.saved)
+                const Positioned(right: 4, top: 4, child: SavedMark(size: 14)),
             ],
           ),
         ),

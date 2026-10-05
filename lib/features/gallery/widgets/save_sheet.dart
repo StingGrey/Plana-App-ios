@@ -9,6 +9,7 @@ import '../../../core/store/storage_stats.dart' show fmtBytes;
 import '../../../core/theme/app_theme.dart';
 import '../../../core/ui/param_input.dart';
 import '../../generate/widgets/common.dart' show hintSnack;
+import '../gallery_state.dart';
 import '../save_pipeline.dart';
 import '../models.dart';
 import '../phone_gallery_save.dart';
@@ -94,6 +95,7 @@ class _SaveSheetState extends ConsumerState<_SaveSheet> {
   Future<void> _saveOnce() async {
     if (_saving) return;
     final settings = _current;
+    final gallery = ref.read(galleryProvider.notifier);
     setState(() => _saving = true);
     try {
       final ok = await Gal.hasAccess() || await Gal.requestAccess();
@@ -107,6 +109,7 @@ class _SaveSheetState extends ConsumerState<_SaveSheet> {
         image: widget.image,
         format: settings.format,
       );
+      gallery.markSaved([widget.image.id]);
       if (!mounted) return;
       hintSnack(
         context,

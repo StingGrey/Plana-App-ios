@@ -14,6 +14,7 @@ import '../generate/generate_state.dart';
 import '../generate/models.dart';
 import '../generate/res_rules.dart' show kFreePixelThreshold;
 import '../generate/widgets/common.dart' show hintSnack;
+import '../gallery/albums/album_state.dart' show gallerySaveTargetProvider;
 import '../gallery/gallery_state.dart';
 import '../gallery/models.dart' show ResultBadge;
 import '../shell/shell_state.dart';
@@ -1110,6 +1111,11 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
       return;
     }
     setState(() => _firing = true);
+    // 存进哪本、还该不该抢选中,按点下去这一刻定(同放大):打码途中改了
+    // 保存相册或点了别的图,结果照原来的去处走,也不把人正看的图换掉。
+    final galleryTarget = ref.read(gallerySaveTargetProvider);
+    final gallery = ref.read(galleryProvider.notifier);
+    final galleryRevision = gallery.selectionRevision;
     try {
       final png = await censorPng(
         _currentBytes,
@@ -1136,16 +1142,16 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
         }
       }
       if (!mounted) return;
-      ref
-          .read(galleryProvider.notifier)
-          .addResult(
-            bytes: png,
-            width: img.width,
-            height: img.height,
-            seed: seed,
-            badge: ResultBadge.censored,
-            input: input,
-          );
+      await gallery.addResultToGallery(
+        target: galleryTarget,
+        canSelect: () => gallery.selectionRevision == galleryRevision,
+        bytes: png,
+        width: img.width,
+        height: img.height,
+        seed: seed,
+        badge: ResultBadge.censored,
+        input: input,
+      );
       if (!mounted) return;
       hintSnack(context, '已打码并存入图库', icon: Icons.check_circle_outline);
       await _close();

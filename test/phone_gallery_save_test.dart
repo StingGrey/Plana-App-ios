@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/core/theme/app_theme.dart';
+import 'package:plana_app/features/gallery/gallery_state.dart';
 import 'package:plana_app/features/gallery/models.dart';
 import 'package:plana_app/features/gallery/phone_gallery_save.dart';
 import 'package:plana_app/features/gallery/phone_image_date.dart';
@@ -213,6 +214,8 @@ void main() {
       );
       await tester.tap(find.text('历史'));
       await tester.pumpAndSettle();
+      await tester.tap(find.text('全部相册'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('多选'));
       await tester.pumpAndSettle();
       // 按显示的「新→旧」勾选，保存必须重新按时间排列。
@@ -237,6 +240,16 @@ void main() {
       expect(writes, hasLength(1));
       expect(writes.single['creationDate'], old.createdAt);
       firstDone.complete();
+      // 存完会给两张打「已保存」标记、排一次索引写。赶在防抖计时器于假时钟里
+      // 触发前换到真实事件循环写掉 —— 假时钟里发起的 IO 永远等不到完成。
+      final doneText = toAlbum ? '已保存 2 张到「测试排序」' : '已保存 2 张到相册';
+      for (var i = 0; i < 100 && find.text(doneText).evaluate().isEmpty; i++) {
+        await tester.pump();
+      }
+      await tester.runAsync(() async {
+        stores.flushNow();
+        await stores.gallery.idle;
+      });
       await tester.pumpAndSettle();
       expect(writes.map((w) => w['creationDate']), [
         old.createdAt,
@@ -246,9 +259,10 @@ void main() {
         writes.map((w) => w['relativePath']),
         everyElement(toAlbum ? 'Pictures/测试排序/' : 'Pictures/'),
       );
+      expect(find.text(doneText), findsOneWidget);
       expect(
-        find.text(toAlbum ? '已保存 2 张到「测试排序」' : '已保存 2 张到相册'),
-        findsOneWidget,
+        container.read(galleryProvider).results.every((r) => r.saved),
+        isTrue,
       );
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
