@@ -12,6 +12,7 @@ import '../generate/models.dart' show PromptSection;
 import '../generate/widgets/common.dart' show hintSnack;
 import 'data/suggestions.dart';
 import 'data/tag_completion.dart';
+import 'data/tag_favorites.dart';
 import 'data/tag_translation_service.dart';
 import 'editor_models.dart';
 import 'editor_settings.dart';
@@ -118,6 +119,9 @@ class _EditorPageState extends ConsumerState<EditorPage>
   /// 它只在打字时出现,而打字本身就会把这里放回来。
   bool _chromeHidden = false;
   final ChromeScrollTracker _chromeScroll = ChromeScrollTracker();
+
+  /// 底栏展开钮拉出的收藏托盘是否展开。
+  bool _trayOpen = false;
 
   /// 正文形态。设置即真相 —— 底栏那颗切换直接改设置,不另存一份局部状态,
   /// 免得「设置里是芯片、页面还停在文本」这种两头对不上的中间态。
@@ -255,9 +259,9 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _controller.refresh();
     _muting = false;
     if (_panelTok != null && _query.isEmpty) _reroute();
-    // 补全条的译文也是显示时现查(transOf)。结果快照没变,不重建就一直空着 ——
-    // 只重绘注音层不够,那是另一棵树。
-    if (!_result.isEmpty) setState(() {});
+    // 补全条与收藏托盘的译文也是显示时现查(transOf)。结果快照没变,不重建
+    // 就一直空着 —— 只重绘注音层不够,那是另一棵树。
+    if (!_result.isEmpty || _trayOpen) setState(() {});
   }
 
   /// 把注音未命中的词喂给后端翻译通道(增强模式;离线模式 no-op)。
@@ -881,6 +885,34 @@ class _EditorPageState extends ConsumerState<EditorPage>
         if (mounted) _focus.requestFocus();
       });
     }
+  }
+
+  void _toggleTray() {
+    Haptics.selection();
+    setState(() => _trayOpen = !_trayOpen);
+    // 收藏卡带译文:缺的交给后端翻译通道(离线模式 no-op)
+    if (_trayOpen) _transSvc.request(ref.read(tagFavoritesProvider));
+  }
+
+  /// 托盘里点了一枚收藏:芯片模式接在末尾;文本模式落在光标处 —— 光标在词里
+  /// 就接在这枚词后面,在空隙里就插在原地。
+  void _insertFavorite(String tag) {
+    Haptics.selection();
+    if (_chipMode) {
+      _appendTag(tag);
+      return;
+    }
+    final text = _controller.text;
+    final sel = _controller.selection;
+    final off = sel.isValid ? sel.end : text.length;
+    final toks = parseToks(text);
+    final i = tokIndexAt(text, off, toks);
+    final (next, cursor) = insertUnitAt(
+      text,
+      i >= 0 ? toks[i].segEnd : off,
+      tag,
+    );
+    _applyText(next, cursor);
   }
 
   /// 形态切换后的收尾:清掉另一头才有意义的状态。设置载回(冷启动时持久化的
@@ -1515,13 +1547,17 @@ class _EditorPageState extends ConsumerState<EditorPage>
       data: editorTheme(context),
       child: Builder(
         builder: (context) => PopScope(
-          // 芯片模式选中着东西时,返回键先退选(形态本身是常驻偏好,不该被
-          // 返回键改掉),再按一次才离开编辑器
-          canPop: !(settings.chipMode && (_chipSel.isNotEmpty || _chipPlacing)),
+          // 托盘展开着时返回键先收托盘;芯片模式选中着东西时先退选(形态本身
+          // 是常驻偏好,不该被返回键改掉)。收完再按一次才离开编辑器
+          canPop:
+              !_trayOpen &&
+              !(settings.chipMode && (_chipSel.isNotEmpty || _chipPlacing)),
           onPopInvokedWithResult: (didPop, _) {
             if (didPop) {
               _save();
               _dismissKeyboard(); // 系统返回手势也走这里,不能只挂在返回按钮上
+            } else if (_trayOpen) {
+              setState(() => _trayOpen = false);
             } else if (_chipPlacing) {
               // 先退落位阶段,选中留着 —— 用户多半只是想改一下选哪几枚
               setState(() => _chipPlacing = false);
@@ -1649,6 +1685,9 @@ class _EditorPageState extends ConsumerState<EditorPage>
                   EditorBottomBar(
                     onToggleMode: _toggleChipMode,
                     chipMode: settings.chipMode,
+                    trayOpen: _trayOpen,
+                    onToggleTray: _toggleTray,
+                    onInsertFavorite: _insertFavorite,
                   ),
                 ],
               ),
@@ -1827,6 +1866,11 @@ class _EditorPageState extends ConsumerState<EditorPage>
         onAddRelated: _addRelated,
         onRename: _chipMode ? _chipRename : null,
         onClose: _chipMode ? () => _setChipSel({}) : _closePanel,
+        favorited: ref
+            .watch(tagFavoriteKeysProvider)
+            .contains(metaKey(tok.name)),
+        onToggleFavorite: () =>
+            ref.read(tagFavoritesProvider.notifier).toggle(tok.name),
       );
     }
     return const SizedBox.shrink(key: ValueKey('dock-empty'));

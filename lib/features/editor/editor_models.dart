@@ -1823,6 +1823,29 @@ String appendUnit(String text, String tag) {
   return '$base$sep$add';
 }
 
+/// 在 [at] 处插入一枚单元,两侧按需补分隔:左边紧挨着词补 `, `,逗号后只补
+/// 空格,文首 / 换行后直接接;右边还有词再补 `, `。返回新正文与新单元的末尾。
+(String, int) insertUnitAt(String text, int at, String tag) {
+  final add = tag.trim();
+  if (add.isEmpty) return (text, at);
+  var l = at.clamp(0, text.length);
+  while (l > 0 && (text[l - 1] == ' ' || text[l - 1] == '\t')) {
+    l--;
+  }
+  var r = at.clamp(0, text.length);
+  while (r < text.length && (text[r] == ' ' || text[r] == '\t')) {
+    r++;
+  }
+  final lead = (l == 0 || text[l - 1] == '\n')
+      ? ''
+      : (text[l - 1] == ',' || text[l - 1] == '，')
+      ? ' '
+      : ', ';
+  final trail = (r >= text.length || _isSep(text[r])) ? '' : ', ';
+  final out = '${text.substring(0, l)}$lead$add$trail${text.substring(r)}';
+  return (out, l + lead.length + add.length);
+}
+
 /// 顶层单元重排:把第 [from] 个单元移到 [to](移除后下标)。槽位法——各单元
 /// 原文按新序填回原有槽,槽间分隔(逗号/换行)原样保留。
 String reorderUnits(String text, Map<String, String> bodies, int from, int to) {
