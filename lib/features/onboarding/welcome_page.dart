@@ -764,7 +764,7 @@ class _AccessStepState extends ConsumerState<_AccessStep>
                       ? Padding(
                           padding: const EdgeInsets.fromLTRB(0, 9, 0, 9),
                           child: Text(
-                            '兼容 NovelAI 接口的中转站或自建反代,地址跟这把 key 一起存',
+                            '兼容 NovelAI 接口的中转站或自建反代',
                             style: context.texts.labelSmall!.copyWith(
                               color: scheme.outline,
                             ),

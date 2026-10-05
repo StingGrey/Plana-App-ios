@@ -192,6 +192,55 @@ void main() {
       await expectLater(pending, throwsA(isA<NaiException>()));
     });
   });
+
+  test('查点数:令牌被拒(401)跟查不通分得开', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((req) async {
+      // 官方对已删的号、编的假令牌都回这一句
+      final dead = req.headers.value('authorization') == 'Bearer dead';
+      req.response
+        ..statusCode = dead ? 401 : 503
+        ..headers.contentType = ContentType.json
+        ..write(
+          jsonEncode(
+            dead
+                ? {'statusCode': 401, 'message': 'Unauthorized'}
+                : {'statusCode': 503, 'message': 'Service Unavailable'},
+          ),
+        );
+      await req.response.close();
+    });
+    addTearDown(() => server.close(force: true));
+
+    Future<Object?> errorOf(NaiClient client, String token) async {
+      try {
+        await client.subscription(token);
+      } catch (e) {
+        return e;
+      }
+      return null;
+    }
+
+    final client = NaiClient(base: 'http://127.0.0.1:${server.port}');
+    await withRealHttp(() async {
+      expect(naiTokenRejected(await errorOf(client, 'dead')), isTrue);
+
+      final busy = await errorOf(client, 'ok');
+      expect(busy, isA<NaiException>());
+      expect(naiTokenRejected(busy), isFalse);
+
+      // 连不上(端口已关)也不算被拒
+      final gone = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final port = gone.port;
+      await gone.close(force: true);
+      final offline = await errorOf(
+        NaiClient(base: 'http://127.0.0.1:$port'),
+        'dead',
+      );
+      expect(offline, isA<NaiException>());
+      expect(naiTokenRejected(offline), isFalse);
+    });
+  });
 }
 
 class _RealHttp extends HttpOverrides {}
