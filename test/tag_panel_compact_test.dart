@@ -59,8 +59,8 @@ Widget _host({required bool compact, Tok? tok}) => MaterialApp(
 );
 
 void main() {
-  // 369×800:测试机的真实逻辑尺寸(1200px / 520dpi),精简版的宽度预算按它算。
-  // 以前默认 412 是猜的,比真机宽 43 —— 按那个数排出来的行在真机上是挤的。
+  // 369×800:窄屏的逻辑尺寸(1200px / 520dpi),精简版的宽度预算按它算。
+  // 默认的 412 比它宽 43 —— 按那个数排出来的行在窄屏上是挤的。
   Future<void> pumpAt(WidgetTester t, Widget w, {double width = 369}) async {
     t.view.physicalSize = Size(width * 3, 800 * 3);
     t.view.devicePixelRatio = 3;

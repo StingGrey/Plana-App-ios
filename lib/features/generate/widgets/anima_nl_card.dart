@@ -13,7 +13,7 @@ import 'section_card.dart';
 /// 点一下整段写进正向词(再点一下整段移出)——一个插入点。
 ///
 /// ⚠ krea 有一张同名卡([KreaPromptCard]),行为相反:那边产的是整条新的正向词、
-/// 动作是替换/还原。同名是用户定的(对用户而言就是同一件事:让 AI 写自然语言),
+/// 动作是替换/还原。同名是有意的(对用户而言就是同一件事:让 AI 写自然语言),
 /// 改代码时按 provider 认卡,别按名字。
 class AnimaNlCard extends ConsumerStatefulWidget {
   const AnimaNlCard({super.key, this.reorderIndex});

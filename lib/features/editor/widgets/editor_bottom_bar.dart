@@ -128,7 +128,7 @@ class _PosNegToggle extends StatelessWidget {
 
     return Container(
       // 定宽:Row 里宽度无界时 Align 会收缩到滑块自身,滑块没有可移动
-      // 空间——永远停在左段、切换无动画(真机反馈修复)。
+      // 空间——永远停在左段、切换无动画。
       width: _PosNegToggle._segW * 2 + 6,
       height: _h,
       padding: const EdgeInsets.all(3),

@@ -914,7 +914,7 @@ class _TagChip extends StatelessWidget {
                   child: Align(
                     alignment: Alignment.bottomLeft,
                     // widthFactor 必须给。不给 = Align 撑满可用宽度,
-                    // Column 跟着变满宽,整颗 chip 独占一整行(真机反馈修复)。
+                    // Column 跟着变满宽,整颗 chip 独占一整行。
                     widthFactor: 1,
                     child: tok.trans != null
                         ? Text(

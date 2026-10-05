@@ -81,7 +81,7 @@ class TagPanel extends StatefulWidget {
 /// 精简词条栏的控件尺寸。抽成常量是因为 [_TagPanelState._compactRow] 要靠
 /// 它们判断放不放得下 —— 硬编码两份迟早对不上。
 ///
-/// 尺寸是**真机宽度**倒推的,不是拍脑袋:测试机 1200px / 520dpi = **369 dp**,
+/// 尺寸按窄屏倒推:1200px / 520dpi = **369 dp**,
 /// 去掉内边距只剩 353 装八个控件。按这一版的数是 334,留 19 的余量,
 /// 360 那档也放得下。一行里塞八样东西,单颗就只能到这个尺寸 ——
 /// 想再粗只能减功能。
@@ -425,7 +425,7 @@ class _TagPanelState extends State<TagPanel> {
               ],
             ),
             // 关联标签:点「关联」展开一行横向滚动(定高,再多也不溢出;
-            // Wrap 多行版在词多时撑破 dock 区,真机反馈弃用)
+            // Wrap 多行版在词多时撑破 dock 区,弃用)
             AnimatedSize(
               duration: Motion.fast,
               curve: Motion.emphasized,

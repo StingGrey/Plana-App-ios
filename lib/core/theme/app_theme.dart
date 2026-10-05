@@ -4,7 +4,7 @@ import 'package:material_color_utilities/material_color_utilities.dart'
 
 import '../ui/slide_back_transitions.dart';
 
-/// 全局主题。当前阶段按用户要求使用 M3 默认配色(基准种子色),
+/// 全局主题。当前阶段使用 M3 默认配色(基准种子色),
 /// 组件一律走语义角色(primary/surfaceContainer* 等),
 /// 将来切 NAI 品牌皮肤时只需替换这里的 ColorScheme。
 abstract final class AppTheme {

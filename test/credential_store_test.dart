@@ -9,7 +9,7 @@ import 'package:plana_app/core/auth/credential_store.dart';
 import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/core/store/prefs_store.dart';
 
-/// 加密存储留不住数据的机型(群友的 OPPO A93 5G,每次冷启动整份被清)要改存
+/// 加密存储留不住数据的机型(每次冷启动整份被清)要改存
 /// 文件,正常机型照旧走加密存储。两边判错都要命:漏判 = 每次冷启动丢 Key;
 /// 误判 = 好好的机器丢了 Keystore 这层保护,还白白提示一次「Key 被清了」。
 void main() {
