@@ -7,6 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../../core/store/ui_prefs.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/ui/pinch_columns.dart';
+import '../../../core/ui/scroll_memory.dart';
 import '../../generate/widgets/common.dart' show hintSnack;
 import 'codex_card.dart';
 import 'codex_favorites.dart';
@@ -38,8 +39,18 @@ class _CodexViewState extends ConsumerState<CodexView>
   List<String> _catPath = const []; // 分类树选中路径(空=全部;前缀匹配词条 path)
   Timer? _debounce;
   bool _introScheduled = false; // 首次说明弹窗本会话是否已排期(防重复弹)
-  final _scroll = ScrollController();
   final _masonry = CodexMasonry(gap: _gap);
+
+  /// 正在显示的是哪一部(build 时定下)。换法典时按它把当前状态存回原主。
+  String? _viewId;
+
+  /// 每部法典各记各的搜索词与分类筛选,换走再换回来原样还原。
+  /// 滚动位置记在 [ScrollMemory] 里,键带法典 id。
+  final _views = <String, ({String search, List<String> cat})>{};
+
+  late final _scroll = MemoScrollController.keyed(
+    () => 'inspiration.codex.${_viewId ?? ''}',
+  );
 
   /// 搜索框要能被程序清空(换法典时),所以不能是裸 TextField。
   final _searchCtrl = TextEditingController();
@@ -103,23 +114,26 @@ class _CodexViewState extends ConsumerState<CodexView>
 
   @override
   Widget build(BuildContext context) {
-    // 换法典后重置分类筛选**与搜索**。选择器已挪到外层顶栏,靠 provider 联动重置。
+    // 换法典:当前这部的搜索与分类存回它名下,换上目标那部上次的(没去过就是空)。
+    // 选择器在外层顶栏,靠 provider 联动。
     //
-    // 搜索原来是漏掉的:关键词跨法典留着,新法典多半一条都匹配不上,于是切过去
-    // 只看到「没有匹配的词条」—— 而搜索框在上面还原样显示着旧关键词,没人会想到
-    // 是它在过滤。三样一起清:输入框文本、过滤用的 _search、以及**防抖里压着的
-    // 那次**(不取消的话它会在切换后才落地,把刚清掉的关键词又写回去)。
-    ref.listen(selectedCodexProvider, (_, _) {
-      if (!mounted) return;
+    // 搜索不能跨法典带过去:新法典多半一条都匹配不上,切过去只看到「没有匹配的
+    // 词条」,没人会想到是上面那个旧关键词在过滤。输入框文本、过滤用的 _search、
+    // 以及**防抖里压着的那次**三样一起换(不取消的话它会在切换后才落地,把旧
+    // 关键词写进新法典)。滚动位置不用管:网格按法典 id 换 key 重建,从那部的
+    // 账上落位。
+    ref.listen(selectedCodexProvider, (_, next) {
+      if (!mounted || next == null || next == _viewId) return;
       _debounce?.cancel();
-      _searchCtrl.clear();
-      // 滚动位置也得归零。它没有分法典记账(不同于标签库的 ScrollMemory),
-      // 不重置就直接带到新法典上 —— 旧法典翻到几百条的位置,切到一本短的会被
-      // 钳到列表末尾,看着像打开就在底部。
-      if (_scroll.hasClients) _scroll.jumpTo(0);
+      final from = _viewId;
+      if (from != null) {
+        _views[from] = (search: _searchCtrl.text, cat: _catPath);
+      }
+      final to = _views[next];
+      _searchCtrl.text = to?.search ?? '';
       setState(() {
-        _catPath = const [];
-        _search = '';
+        _catPath = to?.cat ?? const [];
+        _search = to?.search ?? '';
       });
     });
     final indexAsync = ref.watch(codexIndexProvider);
@@ -129,7 +143,7 @@ class _CodexViewState extends ConsumerState<CodexView>
           _error('法典索引加载失败', () => ref.invalidate(codexIndexProvider)),
       data: (index) {
         if (index.isEmpty) return _msg('暂无法典');
-        final selId = _resolveSelectedId(index);
+        final selId = _viewId = _resolveSelectedId(index);
         final meta = index.firstWhere((m) => m.id == selId);
         // 首次进入法典功能:读盘确认为「没读过」时弹一次说明。
         if (ref.watch(codexIntroProvider) == false) _maybeShowIntro();
@@ -438,6 +452,7 @@ class _CodexViewState extends ConsumerState<CodexView>
                   _gap * (cols - 1)) /
               cols;
           return CustomScrollView(
+            key: ValueKey(meta.id), // 换法典即换一份列表,从那部的滚动账上落位
             controller: _scroll,
             physics: pinchPhysics(const AlwaysScrollableScrollPhysics()),
             slivers: [

@@ -67,6 +67,9 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   bool _codex = false;
   static const _kCodexSel = '__codex__';
 
+  /// 法典正文进过一次就一直挂着(切回标签库时只是藏起来),没进过不建、不拉数据。
+  bool _codexBuilt = false;
+
   late final TabController _tab = TabController(length: 2, vsync: this);
   // 账本 key 跟着当前分类走;网格按分类 + 分段换 key 重建,新网格从各自的账上落位
   // (换分类、换分段、骨架换成内容都一样)。
@@ -407,85 +410,104 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     final def = _def;
     _authorNames = ref.watch(tagAuthorNamesProvider).value ?? const {};
 
-    // 法典模式:只留分类胶囊的顶栏 + 只读浏览器,无搜索/分段/筛选/选择栏
-    // (法典自带选择器与搜索)。
-    if (_codex) {
-      return Scaffold(
-        body: Column(
-          children: [
-            _topBarCodex(scheme, lib),
-            const Expanded(child: CodexView()),
-          ],
-        ),
-      );
-    }
-
+    // 标签库与法典两套正文都挂着、只显示其一:来回切换时两边的滚动位置、
+    // 搜索框、分段都原样还在(原来是整块拆掉重建,切回来就回到顶上)。
     return Scaffold(
-      body: Column(
+      body: Stack(
+        fit: StackFit.expand,
         children: [
-          _topBar(scheme, lib),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(_kEdge, 8, _kEdge, 0),
-            child: TextField(
-              key: ValueKey('tag-search-${def.webId}'),
-              onChanged: (v) => setState(() => _search = v),
-              decoration: InputDecoration(
-                isDense: true,
-                hintText: def.searchHint,
-                prefixIcon: const Icon(Icons.search, size: 20),
-                filled: true,
-                fillColor: scheme.surfaceContainerHigh,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none,
-                ),
-                contentPadding: const EdgeInsets.symmetric(vertical: 8),
-                // 「作者 / 适用模型」筛选挂在搜索框里:它们和左边的标签筛选是正交
-                // 维度,塞进同一条 chip 行既会让人以为是同一组单选,标签一多还会被
-                // 挤到屏幕外。挂这儿两个 scope 都有,且不多占一行高度。
-                // 只给有公共库的两类(角色/画风)—— 场景/其他的条目全是自己的,
-                // 没有「别人」可筛。
-                suffixIcon: def.hasPublic ? _filterButton(scheme) : null,
-                suffixIconConstraints: const BoxConstraints(
-                  minWidth: 0,
-                  maxWidth: 190,
-                ),
+          _shown(!_codex, _tagBody(scheme, lib, def)),
+          // 法典模式:只留分类胶囊的顶栏 + 只读浏览器,无搜索/分段/筛选/选择栏
+          // (法典自带选择器与搜索)。
+          if (_codexBuilt)
+            _shown(
+              _codex,
+              Column(
+                children: [
+                  _topBarCodex(scheme, lib),
+                  const Expanded(child: CodexView()),
+                ],
               ),
             ),
-          ),
-          if (def.hasPublic)
-            Padding(
-              // 「我的」下面紧跟筛选行,间距由它顶出,这里不再留底距;
-              // 公共态没有筛选行,分段行会直接贴上网格首个分组头(顶衬仅 2),
-              // 补一档底距回到与上方各行相同的 8 节奏。
-              padding: EdgeInsets.fromLTRB(
-                _kEdge,
-                8,
-                _kEdge,
-                _tabIndex == 0 ? 0 : 8,
-              ),
-              child: ScopeSegTabs(
-                controller: _tab,
-                mineCount: lib.of(_cat).length,
-              ),
-            ),
-          if (_tabIndex == 0 || !def.hasPublic) _filterChips(lib),
-          Expanded(
-            // 禁 TabBarView 横滑:横滑手势留给 shell PageView 切底部 tab
-            // (与场景/其他分类行为一致),scope 切换走分段控件点按。
-            child: pinchLayer(
-              child: def.hasPublic
-                  ? TabBarView(
-                      controller: _tab,
-                      physics: const NeverScrollableScrollPhysics(),
-                      children: [_mineTab(lib), _publicTab(lib)],
-                    )
-                  : _mineTab(lib),
-            ),
-          ),
         ],
       ),
-      bottomNavigationBar: _selectionBar(scheme, lib),
+      bottomNavigationBar: _codex ? null : _selectionBar(scheme, lib),
+    );
+  }
+
+  /// 藏起来但不拆:不绘制、不接手势、不占焦点、动画停走,状态全留着。
+  Widget _shown(bool on, Widget child) => Offstage(
+    offstage: !on,
+    child: TickerMode(
+      enabled: on,
+      child: ExcludeFocus(excluding: !on, child: child),
+    ),
+  );
+
+  Widget _tagBody(ColorScheme scheme, TagLibraryState lib, TagCategoryDef def) {
+    return Column(
+      children: [
+        _topBar(scheme, lib),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(_kEdge, 8, _kEdge, 0),
+          child: TextField(
+            key: ValueKey('tag-search-${def.webId}'),
+            onChanged: (v) => setState(() => _search = v),
+            decoration: InputDecoration(
+              isDense: true,
+              hintText: def.searchHint,
+              prefixIcon: const Icon(Icons.search, size: 20),
+              filled: true,
+              fillColor: scheme.surfaceContainerHigh,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide.none,
+              ),
+              contentPadding: const EdgeInsets.symmetric(vertical: 8),
+              // 「作者 / 适用模型」筛选挂在搜索框里:它们和左边的标签筛选是正交
+              // 维度,塞进同一条 chip 行既会让人以为是同一组单选,标签一多还会被
+              // 挤到屏幕外。挂这儿两个 scope 都有,且不多占一行高度。
+              // 只给有公共库的两类(角色/画风)—— 场景/其他的条目全是自己的,
+              // 没有「别人」可筛。
+              suffixIcon: def.hasPublic ? _filterButton(scheme) : null,
+              suffixIconConstraints: const BoxConstraints(
+                minWidth: 0,
+                maxWidth: 190,
+              ),
+            ),
+          ),
+        ),
+        if (def.hasPublic)
+          Padding(
+            // 「我的」下面紧跟筛选行,间距由它顶出,这里不再留底距;
+            // 公共态没有筛选行,分段行会直接贴上网格首个分组头(顶衬仅 2),
+            // 补一档底距回到与上方各行相同的 8 节奏。
+            padding: EdgeInsets.fromLTRB(
+              _kEdge,
+              8,
+              _kEdge,
+              _tabIndex == 0 ? 0 : 8,
+            ),
+            child: ScopeSegTabs(
+              controller: _tab,
+              mineCount: lib.of(_cat).length,
+            ),
+          ),
+        if (_tabIndex == 0 || !def.hasPublic) _filterChips(lib),
+        Expanded(
+          // 禁 TabBarView 横滑:横滑手势留给 shell PageView 切底部 tab
+          // (与场景/其他分类行为一致),scope 切换走分段控件点按。
+          child: pinchLayer(
+            child: def.hasPublic
+                ? TabBarView(
+                    controller: _tab,
+                    physics: const NeverScrollableScrollPhysics(),
+                    children: [_mineTab(lib), _publicTab(lib)],
+                  )
+                : _mineTab(lib),
+          ),
+        ),
+      ],
     );
   }
 
@@ -574,7 +596,7 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   /// 分类选择(四类标签库 + 法典)。法典是特殊项:切模式,不走 [_switchCategory]。
   void _onPickCat(Object v) {
     if (v == _kCodexSel) {
-      setState(() => _codex = true);
+      setState(() => _codex = _codexBuilt = true);
     } else if (v is TagCategory) {
       if (_codex) setState(() => _codex = false);
       _switchCategory(v);
