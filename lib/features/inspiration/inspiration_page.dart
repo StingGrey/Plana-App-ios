@@ -68,12 +68,13 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   static const _kCodexSel = '__codex__';
 
   late final TabController _tab = TabController(length: 2, vsync: this);
-  // 初始分类的记忆直接灌进 initialScrollOffset;换分类走 _switchCategory 落位。
-  late final _mineScroll = ScrollController(
-    initialScrollOffset: ScrollMemory.read(_scrollKey(_cat, false)) ?? 0,
+  // 账本 key 跟着当前分类走;网格按分类 + 分段换 key 重建,新网格从各自的账上落位
+  // (换分类、换分段、骨架换成内容都一样)。
+  late final _mineScroll = MemoScrollController.keyed(
+    () => _scrollKey(_cat, false),
   );
-  late final _pubScroll = ScrollController(
-    initialScrollOffset: ScrollMemory.read(_scrollKey(_cat, true)) ?? 0,
+  late final _pubScroll = MemoScrollController.keyed(
+    () => _scrollKey(_cat, true),
   );
 
   /// 每分类已选 id(我的/公共库两 scope 共用一套,对齐 web selectionMap)。
@@ -117,8 +118,6 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
       final i = _tab.animation!.value.round();
       if (i != _tabIndex && mounted) setState(() => _tabIndex = i);
     });
-    _mineScroll.addListener(() => _saveScroll(_mineScroll, false));
-    _pubScroll.addListener(() => _saveScroll(_pubScroll, true));
   }
 
   @override
@@ -157,28 +156,10 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   String _scrollKey(TagCategory c, bool pub) =>
       'inspiration.${c.name}.${pub ? 'public' : 'mine'}';
 
-  /// 持续记账(内容不可滚时跳过,否则会把记忆冲成 0)。
-  void _saveScroll(ScrollController ctrl, bool pub) {
-    if (!ctrl.hasClients || ctrl.positions.length != 1) return;
-    final p = ctrl.position;
-    if (!p.hasContentDimensions || p.maxScrollExtent <= 0) return;
-    ScrollMemory.write(_scrollKey(_cat, pub), p.pixels);
-  }
-
-  void _jumpTo(ScrollController ctrl, double want) {
-    if (!ctrl.hasClients || ctrl.positions.length != 1) return;
-    final p = ctrl.position;
-    if (!p.hasContentDimensions) return;
-    final target = want.clamp(0.0, p.maxScrollExtent);
-    if ((p.pixels - target).abs() > 1) ctrl.jumpTo(target);
-  }
-
   void _switchCategory(TagCategory c) {
     if (c == _cat) return;
-    // 目标位置必须在换 _cat **之前**读:换完之后旧偏移还挂在同一个控制器上,
-    // 记账监听会先把旧值写进新分类的账,读到的就不是原位了。
-    final wantMine = ScrollMemory.read(_scrollKey(c, false)) ?? 0;
-    final wantPub = ScrollMemory.read(_scrollKey(c, true)) ?? 0;
+    // 滚动位置不用在这里搬:网格的 widget key 带分类,换完 _cat 就是一份新列表,
+    // 挂上控制器时从新分类的账上落位(见 [MemoScrollController])。
     setState(() {
       _cat = c;
       _search = '';
@@ -189,12 +170,6 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     });
     // 换完 _cat 再换:上限跟着新分类的卡片形状走
     jumpGridColumns(_savedCols(c));
-    // 新分类的列表要等这一帧布好才有 maxScrollExtent,落位排到帧后。
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _jumpTo(_mineScroll, wantMine);
-      _jumpTo(_pubScroll, wantPub);
-    });
   }
 
   // ---- 双指捏合改列数(见 PinchColumnsMixin) ----
@@ -1174,6 +1149,8 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
           (MediaQuery.sizeOf(context).width - _kEdge * 2 - _gap * (cols - 1)) /
           cols;
       return CustomScrollView(
+        // 换分类 / 分段即换一份列表,从各自的滚动账上落位
+        key: ValueKey(_scrollKey(_cat, isPublic)),
         controller: ctrl,
         physics: pinchPhysics(const AlwaysScrollableScrollPhysics()),
         slivers: [
