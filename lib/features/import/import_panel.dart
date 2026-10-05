@@ -1978,7 +1978,9 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
                       ],
                     ),
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 6),
+                  _copyButton(scheme, text: preview, what: title),
+                  const SizedBox(width: 2),
                   // 勾选:自带点击域,不连带展开
                   InkResponse(
                     onTap: onTap,
@@ -2069,6 +2071,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
               tag: autoPos ? 'AUTO' : positionChipLabel(positions[i]),
               tagColor: scheme.tertiary,
               text: m.characters[i].prompt,
+              copyWhat: '角色提示词',
               checked: _charChecked.contains(i),
               onTap: () => setState(() {
                 _charChecked.contains(i)
@@ -2314,6 +2317,16 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
                 ),
               ),
               const SizedBox(width: 8),
+              if (e.label == 'Seed') ...[
+                _copyButton(
+                  scheme,
+                  text: e.value,
+                  what: '种子',
+                  done: '已复制种子 ${e.value}',
+                  size: 28,
+                ),
+                const SizedBox(width: 4),
+              ],
               if (blocked)
                 Icon(Icons.block, size: 18, color: scheme.outline)
               else
@@ -2326,6 +2339,32 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   }
 
   // ---- 通用小部件 ----
+
+  /// 复制按钮。整行 / 整格的点击是展开或勾选,复制单独一颗,自带点击域不抢它们。
+  Widget _copyButton(
+    ColorScheme scheme, {
+    required String text,
+    required String what,
+    String? done,
+    double size = 34,
+  }) => IconButton(
+    tooltip: '复制$what',
+    onPressed: () async {
+      await Clipboard.setData(ClipboardData(text: text));
+      if (!mounted) return;
+      hintSnack(context, done ?? '已复制$what', icon: Icons.check);
+    },
+    style: IconButton.styleFrom(
+      fixedSize: Size.square(size),
+      minimumSize: Size.square(size),
+      padding: EdgeInsets.zero,
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    ),
+    iconSize: size >= 34 ? 18 : 16,
+    color: scheme.onSurfaceVariant,
+    icon: const Icon(Icons.content_copy),
+  );
+
   Widget _checkBox(ColorScheme scheme, bool on, {double size = 22}) {
     return AnimatedContainer(
       duration: Motion.fast,
@@ -2447,11 +2486,17 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     required String text,
     required bool checked,
     required VoidCallback onTap,
+    String? copyWhat,
   }) {
+    final copyable = copyWhat != null && text.isNotEmpty;
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 11),
+        // 带复制钮时上下各让 4:28 高的按钮正好补回来,行高不变
+        padding: EdgeInsets.symmetric(
+          horizontal: 11,
+          vertical: copyable ? 7 : 11,
+        ),
         decoration: BoxDecoration(
           color: scheme.surfaceContainerHigh,
           borderRadius: BorderRadius.circular(11),
@@ -2482,7 +2527,12 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
                 style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
               ),
             ),
-            const SizedBox(width: 8),
+            if (copyable) ...[
+              const SizedBox(width: 4),
+              _copyButton(scheme, text: text, what: copyWhat, size: 28),
+              const SizedBox(width: 4),
+            ] else
+              const SizedBox(width: 8),
             _checkBox(scheme, checked, size: 20),
           ],
         ),
