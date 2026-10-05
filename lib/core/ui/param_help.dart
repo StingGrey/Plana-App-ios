@@ -44,6 +44,17 @@ class ParamHelp {
 /// web 角色参考的两条提示里有「点击数字框可输入负值」——
 /// app 的强度/保真度下限就是 0,照抄会教出一个做不到的操作,已删。
 abstract final class Help {
+  // ---- 分辨率 ----
+  // web 没有对应的 HelpTip,这条是 app 自写的。
+
+  static const resolution = ParamHelp(
+    '分辨率',
+    '按总像素(宽 × 高)分档:\n'
+        '· 免费 → ≤ 1024×1024,即绿线以内;需 Opus 订阅、步数 ≤28\n'
+        '· 消耗点数 → 超出绿线,尺寸越大越贵\n'
+        '· 超出上限 → 超过 1024×3072(红线),无法生成',
+  );
+
   // ---- 图生图 ----
 
   static const img2imgStrength = ParamHelp(
