@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/util/nai_tokenizer.dart';
 import '../../editor/editor_page.dart';
+import '../../inspiration/tag_models.dart' show TagCategory, tagCategoryDef;
 import '../../inspiration/widgets/char_pick_sheet.dart';
 import '../../inspiration/widgets/tag_card.dart' show TagCardPreview;
 import '../char_position.dart';
@@ -14,10 +15,8 @@ import 'position_grid_dialog.dart';
 import 'prompt_card.dart' show negativePreview;
 import 'section_card.dart';
 
-/// 角色面板:每个角色一张内嵌圆角小卡。
-/// 左:头像位(库里选来的显示预览图,否则灰底人像图标;点它从灵感角色库换人)
-/// 右行 1:名称(点名字改名)· 站位徽章 · 电源开关 · 删除
-/// 右下:正向预览 + token 计数;写了负面再跟一行负面(与提示词卡同写法)
+/// 角色面板:沿用创作页的容器与公共按钮,预览比例与灵感角色库一致。
+/// 点头像换角色、点名称改名;删除直接放在卡上,长按整卡仍可排序。
 class CharacterCard extends ConsumerWidget {
   const CharacterCard({super.key, this.reorderIndex});
 
@@ -31,6 +30,8 @@ class CharacterCard extends ConsumerWidget {
     final chars = state.characters;
     final cap = maxCharactersOf(state.params.model);
     final canAdd = chars.length < cap;
+    // 窄屏只收紧公共圆形按钮尺寸,常规宽度与其它模块保持一致。
+    final actionSize = MediaQuery.sizeOf(context).width < 350 ? 32.0 : 36.0;
     // 读数按**启用**数算:上限管的是进载荷的那几个,停用的不占额度。切模型时
     // 超出的尾巴会自动停用(见 GenerateNotifier._capEnabled),之后还标红就只剩
     // 一种来路 —— 用户在小槽位模型下自己又勾回来了,那确实该红。
@@ -45,6 +46,7 @@ class CharacterCard extends ConsumerWidget {
         if (chars.isNotEmpty)
           RoundIconBtn(
             Icons.delete_sweep_outlined,
+            size: actionSize,
             tooltip: '清空全部角色',
             color: scheme.onSurfaceVariant,
             onTap: () => _confirmClear(context, notifier),
@@ -52,12 +54,14 @@ class CharacterCard extends ConsumerWidget {
         // 与 Vibe / 角色参考卡头的「库」同一枚图标、同一个位置
         RoundIconBtn(
           Icons.grid_view,
+          size: actionSize,
           tooltip: '角色库',
           color: canAdd ? scheme.onSurfaceVariant : scheme.outline,
           onTap: canAdd ? () => _addFromLibrary(context, ref) : null,
         ),
         RoundIconBtn(
           Icons.add,
+          size: actionSize,
           tooltip: '添加角色',
           color: canAdd ? null : scheme.outline,
           onTap: canAdd ? notifier.addCharacter : null,
@@ -72,7 +76,7 @@ class CharacterCard extends ConsumerWidget {
       chevronPlaceholder: chars.isEmpty,
       body: chars.isEmpty
           ? null
-          // 长按卡片拖动排序。删除只走行内那枚按钮 —— 横滑抹掉的是整份角色配置
+          // 长按卡片拖动排序。删除只走行内按钮 —— 横滑抹掉的是整份角色配置
           // (提示词/站位/开关),而这里没有撤销可给。
           : ReorderableListView(
               shrinkWrap: true,
@@ -245,10 +249,12 @@ class _CharacterTile extends ConsumerWidget {
     );
     final tokenizer = ref.watch(naiTokenizerProvider).value;
     final hasNeg = char.negative.trim().isNotEmpty;
-    // 停用只灰掉头像和文字,电源键保持清晰 —— 它是把角色叫回来的唯一入口
-    final posColor = !enabled
-        ? scheme.outline
-        : (autoPos ? scheme.onSurfaceVariant : scheme.primary);
+    final positionLabel = autoPos
+        ? 'AUTO'
+        : positionChipLabel(char.position, grid: !isV5);
+    final controlSize = MediaQuery.sizeOf(context).width < 350 ? 32.0 : 36.0;
+    // 停用只弱化内容,操作按钮保持可用。
+    final posColor = enabled ? scheme.primary : scheme.outline;
     final negColor = enabled ? scheme.error : scheme.outline;
     final promptStyle = context.texts.bodyMedium!;
     final countStyle = mono(
@@ -258,16 +264,15 @@ class _CharacterTile extends ConsumerWidget {
     ).copyWith(color: scheme.outline);
 
     return Material(
-      color: scheme.surfaceContainerHigh,
+      color: scheme.surfaceContainer,
       borderRadius: BorderRadius.circular(12),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: () => _openEditor(context, positive: true),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(10, 10, 6, 10),
-          // 卡高由头像定,文字块在它旁边垂直居中:空卡、短提示词的卡也和别的
-          // 卡一样高,不会在底下空出一截
+          padding: const EdgeInsets.all(8),
           child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _Avatar(
                 url: char.avatar,
@@ -281,82 +286,84 @@ class _CharacterTile extends ConsumerWidget {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    // 名称与三个等大的公共圆形按钮共用顶行。
                     Row(
                       children: [
-                        // 名称占满中间,把尾部(徽章 + 开关 + 删除)顶到最右
                         Expanded(
-                          child: Row(
-                            children: [
-                              Flexible(
-                                // 点名字改名:热区只包名字本身,外层那圈照旧点开
-                                // 编辑器(里层先拿到这一下)。长按是整卡拖排序,
-                                // 这里不接。
-                                child: InkWell(
-                                  onTap: () => _rename(context, notifier),
-                                  borderRadius: BorderRadius.circular(8),
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(4),
-                                    child: Text(
-                                      char.name,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: context.texts.bodyLarge!.copyWith(
-                                        fontWeight: FontWeight.w700,
-                                        color: enabled
-                                            ? scheme.onSurface
-                                            : scheme.outline,
-                                      ),
-                                    ),
-                                  ),
+                          child: InkWell(
+                            onTap: () => _rename(context, notifier),
+                            borderRadius: BorderRadius.circular(8),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 3),
+                              child: Text(
+                                char.name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: context.texts.bodyLarge!.copyWith(
+                                  fontWeight: FontWeight.w700,
+                                  color: enabled
+                                      ? scheme.onSurface
+                                      : scheme.outline,
                                 ),
                               ),
-                            ],
+                            ),
                           ),
                         ),
                         const SizedBox(width: 4),
-                        _PositionChip(
-                          // AUTO 是整张图的档(use_coords=false):这时坐标还在,
-                          // 只是模型不理会,徽章统一写 AUTO。否则网格模型
-                          // (V4/V4.5)下显示它实际会被吸附到的那一格 —— 徽章写
-                          // '42,67%'、请求里发的却是 C4 的格心,两边对不上
-                          // (见 quantizeCenterToGrid)。
-                          label: autoPos
-                              ? 'AUTO'
-                              : positionChipLabel(char.position, grid: !isV5),
+                        RoundIconBtn(
+                          Icons.location_on_outlined,
+                          size: controlSize,
                           color: posColor,
                           onTap: () => showPositionGridDialog(context, char.id),
+                          tooltip: '设置角色位置：$positionLabel',
                         ),
-                        const SizedBox(width: 4),
-                        RefEnableToggle(
-                          enabled: enabled,
+                        const SizedBox(width: 6),
+                        RoundIconBtn(
+                          Icons.power_settings_new,
+                          size: controlSize,
+                          color: enabled ? scheme.primary : scheme.outline,
                           onTap: () => notifier.updateCharacter(
                             char.id,
                             enabled: !enabled,
                           ),
-                          onTooltip: '停用(保留配置)',
+                          tooltip: enabled ? '停用(保留配置)' : '启用',
                         ),
-                        SizedBox(
-                          width: 36,
-                          height: 38,
-                          child: IconButton(
-                            onPressed: () => notifier.removeCharacter(char.id),
-                            icon: Icon(
-                              Icons.delete_outline,
-                              size: 20,
-                              color: scheme.error.withValues(alpha: .85),
+                        const SizedBox(width: 6),
+                        RoundIconBtn(
+                          Icons.delete_outline,
+                          size: controlSize,
+                          color: scheme.error,
+                          onTap: () => notifier.removeCharacter(char.id),
+                          tooltip: '删除角色',
+                        ),
+                      ],
+                    ),
+                    // 坐标读数与名字分开,位置按钮只占一个图标的宽度。
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.location_on_outlined,
+                          size: 14,
+                          color: posColor,
+                        ),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: Text(
+                            autoPos ? '自动定位' : positionLabel,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: context.texts.bodySmall!.copyWith(
+                              fontWeight: FontWeight.w500,
+                              color: posColor,
                             ),
-                            tooltip: '删除角色',
-                            padding: EdgeInsets.zero,
-                            visualDensity: VisualDensity.compact,
                           ),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 2),
-                    // 正向:没写负面时给两行;写了负面就一行,底下跟一行负面
-                    // (与提示词卡同一种写法)。空卡不标计数。
+                    const SizedBox(height: 6),
+                    // 名称和提示词都占满预览图右侧。
                     Padding(
-                      padding: const EdgeInsets.only(left: 4, right: 6),
+                      padding: const EdgeInsets.only(right: 4),
                       child: Row(
                         crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
@@ -384,15 +391,16 @@ class _CharacterTile extends ConsumerWidget {
                         ],
                       ),
                     ),
-                    if (hasNeg)
+                    if (hasNeg) ...[
+                      const SizedBox(height: 4),
                       InkWell(
                         onTap: () => _openEditor(context, positive: false),
                         borderRadius: BorderRadius.circular(6),
                         child: Padding(
-                          padding: const EdgeInsets.only(left: 4, right: 6),
+                          padding: const EdgeInsets.fromLTRB(0, 3, 4, 3),
                           child: Row(
                             children: [
-                              Icon(Icons.block, size: 15, color: negColor),
+                              Icon(Icons.block, size: 14, color: negColor),
                               const SizedBox(width: 6),
                               Expanded(
                                 child: Text(
@@ -411,51 +419,9 @@ class _CharacterTile extends ConsumerWidget {
                           ),
                         ),
                       ),
+                    ],
                   ],
                 ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// 站位徽章:点开站位网格。宽度随字走(C3 / AUTO / 42,67%),给名字多留地方。
-class _PositionChip extends StatelessWidget {
-  const _PositionChip({
-    required this.label,
-    required this.color,
-    required this.onTap,
-  });
-
-  final String label;
-  final Color color;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: context.scheme.surfaceContainerHighest,
-      borderRadius: BorderRadius.circular(17),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.grid_on, size: 14, color: color),
-              const SizedBox(width: 4),
-              Text(
-                label,
-                style: mono(
-                  context,
-                  size: 12,
-                  weight: FontWeight.w700,
-                ).copyWith(color: color),
               ),
             ],
           ),
@@ -473,8 +439,7 @@ const _greyscale = ColorFilter.matrix(<double>[
   0, 0, 0, 1, 0,
 ]);
 
-/// 头像位:库里选来的角色显示它的预览图(比例同灵感库角色图 832:1216);
-/// 没有就是灰底人像图标(与站位徽章同一个底色),图读不出来也退回它。
+/// 竖向头像:固定使用角色库的 832:1216 比例,不随提示词高度拉伸。
 /// 点它从灵感角色库挑人。
 class _Avatar extends StatelessWidget {
   const _Avatar({
@@ -489,7 +454,7 @@ class _Avatar extends StatelessWidget {
   final bool enabled;
   final VoidCallback onTap;
 
-  static const _w = 55.0, _h = 80.0;
+  static const width = 72.0;
 
   @override
   Widget build(BuildContext context) {
@@ -504,6 +469,7 @@ class _Avatar extends StatelessWidget {
         ),
       ),
     );
+    final aspect = tagCategoryDef(TagCategory.character).previewAspect;
     Widget child = ClipRRect(
       borderRadius: BorderRadius.circular(8),
       child: url == null
@@ -511,7 +477,7 @@ class _Avatar extends StatelessWidget {
           : TagCardPreview(
               url: url,
               name: name,
-              decodeWidth: _w,
+              decodeWidth: width,
               placeholder: slot,
             ),
     );
@@ -526,7 +492,10 @@ class _Avatar extends StatelessWidget {
       child: GestureDetector(
         onTap: onTap,
         behavior: HitTestBehavior.opaque,
-        child: SizedBox(width: _w, height: _h, child: child),
+        child: SizedBox(
+          width: width,
+          child: AspectRatio(aspectRatio: aspect, child: child),
+        ),
       ),
     );
   }
