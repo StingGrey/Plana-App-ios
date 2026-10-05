@@ -3,6 +3,8 @@ import 'dart:typed_data';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/store/app_stores.dart';
+import '../editor/editor_models.dart' show draftOf, outputOf;
+import '../inspiration/tag_models.dart' show TagEntry, tagCategoryDef;
 import '../vibe_library/naiv4vibe_codec.dart' show kModelToEncodingKey;
 import 'agent_chars.dart';
 import 'canvas_state.dart';
@@ -11,6 +13,7 @@ import 'gen_modules.dart';
 import 'lora_triggers.dart' show removeLoraTriggersFromPrompt;
 import 'models.dart';
 import 'nai_request.dart' show naiModelId;
+import 'prompt_sections.dart';
 
 final generateProvider = NotifierProvider<GenerateNotifier, GenerateState>(
   GenerateNotifier.new,
@@ -792,6 +795,111 @@ class GenerateNotifier extends Notifier<GenerateState> {
     );
   }
 
+  /// 整串换掉提示词(读图导入、反推)。分区里同一侧的词一并清掉、骨架留着 ——
+  /// 导进来的是一张图完整的那串,分区再拼上去就重复了。
+  void replacePrompts({String? positive, String? negative}) {
+    setPrompts(positive: positive, negative: negative);
+    if (state.sections.isEmpty) return;
+    final p = positive != null ? '' : null;
+    final n = negative != null ? '' : null;
+    state = state.copyWith(
+      sections: [
+        for (final s in state.sections)
+          s.isMain
+              ? s
+              : s.copyWith(
+                  positive: p,
+                  positiveRaw: p,
+                  negative: n,
+                  negativeRaw: n,
+                ),
+      ],
+    );
+  }
+
+  // ---- 主提示词分区 ----
+
+  /// 灵感库条目各自成一格,不折叠(见 [withEntrySections])。格子名是分类名
+  /// (画风 / 角色 / 场景…),给了 [name] 就用它(法典词条叫「法典」)。
+  void addEntrySections(Iterable<TagEntry> entries, {String? name}) =>
+      state = state.copyWith(
+        sections: withEntrySections(state.sections, state.prompt, [
+          for (final e in entries)
+            e.copyWith(name: name ?? tagCategoryDef(e.category).label),
+        ], newId: _newId),
+      );
+
+  /// 编辑器多选「提取为新分区」:这段草稿(权重、禁用、折叠照旧)成一格,
+  /// 接在最后,返回新建的这一格(编辑器撤销时按它拿掉)。[positive] 为 false
+  /// 时放进负面那一侧。
+  PromptSection addSectionFrom(String draft, {required bool positive}) {
+    final list = state.sections.isEmpty
+        ? const [PromptSection.main()]
+        : state.sections;
+    final out = outputOf(draft);
+    final raw = draftOf(draft, out);
+    final section = PromptSection(
+      id: _newId(),
+      name: nextSectionName(list),
+      positive: positive ? out : '',
+      positiveRaw: positive ? raw : '',
+      negative: positive ? '' : out,
+      negativeRaw: positive ? '' : raw,
+    );
+    state = state.copyWith(sections: [...list, section]);
+    return section;
+  }
+
+  /// 卡头「+」:在最后加一格「分区 N」。还没分区时连主体一起建出来。
+  void addSection() {
+    final list = state.sections.isEmpty
+        ? const [PromptSection.main()]
+        : state.sections;
+    state = state.copyWith(
+      sections: [
+        ...list,
+        PromptSection(id: _newId(), name: nextSectionName(list)),
+      ],
+    );
+  }
+
+  void updateSection(String id, {String? name, bool? enabled}) {
+    state = state.copyWith(
+      sections: [
+        for (final s in state.sections)
+          if (s.id == id) s.copyWith(name: name, enabled: enabled) else s,
+      ],
+    );
+  }
+
+  /// 删掉一格,返回撤销要用的:删的那格、原行号、当时的主体。主体删不掉;
+  /// 删到只剩主体时整列清空,卡片回到原来的样子。
+  ({PromptSection section, int index, PromptSection main})? removeSection(
+    String id,
+  ) {
+    final list = state.sections;
+    final i = list.indexWhere((s) => s.id == id);
+    if (i < 0 || list[i].isMain) return null;
+    final main = list.firstWhere(
+      (s) => s.isMain,
+      orElse: () => const PromptSection.main(),
+    );
+    state = state.copyWith(
+      sections: normalizeSections([
+        for (final s in list)
+          if (s.id != id) s,
+      ]),
+    );
+    return (section: list[i], index: i, main: main);
+  }
+
+  /// 卡头「清空」:主体的正向清空,分区整列清掉(各格的负面跟着走),
+  /// 卡片回到没分区的样子;主体的负面留着。
+  void clearPositive() {
+    setPrompts(positive: '');
+    if (state.sections.isNotEmpty) state = state.copyWith(sections: const []);
+  }
+
   // ---- 参数 ----
   void applyParams(GenParams params) => state = state.copyWith(params: params);
 
@@ -907,6 +1015,11 @@ class GenerateNotifier extends Notifier<GenerateState> {
 
   void reorderCharacters(int oldIndex, int newIndex) => state = state.copyWith(
     characters: _reordered(state.characters, oldIndex, newIndex),
+  );
+
+  /// 分区行序就是拼接顺序,主体也能拖。
+  void reorderSections(int oldIndex, int newIndex) => state = state.copyWith(
+    sections: _reordered(state.sections, oldIndex, newIndex),
   );
 
   void reorderVibes(int oldIndex, int newIndex) => state = state.copyWith(

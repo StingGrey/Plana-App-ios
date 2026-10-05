@@ -1003,14 +1003,15 @@ Widget _action(
   );
 }
 
-/// 圆形小图标按钮(复制/关闭)。
+/// 圆形小图标按钮(提取 / 复制 / 关闭)。
 Widget _circleIcon(
   BuildContext context, {
   required IconData icon,
   required VoidCallback onTap,
+  String? tooltip,
 }) {
   final scheme = context.scheme;
-  return Material(
+  final btn = Material(
     color: scheme.surfaceContainerHighest,
     shape: const CircleBorder(),
     clipBehavior: Clip.antiAlias,
@@ -1023,6 +1024,7 @@ Widget _circleIcon(
       ),
     ),
   );
+  return tooltip == null ? btn : Tooltip(message: tooltip, child: btn);
 }
 
 /// 精简词条栏里的圆钮([_kTailW])。置灰时不可点,颜色跟着语义走。
@@ -1081,6 +1083,7 @@ class BatchPanel extends StatelessWidget {
     this.onUnfold,
     this.foldCount = 0,
     required this.onCopy,
+    this.onExtract,
     required this.onWrap,
     required this.onStepMult,
     required this.onClearWeight,
@@ -1129,6 +1132,9 @@ class BatchPanel extends StatelessWidget {
   /// 复制所选(折叠摊平成成员,权重/禁用记号照搬)。
   final VoidCallback onCopy;
 
+  /// 把所选提取出来新建一个分区;null = 不给(角色会话没有分区)。
+  final VoidCallback? onExtract;
+
   final void Function(bool up) onWrap;
   final void Function(bool up) onStepMult;
   final VoidCallback onClearWeight;
@@ -1174,6 +1180,15 @@ class BatchPanel extends StatelessWidget {
                   ),
                 ),
                 if (has) ...[
+                  if (onExtract case final extract?) ...[
+                    _circleIcon(
+                      context,
+                      icon: Icons.playlist_add,
+                      onTap: extract,
+                      tooltip: '提取为新分区',
+                    ),
+                    const SizedBox(width: 4),
+                  ],
                   _circleIcon(context, icon: Icons.content_copy, onTap: onCopy),
                   const SizedBox(width: 4),
                   _circleIcon(context, icon: Icons.close, onTap: onClose),

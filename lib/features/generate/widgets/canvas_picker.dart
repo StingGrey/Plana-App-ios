@@ -5,6 +5,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/util/haptics.dart';
 import '../canvas_state.dart';
 import '../models.dart' show CharacterPrompt, GenParams;
+import '../prompt_sections.dart' show joinSections;
 import '../style_recipes.dart' show recipeDetail, recipeOf;
 import 'bottom_action_bar.dart';
 import 'common.dart';
@@ -359,7 +360,12 @@ class _CanvasTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    final prompt = canvas.prompts.prompt;
+    // 分过区的画布按拼好的那串预览,和发出去的一致
+    final prompt = joinSections(
+      canvas.prompts.sections,
+      canvas.prompts.prompt,
+      positive: true,
+    );
     final characters = canvas.prompts.characters;
     final sampling = canvas.prompts.sampling;
     final preview = _previewStyle(context);

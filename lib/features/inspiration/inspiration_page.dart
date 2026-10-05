@@ -28,6 +28,7 @@ import 'tag_library.dart';
 import 'tag_models.dart';
 import 'widgets/scope_seg_tabs.dart';
 import 'widgets/tag_card.dart';
+import 'widgets/tag_filter_chips.dart';
 import 'widgets/tag_filter_sheet.dart';
 import 'widgets/tag_sheets.dart';
 import '../../core/util/haptics.dart';
@@ -89,7 +90,7 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
 
   /// 筛选:null=全部;[_kFavFilter]=收藏;其余为标签名。
   String? _filter;
-  static const _kFavFilter = ' fav';
+  static const _kFavFilter = TagFilterChips.favorites;
 
   /// 画风的「适用模型」筛选:null=全部;[kGenericModelFilter]=只看通用;
   /// 其余是 [ArtistModelGroup] 的 name。与 [_filter] 是两个正交的维度,
@@ -386,10 +387,16 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   }
 
   /// 角色「主提示词」/ 画风/场景/其他「确认选择」:正负向拼进主提示词。
+  /// 主提示词分过区时,每个条目自成一格、不折叠(同提示词卡头的「灵感库」)。
   Future<void> _confirmToPrompt(TagLibraryState lib) async {
     final entries = _resolveSelected(lib);
     if (entries.isEmpty) return;
     final gen = ref.read(generateProvider);
+    if (gen.sections.isNotEmpty) {
+      ref.read(generateProvider.notifier).addEntrySections(entries);
+      await _afterConfirm(entries, '已加入提示词');
+      return;
+    }
     // 追加到编辑器原文草稿(带回既有的禁用/折叠),每个条目自成一个折叠组;
     // 定稿由 outputOf 从草稿导出 —— 两者必须同时写,只写定稿的话草稿会被
     // 判过期作废,这次加进去的折叠(以及用户原有的禁用词)就一起没了。
@@ -834,89 +841,13 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     });
   }
 
-  /// 「全部 / 收藏 / 标签…」筛选行(我的 scope;标签=池∪在用)。
-  /// 药丸 chip + 主色实底标记选中,与 Vibe 管理器同款。
-  Widget _filterChips(TagLibraryState lib) {
-    final scheme = context.scheme;
-    final tags = lib.knownTags(_cat);
-    final filter = _validFilter(lib);
-    Widget chip(String label, bool sel, VoidCallback onTap, {IconData? icon}) =>
-        Padding(
-          padding: const EdgeInsets.only(right: 8),
-          child: ChoiceChip(
-            // 图标放进 label(自控间距),不用 avatar(默认间距太大)
-            label: icon == null
-                ? Text(label)
-                : Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        icon,
-                        size: 15,
-                        color: sel ? scheme.onPrimary : scheme.onSurfaceVariant,
-                      ),
-                      const SizedBox(width: 3),
-                      Text(label),
-                    ],
-                  ),
-            selected: sel,
-            onSelected: (_) => onTap(),
-            visualDensity: VisualDensity.compact,
-            shape: const StadiumBorder(),
-            labelStyle: context.texts.labelMedium!.copyWith(
-              fontWeight: FontWeight.w600,
-              color: sel ? scheme.onPrimary : scheme.onSurfaceVariant,
-            ),
-            selectedColor: scheme.primary,
-            backgroundColor: scheme.surfaceContainerHigh,
-            side: BorderSide.none,
-            showCheckmark: false,
-          ),
-        );
-    return SizedBox(
-      height: 48,
-      child: Row(
-        children: [
-          Expanded(
-            // 横向滚动:标签再多也不会溢出
-            child: ListView(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.fromLTRB(_kEdge, 4, 4, 4),
-              children: [
-                chip(
-                  '全部',
-                  filter == null,
-                  () => setState(() => _filter = null),
-                ),
-                chip(
-                  '收藏',
-                  filter == _kFavFilter,
-                  () => setState(() => _filter = _kFavFilter),
-                  icon: Icons.star_rounded,
-                ),
-                for (final t in tags)
-                  chip(
-                    t,
-                    filter == t,
-                    () => setState(() => _filter = _filter == t ? null : t),
-                  ),
-              ],
-            ),
-          ),
-          IconButton(
-            tooltip: '标签池管理',
-            icon: Icon(
-              Icons.settings_outlined,
-              size: 20,
-              color: scheme.onSurfaceVariant,
-            ),
-            onPressed: () => showTagPoolSheet(context, ref, _cat),
-          ),
-          const SizedBox(width: _kIconEdge),
-        ],
-      ),
-    );
-  }
+  Widget _filterChips(TagLibraryState lib) => TagFilterChips(
+    tags: lib.knownTags(_cat),
+    filter: _validFilter(lib),
+    onChanged: (filter) => setState(() => _filter = filter),
+    onManageTags: () => showTagPoolSheet(context, ref, _cat),
+    edge: _kEdge,
+  );
 
   // ---- 我的 / 公共库 ----
 

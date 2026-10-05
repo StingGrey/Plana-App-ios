@@ -52,12 +52,26 @@ Future<T?> _sheet<T>(BuildContext context, Widget child) =>
 /// 拆角色卡**只对 NAI 做**:Anima / Krea 没有角色分离这回事,给它们拆出来的卡
 /// 会被模块剥离层当场收走,白忙一场还让人以为丢了东西 —— 那两家一律整段
 /// (含各角色段)折叠进主提示词。
-({int added, int dropped}) codexAddToPrompt(WidgetRef ref, CodexEntry e) {
+///
+/// 主提示词分过区([asSection] 或已有分区)时,公共部分不折叠,自成一格
+/// (格子叫「法典」,见 GenerateNotifier.addEntrySections)。
+({int added, int dropped}) codexAddToPrompt(
+  WidgetRef ref,
+  CodexEntry e, {
+  bool asSection = false,
+}) {
   final gen = ref.read(generateProvider);
   final isNai = providerOfModel(gen.params.model) == GenProvider.nai;
+  final section = asSection || gen.sections.isNotEmpty;
+  void put(String content) => section
+      ? _codexSectionInto(ref, e, content)
+      : _codexFoldInto(ref, e, content, gen);
 
   // 非 NAI:整条(公共 + 角色段)一起进主提示词,一个字不丢
-  if (!isNai) return _codexFoldInto(ref, e, e.fullText, gen);
+  if (!isNai) {
+    put(e.fullText);
+    return (added: 0, dropped: 0);
+  }
 
   // 字段里带角色段 → 直接用;否则退回内联写法的拆分
   final fromField = [
@@ -78,7 +92,7 @@ Future<T?> _sheet<T>(BuildContext context, Widget child) =>
       : (hasChars ? split!.base : e.tags);
 
   // 公共部分为空(全站 401 条 tags 就是空的)时不折叠 —— 否则插进去一个空组。
-  _codexFoldInto(ref, e, base, gen);
+  put(base);
 
   if (!hasChars) return (added: 0, dropped: 0);
   final added = ref.read(generateProvider.notifier).addCharactersFilled([
@@ -90,6 +104,19 @@ Future<T?> _sheet<T>(BuildContext context, Widget child) =>
       ),
   ]);
   return (added: added, dropped: chars.length - added);
+}
+
+/// 一段内容自成一格(不折叠),格子叫「法典」。空段跳过。
+void _codexSectionInto(WidgetRef ref, CodexEntry e, String content) {
+  if (content.trim().isEmpty) return;
+  ref.read(generateProvider.notifier).addEntrySections([
+    TagEntry(
+      id: 'codex_${e.id}',
+      category: TagCategory.other,
+      name: e.title,
+      positive: content,
+    ),
+  ], name: '法典');
 }
 
 /// 把一段内容作为**命名折叠组**追加进主提示词(复用灵感页同一条链路:草稿带回

@@ -77,6 +77,72 @@ class CharacterPrompt {
   }
 }
 
+/// 主体那一行在分区列表里的 id。主体的词不存在分区里,就是 [GenerateState.prompt]
+/// 本身;列表里这一项只记它的名字和排在第几行。
+const kMainSectionId = 'main';
+
+/// 主提示词的一个分区(画风 / 场景 / 镜头…)。纯界面层的分类:载荷里没有分区,
+/// 出图前按行序和主体拼成一整串(见 prompt_sections.dart 的 composeSections)。
+///
+/// 和角色一样各有正负两面、开关和编辑器草稿,只是没有站位。
+class PromptSection {
+  const PromptSection({
+    required this.id,
+    required this.name,
+    this.positive = '',
+    this.negative = '',
+    this.positiveRaw = '',
+    this.negativeRaw = '',
+    this.enabled = true,
+    this.artist = false,
+  });
+
+  /// 主体那一行(见 [kMainSectionId])。
+  const PromptSection.main({this.name = '主体'})
+    : id = kMainSectionId,
+      positive = '',
+      negative = '',
+      positiveRaw = '',
+      negativeRaw = '',
+      enabled = true,
+      artist = false;
+
+  final String id;
+  final String name;
+  final String positive;
+  final String negative;
+
+  /// 编辑器原文草稿,同 [CharacterPrompt.positiveRaw]。
+  final String positiveRaw;
+  final String negativeRaw;
+
+  final bool enabled;
+
+  /// 从灵感库「画风」类加进来的一格(画师串词典里收的也算)。名字清空时回到
+  /// 「画风」而不是「分区 N」。
+  final bool artist;
+
+  bool get isMain => id == kMainSectionId;
+
+  PromptSection copyWith({
+    String? name,
+    String? positive,
+    String? negative,
+    String? positiveRaw,
+    String? negativeRaw,
+    bool? enabled,
+  }) => PromptSection(
+    id: id,
+    name: name ?? this.name,
+    positive: positive ?? this.positive,
+    negative: negative ?? this.negative,
+    positiveRaw: positiveRaw ?? this.positiveRaw,
+    negativeRaw: negativeRaw ?? this.negativeRaw,
+    enabled: enabled ?? this.enabled,
+    artist: artist,
+  );
+}
+
 class VibeItem {
   const VibeItem({
     required this.id,
@@ -1137,6 +1203,7 @@ class GenerateState {
     required this.negativePrompt,
     this.promptRaw = '',
     this.negativePromptRaw = '',
+    this.sections = const [],
     required this.characters,
     required this.vibes,
     required this.charRefs,
@@ -1176,6 +1243,11 @@ class GenerateState {
   /// 草稿不参与生成链路的任何一环。有效性判定见 [pickEditorText]。
   final String promptRaw;
   final String negativePromptRaw;
+
+  /// 主提示词的分区,按卡上的行序;空 = 没分区(卡片是原来的样子)。
+  /// 非空时恰有一项是主体([PromptSection.isMain]),它的词就是 [prompt]。
+  /// 只活在创作页:生成快照里已拼进 [prompt](见 composeSections)。
+  final List<PromptSection> sections;
 
   final List<CharacterPrompt> characters;
   final List<VibeItem> vibes;
@@ -1241,6 +1313,7 @@ class GenerateState {
     String? negativePrompt,
     String? promptRaw,
     String? negativePromptRaw,
+    List<PromptSection>? sections,
     List<CharacterPrompt>? characters,
     List<VibeItem>? vibes,
     List<CharRefItem>? charRefs,
@@ -1260,6 +1333,7 @@ class GenerateState {
       negativePrompt: negativePrompt ?? this.negativePrompt,
       promptRaw: promptRaw ?? this.promptRaw,
       negativePromptRaw: negativePromptRaw ?? this.negativePromptRaw,
+      sections: sections ?? this.sections,
       characters: characters ?? this.characters,
       vibes: vibes ?? this.vibes,
       charRefs: charRefs ?? this.charRefs,

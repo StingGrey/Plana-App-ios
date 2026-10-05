@@ -870,8 +870,9 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
       }
     }
 
+    // 整串替换:分区里同一侧的词一并清掉(这串本身就是一张图的全部)
     if (pos != null || neg != null) {
-      notifier.setPrompts(positive: pos, negative: neg);
+      notifier.replacePrompts(positive: pos, negative: neg);
     }
 
     // 角色(站位跟着角色勾选一起走,不单独设开关)
@@ -1113,7 +1114,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     final tags = _reverseTags;
     if (tags == null || !_useReverse) return;
     final before = _before();
-    ref.read(generateProvider.notifier).setPrompts(positive: tags);
+    ref.read(generateProvider.notifier).replacePrompts(positive: tags);
     _finish('已导入反推结果到正向提示词', Icons.download_done, before);
   }
 
