@@ -12,8 +12,8 @@ import 'package:plana_app/features/generate/nai_request.dart';
 import 'package:plana_app/features/generate/prompt_presets.dart';
 import 'package:plana_app/features/import/image_metadata.dart';
 
-/// 一份**故意把两个 V5 不支持的开关都打开**的状态:非 karras + Variety+。
-/// 用户切到 V5 之前留下的值就长这样,收口没做好它们就会被带出去。
+/// 一份非 karras + Variety+ 都开着的状态。非 karras 是 V5 不支持的:
+/// 用户切到 V5 之前留下的值就长这样,收口没做好就会被带出去。
 GenerateState _state(String model) => GenerateState.initial().copyWith(
   prompt: '1girl',
   params: const GenParams().copyWith(
@@ -108,22 +108,23 @@ void main() {
     });
   });
 
-  // 官方能力表里 V5 的 noiseSchedule / cfgDelay 都是 false:请求清洗会把
-  // noise_schedule 硬写回 karras、把 skip_cfg_above_sigma 删掉。带过去不会报错,
-  // 只是白发 —— 但用户切模型前留下的开关会一直显示成"开着",所以两条线都收口。
-  group('V5 不发它没有的两项能力', () {
+  // 官方能力表里 V5 的 noiseSchedule 是 false:请求清洗会把 noise_schedule
+  // 硬写回 karras。带过去不会报错,只是白发 —— 但用户切模型前留下的值会一直
+  // 显示成选着,所以两条线都收口。Variety+ 则与 4.5 同样照发。
+  group('V5 的 noise_schedule 恒 karras,Variety+ 照发', () {
     test('直连:noise_schedule 恒 karras', () {
       expect(_direct('NAI 5.0 Full')['noise_schedule'], 'karras');
       expect(_direct('NAI 5.0 Curated')['noise_schedule'], 'karras');
     });
 
-    test('直连:Variety+ 开着也不发 skip_cfg_above_sigma', () {
-      expect(_direct('NAI 5.0 Full')['skip_cfg_above_sigma'], isNull);
+    test('直连:Variety+ 开着发 skip_cfg_above_sigma = 58', () {
+      expect(_direct('NAI 5.0 Full')['skip_cfg_above_sigma'], 58);
+      expect(_direct('NAI 5.0 Curated')['skip_cfg_above_sigma'], 58);
     });
 
-    test('bot:同一口径(后端还会再兜一道,但别指望它)', () {
+    test('bot:同一口径', () {
       expect(_bot('NAI 5.0 Full')['noiseSchedule'], 'karras');
-      expect(_bot('NAI 5.0 Full')['varietyPlus'], isFalse);
+      expect(_bot('NAI 5.0 Full')['varietyPlus'], isTrue);
     });
 
     test('4.5 不受影响:用户选什么发什么', () {

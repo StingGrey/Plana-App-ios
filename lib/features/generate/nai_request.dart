@@ -235,13 +235,12 @@ Map<String, double> _center(String? pos) {
     'legacy': false,
     'add_original_image': true,
     'cfg_rescale': p.cfgRescale,
-    // 官方能力表里 V5 的 noiseSchedule / cfgDelay 都是 false:请求清洗会先删掉
-    // noise_schedule 再硬写回 karras,skip_cfg_above_sigma 直接删。照它来 ——
-    // 用户切到 V5 之前留下的值不该被带进来(bot 线由后端兜同一道)。
+    // 官方能力表里 V5 的 noiseSchedule 是 false:请求清洗会先删掉 noise_schedule
+    // 再硬写回 karras。照它来 —— 用户切到 V5 之前留下的值不该被带进来。
     'noise_schedule': isV5 ? 'karras' : p.noiseSchedule,
     'legacy_v3_extend': false,
-    // Variety+ = 固定值 58(与 web 一致),关闭则 null
-    'skip_cfg_above_sigma': isV5 || !p.varietyPlus ? null : 58,
+    // Variety+ = 固定值 58(与 web 一致),关闭则 null;V5 也照发
+    'skip_cfg_above_sigma': p.varietyPlus ? 58 : null,
     'use_coords': useCoords,
     'normalize_reference_strength_multiple': p.normalizeVibe,
     'inpaintImg2ImgStrength': 1,
