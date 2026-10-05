@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:plana_app/core/auth/auth_mode.dart';
+import 'package:plana_app/core/net/anlas_provider.dart';
+import 'package:plana_app/core/net/nai_client.dart';
 import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/core/store/gen_settings.dart';
 import 'package:plana_app/features/generate/widgets/bottom_action_bar.dart';
@@ -20,6 +22,13 @@ class _PrimedSettings extends GenSettingsNotifier {
   Future<GenSettings> build() async => const GenSettings(notifyPrimed: true);
 }
 
+/// 同理没有主账号可读:点数直接按「没数」收尾。不然顶栏读数位那枚刷新图标
+/// 一直在转,pumpAndSettle 等不到头。
+class _NoAnlas extends AnlasNotifier {
+  @override
+  Future<NaiSubscription?> build() async => null;
+}
+
 void main() {
   testWidgets('创作页冒烟:核心区块可见', (WidgetTester tester) async {
     await tester.pumpWidget(
@@ -28,6 +37,7 @@ void main() {
           appStoresProvider.overrideWithValue(AppStores.ephemeral()),
           authModeProvider.overrideWith(_TokenMode.new),
           genSettingsProvider.overrideWith(_PrimedSettings.new),
+          anlasProvider.overrideWith(_NoAnlas.new),
         ],
         child: const PlanaApp(),
       ),
@@ -94,6 +104,7 @@ void main() {
           appStoresProvider.overrideWithValue(AppStores.ephemeral()),
           authModeProvider.overrideWith(_TokenMode.new),
           genSettingsProvider.overrideWith(_PrimedSettings.new),
+          anlasProvider.overrideWith(_NoAnlas.new),
         ],
         child: const PlanaApp(),
       ),

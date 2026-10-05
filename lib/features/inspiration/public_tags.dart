@@ -51,6 +51,7 @@ final publicTagsProvider = FutureProvider.family<List<TagEntry>, TagCategory>((
             positive: a.artistString,
             negative: a.negative,
             models: normalizeArtistModels(a.models),
+            recipe: StyleRecipe.fromJson(a.recipe),
             publicId: a.id,
             previews: [if (a.previewUrl != null) a.previewUrl!],
             createdAt: a.createdTime * 1000,

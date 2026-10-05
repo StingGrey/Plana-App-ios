@@ -17,6 +17,7 @@ import '../../core/util/image_pick.dart';
 import '../../core/util/prompt_convert.dart' show convertSdToNai;
 import '../char_library/char_library.dart';
 import '../generate/auto_text.dart';
+import '../generate/canvas_state.dart';
 import '../generate/char_position.dart';
 import '../generate/gen_modules.dart';
 import '../generate/generate_state.dart';
@@ -819,6 +820,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
             ),
           ),
     );
+    final before = _before();
     final notifier = ref.read(generateProvider.notifier);
     final msgs = <String>[];
 
@@ -1000,13 +1002,32 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     _finish(
       msgs.isEmpty ? '已导入到创作页' : '已导入 · ${msgs.join(' · ')}',
       Icons.download_done,
+      before,
     );
   }
 
+  /// 写创作页之前记一份整体状态和当时的画布,给提示条上的「撤销」用。
+  ({GenerateState state, String canvasId}) _before() => (
+    state: ref.read(generateProvider),
+    canvasId: ref.read(canvasWorkspaceProvider).activeId,
+  );
+
   /// 顶部 toast 提示并关闭面板(toast 挂 root overlay,pop 后仍然在)。
   /// 导入/用作都是写创作页,按硬约束自动切回创作 tab(从图库进来时生效)。
-  void _finish(String text, IconData icon) {
-    hintSnack(context, text, icon: icon);
+  /// 「撤销」整份放回写入前的状态,词还给当时那张画布(见 undoWrite)。
+  void _finish(
+    String text,
+    IconData icon,
+    ({GenerateState state, String canvasId}) before,
+  ) {
+    final canvases = ref.read(canvasWorkspaceProvider.notifier);
+    hintSnack(
+      context,
+      text,
+      icon: icon,
+      actionLabel: '撤销',
+      onAction: () => canvases.undoWrite(before.state, before.canvasId),
+    );
     ref.read(shellIndexProvider.notifier).select(kTabCreate);
     Navigator.of(context).pop();
   }
@@ -1017,14 +1038,16 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     final (rw, rh) = await decodeImageSize(bytes);
     if (!mounted) return;
     final res = img2imgResolution(rw, rh);
-    final before = ref.read(generateProvider).params;
+    final before = _before();
     ref
         .read(generateProvider.notifier)
         .setImg2ImgImage(image: bytes, width: res.w, height: res.h);
-    final changed = before.width != res.w || before.height != res.h;
+    final p = before.state.params;
+    final changed = p.width != res.w || p.height != res.h;
     _finish(
       changed ? '已设为图生图底图 · 分辨率 ${res.w}×${res.h}' : '已设为图生图底图',
       Icons.image_outlined,
+      before,
     );
   }
 
@@ -1038,13 +1061,15 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
           .importImageBytes(bytes, widget.displayName, knownHash: hash);
     } catch (_) {}
     if (!mounted) return;
-    final hadCharRefs = ref.read(generateProvider).enabledCharRefs > 0;
+    final before = _before();
+    final hadCharRefs = before.state.enabledCharRefs > 0;
     ref
         .read(generateProvider.notifier)
         .addVibe(image: bytes, name: widget.displayName, imageHash: hash);
     _finish(
       hadCharRefs ? '已加入 Vibe · 与角色参考互斥,已暂停角色参考' : '已加入 Vibe 参考',
       hadCharRefs ? Icons.swap_horiz : Icons.palette_outlined,
+      before,
     );
   }
 
@@ -1058,13 +1083,15 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
           .importImageBytes(bytes, widget.displayName, knownHash: hash);
     } catch (_) {}
     if (!mounted) return;
-    final hadVibes = ref.read(generateProvider).enabledVibes > 0;
+    final before = _before();
+    final hadVibes = before.state.enabledVibes > 0;
     ref
         .read(generateProvider.notifier)
         .addCharRef(image: bytes, name: widget.displayName, imageHash: hash);
     _finish(
       hadVibes ? '已加入角色参考 · 与 Vibe 互斥,已暂停 Vibe' : '已加入角色参考',
       hadVibes ? Icons.swap_horiz : Icons.face_retouching_natural,
+      before,
     );
   }
 
@@ -1085,8 +1112,9 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   void _importReverse() {
     final tags = _reverseTags;
     if (tags == null || !_useReverse) return;
+    final before = _before();
     ref.read(generateProvider.notifier).setPrompts(positive: tags);
-    _finish('已导入反推结果到正向提示词', Icons.download_done);
+    _finish('已导入反推结果到正向提示词', Icons.download_done, before);
   }
 
   @override

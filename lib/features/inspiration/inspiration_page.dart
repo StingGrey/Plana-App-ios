@@ -12,9 +12,11 @@ import '../../core/ui/pinch_columns.dart';
 import '../../core/ui/scroll_memory.dart';
 import '../../core/ui/selection_bar.dart';
 import '../editor/editor_models.dart' show draftOf, outputOf, pickEditorText;
+import '../generate/canvas_state.dart';
 import '../generate/gen_modules.dart';
 import '../generate/generate_state.dart';
 import '../generate/models.dart' show maxCharactersOf;
+import '../generate/style_recipes.dart';
 import '../generate/widgets/common.dart'
     show confirmDialog, hintSnack, sharedAxisRoute;
 import '../shell/shell_state.dart';
@@ -329,6 +331,8 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   }
 
   Future<void> _afterConfirm(List<TagEntry> used, String message) async {
+    // 写进的是此刻的当前画布,提示条里的「套用」也按它回写
+    final canvasId = ref.read(canvasWorkspaceProvider).activeId;
     await ref.read(tagLibraryProvider.notifier).markUsed(_cat, [
       for (final e in used) e.id,
     ]);
@@ -348,6 +352,10 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     if (!mounted) return;
     hintSnack(context, message, icon: Icons.check_circle_outline);
     ref.read(shellIndexProvider.notifier).select(kTabCreate);
+    // 画风带推荐参数、且对得上当前模型的,弹窗问套不套
+    if (_cat == TagCategory.artist) {
+      await offerStyleRecipe(context, ref, used, canvasId: canvasId);
+    }
   }
 
   /// 角色 → 加入角色卡(带名追加,上限按模型截断,见 maxCharactersOf)。

@@ -164,10 +164,29 @@ class TagCard extends StatelessWidget {
                     children: [
                       // 适用模型角标(按分档归并:标了 V5 Full + Curated 只出一个)。
                       // 没标注的不画 —— 「通用」是默认档,给每张卡都挂一个反而是噪音。
-                      if (modelGroups.isNotEmpty && !compact) ...[
+                      // 记了推荐参数的画风再挂一枚调参图标,同一排、同一款底。
+                      if ((modelGroups.isNotEmpty || entry.recipe != null) &&
+                          !compact) ...[
                         Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
+                            if (entry.recipe != null)
+                              Container(
+                                margin: const EdgeInsets.only(right: 4),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 4,
+                                  vertical: 1.5,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: .22),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: const Icon(
+                                  Icons.tune,
+                                  size: 10,
+                                  color: Colors.white,
+                                ),
+                              ),
                             for (final g in modelGroups.take(2))
                               Container(
                                 margin: const EdgeInsets.only(right: 4),

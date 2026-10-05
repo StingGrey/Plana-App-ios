@@ -64,6 +64,7 @@ class PromptPresetManagePage extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final scheme = context.scheme;
     final s = ref.watch(promptPresetsProvider).value;
+    final activeId = ref.watch(activePromptPresetIdProvider);
     return Scaffold(
       appBar: AppBar(
         title: const Text('提示词预设'),
@@ -107,7 +108,7 @@ class PromptPresetManagePage extends ConsumerWidget {
                       padding: const EdgeInsets.only(bottom: 10),
                       child: _PresetTile(
                         preset: s.presets[i],
-                        active: s.presets[i].id == s.activeId,
+                        active: s.presets[i].id == activeId,
                         onTap: () {
                           Haptics.selection();
                           ref
