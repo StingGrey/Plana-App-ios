@@ -32,13 +32,14 @@ Flutter SDK 及其自带组件遵循 BSD 3-Clause(Copyright 2014 The Flutter Aut
 
 ## 随包分发的数据文件
 
-`assets/` 下有三份**非本项目创作**的数据,随 APK 一同分发:
+`assets/` 下有四份**非本项目创作**的数据,随 APK 一同分发:
 
 | 文件 | 出处 | 许可 |
 |---|---|---|
 | `danbooru.tsv` | 标签表、热度、类目与中文译名取自 [zhulinyv/Auto-NovelAI-Refactor](https://github.com/zhulinyv/Auto-NovelAI-Refactor) 的 `assets/danbooru_tags_full_zh.csv`,上游已不收录的少量旧 tag 沿用其早先的 `danbooru_e621_merged_with_zh.csv`;标签体系与别名归 [Danbooru](https://danbooru.donmai.us/) | 上游项目为 **GPL-3.0**,与本项目同许可,再分发合规 |
 | `t5_tokenizer.json` | NovelAI 的 T5 分词器词表,字节级原样拷贝 | 版权归 Anlatan;本项目仅为 token 计数而调用,不作他用 |
 | `models/censor_n.ort` | 自动打码的检测模型,[deepghs/anime_censor_detection](https://huggingface.co/deepghs/anime_censor_detection) 的 `censor_detect_v1.0_n`。本项目只做了格式转换与量化(静态导出 → 动态 int8 → ORT 格式),**权重未经再训练** | **MIT**(权重仓库)。另见下方关于 YOLOv8 的说明 |
+| `prompts/nai5.json` 的 `comic_composition` / `mode_comic` 两段 | AI 助手预设的漫画部分,取自 [Miint-Sunny/nai5-prompting](https://github.com/Miint-Sunny/nai5-prompting) | 上游项目为 **GPL-3.0**,与本项目同许可,再分发合规 |
 
 法典图鉴(quicktagcloud)的数据**不随包分发**,运行时只读拉取,故不在此列。
 
