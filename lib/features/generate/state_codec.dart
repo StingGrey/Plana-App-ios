@@ -4,6 +4,7 @@ import '../../core/store/blob_store.dart';
 import 'char_position.dart';
 import 'models.dart';
 import 'nai_request.dart' show kLegacyAutoCenters;
+import 'prompt_sections.dart' show normalizeSections;
 
 /// GenerateState ⇄ JSON。图片字节不进 JSON——写入 [BlobStore] 后只存
 /// 内容哈希引用;[EncodedState.refs] 汇总本快照引用的全部 blob,
@@ -83,10 +84,28 @@ Future<EncodedState> encodeGenerateState(
   final json = <String, dynamic>{
     'prompt': s.prompt,
     'negativePrompt': s.negativePrompt,
+    'promptPresetId': s.promptPresetId,
     // 编辑器原文草稿:与定稿无差别时为空,空就不写(绝大多数存档不带这两键)
     if (s.promptRaw.isNotEmpty) 'promptRaw': s.promptRaw,
     if (s.negativePromptRaw.isNotEmpty)
       'negativePromptRaw': s.negativePromptRaw,
+    // 主提示词分区:没分区就不写(生成快照里已拼进 prompt,也不会带这个键)
+    if (s.sections.isNotEmpty)
+      'sections': [
+        for (final x in s.sections)
+          x.isMain
+              ? {'id': x.id, 'name': x.name}
+              : {
+                  'id': x.id,
+                  'name': x.name,
+                  'positive': x.positive,
+                  'negative': x.negative,
+                  if (x.positiveRaw.isNotEmpty) 'positiveRaw': x.positiveRaw,
+                  if (x.negativeRaw.isNotEmpty) 'negativeRaw': x.negativeRaw,
+                  if (!x.enabled) 'enabled': false,
+                  if (x.artist) 'artist': true,
+                },
+      ],
     'characters': [
       for (final c in s.characters)
         {
@@ -99,29 +118,19 @@ Future<EncodedState> encodeGenerateState(
           'enabled': c.enabled,
           if (c.position != null) 'position': c.position,
           'activeTab': c.activeTab.name,
+          if (c.avatar != null) 'avatar': c.avatar,
         },
     ],
     'vibes': vibes,
     'charRefs': charRefs,
-    // LoRA 无图片字节(previewUrl 是远端直链),整条直接进 JSON
-    // 下载中的占位条不入存档:安装队列在内存里,重启就没了,存回来只会是一条
-    // 永远停在「排队中」、还悄悄不参与生成的僵尸条目。
-    if (s.loras.any((l) => l.pending == null))
-      'loras': [
-        for (final l in s.loras)
-          if (l.pending == null)
-            {
-              'name': l.name,
-              'displayName': l.displayName,
-              'weight': l.weight,
-              'enabled': l.enabled,
-              if (l.clipWeight != null) 'clipWeight': l.clipWeight,
-              if (l.hasTe != null) 'hasTe': l.hasTe,
-              'triggerWords': l.triggerWords,
-              if (l.previewUrl.isNotEmpty) 'previewUrl': l.previewUrl,
-              'type': l.type,
-            },
-      ],
+    if (s.loras.any((l) => l.pending == null)) 'loras': _encodeLoras(s.loras),
+    // 收起来的另一个底模那份(见 GenerateState.loraMem),没有就整键不写
+    if (s.loraMem.values.any((v) => v.any((l) => l.pending == null)))
+      'loraMem': {
+        for (final e in s.loraMem.entries)
+          if (e.value.any((l) => l.pending == null))
+            e.key: _encodeLoras(e.value),
+      },
     if (kreaStyleRefs.isNotEmpty) 'kreaStyleRefs': kreaStyleRefs,
     // 强度无条件写(不跟着图走):同一份 codec 也在存创作页工作区,只在有图时
     // 存的话,把参考图清空再重启,调好的强度就没了。
@@ -220,8 +229,7 @@ Future<EncodedState> encodeGenerateState(
 /// ⚠ 下标必须按当年的口径算 —— 只数 `enabled && positive 非空` 的那些
 /// (见 buildNaiPayload 的 chars 过滤),否则一个禁用的首位角色会让后面全错一格。
 /// 不参与出图的那些补个不冲突的空位即可,它们本来也发不出去。
-({List<CharacterPrompt> characters, bool useCoords})?
-_migrateLegacyPositions(
+({List<CharacterPrompt> characters, bool useCoords})? _migrateLegacyPositions(
   List<CharacterPrompt> characters, {
   required bool hadUseCoordsKey,
 }) {
@@ -255,10 +263,13 @@ _migrateLegacyPositions(
   return (characters: out, useCoords: true);
 }
 
+/// [presetFallback]:存的时候还没记提示词预设的(1.1.1 及以前的存档和图库
+/// 快照)用哪一档;不给就用 [kDefaultPromptPresetId]。
 Future<GenerateState> decodeGenerateState(
   Map<String, dynamic> j,
-  BlobStore blobs,
-) async {
+  BlobStore blobs, {
+  String? presetFallback,
+}) async {
   Future<Uint8List?> img(Object? hash) async =>
       hash is String && hash.isNotEmpty ? blobs.get(hash) : null;
 
@@ -284,6 +295,7 @@ Future<GenerateState> decodeGenerateState(
           position: e['position'] as String?,
           activeTab:
               _enumByName(CharTab.values, e['activeTab']) ?? CharTab.positive,
+          avatar: e['avatar'] is String ? e['avatar'] as String : null,
         ),
       );
     }
@@ -364,37 +376,12 @@ Future<GenerateState> decodeGenerateState(
     }
   }
 
-  final loras = <ActiveLora>[];
-  if (j['loras'] is List) {
-    for (final e in j['loras'] as List) {
-      if (e is! Map) continue;
-      final name = e['name'];
-      if (name is! String || name.isEmpty) continue;
-      loras.add(
-        ActiveLora(
-          name: name,
-          displayName: e['displayName'] is String
-              ? e['displayName'] as String
-              : name,
-          weight: (e['weight'] as num?)?.toDouble() ?? 0.8,
-          enabled: e['enabled'] != false,
-          clipWeight: (e['clipWeight'] as num?)
-              ?.toDouble(), // 缺省 null=跟随 weight
-          hasTe: e['hasTe'] is bool ? e['hasTe'] as bool : null,
-          triggerWords: e['triggerWords'] is List
-              ? [
-                  for (final t in e['triggerWords'] as List)
-                    if (t is String && t.isNotEmpty) t,
-                ]
-              : const [],
-          previewUrl: e['previewUrl'] is String
-              ? e['previewUrl'] as String
-              : '',
-          type: e['type'] is String ? e['type'] as String : 'concept',
-        ),
-      );
-    }
-  }
+  final loras = _decodeLoras(j['loras']);
+  final loraMem = <String, List<ActiveLora>>{
+    if (j['loraMem'] is Map)
+      for (final e in (j['loraMem'] as Map).entries)
+        if (e.key is String) e.key as String: _decodeLoras(e.value),
+  }..removeWhere((_, v) => v.isEmpty);
 
   Img2ImgConfig? img2img;
   if (j['img2img'] is Map) {
@@ -553,6 +540,9 @@ Future<GenerateState> decodeGenerateState(
   }
 
   return GenerateState(
+    promptPresetId: j['promptPresetId'] is String
+        ? j['promptPresetId'] as String
+        : presetFallback ?? kDefaultPromptPresetId,
     prompt: j['prompt'] is String ? j['prompt'] as String : '',
     negativePrompt: j['negativePrompt'] is String
         ? j['negativePrompt'] as String
@@ -561,6 +551,7 @@ Future<GenerateState> decodeGenerateState(
     negativePromptRaw: j['negativePromptRaw'] is String
         ? j['negativePromptRaw'] as String
         : '',
+    sections: _decodeSections(j['sections']),
     characters: characters,
     vibes: vibes,
     charRefs: charRefs,
@@ -569,8 +560,85 @@ Future<GenerateState> decodeGenerateState(
     anlas: (j['anlas'] as num?)?.toInt() ?? 0,
     openPanels: openPanels,
     loras: loras,
+    loraMem: loraMem,
     kreaStyleRefs: kreaStyleRefs,
     kreaStyleRefWeight: (j['kreaStyleRefWeight'] as num?)?.toDouble() ?? 1.0,
     inpaint: inpaint,
   );
+}
+
+/// LoRA 无图片字节(previewUrl 是远端直链),整条直接进 JSON。
+/// 下载中的占位条不入存档:安装队列在内存里,重启就没了,存回来只会是一条
+/// 永远停在「排队中」、还悄悄不参与生成的僵尸条目。
+List<Map<String, dynamic>> _encodeLoras(List<ActiveLora> loras) => [
+  for (final l in loras)
+    if (l.pending == null)
+      {
+        'name': l.name,
+        'displayName': l.displayName,
+        'weight': l.weight,
+        'enabled': l.enabled,
+        if (l.clipWeight != null) 'clipWeight': l.clipWeight,
+        if (l.hasTe != null) 'hasTe': l.hasTe,
+        'triggerWords': l.triggerWords,
+        if (l.previewUrl.isNotEmpty) 'previewUrl': l.previewUrl,
+        'type': l.type,
+      },
+];
+
+List<ActiveLora> _decodeLoras(Object? raw) {
+  if (raw is! List) return const [];
+  return [
+    for (final e in raw)
+      if (e is Map && e['name'] is String && (e['name'] as String).isNotEmpty)
+        ActiveLora(
+          name: e['name'] as String,
+          displayName: e['displayName'] is String
+              ? e['displayName'] as String
+              : e['name'] as String,
+          weight: (e['weight'] as num?)?.toDouble() ?? 0.8,
+          enabled: e['enabled'] != false,
+          clipWeight: (e['clipWeight'] as num?)
+              ?.toDouble(), // 缺省 null=跟随 weight
+          hasTe: e['hasTe'] is bool ? e['hasTe'] as bool : null,
+          triggerWords: e['triggerWords'] is List
+              ? [
+                  for (final t in e['triggerWords'] as List)
+                    if (t is String && t.isNotEmpty) t,
+                ]
+              : const [],
+          previewUrl: e['previewUrl'] is String
+              ? e['previewUrl'] as String
+              : '',
+          type: e['type'] is String ? e['type'] as String : 'concept',
+        ),
+  ];
+}
+
+List<PromptSection> _decodeSections(Object? raw) {
+  if (raw is! List) return const [];
+  String str(Object? v) => v is String ? v : '';
+  final out = <PromptSection>[];
+  final seen = <String>{};
+  for (final e in raw) {
+    if (e is! Map) continue;
+    final id = e['id'];
+    if (id is! String || !seen.add(id)) continue;
+    final name = str(e['name']);
+    out.add(
+      id == kMainSectionId
+          ? PromptSection.main(name: name.isEmpty ? '主体' : name)
+          : PromptSection(
+              id: id,
+              name: name,
+              positive: str(e['positive']),
+              negative: str(e['negative']),
+              positiveRaw: str(e['positiveRaw']),
+              negativeRaw: str(e['negativeRaw']),
+              enabled: e['enabled'] != false,
+              artist: e['artist'] == true,
+            ),
+    );
+  }
+  return normalizeSections(out);
 }

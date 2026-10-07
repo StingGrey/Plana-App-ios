@@ -17,12 +17,14 @@ import '../../import/import_panel.dart';
 import '../../inpaint/inpaint_overlay.dart';
 import '../../../core/net/anlas_provider.dart';
 import '../../../core/store/app_stores.dart';
-import '../../../core/util/gallery_save.dart';
 import '../../../core/util/haptics.dart';
 import '../../../core/util/image_ops.dart';
 import '../../../core/util/image_scramble.dart';
 import '../gallery_state.dart';
+import '../albums/album_state.dart';
+import '../albums/album_ui.dart';
 import '../models.dart';
+import '../phone_gallery_save.dart';
 import '../save_pipeline.dart';
 import '../save_settings.dart';
 import '../upscale_model.dart';
@@ -103,7 +105,7 @@ class GalleryImageLayer extends StatelessWidget {
   }
 }
 
-/// 结果操作层:右侧竖排操作轨 + 左下 seed 芯片(叠在大图上)。
+/// 结果操作层:右侧竖排操作轨 + 左下新图保存相册入口。
 class ResultChrome extends StatelessWidget {
   const ResultChrome({super.key, required this.result});
 
@@ -114,7 +116,7 @@ class ResultChrome extends StatelessWidget {
     return Stack(
       children: [
         Positioned(right: 12, bottom: 16, child: _ActionRail(result: result)),
-        Positioned(left: 12, bottom: 16, child: _SeedChip(seed: result.seed)),
+        const Positioned(left: 12, bottom: 16, child: _SaveAlbumChip()),
       ],
     );
   }
@@ -474,8 +476,8 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
                     ),
                     const SizedBox(height: 10),
                     _RailButton(
-                      label: '保存',
-                      icon: Icons.download,
+                      label: result.saved ? '已保存' : '保存',
+                      icon: result.saved ? Icons.download_done : Icons.download,
                       onTap: () => _download(context, ref),
                       onLongPress: () => _openSaveSheet(context, ref),
                     ),
@@ -563,10 +565,17 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
       await ref.read(appStoresProvider).gallery.readImage(result.id);
 
   /// 参数快照:内存优先;盘上有(hasInput)则懒读,读失败/无快照为 null。
+  /// 没记预设的老图按当前画布那一档(同当时出图时用的是当下选的档)。
   Future<GenerateState?> _inputOf(WidgetRef ref) async =>
       result.input ??
       (result.hasInput
-          ? await ref.read(appStoresProvider).gallery.readInput(result.id)
+          ? await ref
+                .read(appStoresProvider)
+                .gallery
+                .readInput(
+                  result.id,
+                  presetFallback: ref.read(generateProvider).promptPresetId,
+                )
           : null);
 
   /// 重绘一次只能有一条 —— 回贴信息(裁切框/原图)是随会话共享的,两条同时跑会串。
@@ -678,6 +687,10 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
       ),
     );
     if (picked == null || !context.mounted) return;
+    final galleryTarget = ref.read(gallerySaveTargetProvider);
+    final galleryRevision = ref
+        .read(galleryProvider.notifier)
+        .selectionRevision;
     await ref.read(upscaleSettingsProvider.notifier).set(picked);
     if (!context.mounted) return;
     final method = picked.method;
@@ -712,9 +725,13 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
       final outH = r.height;
       // 入库:新条目 + 放大角标,沿用原图 seed/输入参数(快照懒读补齐)
       final input = await _inputOf(ref);
-      ref
+      await ref
           .read(galleryProvider.notifier)
-          .addResult(
+          .addResultToGallery(
+            target: galleryTarget,
+            canSelect: () =>
+                ref.read(galleryProvider.notifier).selectionRevision ==
+                galleryRevision,
             bytes: png,
             width: outW,
             height: outH,
@@ -847,7 +864,8 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
     }
   }
 
-  /// 点按保存:按默认保存设置处理后存相册(gal;Android 10+ 免权限走 MediaStore)。
+  /// 点按保存:按默认保存设置处理后存相册(gal;Android 10+ 免权限走 MediaStore),
+  /// 并保留生成时间。
   Future<void> _download(BuildContext context, WidgetRef ref) async {
     final bytes = await _bytesOf(ref);
     if (!context.mounted || bytes == null) return;
@@ -859,13 +877,15 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
         }
         return;
       }
+      final gallery = ref.read(galleryProvider.notifier);
       final settings = await ref.read(saveSettingsProvider.future);
       final out = await processForSave(bytes, settings);
-      await saveImageBytesToGallery(
+      await saveProcessedImageToPhone(
         out,
-        name: 'plana_${result.seed}',
-        extension: settings.format == SaveFormat.jpg ? 'jpg' : 'png',
+        image: result,
+        format: settings.format,
       );
+      gallery.markSaved([result.id]);
       if (context.mounted) {
         hintSnack(context, '已保存到相册', icon: Icons.check_circle_outline);
       }
@@ -888,7 +908,7 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
       hintSnack(context, '图片尚未就绪', icon: Icons.hourglass_empty);
       return;
     }
-    await showSaveSheet(context, bytes: bytes, seed: result.seed);
+    await showSaveSheet(context, bytes: bytes, image: result);
   }
 
   /// 按本图参数、换随机种子出一张新图(不改用户当前编辑器状态)。
@@ -926,10 +946,11 @@ class _RailHandle extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     return Material(
-      color: scheme.surfaceContainerHighest,
-      borderRadius: BorderRadius.circular(14),
-      elevation: 1.5,
-      shadowColor: scheme.shadow,
+      color: _glass(scheme),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: _glassEdge(scheme),
+      ),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
@@ -951,6 +972,11 @@ class _RailHandle extends StatelessWidget {
     );
   }
 }
+
+/// 画布上浮层控件共用的半透明底与细描边(操作轨、收起把手、「保存到」胶囊)。
+Color _glass(ColorScheme scheme) => scheme.surface.withValues(alpha: .84);
+BorderSide _glassEdge(ColorScheme scheme) =>
+    BorderSide(color: scheme.outlineVariant.withValues(alpha: .5));
 
 class _RailButton extends StatelessWidget {
   const _RailButton({
@@ -977,9 +1003,9 @@ class _RailButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final double d = compact ? 48 : (primary ? 58 : 48);
-    final Color circleColor = primary
-        ? scheme.primary
-        : scheme.surfaceContainerHighest;
+    // 次要按钮与左下「保存到」胶囊同一种半透明底 + 细描边,压在图上不显得
+    // 一坨灰;不给阴影 —— 半透明底会把底下的阴影透出来,发脏。主按钮照旧实心。
+    final Color circleColor = primary ? scheme.primary : _glass(scheme);
     final Color iconColor = primary ? scheme.onPrimary : scheme.onSurface;
 
     return Column(
@@ -987,8 +1013,10 @@ class _RailButton extends StatelessWidget {
       children: [
         Material(
           color: circleColor,
-          shape: const CircleBorder(),
-          elevation: primary ? 3 : 1.5,
+          shape: primary
+              ? const CircleBorder()
+              : CircleBorder(side: _glassEdge(scheme)),
+          elevation: primary ? 3 : 0,
           shadowColor: scheme.shadow,
           clipBehavior: Clip.antiAlias,
           child: InkWell(
@@ -1012,7 +1040,7 @@ class _RailButton extends StatelessWidget {
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
           decoration: BoxDecoration(
-            color: scheme.surfaceContainerHighest.withValues(alpha: .82),
+            color: _glass(scheme),
             borderRadius: BorderRadius.circular(6),
           ),
           child: Text(
@@ -1030,6 +1058,7 @@ class _RailButton extends StatelessWidget {
   }
 }
 
+/// 种子芯片:点一下把这张图的种子同步到高级设置并复制(平板工具栏用)。
 class _SeedChip extends ConsumerWidget {
   const _SeedChip({required this.seed});
 
@@ -1061,6 +1090,59 @@ class _SeedChip extends ConsumerWidget {
               Icon(Icons.grain, size: 16, color: scheme.onSurfaceVariant),
               const SizedBox(width: 7),
               Text('$seed', style: mono(context, size: 13)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SaveAlbumChip extends ConsumerWidget {
+  const _SaveAlbumChip();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final scheme = context.scheme;
+    final target = ref.watch(gallerySaveTargetProvider).albumId;
+    final name = ref.watch(albumsProvider).name(target);
+    return Material(
+      color: _glass(scheme),
+      shape: StadiumBorder(side: _glassEdge(scheme)),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => showGallerySaveAlbumPicker(context),
+        // 13 号粗体、17 的图标:压在图上看得清,又不抢右侧操作轨。
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(11, 7, 7, 7),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.photo_album_outlined,
+                size: 17,
+                color: scheme.onSurface,
+              ),
+              const SizedBox(width: 6),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 160),
+                child: Text(
+                  '保存到 $name',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: context.texts.labelLarge?.copyWith(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: scheme.onSurface,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 2),
+              Icon(
+                Icons.keyboard_arrow_down,
+                size: 17,
+                color: scheme.onSurface,
+              ),
             ],
           ),
         ),

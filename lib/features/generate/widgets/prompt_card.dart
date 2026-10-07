@@ -6,15 +6,31 @@ import '../../fixed_tags/fixed_tags.dart';
 import '../../fixed_tags/fixed_tags_page.dart';
 import '../../../core/util/nai_tokenizer.dart';
 import '../../../core/util/prompt_convert.dart';
+import '../../editor/editor_models.dart'
+    show outputOf, parseFolds, pickEditorText;
 import '../../editor/editor_page.dart';
+import '../../inspiration/codex/codex_favorites.dart' show CodexFavorite;
+import '../../inspiration/codex/codex_models.dart' show CodexMeta, CodexType;
+import '../../inspiration/codex/codex_providers.dart' show codexIndexProvider;
+import '../../inspiration/codex/codex_sheets.dart' show codexAddToPrompt;
+import '../../inspiration/tag_models.dart' show TagCategory, TagEntry;
+import '../../inspiration/widgets/char_pick_sheet.dart'
+    show showLibraryPickSheet;
+import '../canvas_state.dart';
 import '../generate_state.dart';
-import '../models.dart' show tokenLimitOf;
+import '../models.dart' show PromptSection, maxCharactersOf, tokenLimitOf;
 import '../prompt_presets.dart';
+import '../prompt_sections.dart';
+import '../style_recipes.dart';
 import 'common.dart';
 
-/// 提示词卡:正/负面提示词各自拥有独立的展开/收起状态。
-/// 卡片头部同时显示正面 token 进度,并提供清空正向与正/负提示词下划线转空格
-/// (均可撤销)。
+/// 提示词卡:头部 token 进度条 + 正文 + 负面标题行(带独立计数与展开/收起)。
+/// 正/负面提示词各自拥有独立的展开/收起状态,卡头同时提供固定词库、清空正向
+/// 与正/负提示词下划线转空格(均可撤销)。
+///
+/// 没分区时正文是两行段落预览;分了区就一格一行,操作照角色卡:点行编辑这一格、
+/// 点名字改名、⏻ 停用、删除(可撤销)、长按拖动调顺序(顺序即拼接顺序)。
+/// 主体那一行就是原来的主提示词,不能停用、删除。
 class PromptCard extends ConsumerStatefulWidget {
   const PromptCard({super.key});
 
@@ -31,11 +47,12 @@ class _PromptCardState extends ConsumerState<PromptCard> {
     final state = ref.watch(generateProvider);
     final notifier = ref.read(generateProvider.notifier);
     final scheme = context.scheme;
-    // web totalTokenCount 口径:主串 + 启用角色串 + 激活预设(都实际参与生成)。
-    // 角色串取 countedCharactersProvider —— 模块不可见(anima 等)时为空,
-    // 不然会出现「切到 anima 计数凭空变大」的幽灵。
+    final sections = state.sections;
+    // web totalTokenCount 口径:主串 + 启用分区 + 启用角色串 + 激活预设(都实际
+    // 参与生成)。角色串取 countedCharactersProvider —— 模块不可见(anima 等)
+    // 时为空,不然会出现「切到 anima 计数凭空变大」的幽灵。
     final tok = ref.watch(naiTokenizerProvider).value;
-    final preset = ref.watch(promptPresetsProvider).value?.active;
+    final preset = ref.watch(activePromptPresetProvider);
     final chars = ref.watch(countedCharactersProvider);
     final fixed = ref.watch(fixedTagsProvider);
     final promptForCount = fixed.apply(state.prompt, FixedTagSide.positive);
@@ -46,13 +63,19 @@ class _PromptCardState extends ConsumerState<PromptCard> {
     final promptTokens = totalPromptTokens(
       tok,
       main: promptForCount,
-      parts: [for (final c in chars) c.positive],
+      parts: [
+        ...sectionTexts(sections, positive: true),
+        for (final c in chars) c.positive,
+      ],
       preset: preset?.positive ?? '',
     );
     final negTokens = totalPromptTokens(
       tok,
       main: negativeForCount,
-      parts: [for (final c in chars) c.negative],
+      parts: [
+        ...sectionTexts(sections, positive: false),
+        for (final c in chars) c.negative,
+      ],
       preset: preset?.negative ?? '',
     );
     // 上限按当前模型取(NAI 5 抬到 703/1471,其余 512),读数与编辑器顶栏同源。
@@ -60,6 +83,8 @@ class _PromptCardState extends ConsumerState<PromptCard> {
     final over = promptTokens > limit;
     final ratio = (promptTokens / limit).clamp(0.0, 1.0);
     final barColor = over ? scheme.error : scheme.primary;
+    // 窄屏只收紧公共圆形按钮尺寸,与角色卡头同一口径。
+    final actionSize = MediaQuery.sizeOf(context).width < 350 ? 32.0 : 36.0;
 
     return Material(
       color: scheme.surfaceContainerLow,
@@ -74,32 +99,80 @@ class _PromptCardState extends ConsumerState<PromptCard> {
               children: [
                 Icon(Icons.subject, size: 20, color: scheme.onSurfaceVariant),
                 const SizedBox(width: 9),
-                Text(
-                  '提示词',
-                  style: context.texts.bodyLarge!.copyWith(
-                    fontWeight: FontWeight.w600,
+                // 标题与读数共用动作按钮之外的剩余宽度(同 SectionCard:标题吃
+                // 省略号,右侧点击区保持完整)。合起来后卡头按钮变多(清空 /
+                // 灵感库 / 固定词库 / 下划线 / 添加分区 / chevron),369dp 窄屏与
+                // 平板左栏(约 340dp)放不下时,读数整组按比例缩小。
+                Expanded(
+                  child: Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          '提示词',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: context.texts.bodyLarge!.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 9),
+                      Flexible(
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          alignment: Alignment.centerLeft,
+                          child: Row(
+                            children: [
+                              Text(
+                                '$promptTokens',
+                                style: mono(
+                                  context,
+                                  size: 11,
+                                  weight: FontWeight.w700,
+                                ).copyWith(
+                                  color: over ? scheme.error : scheme.onSurface,
+                                ),
+                              ),
+                              Text(
+                                ' / $limit',
+                                style: mono(
+                                  context,
+                                  size: 11,
+                                  weight: FontWeight.w500,
+                                ).copyWith(color: scheme.outline),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(width: 9),
-                Text(
-                  '$promptTokens',
-                  style: mono(
-                    context,
-                    size: 11,
-                    weight: FontWeight.w700,
-                  ).copyWith(color: over ? scheme.error : scheme.onSurface),
+                const SizedBox(width: 6),
+                // 没东西可清就不给(同角色卡:没有角色时不出清空)
+                if (state.prompt.trim().isNotEmpty || sections.isNotEmpty) ...[
+                  RoundIconBtn(
+                    Icons.delete_sweep_outlined,
+                    size: actionSize,
+                    tooltip: sections.isEmpty ? '清空正向提示词' : '清空提示词和分区',
+                    color: scheme.onSurfaceVariant,
+                    onTap: () => _clearPositive(context, ref),
+                  ),
+                  const SizedBox(width: 6),
+                ],
+                // 与角色卡头「角色库」同一枚图标、同一个位置
+                RoundIconBtn(
+                  Icons.grid_view,
+                  size: actionSize,
+                  tooltip: '灵感库',
+                  color: scheme.onSurfaceVariant,
+                  onTap: () => _importFromLibrary(context, ref),
                 ),
-                Text(
-                  ' / $limit',
-                  style: mono(
-                    context,
-                    size: 11,
-                    weight: FontWeight.w500,
-                  ).copyWith(color: scheme.outline),
-                ),
-                const Spacer(),
+                const SizedBox(width: 6),
+                // 与「灵感库」并列的固定词库入口(本地功能)
                 RoundIconBtn(
                   Icons.push_pin_outlined,
+                  size: actionSize,
                   tooltip: '固定词库',
                   color: scheme.onSurfaceVariant,
                   onTap: () => Navigator.of(context).push(
@@ -108,25 +181,8 @@ class _PromptCardState extends ConsumerState<PromptCard> {
                 ),
                 const SizedBox(width: 6),
                 RoundIconBtn(
-                  Icons.delete_sweep_outlined,
-                  tooltip: '清空正向提示词',
-                  color: scheme.onSurfaceVariant,
-                  onTap: () {
-                    final old = state.prompt;
-                    if (old.isEmpty) return;
-                    notifier.setPrompts(positive: '');
-                    hintSnack(
-                      context,
-                      '已清空正向提示词',
-                      icon: Icons.delete_sweep_outlined,
-                      actionLabel: '撤销',
-                      onAction: () => notifier.setPrompts(positive: old),
-                    );
-                  },
-                ),
-                const SizedBox(width: 6),
-                RoundIconBtn(
                   Icons.space_bar_outlined,
+                  size: actionSize,
                   tooltip: '下划线替换为空格',
                   color: scheme.onSurfaceVariant,
                   onTap: () {
@@ -154,6 +210,13 @@ class _PromptCardState extends ConsumerState<PromptCard> {
                   },
                 ),
                 const SizedBox(width: 6),
+                RoundIconBtn(
+                  Icons.add,
+                  size: actionSize,
+                  tooltip: '添加分区',
+                  onTap: notifier.addSection,
+                ),
+                const SizedBox(width: 6),
                 Tooltip(
                   message: _positiveExpanded ? '收起正面提示词' : '展开正面提示词',
                   child: InkResponse(
@@ -179,44 +242,50 @@ class _PromptCardState extends ConsumerState<PromptCard> {
               ],
             ),
           ),
+          // token 用量进度条:与卡头同级,收起正面时读数也还在
+          Padding(
+            padding: const EdgeInsets.fromLTRB(15, 0, 15, 2),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(2),
+              child: TweenAnimationBuilder<double>(
+                tween: Tween(begin: ratio, end: ratio),
+                duration: Motion.medium,
+                builder: (_, v, _) => LinearProgressIndicator(
+                  value: v,
+                  minHeight: 3,
+                  backgroundColor: scheme.surfaceContainerHighest,
+                  color: barColor,
+                ),
+              ),
+            ),
+          ),
+          // 正面正文:没分区是两行段落预览,分了区就一格一行。
           ExpandBody(
             expanded: _positiveExpanded,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // token 用量进度条
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(15, 0, 15, 2),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(2),
-                    child: TweenAnimationBuilder<double>(
-                      tween: Tween(begin: ratio, end: ratio),
-                      duration: Motion.medium,
-                      builder: (_, v, _) => LinearProgressIndicator(
-                        value: v,
-                        minHeight: 3,
-                        backgroundColor: scheme.surfaceContainerHighest,
-                        color: barColor,
+                if (sections.isEmpty)
+                  InkWell(
+                    onTap: () => _openEditor(context, positive: true),
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(15, 12, 15, 10),
+                      child: Text(
+                        state.prompt.isEmpty ? '点击编辑正面提示词…' : state.prompt,
+                        style: context.texts.bodyLarge!.copyWith(
+                          height: 1.5,
+                          color: state.prompt.isEmpty
+                              ? scheme.outline
+                              : scheme.onSurface,
+                        ),
                       ),
                     ),
+                  )
+                else
+                  const Padding(
+                    padding: EdgeInsets.only(top: 6),
+                    child: _SectionRows(),
                   ),
-                ),
-                // 正面:展开后按内容完整撑高。
-                InkWell(
-                  onTap: () => _openEditor(context, positive: true),
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(15, 12, 15, 10),
-                    child: Text(
-                      state.prompt.isEmpty ? '点击编辑正面提示词…' : state.prompt,
-                      style: context.texts.bodyLarge!.copyWith(
-                        height: 1.5,
-                        color: state.prompt.isEmpty
-                            ? scheme.outline
-                            : scheme.onSurface,
-                      ),
-                    ),
-                  ),
-                ),
               ],
             ),
           ),
@@ -234,7 +303,17 @@ class _PromptCardState extends ConsumerState<PromptCard> {
                     child: Padding(
                       padding: const EdgeInsets.symmetric(vertical: 8),
                       child: Text(
-                        '负面提示词',
+                        // 收起时只报前 3 个 tag 与 +N 溢出,展开才给全文
+                        _negativeExpanded
+                            ? (state.negativePrompt.isEmpty
+                                  ? '点击编辑负面提示词…'
+                                  : state.negativePrompt)
+                            : switch (negativePreview(state.negativePrompt)) {
+                                '' => '点击编辑负面提示词…',
+                                final s => s,
+                              },
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: context.texts.bodyMedium!.copyWith(
                           color: scheme.error,
                           fontWeight: FontWeight.w600,
@@ -304,4 +383,439 @@ class _PromptCardState extends ConsumerState<PromptCard> {
   void _openEditor(BuildContext context, {required bool positive}) {
     Navigator.of(context).push(sharedAxisRoute(EditorPage(positive: positive)));
   }
+
+  /// 清空:主体的正向清空,分区整列清掉,主体的负面留着。撤销条挂几秒,
+  /// 期间切了画布也要还给清空的那张。
+  void _clearPositive(BuildContext context, WidgetRef ref) {
+    final s = ref.read(generateProvider);
+    final old = (prompt: s.prompt, raw: s.promptRaw, sections: s.sections);
+    if (old.prompt.isEmpty && old.sections.isEmpty) return;
+    final canvases = ref.read(canvasWorkspaceProvider.notifier);
+    final canvasId = ref.read(canvasWorkspaceProvider).activeId;
+    ref.read(generateProvider.notifier).clearPositive();
+    final oldIds = {for (final x in old.sections) x.id};
+    hintSnack(
+      context,
+      old.sections.isEmpty ? '已清空正向提示词' : '已清空提示词和分区',
+      icon: Icons.delete_sweep_outlined,
+      actionLabel: '撤销',
+      onAction: () => canvases.updatePrompts(
+        canvasId,
+        (p) => p.copyWith(
+          prompt: old.prompt,
+          promptRaw: old.raw,
+          // 分区原样放回;撤销条挂着这几秒里新加的格子接在后面
+          sections: old.sections.isEmpty
+              ? null
+              : normalizeSections([
+                  ...old.sections,
+                  for (final x in p.sections)
+                    if (!x.isMain && !oldIds.contains(x.id)) x,
+                ]),
+        ),
+      ),
+    );
+  }
+
+  /// 卡头「灵感库」:角色、画风、场景与法典收藏都能挑。选完每条自成一格、
+  /// 不折叠,格子名是分类名(角色也进分区,角色卡有自己的选择器),按勾选顺序
+  /// 接在最后;法典收藏同法典页的「使用」(角色段照旧拆成角色卡),画师串词典
+  /// 里收的算画风。
+  Future<void> _importFromLibrary(BuildContext context, WidgetRef ref) async {
+    final canvasId = ref.read(canvasWorkspaceProvider).activeId;
+    final picks = await showLibraryPickSheet(context);
+    if (picks == null || !context.mounted) return;
+    // 面板是模态的,开着时切不了画布;真切了(不该发生)就不写,免得写错地方
+    if (ref.read(canvasWorkspaceProvider).activeId != canvasId) return;
+    final index = ref.read(codexIndexProvider).value ?? const <CodexMeta>[];
+    bool artistString(CodexFavorite f) =>
+        f.entry.tags.trim().isNotEmpty &&
+        index.any((m) => m.id == f.codexId && m.type == CodexType.string);
+    // 一条一条按勾选顺序加:新格子都接在最后,顺序就是勾的先后
+    final notifier = ref.read(generateProvider.notifier);
+    var dropped = 0;
+    for (final p in picks) {
+      final t = p.tag, f = p.codex;
+      if (t != null) {
+        notifier.addEntrySections([t.entry]);
+      } else if (f != null && artistString(f)) {
+        notifier.addEntrySections([
+          TagEntry(
+            id: 'codex_${f.entry.id}',
+            category: TagCategory.artist,
+            name: f.entry.title,
+            positive: f.entry.tags,
+          ),
+        ]);
+      } else if (f != null) {
+        dropped += codexAddToPrompt(ref, f.entry, asSection: true).dropped;
+      }
+    }
+    if (dropped > 0) {
+      final cap = maxCharactersOf(ref.read(generateProvider).params.model);
+      hintSnack(
+        context,
+        '角色已满 $cap 个,$dropped 个没加进去',
+        icon: Icons.block_outlined,
+      );
+    }
+    // 带推荐参数、且对得上当前模型的,弹窗问套不套(点了才写,不切模型)
+    final artists = [
+      for (final p in picks)
+        if (p.tag?.entry.category == TagCategory.artist) p.tag!.entry,
+    ];
+    if (artists.isNotEmpty && context.mounted) {
+      await offerStyleRecipe(context, ref, artists, canvasId: canvasId);
+    }
+  }
+}
+
+/// 分了区之后的正文:一格一行,长按拖动调顺序。
+class _SectionRows extends ConsumerWidget {
+  const _SectionRows();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = ref.watch(generateProvider);
+    final notifier = ref.read(generateProvider.notifier);
+    final tok = ref.watch(naiTokenizerProvider).value;
+    final sections = state.sections;
+    var k = 0; // 非主体分区的序号,改名留空时的默认名用
+    return ReorderableListView(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      proxyDecorator: _rowDragProxy,
+      onReorderStart: dragStartHaptic,
+      onReorderEnd: dragEndHaptic,
+      onReorderItem: notifier.reorderSections,
+      children: [
+        for (final s in sections)
+          _SectionRow(
+            key: ValueKey('sec${s.id}'),
+            section: s,
+            fallbackName: s.isMain
+                ? '主体'
+                : s.artist
+                ? '画风'
+                : '分区 ${++k}',
+            draft: s.isMain
+                ? pickEditorText(state.promptRaw, state.prompt)
+                : pickEditorText(s.positiveRaw, s.positive),
+            tokens: totalPromptTokens(
+              tok,
+              main: s.isMain ? state.prompt : s.positive,
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+/// 拖起来的那一行垫一层底色,不然半透明地叠在别的行上。
+Widget _rowDragProxy(Widget child, int index, Animation<double> animation) =>
+    AnimatedBuilder(
+      animation: animation,
+      child: child,
+      builder: (context, child) {
+        final t = Curves.easeOut.transform(animation.value);
+        return Transform.scale(
+          scale: 1 + .03 * t,
+          child: Material(
+            color: context.scheme.surfaceContainerHigh,
+            borderRadius: BorderRadius.circular(10),
+            clipBehavior: Clip.antiAlias,
+            child: child,
+          ),
+        );
+      },
+    );
+
+class _SectionRow extends ConsumerWidget {
+  const _SectionRow({
+    super.key,
+    required this.section,
+    required this.fallbackName,
+    required this.draft,
+    required this.tokens,
+  });
+
+  final PromptSection section;
+
+  /// 改名留空时回落的名字。
+  final String fallbackName;
+
+  /// 这一格的编辑器草稿(折叠在预览里显示成名字)。
+  final String draft;
+  final int tokens;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final notifier = ref.read(generateProvider.notifier);
+    final scheme = context.scheme;
+    final s = section;
+    // 停用只弱化内容,操作按钮保持可用(同角色卡)
+    final on = s.enabled;
+    // 与角色卡的开关 / 删除同一尺寸(窄屏同样收到 32)
+    final btnSize = MediaQuery.sizeOf(context).width < 350 ? 32.0 : 36.0;
+    return InkWell(
+      onTap: () => Navigator.of(context).push(
+        sharedAxisRoute(
+          EditorPage(positive: true, sectionId: s.isMain ? null : s.id),
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(15, 4, 13, 4),
+        child: Row(
+          children: [
+            _NameChip(
+              name: s.name,
+              enabled: on,
+              onTap: () => _rename(context, notifier),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _Preview(draft: draft, enabled: on),
+            ),
+            const SizedBox(width: 8),
+            SizedBox(
+              width: 26,
+              child: Text(
+                '$tokens',
+                textAlign: TextAlign.right,
+                style: mono(
+                  context,
+                  size: 11,
+                  weight: FontWeight.w500,
+                ).copyWith(color: scheme.outline),
+              ),
+            ),
+            const SizedBox(width: 6),
+            if (s.isMain)
+              // 主体不能停用、删除;留出同样的宽度,各行计数对齐
+              SizedBox(width: btnSize * 2 + 6, height: btnSize)
+            else ...[
+              RoundIconBtn(
+                Icons.power_settings_new,
+                size: btnSize,
+                color: on ? scheme.primary : scheme.outline,
+                tooltip: on ? '停用(保留配置)' : '启用',
+                onTap: () => notifier.updateSection(s.id, enabled: !on),
+              ),
+              const SizedBox(width: 6),
+              RoundIconBtn(
+                Icons.delete_outline,
+                size: btnSize,
+                color: scheme.error,
+                tooltip: '删除分区',
+                onTap: () => _remove(context, ref),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 点名字改名,同角色卡:留空 = 回到默认名。
+  Future<void> _rename(BuildContext context, GenerateNotifier notifier) async {
+    final ctrl = TextEditingController(text: section.name);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('重命名'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: InputDecoration(isDense: true, hintText: fallbackName),
+          onSubmitted: (v) => Navigator.pop(context, v),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, ctrl.text),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    if (name == null) return; // 取消
+    final trimmed = name.trim();
+    notifier.updateSection(
+      section.id,
+      name: trimmed.isEmpty ? fallbackName : trimmed,
+    );
+  }
+
+  /// 直接删,不弹确认;提示条给撤销,还回删除时那张画布的原位。
+  void _remove(BuildContext context, WidgetRef ref) {
+    final canvases = ref.read(canvasWorkspaceProvider.notifier);
+    final canvasId = ref.read(canvasWorkspaceProvider).activeId;
+    final r = ref.read(generateProvider.notifier).removeSection(section.id);
+    if (r == null) return;
+    hintSnack(
+      context,
+      '已删除「${r.section.name}」',
+      icon: Icons.delete_outline,
+      actionLabel: '撤销',
+      onAction: () => canvases.updatePrompts(
+        canvasId,
+        (p) => p.sections.any((x) => x.id == r.section.id)
+            ? p
+            : p.copyWith(
+                sections: restoreSection(
+                  p.sections,
+                  r.section,
+                  r.index,
+                  main: r.main,
+                ),
+              ),
+      ),
+    );
+  }
+}
+
+/// 分区名:填色小签,停用时改成描边、灰字。点它改名。
+class _NameChip extends StatelessWidget {
+  const _NameChip({
+    required this.name,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  final String name;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return Material(
+      color: enabled ? scheme.primaryContainer : Colors.transparent,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(6),
+        side: enabled
+            ? BorderSide.none
+            : BorderSide(color: scheme.outlineVariant),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 76),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+            child: Text(
+              name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: context.texts.labelMedium!.copyWith(
+                fontWeight: FontWeight.w600,
+                color: enabled ? scheme.onPrimaryContainer : scheme.outline,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 一行预览:折叠(画师串等)显示成它的名字,其余照定稿写法。
+class _Preview extends StatelessWidget {
+  const _Preview({required this.draft, required this.enabled});
+
+  final String draft;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    // 停用:字灰掉再加一道删除线,一眼看出这一格不进载荷
+    final style = context.texts.bodyMedium!.copyWith(
+      color: enabled ? scheme.onSurfaceVariant : scheme.outline,
+      decoration: enabled ? null : TextDecoration.lineThrough,
+      decorationColor: scheme.outline,
+    );
+    final pieces = previewPieces(draft);
+    if (pieces.isEmpty) {
+      return Text(
+        '点击编辑…',
+        maxLines: 1,
+        style: context.texts.bodyMedium!.copyWith(color: scheme.outline),
+      );
+    }
+    final spans = <InlineSpan>[];
+    for (var i = 0; i < pieces.length; i++) {
+      final p = pieces[i];
+      if (i > 0) {
+        // 折叠签之间空一格就够,纯文本之间照写逗号
+        final pill = p.fold || pieces[i - 1].fold;
+        spans.add(TextSpan(text: pill ? ' ' : ', '));
+      }
+      spans.add(
+        p.fold
+            ? WidgetSpan(
+                alignment: PlaceholderAlignment.middle,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 1,
+                  ),
+                  decoration: BoxDecoration(
+                    color: scheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    p.text,
+                    style: context.texts.labelMedium!.copyWith(
+                      color: style.color,
+                      decoration: style.decoration,
+                      decorationColor: style.decorationColor,
+                    ),
+                  ),
+                ),
+              )
+            : TextSpan(text: p.text),
+      );
+    }
+    return Text.rich(
+      TextSpan(children: spans),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: style,
+    );
+  }
+}
+
+/// 预览片段:折叠只取名字,折叠之间的文字取定稿(禁用词剔掉)。
+List<({String text, bool fold})> previewPieces(String draft) {
+  String clean(String s) =>
+      outputOf(s).replaceAll(RegExp(r'^[,，\s]+|[,，\s]+$'), '');
+  final out = <({String text, bool fold})>[];
+  var at = 0;
+  for (final f in parseFolds(draft)) {
+    final before = clean(draft.substring(at, f.start));
+    if (before.isNotEmpty) out.add((text: before, fold: false));
+    if (f.name.trim().isNotEmpty) out.add((text: f.name.trim(), fold: true));
+    at = f.end;
+  }
+  final rest = clean(draft.substring(at));
+  if (rest.isNotEmpty) out.add((text: rest, fold: false));
+  return out;
+}
+
+/// 负面预览:前 3 个 tag + "+N" 溢出提示;没写返回空串。提示词卡与角色卡共用。
+String negativePreview(String neg) {
+  final tags = neg
+      .split(',')
+      .map((e) => e.trim())
+      .where((e) => e.isNotEmpty)
+      .toList();
+  if (tags.isEmpty) return '';
+  final shown = tags.take(3).join(', ');
+  final extra = tags.length - 3;
+  return extra > 0 ? '$shown +$extra' : shown;
 }

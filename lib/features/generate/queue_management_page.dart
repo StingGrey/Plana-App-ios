@@ -466,4 +466,5 @@ String _stageLabel(GenJobStage stage) => switch (stage) {
   GenJobStage.queued => '服务端排队',
   GenJobStage.starting => '启动模型',
   GenJobStage.running => '生成中',
+  GenJobStage.saving => '保存中',
 };

@@ -59,7 +59,7 @@ Future<({Uint8List png, int width, int height})> upscaleNai(
     // 占一个直连槽再打:超分和生成花的是同一个账号、撞的是同一个限流桶。
     // 不占的话「生成中顺手点一次超分」必 429(NAI 同 Key 不许并发)。
     //
-    // paid:超分一定扣点(按源图像素 1–4 点),所以关了「使用点数」的 Key
+    // paid:超分一定扣点(按源图像素 1–4 点),所以没勾「参与点数生成」的 Key
     // 不参与 —— 白嫖号的点数不该被超分悄悄花掉。用哪把由闸门定。
     // 打哪台机器跟着闸门给的那把 Key 走(第三方的 key 只在它自己那台上有效)。
     out = await ref.read(naiGateProvider).run(paid: true, (token, base) {

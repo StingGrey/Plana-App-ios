@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../../features/assistant/session_store.dart';
 import '../../features/gallery/gallery_store.dart';
+import '../../features/gallery/albums/album_store.dart';
 import '../../features/generate/workspace_store.dart';
 import '../../features/local_gallery/local_gallery_store.dart';
 import '../../features/stats/key_ledger.dart';
@@ -26,12 +27,14 @@ class AppStores {
     this.ledger,
     this.assistant,
     this.prefs,
+    this.albums,
   );
 
   final BlobStore blobs;
   final WorkspaceStore workspace;
   final GalleryStore gallery;
   final LocalGalleryStore localGallery;
+  final AlbumStore albums;
   final KeyLedgerStore ledger;
   final AssistantStore assistant;
 
@@ -53,6 +56,7 @@ class AppStores {
       KeyLedgerStore(root),
       AssistantStore(blobs, root),
       PrefsStore.emptyForTest(root),
+      AlbumStore(root),
     );
   }
 
@@ -75,6 +79,7 @@ class AppStores {
     final workspace = WorkspaceStore(blobs, root);
     final gallery = GalleryStore(blobs, root);
     final localGallery = LocalGalleryStore(root, historyStore: gallery);
+    final albums = AlbumStore(root);
     final ledger = KeyLedgerStore(root);
     final assistant = AssistantStore(blobs, root);
     try {
@@ -89,6 +94,9 @@ class AppStores {
     } catch (_) {
       // A missing/unsupported local-gallery directory must not block startup.
     }
+    await albums.load(
+      liveImages: gallery.initialResults.map((r) => r.id).toSet(),
+    );
     await ledger.load();
     await assistant.load();
     return AppStores._(
@@ -99,6 +107,7 @@ class AppStores {
       ledger,
       assistant,
       prefs,
+      albums,
     );
   }
 

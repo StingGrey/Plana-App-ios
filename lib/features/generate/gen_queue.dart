@@ -8,6 +8,8 @@ import '../fixed_tags/fixed_tags.dart';
 import 'generation_controller.dart';
 import 'loop_controller.dart';
 import 'models.dart';
+import '../gallery/albums/album_models.dart';
+import '../gallery/albums/album_state.dart';
 
 /// 排队任务:入队瞬间的完整参数快照,之后随便改编辑器不影响已排的。
 class QueuedTask {
@@ -15,6 +17,7 @@ class QueuedTask {
     required this.id,
     required this.snapshot,
     this.fixedTags = const FixedTagsState(),
+    this.galleryTarget = const GallerySaveTarget.all(),
   });
 
   final int id;
@@ -24,6 +27,9 @@ class QueuedTask {
   /// the generation settings. Changing the library after enqueueing must not
   /// silently change an already submitted task.
   final FixedTagsState fixedTags;
+
+  /// 入队那一刻的保存目标(哪本相册),同样随任务锁死。
+  final GallerySaveTarget galleryTarget;
 }
 
 /// Failure behavior after the safe, no-charge retry has been exhausted.
@@ -141,6 +147,7 @@ class GenQueueNotifier extends Notifier<GenQueueState> {
       id: _seq++,
       snapshot: snapshot,
       fixedTags: fixedTags ?? ref.read(fixedTagsProvider),
+      galleryTarget: ref.read(gallerySaveTargetProvider),
     );
     state = state.copyWith(
       items: front ? [task, ...state.items] : [...state.items, task],
@@ -249,6 +256,7 @@ class GenQueueNotifier extends Notifier<GenQueueState> {
         var outcome = await gen.generate(
           using: task.snapshot,
           fixedTags: task.fixedTags,
+          galleryTarget: task.galleryTarget,
         );
         // **只有「确定未扣点」才重试。** 流中断 / 超时 / 内容审核这类失败,NAI
         // 可能已经受理并扣了点,盲目重试就是第二次扣费,而且没有任何用户动作。
@@ -259,6 +267,7 @@ class GenQueueNotifier extends Notifier<GenQueueState> {
           outcome = await gen.generate(
             using: task.snapshot,
             fixedTags: task.fixedTags,
+            galleryTarget: task.galleryTarget,
           );
         }
         if (outcome != GenOutcome.ok) {

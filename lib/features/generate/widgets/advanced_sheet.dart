@@ -96,9 +96,9 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
     final scheme = context.scheme;
     final isAnima = isAnimaModel(draft.model);
     final isKrea = isKreaModel(draft.model);
-    // 官方能力表里 V5 的 noiseSchedule / cfgDelay 都是 false —— 请求发出前
-    // noise_schedule 被硬写回 karras、skip_cfg_above_sigma 被删掉。这两个控件
-    // 在 V5 下点了完全没反应,继续摆着就是骗人,所以按能力面藏掉。
+    // 官方能力表里 V5 的 noiseSchedule 是 false —— 请求发出前 noise_schedule
+    // 被硬写回 karras。这个控件在 V5 下点了完全没反应,继续摆着就是骗人,
+    // 所以按能力面藏掉。
     final isV5 = isNai5Model(draft.model);
     return Column(
       children: [
@@ -340,39 +340,22 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                   divisions: 250, // step 0.1(对齐 web)
                   valueText: draft.cfg.toStringAsFixed(1),
                   // Variety+ 借住在 CFG 这行,自己那份说明只能挂个独立问号
-                  trailing: isV5
-                      ? null
-                      : Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            FilterChip(
-                              avatar: Icon(
-                                Icons.shuffle,
-                                size: 13,
-                                color: draft.varietyPlus
-                                    ? scheme.onSecondaryContainer
-                                    : scheme.onSurfaceVariant,
-                              ),
-                              label: const Text(
-                                'Variety+',
-                                style: TextStyle(fontSize: 11),
-                              ),
-                              selected: draft.varietyPlus,
-                              showCheckmark: false,
-                              visualDensity: const VisualDensity(
-                                horizontal: -3,
-                                vertical: -3,
-                              ),
-                              onSelected: (v) =>
-                                  _set(draft.copyWith(varietyPlus: v)),
-                            ),
-                            const HelpDot(
-                              Help.varietyPlus,
-                              size: 30,
-                              iconSize: 17,
-                            ),
-                          ],
-                        ),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _TextToggle(
+                        label: 'Variety+',
+                        selected: draft.varietyPlus,
+                        onTap: () {
+                          Haptics.selection();
+                          _set(
+                            draft.copyWith(varietyPlus: !draft.varietyPlus),
+                          );
+                        },
+                      ),
+                      const HelpDot(Help.varietyPlus, size: 30, iconSize: 17),
+                    ],
+                  ),
                   onChanged: (v) => _set(draft.copyWith(cfg: v)),
                 ),
                 const SizedBox(height: 12),
@@ -676,6 +659,69 @@ class _SelectTile extends StatelessWidget {
   }
 }
 
+/// 文字开关胶囊:关着是细边圈住一行灰字;开了换成与采样器选中格同一套
+/// (secondaryContainer 底 + 主色描边),字前多个对勾。
+class _TextToggle extends StatelessWidget {
+  const _TextToggle({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    final fg = selected ? scheme.onSecondaryContainer : scheme.onSurfaceVariant;
+    return AnimatedContainer(
+      duration: Motion.fast,
+      height: 28,
+      decoration: BoxDecoration(
+        color: selected ? scheme.secondaryContainer : Colors.transparent,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: selected ? scheme.primary : scheme.outlineVariant,
+        ),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(14),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            child: AnimatedSize(
+              duration: Motion.fast,
+              alignment: Alignment.centerRight,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (selected) ...[
+                    Icon(Icons.check, size: 14, color: fg),
+                    const SizedBox(width: 3),
+                  ],
+                  Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                      color: fg,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// 预设切换行:下拉单选即时生效(自定义多了 chip 行放不下,用户定稿下拉)
 /// + 尾部「管理」进独立管理页。
 class _PresetRow extends ConsumerWidget {
@@ -694,7 +740,11 @@ class _PresetRow extends ConsumerWidget {
     // 存的那个档在当前模型下可能根本不在列表里(切了模型、档没跟着换)。
     // 这里只是**显示**成同强度的那一档 —— 真正落地由 _applyPreset 再算一次,
     // 不在这儿写回:草稿里的模型用户还可能取消。
-    final activeId = remapPromptPresetId(s.activeId, s.presets, model);
+    final activeId = remapPromptPresetId(
+      ref.watch(activePromptPresetIdProvider),
+      s.presets,
+      model,
+    );
     return Row(
       children: [
         Expanded(

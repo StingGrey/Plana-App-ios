@@ -25,6 +25,7 @@ import '../../core/net/backend_client.dart';
 import '../../core/net/backend_config.dart';
 import '../../core/store/app_stores.dart';
 import '../generate/agent_chars.dart';
+import '../generate/canvas_state.dart';
 import '../generate/char_position.dart';
 import '../gallery/gallery_state.dart' show galleryProvider;
 import '../generate/gen_modules.dart';
@@ -52,6 +53,8 @@ class AssistantState {
     this.running = false,
     this.liveTools = const [],
     this.stage = '',
+    this.liveText = '',
+    this.liveReasoning = '',
     this.changedUnseen = false,
     this.jobs = const {},
     this.mode = AssistantMode.normal,
@@ -78,6 +81,13 @@ class AssistantState {
   /// 等待期的阶段文案。一轮要 20~40 秒,光转圈会让人以为死了。
   final String stage;
 
+  /// 正在写的这一跳的正文(自填接口那条才有,见 [AgentDelta])。每帧整块替换,
+  /// 不是往后拼;换一跳会从头再来。跑完并进 [AssistantMsg.text],这里清空。
+  final String liveText;
+
+  /// 同上,模型这一跳的思考过程。跑完**不留**:最终消息里本来就不带它。
+  final String liveReasoning;
+
   /// 正在为某条消息出的图:消息 id → 出图任务 id。**只在「图片显示在对话里」
   /// 开着时才记** —— 关了的话页面已经切去图库看进度了,对话里再画一条是重复。
   ///
@@ -96,6 +106,8 @@ class AssistantState {
     bool? running,
     List<ToolTrace>? liveTools,
     String? stage,
+    String? liveText,
+    String? liveReasoning,
     bool? changedUnseen,
     Map<String, String>? jobs,
     AssistantMode? mode,
@@ -105,6 +117,8 @@ class AssistantState {
     running: running ?? this.running,
     liveTools: liveTools ?? this.liveTools,
     stage: stage ?? this.stage,
+    liveText: liveText ?? this.liveText,
+    liveReasoning: liveReasoning ?? this.liveReasoning,
     changedUnseen: changedUnseen ?? this.changedUnseen,
     jobs: jobs ?? this.jobs,
     mode: mode ?? this.mode,
@@ -444,6 +458,8 @@ class AssistantNotifier extends Notifier<AssistantState> {
     // 而实际什么都没发出去。
     final g = ref.read(generateProvider);
     final canvas = withCanvas && canvasHasContent(g);
+    // 回复回来时人可能已经切去别的画布,自动导入 / 出图只对发问时这张生效
+    final sourceCanvasId = ref.read(canvasWorkspaceProvider).activeId;
     final picked = state.mode;
     final noDraw = assistantSettingsOf(ref).noDraw;
 
@@ -471,9 +487,11 @@ class AssistantNotifier extends Notifier<AssistantState> {
         ],
         running: true,
         liveTools: const [],
+        liveText: '',
+        liveReasoning: '',
         // 一开始是模型在想,不是在查资料:大多数轮次根本不调工具,开场就报「查资料」
         // 是在说一件还没发生、多半也不会发生的事。真调了工具再切过去(见下面的事件)。
-        stage: '正在想…',
+        stage: '思考中',
       ),
     );
     // 记录跟着这条提问一起开:下面还要等灵感库、规则这些,这期间按了停止也得收尾。
@@ -541,6 +559,8 @@ class AssistantNotifier extends Notifier<AssistantState> {
       'mode_keys': modeKeys,
       'no_draw': noDraw,
       'library_scope': scope.name,
+      'oc_placeholders':
+          endpoint != null && assistantSettingsOf(ref).ocPlaceholders,
       'history_turns': assistantSettingsOf(ref).historyTurns,
       'history_entries': history.length,
       'with_canvas': canvas,
@@ -568,10 +588,12 @@ class AssistantNotifier extends Notifier<AssistantState> {
             // 不发给后端(见 local_library.dart)
             webArtists: lib.artists,
             webOcs: lib.ocs,
+            ocPlaceholders: assistantSettingsOf(ref).ocPlaceholders,
             resources: latestResources(state.msgs),
             libraryScope: libraryScopeWire(scope),
             chosenModes: modeKeys,
             think: assistantSettingsOf(ref).thinkLevel,
+            stream: assistantSettingsOf(ref).stream,
             trace: trace,
           )
         : streamAgentPrompt(
@@ -620,7 +642,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
             // 就再也拿不到「查的是普拉娜」这件事了。
             tools.add(ToolTrace(name: name, subject: toolSubject(args)));
             _set(
-              state.copyWith(liveTools: List.of(tools), stage: '正在查资料…'),
+              state.copyWith(liveTools: List.of(tools), stage: '查资料中'),
               persist: false,
             );
           case AgentToolResult(:final name, :final summary):
@@ -633,7 +655,14 @@ class AssistantNotifier extends Notifier<AssistantState> {
             _set(
               // 结果回来之后模型接着想:可能再查一轮,可能出图,也可能只是回答个问题
               // (「芙兰是谁」查完就答,没有提示词可写)—— 所以不报「写提示词」
-              state.copyWith(liveTools: List.of(tools), stage: '正在想…'),
+              state.copyWith(liveTools: List.of(tools), stage: '思考中'),
+              persist: false,
+            );
+          case AgentDelta(:final text, :final reasoning):
+            // 整块替换,不往后拼(见 AgentDelta 的说明)。这一段不落盘 ——
+            // 半截话没有存的价值,真存了下次启动还得当完整回复显示。
+            _set(
+              state.copyWith(liveText: text, liveReasoning: reasoning),
               persist: false,
             );
           case AgentDegraded():
@@ -642,7 +671,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
             );
             _set(state.copyWith(liveTools: List.of(tools)), persist: false);
           case AgentDone(:final result):
-            _finish(result, tools, canvas, picked, noDraw);
+            _finish(result, tools, canvas, picked, noDraw, sourceCanvasId);
         }
       },
       onError: (Object e) {
@@ -746,6 +775,8 @@ class AssistantNotifier extends Notifier<AssistantState> {
         running: false,
         liveTools: const [],
         stage: '',
+        liveText: '',
+        liveReasoning: '',
       ),
     );
   }
@@ -756,6 +787,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
     bool canvas,
     AssistantMode mode,
     bool noDraw,
+    String sourceCanvasId,
   ) {
     _finishTrace(null);
     // **不写创作页**。AI 的产出先当成一份「提议」挂在这条消息上,用户在结果卡上
@@ -809,10 +841,12 @@ class AssistantNotifier extends Notifier<AssistantState> {
         running: false,
         liveTools: const [],
         stage: '',
+        liveText: '',
+        liveReasoning: '',
       ),
     );
     // 纯文本那种只给复制:不自动导入、不自动出图
-    if (draw != null && !noDraw) _autoAfterDraw(id);
+    if (draw != null && !noDraw) _autoAfterDraw(id, sourceCanvasId);
   }
 
   /// 「总是读写创作页」/「出词后自动生成」这两个开关的落点。
@@ -820,7 +854,11 @@ class AssistantNotifier extends Notifier<AssistantState> {
   /// 顺序是**先导入再出图**:两件事各自独立(不导入也能照 AI 那份出图),但
   /// 如果两个开关都开着,先导入能让画布和这张图对得上 —— 出完图回创作页一看
   /// 提示词还是旧的,那才叫见鬼。
-  void _autoAfterDraw(String msgId) {
+  ///
+  /// 发问之后切去了别的画布,两样都不自动做:回复是照着原来那张要的,自动写进
+  /// (或照它出图到)眼下这张都不对。提议照常挂在消息上,用户自己点导入 / 生成。
+  void _autoAfterDraw(String msgId, String sourceCanvasId) {
+    if (ref.read(canvasWorkspaceProvider).activeId != sourceCanvasId) return;
     final settings = assistantSettingsOf(ref);
     if (settings.autoImport) applyProposal(msgId);
     if (settings.autoGenerate) unawaited(generateFrom(msgId));
@@ -882,7 +920,13 @@ class AssistantNotifier extends Notifier<AssistantState> {
     _sub?.cancel();
     _sub = null;
     _set(
-      state.copyWith(running: false, liveTools: const [], stage: ''),
+      state.copyWith(
+        running: false,
+        liveTools: const [],
+        stage: '',
+        liveText: '',
+        liveReasoning: '',
+      ),
       persist: false,
     );
   }
@@ -896,6 +940,21 @@ class AssistantNotifier extends Notifier<AssistantState> {
       negative: g.negativePrompt,
       characters: List.of(g.characters),
       useCoords: g.params.useCoords,
+    );
+  }
+
+  /// 某张画布眼下那组词。null = 当前画布(切画布之前的老记录没记画布);
+  /// 画布已经删了返回 null。
+  PromptSnapshot? _snapshotOf(String? canvasId) {
+    final w = ref.read(canvasWorkspaceProvider);
+    if (canvasId == null || canvasId == w.activeId) return _snapshot();
+    final p = w.find(canvasId)?.prompts;
+    if (p == null) return null;
+    return PromptSnapshot(
+      positive: p.prompt,
+      negative: p.negativePrompt,
+      characters: List.of(p.characters),
+      useCoords: p.useCoords,
     );
   }
 
@@ -959,14 +1018,20 @@ class AssistantNotifier extends Notifier<AssistantState> {
     final msgs = [...state.msgs];
     msgs[i] = msg.copyWith(
       // 撤销过再导入:非空的 change 直接覆盖掉那条 undone 的记录。
-      change: AssistantChange(before: before, after: _snapshot()),
+      change: AssistantChange(
+        before: before,
+        after: _snapshot(),
+        canvasId: ref.read(canvasWorkspaceProvider).activeId,
+      ),
     );
     _set(state.copyWith(msgs: msgs, changedUnseen: true));
     return true;
   }
 
-  /// 当前画面与那一轮写回时是否还一致。false = 用户之后自己又改过。
-  bool inSyncWith(AssistantChange c) => _snapshot().sameAs(c.after);
+  /// 导入的那张画布与那一轮写回时是否还一致。false = 用户之后自己又改过。
+  /// 那张画布已经删了就无从比较,按一致算(撤销只是把这条记成已撤销)。
+  bool inSyncWith(AssistantChange c) =>
+      _snapshotOf(c.canvasId)?.sameAs(c.after) ?? true;
 
   /// 撤销一条 AI 消息的写回:把 [AssistantChange.before] 整份恢复回去。
   ///
@@ -983,10 +1048,33 @@ class AssistantNotifier extends Notifier<AssistantState> {
     if (c == null || c.undone) return true;
     if (!force && !inSyncWith(c)) return false;
 
-    final gen = ref.read(generateProvider.notifier);
-    gen.setPrompts(positive: c.before.positive, negative: c.before.negative);
-    gen.replaceCharacters(c.before.characters);
-    gen.setUseCoords(c.before.useCoords);
+    // 回滚到导入的那张画布上,不碰眼下这张;画布删了就只记成已撤销。
+    final target = c.canvasId;
+    final w = ref.read(canvasWorkspaceProvider);
+    if (target == null || target == w.activeId) {
+      final gen = ref.read(generateProvider.notifier);
+      gen.setPrompts(positive: c.before.positive, negative: c.before.negative);
+      gen.replaceCharacters(c.before.characters);
+      gen.setUseCoords(c.before.useCoords);
+    } else if (w.find(target) != null) {
+      final b = c.before;
+      ref
+          .read(canvasWorkspaceProvider.notifier)
+          .updatePrompts(
+            target,
+            (p) => p.copyWith(
+              prompt: b.positive,
+              // 同 setPrompts:词变了,编辑器草稿随之作废
+              promptRaw: b.positive == p.prompt ? p.promptRaw : '',
+              negativePrompt: b.negative,
+              negativePromptRaw: b.negative == p.negativePrompt
+                  ? p.negativePromptRaw
+                  : '',
+              characters: List.of(b.characters),
+              useCoords: b.useCoords,
+            ),
+          );
+    }
 
     final msgs = [...state.msgs];
     msgs[i] = msgs[i].copyWith(change: c.copyWith(undone: true));

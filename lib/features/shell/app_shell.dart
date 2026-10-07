@@ -13,10 +13,14 @@ import '../../core/store/prefs_store.dart';
 import '../../core/theme/app_theme.dart';
 import '../assistant/assistant_page.dart';
 import '../gallery/gallery_page.dart';
+import '../gallery/gallery_state.dart';
+import '../gallery/albums/album_models.dart';
+import '../gallery/albums/album_state.dart';
 import '../generate/generate_page.dart';
 import '../generate/generation_controller.dart';
 import '../generate/widgets/common.dart' show hintSnack;
 import '../inspiration/inspiration_page.dart';
+import '../inpaint/inpaint_overlay.dart' show inpaintSessionProvider;
 import '../profile/profile_page.dart';
 import '../update/update_service.dart';
 import '../update/update_sheet.dart' show showUpdateSheet;
@@ -181,11 +185,48 @@ class _AppShellState extends ConsumerState<AppShell> {
       ref.read(genNoticeProvider.notifier).clear();
     });
 
+    // 保存完成提示:告诉用户新图落进了哪个相册,并给一条直达的「查看」。
+    ref.listen<GalleryResultPreview?>(gallerySavedNoticeProvider, (_, next) {
+      if (next == null) return;
+      final name = ref.read(albumsProvider).name(next.target.albumId);
+      hintSnack(
+        context,
+        '新图片已保存到「$name」',
+        icon: Icons.photo_library_outlined,
+        actionLabel: '查看',
+        onAction: () {
+          if (!mounted) return;
+          if (ref.read(inpaintSessionProvider) != null) {
+            hintSnack(context, '结束编辑后可查看新图片');
+            return;
+          }
+          if (!ref
+              .read(galleryProvider)
+              .results
+              .any((r) => r.id == next.imageId)) {
+            hintSnack(context, '这张图片已被删除');
+            return;
+          }
+          final target = ref.read(albumsProvider).exists(next.target.albumId)
+              ? next.target
+              : const GallerySaveTarget.all();
+          ref.read(generationProvider.notifier).select(null);
+          ref
+              .read(galleryResultPreviewProvider.notifier)
+              .show(next.imageId, target);
+          ref.read(shellIndexProvider.notifier).select(kTabGallery);
+        },
+      );
+      ref.read(gallerySavedNoticeProvider.notifier).clear();
+    });
+
     final pageView = PageView(
       controller: _pc,
       // 只让程序 animateToPage 驱动;用户横滑一律不吃
       physics: const NeverScrollableScrollPhysics(),
-      onPageChanged: (i) => ref.read(shellIndexProvider.notifier).select(i),
+      // **不接 onPageChanged**:页面只会跟着索引走,而 animateToPage 途经的
+      // 每一页都会上报一次。写回索引的话,创作 → 灵感会在半路把索引拨成 AI 页
+      // —— 没做过引导的弹出引导;底栏藏了 AI 的,被上面那段拽回创作页。
       children: pages,
     );
 

@@ -97,20 +97,26 @@ class AssistantSettings {
     this.autoImport = false,
     this.thinkLevel = ThinkLevel.auto,
     this.libraryScope = LibraryScope.local,
+    this.ocPlaceholders = false,
     this.noDraw = false,
     this.introVersion = 0,
     this.fontSize = fontSizeDefault,
     this.historyTurns = historyTurnsDefault,
+    this.stream = true,
   });
 
-  /// 上下文轮数的默认值与可调范围。
+  /// 上下文轮数的默认值、可调范围与步长。
   ///
   /// 默认 20 与服务端原先写死的窗口一样(`history_adapter.WEB_HISTORY_MAX_TURNS`)。
-  /// 上界 50 是服务端肯收的上限:走后端渠道时 token 是服务端付的,再往上一个请求
-  /// 光历史就上万。自定义接口那条没人替它截,也按同一个上限走。
+  /// 上界 200 对齐服务端肯收的上限(`WEB_HISTORY_TURNS_MAX`):走后端渠道时 token 是
+  /// 服务端付的,拉满一个请求光历史就三万多;老版服务端封顶更低,要多了照样截回去。
+  /// 自定义接口那条没人替它截,也按同一个上限走。
+  ///
+  /// 十轮一档:两百轮的范围,一轮一轮地按太碎。
   static const historyTurnsDefault = 20;
-  static const historyTurnsMin = 1;
-  static const historyTurnsMax = 50;
+  static const historyTurnsMin = 10;
+  static const historyTurnsMax = 200;
+  static const historyTurnsStep = 10;
 
   /// 消息字号的默认值、可调范围与步长。
   ///
@@ -150,6 +156,9 @@ class AssistantSettings {
   /// 拿全量去和一句话做匹配,捞上来的多半是他没见过的东西。
   final LibraryScope libraryScope;
 
+  /// 自定义接口渠道：本地和公共库 OC 只给 AI 占位符，结果落地前展开。默认关闭。
+  final bool ocPlaceholders;
+
   /// 纯文本格式:AI 照常写提示词,提议只显示成纯文本给复制,不出结果卡、不导入、不出图
   /// (见 [AssistantMsg.promptAsText])。什么都不发给模型。
   ///
@@ -175,26 +184,37 @@ class AssistantSettings {
   /// 不占轮数,调小了也不会丢。
   final int historyTurns;
 
+  /// 回复边写边显示。**只对自定义接口生效** —— 后端渠道还没开流(见 agent_stream)。
+  ///
+  /// 这一项与上面那几个「放权」开关不同类,默认**开着**:它不替用户决定任何事,
+  /// 只是把已经在发生的事显示出来。关掉 = 整段写完一次出,留给中转不认 `stream`
+  /// 字段、或者就是不想看字一个个蹦的人。
+  final bool stream;
+
   AssistantSettings copyWith({
     bool? autoGenerate,
     bool? inlineImage,
     bool? autoImport,
     ThinkLevel? thinkLevel,
     LibraryScope? libraryScope,
+    bool? ocPlaceholders,
     bool? noDraw,
     int? introVersion,
     double? fontSize,
     int? historyTurns,
+    bool? stream,
   }) => AssistantSettings(
     autoGenerate: autoGenerate ?? this.autoGenerate,
     inlineImage: inlineImage ?? this.inlineImage,
     autoImport: autoImport ?? this.autoImport,
     thinkLevel: thinkLevel ?? this.thinkLevel,
     libraryScope: libraryScope ?? this.libraryScope,
+    ocPlaceholders: ocPlaceholders ?? this.ocPlaceholders,
     noDraw: noDraw ?? this.noDraw,
     introVersion: introVersion ?? this.introVersion,
     fontSize: fontSize ?? this.fontSize,
     historyTurns: historyTurns ?? this.historyTurns,
+    stream: stream ?? this.stream,
   );
 
   Map<String, dynamic> toJson() => {
@@ -203,10 +223,12 @@ class AssistantSettings {
     'autoImport': autoImport,
     'thinkLevel': thinkLevel.name,
     'libraryScope': libraryScope.name,
+    'ocPlaceholders': ocPlaceholders,
     'noDraw': noDraw,
     'introVersion': introVersion,
     'fontSize': fontSize,
     'historyTurns': historyTurns,
+    'stream': stream,
   };
 
   factory AssistantSettings.fromJson(Map<String, dynamic> j) =>
@@ -221,7 +243,10 @@ class AssistantSettings {
         libraryScope:
             LibraryScope.values.asNameMap()[j['libraryScope']] ??
             LibraryScope.local,
+        ocPlaceholders: j['ocPlaceholders'] == true,
         noDraw: j['noDraw'] == true,
+        // 缺键 = 老存档,按开算:新行为更好,不必等用户自己去翻设置
+        stream: j['stream'] != false,
         introVersion: switch (j['introVersion']) {
           final num v => v.toInt(),
           _ => 0,
@@ -232,11 +257,13 @@ class AssistantSettings {
             v.toDouble().clamp(fontSizeMin, fontSizeMax).toDouble(),
           _ => fontSizeDefault,
         },
+        // 以前一轮一轮调出来的(比如 35)就近落到档上,不然按一下加减会跳两档
         historyTurns: switch (j['historyTurns']) {
-          final num v when v.isFinite => v.round().clamp(
-            historyTurnsMin,
-            historyTurnsMax,
-          ),
+          final num v when v.isFinite =>
+            ((v / historyTurnsStep).round() * historyTurnsStep).clamp(
+              historyTurnsMin,
+              historyTurnsMax,
+            ),
           _ => historyTurnsDefault,
         },
       );

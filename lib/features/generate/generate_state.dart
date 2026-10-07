@@ -3,13 +3,17 @@ import 'dart:typed_data';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/store/app_stores.dart';
+import '../editor/editor_models.dart' show draftOf, outputOf;
+import '../inspiration/tag_models.dart' show TagEntry, tagCategoryDef;
 import '../vibe_library/naiv4vibe_codec.dart' show kModelToEncodingKey;
 import 'agent_chars.dart';
+import 'canvas_state.dart';
 import 'char_position.dart';
 import 'gen_modules.dart';
 import 'lora_triggers.dart' show removeLoraTriggersFromPrompt;
 import 'models.dart';
 import 'nai_request.dart' show naiModelId;
+import 'prompt_sections.dart';
 
 final generateProvider = NotifierProvider<GenerateNotifier, GenerateState>(
   GenerateNotifier.new,
@@ -27,12 +31,27 @@ class GenerateNotifier extends Notifier<GenerateState> {
 
   @override
   GenerateState build() {
-    // 启动水合 + 每次状态变更排队防抖落盘:重启回到原样工作台
+    // 启动水合 + 每次状态变更抄回当前画布、排队防抖落盘:重启回到原样工作台
     final ws = ref.watch(appStoresProvider).workspace;
     _idSeq = ws.idSeq;
-    listenSelf((_, next) => ws.schedule(next, idSeq: _idSeq));
+    listenSelf((_, next) {
+      ref.read(canvasWorkspaceProvider.notifier).record(next, idSeq: _idSeq);
+    });
     return ws.initial ?? GenerateState.initial();
   }
+
+  /// 换上另一张画布的那组提示词;模型、参数、参考图等全局设置原样不动。
+  void applyCanvas(CanvasPrompts prompts) {
+    if (CanvasPrompts.of(state).sameAs(prompts)) return;
+    state = prompts.applyTo(state);
+  }
+
+  /// 把全局设置整份换回 [s],当前画布的词不动(撤销一次整体写入时用,
+  /// 词由 [CanvasWorkspaceNotifier.undoWrite] 另行还给原画布)。
+  void restoreGlobals(GenerateState s) =>
+      state = CanvasPrompts.of(state).applyTo(s);
+
+  void setPromptPreset(String id) => state = state.copyWith(promptPresetId: id);
 
   String _newId() => 'id${_idSeq++}';
 
@@ -230,11 +249,12 @@ class GenerateNotifier extends Notifier<GenerateState> {
     if (base.isNotEmpty) openPanel(Panel.characters);
   }
 
-  /// 灵感页「加入角色」:带名追加(名字取自角色条目),尊重张数上限
-  /// (按模型取,见 maxCharactersOf),超出静默截断(对齐 web
-  /// availableSlots 语义)。返回实际加入条数。
+  /// 灵感页「加入角色」/ 角色卡头「角色库」:带名追加(名字取自角色条目,
+  /// 头像取条目预览),尊重张数上限(按模型取,见 maxCharactersOf),超出静默
+  /// 截断(对齐 web availableSlots 语义)。返回实际加入条数。
   int addNamedCharactersFrom(
-    List<({String name, String positive, String negative})> chars,
+    List<({String name, String positive, String negative, String? avatar})>
+    chars,
   ) {
     final cap = maxCharactersOf(state.params.model);
     final base = [...state.characters];
@@ -248,6 +268,7 @@ class GenerateNotifier extends Notifier<GenerateState> {
           positive: c.positive,
           negative: c.negative,
           position: _spawnPos(base),
+          avatar: c.avatar,
         ),
       );
       added++;
@@ -257,6 +278,34 @@ class GenerateNotifier extends Notifier<GenerateState> {
       openPanel(Panel.characters);
     }
     return added;
+  }
+
+  /// 角色卡点头像换人:名字、正负向、头像整份换成库条目的,站位和开关不动。
+  /// 编辑器草稿一并清空(空 = 与定稿无差别)—— 那份草稿对的是旧提示词。
+  /// 条目没有预览图时头像也清掉,别让新名字挂着上一个人的脸。
+  void fillCharacterFrom(
+    String id, {
+    required String name,
+    required String positive,
+    required String negative,
+    String? avatar,
+  }) {
+    state = state.copyWith(
+      characters: [
+        for (final c in state.characters)
+          if (c.id == id)
+            c.copyWith(
+              name: name.isNotEmpty ? name : c.name,
+              positive: positive,
+              negative: negative,
+              positiveRaw: '',
+              negativeRaw: '',
+              avatar: avatar,
+            )
+          else
+            c,
+      ],
+    );
   }
 
   void moveCharacter(String id, int delta) {
@@ -536,33 +585,37 @@ class GenerateNotifier extends Notifier<GenerateState> {
   /// 那意味着用户在下载期间把它移除了,或者中途载入了别的工作区/快照。
   /// 这两种情况下他手上的配置里都没有这一条,下载完再塞回去就是个幽灵改动:
   /// 明明点了移除,过几分钟它自己又回来了。装好的本体在库里,要用去挂载即可。
+  ///
+  /// 下载途中切去了另一个底模的模型 / 画布,占位条就收在 [GenerateState.loraMem]
+  /// 里,在那儿转正,切回来时已经是装好的样子。
   bool promotePendingLora(String placeholder, ActiveLora real) {
-    final idx = state.loras.indexWhere((l) => l.name == placeholder);
-    if (idx < 0) return false;
-    final old = state.loras[idx];
-    final dup = state.loras.any((l) => l.name == real.name);
-    state = state.copyWith(
-      loras: [
-        for (var i = 0; i < state.loras.length; i++)
+    List<ActiveLora>? promote(List<ActiveLora> list) {
+      final idx = list.indexWhere((l) => l.name == placeholder);
+      if (idx < 0) return null;
+      final old = list[idx];
+      final dup = list.any((l) => l.name == real.name);
+      return [
+        for (var i = 0; i < list.length; i++)
           if (i != idx)
-            state.loras[i]
+            list[i]
           else if (!dup)
             real.copyWith(
               weight: old.weight,
               enabled: old.enabled,
               clipWeight: old.clipWeight,
             ),
-      ],
-    );
-    return true;
+      ];
+    }
+
+    return _updateLoraLists(promote);
   }
 
   /// 占位条下载失败:标红并停用,留在原地等用户处理(移除或重新导入)。
   void markLoraFailed(String placeholder, String reason) {
-    if (!state.loras.any((l) => l.name == placeholder)) return;
-    state = state.copyWith(
-      loras: [
-        for (final l in state.loras)
+    _updateLoraLists((list) {
+      if (!list.any((l) => l.name == placeholder)) return null;
+      return [
+        for (final l in list)
           if (l.name == placeholder)
             l.copyWith(
               enabled: false,
@@ -573,8 +626,25 @@ class GenerateNotifier extends Notifier<GenerateState> {
             )
           else
             l,
-      ],
-    );
+      ];
+    });
+  }
+
+  /// 先在挂着的列表里改,找不到再去收起来的那几份([GenerateState.loraMem])里改。
+  /// [change] 返回 null = 这份里没有要改的。
+  bool _updateLoraLists(List<ActiveLora>? Function(List<ActiveLora>) change) {
+    final active = change(state.loras);
+    if (active != null) {
+      state = state.copyWith(loras: active);
+      return true;
+    }
+    for (final e in state.loraMem.entries) {
+      final stashed = change(e.value);
+      if (stashed == null) continue;
+      state = state.copyWith(loraMem: {...state.loraMem, e.key: stashed});
+      return true;
+    }
+    return false;
   }
 
   void removeLora(String name) {
@@ -725,6 +795,111 @@ class GenerateNotifier extends Notifier<GenerateState> {
     );
   }
 
+  /// 整串换掉提示词(读图导入、反推)。分区里同一侧的词一并清掉、骨架留着 ——
+  /// 导进来的是一张图完整的那串,分区再拼上去就重复了。
+  void replacePrompts({String? positive, String? negative}) {
+    setPrompts(positive: positive, negative: negative);
+    if (state.sections.isEmpty) return;
+    final p = positive != null ? '' : null;
+    final n = negative != null ? '' : null;
+    state = state.copyWith(
+      sections: [
+        for (final s in state.sections)
+          s.isMain
+              ? s
+              : s.copyWith(
+                  positive: p,
+                  positiveRaw: p,
+                  negative: n,
+                  negativeRaw: n,
+                ),
+      ],
+    );
+  }
+
+  // ---- 主提示词分区 ----
+
+  /// 灵感库条目各自成一格,不折叠(见 [withEntrySections])。格子名是分类名
+  /// (画风 / 角色 / 场景…),给了 [name] 就用它(法典词条叫「法典」)。
+  void addEntrySections(Iterable<TagEntry> entries, {String? name}) =>
+      state = state.copyWith(
+        sections: withEntrySections(state.sections, state.prompt, [
+          for (final e in entries)
+            e.copyWith(name: name ?? tagCategoryDef(e.category).label),
+        ], newId: _newId),
+      );
+
+  /// 编辑器多选「提取为新分区」:这段草稿(权重、禁用、折叠照旧)成一格,
+  /// 接在最后,返回新建的这一格(编辑器撤销时按它拿掉)。[positive] 为 false
+  /// 时放进负面那一侧。
+  PromptSection addSectionFrom(String draft, {required bool positive}) {
+    final list = state.sections.isEmpty
+        ? const [PromptSection.main()]
+        : state.sections;
+    final out = outputOf(draft);
+    final raw = draftOf(draft, out);
+    final section = PromptSection(
+      id: _newId(),
+      name: nextSectionName(list),
+      positive: positive ? out : '',
+      positiveRaw: positive ? raw : '',
+      negative: positive ? '' : out,
+      negativeRaw: positive ? '' : raw,
+    );
+    state = state.copyWith(sections: [...list, section]);
+    return section;
+  }
+
+  /// 卡头「+」:在最后加一格「分区 N」。还没分区时连主体一起建出来。
+  void addSection() {
+    final list = state.sections.isEmpty
+        ? const [PromptSection.main()]
+        : state.sections;
+    state = state.copyWith(
+      sections: [
+        ...list,
+        PromptSection(id: _newId(), name: nextSectionName(list)),
+      ],
+    );
+  }
+
+  void updateSection(String id, {String? name, bool? enabled}) {
+    state = state.copyWith(
+      sections: [
+        for (final s in state.sections)
+          if (s.id == id) s.copyWith(name: name, enabled: enabled) else s,
+      ],
+    );
+  }
+
+  /// 删掉一格,返回撤销要用的:删的那格、原行号、当时的主体。主体删不掉;
+  /// 删到只剩主体时整列清空,卡片回到原来的样子。
+  ({PromptSection section, int index, PromptSection main})? removeSection(
+    String id,
+  ) {
+    final list = state.sections;
+    final i = list.indexWhere((s) => s.id == id);
+    if (i < 0 || list[i].isMain) return null;
+    final main = list.firstWhere(
+      (s) => s.isMain,
+      orElse: () => const PromptSection.main(),
+    );
+    state = state.copyWith(
+      sections: normalizeSections([
+        for (final s in list)
+          if (s.id != id) s,
+      ]),
+    );
+    return (section: list[i], index: i, main: main);
+  }
+
+  /// 卡头「清空」:主体的正向清空,分区整列清掉(各格的负面跟着走),
+  /// 卡片回到没分区的样子;主体的负面留着。
+  void clearPositive() {
+    setPrompts(positive: '');
+    if (state.sections.isNotEmpty) state = state.copyWith(sections: const []);
+  }
+
   // ---- 参数 ----
   void applyParams(GenParams params) => state = state.copyWith(params: params);
 
@@ -760,9 +935,14 @@ class GenerateNotifier extends Notifier<GenerateState> {
   }) {
     // 换档位时先把旧档那套收进记忆(与 setModel 同一套规矩)。**不**跟着取回
     // 新档的:导入面板给了哪些字段就落哪些,没勾的项保持不动是这条路的本意。
+    // LoRA 换底模同 setModel:收起旧底模挂的,换上新底模上次挂的。
     var cur = state.params;
-    if (model != null && model != cur.model) cur = cur.rememberModalSampling();
-    state = state.copyWith(
+    var base = state;
+    if (model != null && model != cur.model) {
+      cur = cur.rememberModalSampling();
+      base = state.withLoraBaseOf(model);
+    }
+    state = base.copyWith(
       // 导入面板勾了模型这一项时也可能把槽位换小,同 setModel 一样收口。
       // 角色是在这之前落地的(导入面板先加角色再落设置),所以得在这儿再过一遍。
       characters: _capEnabled(state.characters, model ?? cur.model),
@@ -801,24 +981,23 @@ class GenerateNotifier extends Notifier<GenerateState> {
   /// 这档,调好的步数/CFG 就没了。联动的初衷(切到慢档别还挂着蒸馏档的 12 步)
   /// 由「没进过的档才套配方」保住。
   ///
-  /// 换 LoRA 底模时连带清空已挂的:上一个库的 LR 编号在新库里查无此条,
-  /// 留着发出去服务端会静默丢弃,等于白跑一次生成(对齐 web prevLoraBaseRef)。
-  /// NAI 归在 anima 那一侧,所以 NAI↔Anima 来回切不动列表,只有进出 Krea 才清。
+  /// 换 LoRA 底模时按底模换挂载列表(见 [GenerateState.withLoraBaseOf]):上一个库
+  /// 的 LR 编号在新库里查无此条,留着发出去服务端会静默丢弃;收起来,切回这个
+  /// 底模时再挂回去(web prevLoraBaseRef 是直接清空)。NAI 归在 anima 那一侧,
+  /// 所以 NAI↔Anima 来回切不动列表,只有进出 Krea 才换。
   void setModel(String model) {
     // 收好旧档 → 换名 → 取回新档,顺序不能反(两步各自认 params.model)
     final p = state.params
         .rememberModalSampling()
         .copyWith(model: model)
         .recallModalSampling();
-    final baseChanged =
-        loraBaseOf(model) != loraBaseOf(state.params.model) &&
-        state.loras.isNotEmpty;
-    state = state.copyWith(
-      params: p,
-      loras: baseChanged ? const [] : null,
-      // 5 → 4/4.5 槽位从 32 掉到 6,超出的尾巴就地停用(见 [_capEnabled])
-      characters: _capEnabled(state.characters, model),
-    );
+    state = state
+        .withLoraBaseOf(model)
+        .copyWith(
+          params: p,
+          // 5 → 4/4.5 槽位从 32 掉到 6,超出的尾巴就地停用(见 [_capEnabled])
+          characters: _capEnabled(state.characters, model),
+        );
   }
 
   void setLoop(LoopCount l) =>
@@ -840,6 +1019,11 @@ class GenerateNotifier extends Notifier<GenerateState> {
 
   void reorderCharacters(int oldIndex, int newIndex) => state = state.copyWith(
     characters: _reordered(state.characters, oldIndex, newIndex),
+  );
+
+  /// 分区行序就是拼接顺序,主体也能拖。
+  void reorderSections(int oldIndex, int newIndex) => state = state.copyWith(
+    sections: _reordered(state.sections, oldIndex, newIndex),
   );
 
   void reorderVibes(int oldIndex, int newIndex) => state = state.copyWith(

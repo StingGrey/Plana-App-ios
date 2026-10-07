@@ -1101,18 +1101,56 @@ void main() {
       expect(pre.plan.tokens, {'__ARTIST_D11__': d11});
     });
 
-    test('这轮没点到的那类用账本补上;账本里记着的画师串都进映射', () {
+    test('开启 OC 占位符时本地和公共 OC 都只给 token，默认行为不变', () {
+      final pre = buildLocalPrequery(
+        text: '画小小纺和深海',
+        artists: artists,
+        ocs: ocs,
+        remembered: const {},
+        publicOcs: const {'深海': 'blue eyes, shell crown'},
+        ocPlaceholders: true,
+      );
+      expect(pre.block, contains('小小纺 → __OC_小小纺__'));
+      expect(pre.block, contains('深海 → __OC_深海__'));
+      expect(pre.block, isNot(contains('twin braids')));
+      expect(pre.block, isNot(contains('shell crown')));
+      final later = buildLocalPrequery(
+        text: '换个姿势',
+        artists: artists,
+        ocs: ocs,
+        remembered: const {
+          'oc': {'深海': 'blue eyes, shell crown'},
+        },
+        ocPlaceholders: true,
+      );
+      expect(later.block, contains('深海 → __OC_深海__'));
+      expect(later.block, isNot(contains('shell crown')));
+      expect(later.ocPlan.tokens['__OC_深海__'], 'blue eyes, shell crown');
+      final draw = expandOcDraw({
+        'positive': '__OC_深海__, sea',
+        'characters': [
+          {'name': '小小纺', 'positive': '__OC_小小纺__, smiling'},
+        ],
+      }, pre.ocPlan)!;
+      expect(draw['positive'], 'blue eyes, shell crown, sea');
+      expect(
+        (draw['characters'] as List).single['positive'],
+        'silver hair, twin braids, smiling',
+      );
+    });
+
+    test('这轮没点到的画师串用账本补上,OC 不补;账本里记着的画师串都进映射', () {
       final pre = buildLocalPrequery(
         text: '换个姿势',
         artists: artists,
         ocs: ocs,
         remembered: {
           'artist': {'A1': a1},
-          'oc': {'小小纺': 'silver hair, twin braids'},
+          'oc': {'小小纺': 'silver hair, twin braids'}, // 旧版记下的
         },
       );
       expect(pre.block, contains('A1 → __ARTIST_A1__'));
-      expect(pre.block, contains('[OC 角色]\n小小纺 → silver hair, twin braids'));
+      expect(pre.block, isNot(contains('[OC 角色]')), reason: 'OC 只活在点到它的那一轮');
       expect(pre.thisTurn['artist'], isEmpty, reason: '补上的不算本轮命中');
       final none = buildLocalPrequery(
         text: '用 D11',
@@ -1257,16 +1295,16 @@ void main() {
       );
     });
 
-    test('收尾记账:本轮 ∪ 记着的,出了图才按画面筛', () {
+    test('收尾记账:本轮 ∪ 记着的,出了图才按画面筛;OC 一律不进账', () {
       const remembered = {
         'artist': {'A1': a1, 'Q9': 'artist:gone'},
+        'oc': {'小小纺': 'silver hair, twin braids'}, // 旧版记下的
       };
       const thisTurn = {
         'oc': {'小小纺': 'silver hair, twin braids'},
       };
       expect(mergeLedger(remembered, thisTurn, null), {
         'artist': {'A1': a1, 'Q9': 'artist:gone'},
-        'oc': {'小小纺': 'silver hair, twin braids'},
       });
       expect(
         mergeLedger(remembered, thisTurn, {
@@ -1277,7 +1315,6 @@ void main() {
         }),
         {
           'artist': {'A1': a1},
-          'oc': {'小小纺': 'silver hair, twin braids'},
         },
       );
     });
@@ -1306,7 +1343,8 @@ void main() {
   });
 
   group('自定义接口:本地库不出本机', () {
-    const d11 = '<artist>\n1.2::harukui::,\n</artist>\n\n<style>\nthick paint,\n</style>,';
+    const d11 =
+        '<artist>\n1.2::harukui::,\n</artist>\n\n<style>\nthick paint,\n</style>,';
     const a1 = '[[artist:as109]],{{artist:wlop}}';
     const endpoint = CustomEndpoint(
       id: 'e',
@@ -1349,6 +1387,7 @@ void main() {
       MockClient mock, {
       required String scope,
       String userRequest = '用 D11 画小小纺',
+      bool ocPlaceholders = false,
     }) => http.runWithClient(
       () => streamDirectPrompt(
         endpoint: endpoint,
@@ -1363,6 +1402,7 @@ void main() {
         ],
         webArtists: library.artists,
         webOcs: library.ocs,
+        ocPlaceholders: ocPlaceholders,
         resources: const {
           'artist': {'A1': a1},
         },
@@ -1412,7 +1452,11 @@ void main() {
       });
       for (final r in backend) {
         for (final leaked in ['harukui', 'rella', 'twin braids', 'as109']) {
-          expect(r.body, isNot(contains(leaked)), reason: '${r.url.path} 带了库内容');
+          expect(
+            r.body,
+            isNot(contains(leaked)),
+            reason: '${r.url.path} 带了库内容',
+          );
         }
       }
 
@@ -1431,7 +1475,6 @@ void main() {
       expect(done.replyText, '用 D11 和 B7 画好了');
       expect(done.resources, {
         'artist': {'D11': d11},
-        'oc': {'小小纺': 'silver hair, twin braids'},
       });
     });
 
@@ -1458,7 +1501,11 @@ void main() {
           }),
           '/api/agent/tools/call' => json({
             'result': [
-              {'name': 'xiao_(game)', 'tags': 'xiao_(game)', 'source': 'roleTag'},
+              {
+                'name': 'xiao_(game)',
+                'tags': 'xiao_(game)',
+                'source': 'roleTag',
+              },
             ],
           }),
           _ => http.Response('{}', 404),
@@ -1468,8 +1515,13 @@ void main() {
       await run(mock, scope: 'all', userRequest: '用 D11 和 Z9 画小小纺');
 
       // 请求体是 JSON,换行在里面是转义过的
-      expect(model.first, contains(r'D11 → __ARTIST_D11__\nZ9 → __ARTIST_Z9__'));
-      final call = backend.firstWhere((r) => r.url.path == '/api/agent/tools/call');
+      expect(
+        model.first,
+        contains(r'D11 → __ARTIST_D11__\nZ9 → __ARTIST_Z9__'),
+      );
+      final call = backend.firstWhere(
+        (r) => r.url.path == '/api/agent/tools/call',
+      );
       expect(jsonDecode(call.body), {
         'name': 'search_character',
         'arguments': {'query': '小小纺'},
@@ -1479,6 +1531,58 @@ void main() {
       final role = model.last.indexOf('xiao_(game)');
       expect(result, greaterThan(-1));
       expect(role, greaterThan(result), reason: '本地 OC 排在角色库前面');
+    });
+
+    test('OC 占位符模式：本地与公共预匹配、工具结果都不向模型展开', () async {
+      final model = <String>[];
+      final mock = MockClient((req) async {
+        if (req.url.host == 'llm.test') {
+          model.add(req.body);
+          return modelSays(
+            model.length == 1
+                ? '```tool_call\n{"name": "search_character", "arguments": {"query": "深海"}}\n```'
+                : '```nai_draw\n{"positive": "__OC_深海__, sea", "characters": [{"name": "小小纺", "positive": "__OC_小小纺__, smiling"}]}\n```',
+          );
+        }
+        return switch (req.url.path) {
+          '/api/agent/tools' => json({'block': '[可用工具]'}),
+          '/api/agent/prequery' => json({
+            'block': '',
+            'this_turn': {
+              'oc': {'深海': 'blue eyes, shell crown'},
+            },
+          }),
+          '/api/agent/tools/call' => json({
+            'result': [
+              {'name': '深海', 'tags': 'blue eyes, shell crown', 'source': 'oc'},
+            ],
+          }),
+          _ => http.Response('{}', 404),
+        };
+      });
+      final events = await run(
+        mock,
+        scope: 'all',
+        userRequest: '画小小纺和深海',
+        ocPlaceholders: true,
+      );
+      expect(model.first, contains('小小纺 → __OC_小小纺__'));
+      expect(model.first, contains('深海 → __OC_深海__'));
+      expect(model.last, contains('"tags\\":\\"__OC_深海__'));
+      for (final request in model) {
+        expect(request, isNot(contains('twin braids')));
+        expect(request, isNot(contains('shell crown')));
+      }
+      final done = events.whereType<AgentDone>().single.result;
+      expect(done.positive, 'blue eyes, shell crown, sea');
+      expect(
+        done.characters.single.positive,
+        'silver hair, twin braids, smiling',
+      );
+      expect(done.resources['oc'], {
+        '小小纺': 'silver hair, twin braids',
+        '深海': 'blue eyes, shell crown',
+      });
     });
 
     test('「不使用」:连预匹配都不打', () async {
@@ -1745,6 +1849,19 @@ void main() {
       expect(d.autoImport, isFalse);
       // 公共库上万条画师串,默认并进去等于把预匹配的准头让出去
       expect(d.libraryScope, LibraryScope.local);
+      expect(d.ocPlaceholders, isFalse);
+      // 逐字显示不属于「放权」那一类:它不替用户决定任何事,默认开着
+      expect(d.stream, isTrue);
+    });
+
+    test('逐字显示:存得下,老存档缺这个字段按开算', () {
+      expect(
+        AssistantSettings.fromJson(
+          const AssistantSettings(stream: false).toJson(),
+        ).stream,
+        isFalse,
+      );
+      expect(AssistantSettings.fromJson(const {}).stream, isTrue);
     });
 
     test('存得下也读得回来', () {
@@ -1752,11 +1869,14 @@ void main() {
         autoGenerate: true,
         libraryScope: LibraryScope.all,
         thinkLevel: ThinkLevel.high,
+        ocPlaceholders: true,
       );
       final back = AssistantSettings.fromJson(s.toJson());
       expect(back.autoGenerate, isTrue);
       expect(back.libraryScope, LibraryScope.all);
       expect(back.thinkLevel, ThinkLevel.high);
+      expect(back.ocPlaceholders, isTrue);
+      expect(AssistantSettings.fromJson(const {}).ocPlaceholders, isFalse);
     });
 
     test('老存档没这个字段,回落本地库', () {
@@ -2192,14 +2312,22 @@ void main() {
       );
     });
 
-    test('上下文轮数:默认 20 与服务端一致,存得下读得回来,越界夹回范围', () {
+    test('上下文轮数:默认 20 与服务端一致,存得下读得回来,零头落到十轮一档,越界夹回范围', () {
       expect(const AssistantSettings().historyTurns, 20);
       expect(AssistantSettings.fromJson(const {}).historyTurns, 20);
       expect(
         AssistantSettings.fromJson(
-          const AssistantSettings(historyTurns: 35).toJson(),
+          const AssistantSettings(historyTurns: 130).toJson(),
         ).historyTurns,
-        35,
+        130,
+      );
+      expect(
+        AssistantSettings.fromJson(const {'historyTurns': 35}).historyTurns,
+        40,
+      );
+      expect(
+        AssistantSettings.fromJson(const {'historyTurns': 3}).historyTurns,
+        AssistantSettings.historyTurnsMin,
       );
       expect(
         AssistantSettings.fromJson(const {'historyTurns': 999}).historyTurns,

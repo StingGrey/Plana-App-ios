@@ -30,3 +30,27 @@ class ResultBadgeChip extends StatelessWidget {
     );
   }
 }
+
+/// 缩略图右上角「已存进相册」小圆标,胶片条与网格共用。底色与网格时刻角标同一层黑纱。
+class SavedMark extends StatelessWidget {
+  const SavedMark({super.key, this.size = 16});
+
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: Colors.black.withValues(alpha: .45),
+      ),
+      child: Icon(
+        Icons.download_done,
+        size: size * .7,
+        color: Colors.white.withValues(alpha: .92),
+      ),
+    );
+  }
+}

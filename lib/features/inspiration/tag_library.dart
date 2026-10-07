@@ -253,6 +253,8 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
         positive: publicEntry.positive,
         negative: publicEntry.negative,
         aliases: publicEntry.aliases,
+        models: publicEntry.models,
+        recipe: publicEntry.recipe,
         origin: TagOrigin.favorited,
         publicId: publicEntry.publicId,
         previews: publicEntry.previews,

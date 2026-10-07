@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -211,7 +212,7 @@ void main() {
         seed: 7,
         bytes: Uint8List.fromList(_png),
       );
-      stores.gallery.persistResult(result);
+      unawaited(stores.gallery.persistResult(result));
       await stores.gallery.idle;
 
       // Simulate the old release, whose local store owned a second copy.

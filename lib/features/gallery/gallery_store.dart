@@ -76,6 +76,7 @@ class GalleryStore {
               createdAt: (e['t'] as num?)?.toInt() ?? 0,
               // 老索引没这键 → -1(不是批次产物)
               batchIndex: (e['bi'] as num?)?.toInt() ?? -1,
+              saved: e['sv'] == true,
               hasInput: e['hasInput'] == true,
             ),
           );
@@ -210,17 +211,19 @@ class GalleryStore {
   /// 写入队列排空(存储管理在清空后等它,再做 GC/重扫)。
   Future<void> get idle => _chain;
 
-  void _enqueue(Future<void> Function() job) {
-    _chain = _chain.then((_) => job()).catchError((Object e) {
+  Future<void> _enqueue(Future<void> Function() job) {
+    final work = _chain.then((_) => job());
+    _chain = work.catchError((Object e) {
       logd('[gallery-store] 写入失败: $e');
     });
+    return work;
   }
 
   /// 新结果落盘:原图 + 缩略图 + 参数快照(有则)。
   /// 调用时机是 addResult 同帧,bytes/input 一定在内存里。
-  void persistResult(ResultImage r) {
+  Future<void> persistResult(ResultImage r) {
     final bytes = r.bytes;
-    if (bytes == null) return;
+    if (bytes == null) return Future.value();
     final input = r.input;
     // Keep a lightweight known-result entry immediately. This lets other
     // views discover a just-created result before its queued bytes finish
@@ -231,7 +234,7 @@ class GalleryStore {
         if (existing.id != r.id) existing,
     ]);
     _pendingImages[r.id] = bytes;
-    _enqueue(() async {
+    return _enqueue(() async {
       try {
         // 全部走原子写:半截 PNG 会变成永远打不开的坏图,半截快照 JSON 会让
         // 「重新生成」读不出参数(见 atomic_file.dart)
@@ -260,6 +263,7 @@ class GalleryStore {
   List<ResultImage>? _idxItems;
   String? _idxSelected;
   int _idxSeq = 0;
+  Future<void> _indexWrite = Future.value();
 
   void scheduleIndex({
     required List<ResultImage> results,
@@ -274,14 +278,14 @@ class GalleryStore {
   }
 
   /// 立即写索引(前后台切换时由 AppStores.flushNow 调用)。
-  void flushIndex() {
+  Future<void> flushIndex() {
     final items = _idxItems;
-    if (items == null) return;
+    if (items == null) return _indexWrite;
     _idxItems = null;
     _idxTimer?.cancel();
     final selected = _idxSelected;
     final seq = _idxSeq;
-    _enqueue(() async {
+    return _indexWrite = _enqueue(() async {
       // 索引是最不能半截的一个文件:坏了会让整库看起来是空的(见 S1C-01)
       await writeStringAtomic(
         _indexFile,
@@ -301,6 +305,7 @@ class GalleryStore {
                 // 批次内位置。只有批次产物才写,单张不占位 ——
                 // 这张索引每次出图都要整份重写,能省一个键是一个。
                 if (r.batchIndex >= 0) 'bi': r.batchIndex,
+                if (r.saved) 'sv': true,
                 'hasInput': r.hasInput,
               },
           ],
@@ -335,13 +340,13 @@ class GalleryStore {
   /// 清空图库文件(存储管理「清空图库」):删光原图/缩略图/快照,
   /// 写空索引但**保留发号器**(id 永不复用)。作废挂起的索引写,
   /// 串行队列保证在途的 persistResult 先完成再删。
-  void clearAllFiles({required int seq}) {
+  Future<void> clearAllFiles({required int seq}) {
     _idxItems = null;
     _idxTimer?.cancel();
     initialResults = const [];
     initialSelectedId = null;
     _pendingImages.clear();
-    _enqueue(() async {
+    return _indexWrite = _enqueue(() async {
       for (final d in [_imagesDir, _thumbsDir, _inputsDir]) {
         try {
           await for (final ent in d.list()) {
@@ -393,14 +398,23 @@ class GalleryStore {
 
   File get _searchFile => File('${_root.path}/search.json');
 
-  /// 检索索引读入;空/坏 → 空表(回填会重扫快照补齐)。
+  /// 检索索引的版本。取材口径一变就得抬 —— 旧版里的文本是按旧口径抽的,留着就是
+  /// 带着错答案不走;读到版本不对直接当空表,回填会按新口径把整库重扫一遍。
+  ///
+  ///   1 → 2:禁用的角色卡不再进索引(旧版把它们也收了,搜得到图里没画的东西,
+  ///          按角色分组也跟着归错)。
+  static const _searchVersion = 2;
+
+  /// 检索索引读入;空/坏/**版本不对** → 空表(回填会重扫快照补齐)。
   /// 值是结构化 record,与 gallery_search 的 GallerySearchMeta 结构同型
   /// (record 按结构判型,这里不 import 上层 feature 文件,避免环)。
   Future<Map<String, ({String model, String text})>> readSearchIndex() async {
     try {
       if (!await _searchFile.exists()) return const {};
       final j = jsonDecode(await _searchFile.readAsString());
-      if (j is! Map || j['items'] is! Map) return const {};
+      if (j is! Map || j['v'] != _searchVersion || j['items'] is! Map) {
+        return const {};
+      }
       return {
         for (final e in (j['items'] as Map).entries)
           if (e.key is String &&
@@ -431,7 +445,7 @@ class GalleryStore {
         await writeStringAtomic(
           _searchFile,
           jsonEncode({
-            'v': 1,
+            'v': _searchVersion,
             'items': {
               for (final e in m.entries)
                 e.key: {'m': e.value.model, 't': e.value.text},
@@ -470,7 +484,8 @@ class GalleryStore {
   }
 
   /// 参数快照(重新生成/重绘/导入用),blob 缺失字段按可用降级。
-  Future<GenerateState?> readInput(String id) async {
+  /// [presetFallback]:快照里没记提示词预设的老图用哪一档(见 [decodeGenerateState])。
+  Future<GenerateState?> readInput(String id, {String? presetFallback}) async {
     try {
       final f = _inputFile(id);
       if (!await f.exists()) return null;
@@ -479,6 +494,7 @@ class GalleryStore {
       return await decodeGenerateState(
         j['state'] as Map<String, dynamic>,
         _blobs,
+        presetFallback: presetFallback,
       );
     } catch (e) {
       logd('[gallery-store] 快照读取失败 $id: $e');

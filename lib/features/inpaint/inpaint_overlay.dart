@@ -9,11 +9,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/store/app_stores.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/ui/param_input.dart';
+import '../generate/canvas_state.dart';
 import '../generate/gen_modules.dart';
 import '../generate/generate_state.dart';
 import '../generate/models.dart';
 import '../generate/res_rules.dart' show kFreePixelThreshold;
 import '../generate/widgets/common.dart' show hintSnack;
+import '../gallery/albums/album_state.dart' show gallerySaveTargetProvider;
 import '../gallery/gallery_state.dart';
 import '../gallery/models.dart' show ResultBadge;
 import '../shell/shell_state.dart';
@@ -909,20 +911,25 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   ///
   /// 存完直接跳创作页:主生成按钮在那儿,留在图库等于让人自己去找。
   void _saveInto(InpaintJob job, {required int width, required int height}) {
-    final before = ref.read(generateProvider).params;
+    // 存入会顶掉图生图底图、改分辨率:提示条上给「撤销」,整份放回存入之前
+    final before = ref.read(generateProvider);
+    final canvasId = ref.read(canvasWorkspaceProvider).activeId;
+    final canvases = ref.read(canvasWorkspaceProvider.notifier);
     ref
         .read(generateProvider.notifier)
         .setInpaint(job, width: width, height: height);
     Haptics.medium();
     // 遮罩会改写生成分辨率(局部发裁切区、扩图发垫大后的画布),和图生图选底图
     // 一个道理 —— 变了就说一声,免得回到创作页看见分辨率莫名其妙换了。
-    if (before.width != width || before.height != height) {
-      hintSnack(
-        context,
-        '分辨率已按重绘范围调整为 $width×$height',
-        icon: Icons.aspect_ratio,
-      );
-    }
+    final resized =
+        before.params.width != width || before.params.height != height;
+    hintSnack(
+      context,
+      resized ? '分辨率已按重绘范围调整为 $width×$height' : '已存入重绘',
+      icon: resized ? Icons.aspect_ratio : Icons.brush,
+      actionLabel: '撤销',
+      onAction: () => canvases.undoWrite(before, canvasId),
+    );
     ref.read(shellIndexProvider.notifier).select(kTabCreate);
     _close();
   }
@@ -1110,6 +1117,11 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
       return;
     }
     setState(() => _firing = true);
+    // 存进哪本、还该不该抢选中,按点下去这一刻定(同放大):打码途中改了
+    // 保存相册或点了别的图,结果照原来的去处走,也不把人正看的图换掉。
+    final galleryTarget = ref.read(gallerySaveTargetProvider);
+    final gallery = ref.read(galleryProvider.notifier);
+    final galleryRevision = gallery.selectionRevision;
     try {
       final png = await censorPng(
         _currentBytes,
@@ -1130,22 +1142,30 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
           input =
               r.input ??
               (r.hasInput
-                  ? await ref.read(appStoresProvider).gallery.readInput(r.id)
+                  ? await ref
+                        .read(appStoresProvider)
+                        .gallery
+                        .readInput(
+                          r.id,
+                          presetFallback: ref
+                              .read(generateProvider)
+                              .promptPresetId,
+                        )
                   : null);
           break;
         }
       }
       if (!mounted) return;
-      ref
-          .read(galleryProvider.notifier)
-          .addResult(
-            bytes: png,
-            width: img.width,
-            height: img.height,
-            seed: seed,
-            badge: ResultBadge.censored,
-            input: input,
-          );
+      await gallery.addResultToGallery(
+        target: galleryTarget,
+        canSelect: () => gallery.selectionRevision == galleryRevision,
+        bytes: png,
+        width: img.width,
+        height: img.height,
+        seed: seed,
+        badge: ResultBadge.censored,
+        input: input,
+      );
       if (!mounted) return;
       hintSnack(context, '已打码并存入图库', icon: Icons.check_circle_outline);
       await _close();

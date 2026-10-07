@@ -56,14 +56,17 @@ class AnlasNotifier extends AsyncNotifier<NaiSubscription?> {
 
   /// 主动刷新(顶栏点按 / 生成后):**静默**拉新,成功才替换。
   /// 不置 loading——那会让所有消费端瞬间丢值:点数闪没、isOpus 丢失导致
-  /// 免费图的费用胶囊闪现 20 Anlas 再变回免费(真机反馈修复)。
+  /// 免费图的费用胶囊闪现 20 Anlas 再变回免费。
+  /// 例外是手里本来就没数:没有值可丢,置 loading 顶栏那格才转得起来。
   Future<void> refresh() async {
+    final blank = state.asData?.value == null && !state.isLoading;
     try {
       final mode = ref.read(authModeProvider).value;
       final NaiSubscription? next;
       if (mode == AuthMode.bot) {
         final base = await ref.read(backendBaseProvider.future);
         if (base.isEmpty) return;
+        if (blank) state = const AsyncLoading();
         final res = await ref.read(backendClientProvider).getAnlas();
         next = (
           anlas: res.anlas,
@@ -76,12 +79,17 @@ class AnlasNotifier extends AsyncNotifier<NaiSubscription?> {
       } else {
         final key = await ref.read(primaryNaiKeyProvider.future);
         if (key == null || key.token.isEmpty) return;
+        if (blank) state = const AsyncLoading();
         next = await ref
             .read(naiClientProvider(key.endpoint))
             .subscription(key.token);
       }
       state = AsyncData(next);
-    } catch (_) {} // 拉失败保留旧值(旧行为会把显示清掉,更糟)
+    } catch (_) {
+      // 拉失败保留旧值(旧行为会把显示清掉,更糟);本来就没数的退回「没数」,
+      // 不然顶栏那格会一直转下去。
+      if (blank) state = const AsyncData(null);
+    }
   }
 }
 

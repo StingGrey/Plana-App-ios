@@ -1,10 +1,14 @@
 import 'dart:typed_data';
+import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/store/app_stores.dart';
 import '../../core/store/storage_settings.dart';
 import '../generate/models.dart' show GenerateState;
+import '../generate/generation_controller.dart' show genNoticeProvider;
+import 'albums/album_models.dart';
+import 'albums/album_state.dart';
 import 'gallery_search.dart';
 import 'models.dart';
 
@@ -36,12 +40,34 @@ final galleryZoomedProvider = NotifierProvider<GalleryZoomedNotifier, bool>(
 // 画布跟随哪条任务已经由 GenPool.selectedId 说了算,一个布尔值表达不了
 // 「跟着第几条」,两份状态并存只会打架。
 
+/// 入库的参数快照:**只留启用的角色卡**。
+///
+/// 快照记的是「这张图是怎么出来的」,而禁用的卡根本没发出去(见 nai_request 的
+/// `c.enabled` 过滤)。留着它们只有坏处:检索索引会把它们的标签当成这张图的,
+/// 搜得到没画的东西,按角色分组还会归进没画的角色 —— 切模型时超出槽位的卡会被
+/// 自动停用(见 generate_state 的 `_capEnabled`),所以这不是偶发。
+///
+/// 丢掉也不损失什么,快照的用处逐个核过:重新生成 / 重绘放大是直接拿快照出图
+/// (本来就只发启用的);放大 / 重绘只是把快照带给新图;长按「导入」读的是 PNG
+/// 里嵌的元数据,不读快照。
+///
+/// 升级前的老快照盘上还带着禁用卡,检索那边按 `enabled` 再筛一道兜住。
+GenerateState gallerySnapshotOf(GenerateState s) =>
+    s.characters.every((c) => c.enabled)
+    ? s
+    : s.copyWith(
+        characters: [
+          for (final c in s.characters)
+            if (c.enabled) c,
+        ],
+      );
+
 class GalleryZoomedNotifier extends Notifier<bool> {
   @override
   bool build() => false;
 
   void set(bool v) {
-    if (state != v) state = v;
+    if (ref.mounted && state != v) state = v;
   }
 }
 
@@ -61,15 +87,21 @@ class GalleryState {
     return results.isEmpty ? null : results.first;
   }
 
-  GalleryState copyWith({List<ResultImage>? results, String? selectedId}) =>
-      GalleryState(
-        results: results ?? this.results,
-        selectedId: selectedId ?? this.selectedId,
-      );
+  GalleryState copyWith({
+    List<ResultImage>? results,
+    String? selectedId,
+    bool clearSelection = false,
+  }) => GalleryState(
+    results: results ?? this.results,
+    selectedId: clearSelection ? null : selectedId ?? this.selectedId,
+  );
 }
 
 class GalleryNotifier extends Notifier<GalleryState> {
   int _seq = 0;
+  int _selectionRevision = 0;
+  int get selectionRevision => _selectionRevision;
+  final _writes = <String, Future<void>>{};
 
   /// 最近这么多张保留内存字节;更旧的卸掉(盘上有,再看懒读),
   /// 挂机循环几百张不再无限吃 RAM。
@@ -104,6 +136,7 @@ class GalleryNotifier extends Notifier<GalleryState> {
     final dropIds = [for (final r in drop) r.id];
     ref.read(appStoresProvider).gallery.deleteResultFiles(dropIds);
     ref.read(gallerySearchProvider.notifier).removeAll(dropIds);
+    _removeMemberships(dropIds);
     _persistIndex();
   }
 
@@ -118,9 +151,11 @@ class GalleryNotifier extends Notifier<GalleryState> {
         );
   }
 
-  void select(String id) {
+  void select(String? id) {
+    _selectionRevision++;
+    ref.read(galleryResultPreviewProvider.notifier).clear();
     if (id == state.selectedId) return;
-    state = state.copyWith(selectedId: id);
+    state = state.copyWith(selectedId: id, clearSelection: id == null);
     _persistIndex();
   }
 
@@ -144,6 +179,7 @@ class GalleryNotifier extends Notifier<GalleryState> {
     /// 后台某一条出完就把用户正看的图换掉,是并行最容易踩的坑。
     bool select = true,
   }) {
+    final snap = input == null ? null : gallerySnapshotOf(input);
     final r = ResultImage(
       id: 'gen${_seq++}',
       width: width,
@@ -154,11 +190,11 @@ class GalleryNotifier extends Notifier<GalleryState> {
       batchIndex: batchIndex,
       inpaintFrom: inpaintFrom,
       bytes: bytes,
-      input: input,
+      input: snap,
     );
     // 检索索引同帧写入(input 在内存,零 IO)
-    if (input != null) {
-      ref.read(gallerySearchProvider.notifier).put(r.id, input);
+    if (snap != null) {
+      ref.read(gallerySearchProvider.notifier).put(r.id, snap);
     }
     var list = [r, ...state.results];
     if (list.length > _keepBytesFor) {
@@ -170,7 +206,16 @@ class GalleryNotifier extends Notifier<GalleryState> {
     // Queue ownership before publishing the state. Listeners such as the
     // local catalog can then wait on this store's queue instead of racing a
     // result/snapshot write that has not been enqueued yet.
-    ref.read(appStoresProvider).gallery.persistResult(r);
+    // addResult 仍供旧调用方同步使用;错误由异步入库接口报告,这里把这次写
+    // 挂进 _writes,addResultToGallery 才能 await 它。
+    final write = ref.read(appStoresProvider).gallery.persistResult(r);
+    _writes[r.id] = write;
+    unawaited(
+      write.then(
+        (_) => _writes.remove(r.id),
+        onError: (Object _, StackTrace _) {},
+      ),
+    );
     state = state.copyWith(
       results: list,
       selectedId: select ? r.id : state.selectedId,
@@ -182,8 +227,101 @@ class GalleryNotifier extends Notifier<GalleryState> {
     return r;
   }
 
-  /// 批量删除(展开网格多选):状态移除 + 盘上文件一并删。
-  /// 选中项被删时回退到剩余的最新一张。
+  /// 所有生成/处理产物经此提交：先保存原图，再提交归属，最后按视角选中。
+  Future<ResultImage> addResultToGallery({
+    required Uint8List bytes,
+    required int width,
+    required int height,
+    required int seed,
+    required GallerySaveTarget target,
+    ResultBadge badge = ResultBadge.none,
+    GenerateState? input,
+    String? inpaintFrom,
+    int batchIndex = -1,
+    bool select = true,
+    bool Function()? canSelect,
+    bool notify = true,
+  }) async {
+    final revision = _selectionRevision;
+    final r = addResult(
+      bytes: bytes,
+      width: width,
+      height: height,
+      seed: seed,
+      badge: badge,
+      input: input,
+      inpaintFrom: inpaintFrom,
+      batchIndex: batchIndex,
+      select: false,
+    );
+    final store = ref.read(appStoresProvider).gallery;
+    try {
+      await _writes[r.id];
+      await store.flushIndex();
+    } catch (_) {
+      unawaited(_writes.remove(r.id)?.catchError((Object _) {}));
+      rethrow;
+    }
+    if (!ref.mounted || !state.results.any((e) => e.id == r.id)) return r;
+    var actual = target;
+    if (target.albumId != null) {
+      try {
+        await ref
+            .read(albumsProvider.notifier)
+            .organize({r.id}, {target.albumId!});
+      } catch (_) {
+        actual = const GallerySaveTarget.all();
+        ref.read(genNoticeProvider.notifier).show('图片已保存在全部作品，目标图库不可用或归类失败');
+      }
+    }
+    if (!ref.mounted || !state.results.any((e) => e.id == r.id)) return r;
+    final inScope = ref
+        .read(albumsProvider)
+        .contains(ref.read(galleryBrowseAlbumProvider), r.id);
+    if (select &&
+        revision == _selectionRevision &&
+        (canSelect?.call() ?? true)) {
+      if (inScope) {
+        this.select(r.id);
+      } else {
+        ref.read(galleryResultPreviewProvider.notifier).show(r.id, actual);
+      }
+    } else if (notify && !inScope) {
+      ref.read(gallerySavedNoticeProvider.notifier).show(r.id, actual);
+    }
+    return r;
+  }
+
+  /// 存进手机相册成功后打标(缩略图角标 / 画布保存键据此显示已保存)。
+  void markSaved(Iterable<String> ids) {
+    final hit = ids.toSet();
+    if (!state.results.any((r) => hit.contains(r.id) && !r.saved)) return;
+    state = state.copyWith(
+      results: [
+        for (final r in state.results) hit.contains(r.id) ? r.asSaved() : r,
+      ],
+    );
+    _persistIndex();
+  }
+
+  void _removeMemberships(List<String> ids) {
+    unawaited(
+      ref.read(albumsProvider.notifier).removeImages(ids.toSet()).catchError((
+        Object _,
+      ) {
+        if (ref.mounted) {
+          ref.read(genNoticeProvider.notifier).show('图片已删除，图库归属清理失败');
+        }
+      }),
+    );
+    final preview = ref.read(galleryResultPreviewProvider);
+    if (preview != null && ids.contains(preview.imageId)) {
+      ref.read(galleryResultPreviewProvider.notifier).clear();
+    }
+  }
+
+  /// 删除单张或多张图片:状态移除 + 盘上文件一并删。
+  /// 删除当前图片时，沿当前图库顺序选下一张；没有下一张则选上一张。
   void deleteResults(List<String> ids) {
     if (ids.isEmpty) return;
     final drop = ids.toSet();
@@ -192,19 +330,53 @@ class GalleryNotifier extends Notifier<GalleryState> {
         if (!drop.contains(r.id)) r,
     ];
     if (keep.length == state.results.length) return;
-    final sel = keep.any((r) => r.id == state.selectedId)
+    // 不读取依赖本 provider 的 galleryViewProvider，避免循环依赖。
+    final scope = ref.read(galleryBrowseAlbumProvider);
+    final albums = ref.read(albumsProvider);
+    final visible = state.results
+        .where((r) => albums.contains(scope, r.id))
+        .toList();
+    final current = visible.any((r) => r.id == state.selectedId)
         ? state.selectedId
-        : (keep.isEmpty ? null : keep.first.id);
+        : visible.firstOrNull?.id;
+    var sel = state.selectedId;
+    if (drop.contains(current) || drop.contains(sel)) {
+      // 使用删除前的浏览集合，避免跨到其他图库或因索引平移跳回第一张。
+      final at = visible.indexWhere((r) => r.id == current);
+      sel = null;
+      for (var i = at; i >= 0 && i < visible.length; i++) {
+        if (!drop.contains(visible[i].id)) {
+          sel = visible[i].id;
+          break;
+        }
+      }
+      if (sel == null) {
+        for (var i = at - 1; i >= 0; i--) {
+          if (!drop.contains(visible[i].id)) {
+            sel = visible[i].id;
+            break;
+          }
+        }
+      }
+      // 删除产生的新选择也优先于仍在异步入库的结果。
+      _selectionRevision++;
+    }
     state = GalleryState(results: keep, selectedId: sel);
     ref.read(appStoresProvider).gallery.deleteResultFiles(ids);
     ref.read(gallerySearchProvider.notifier).removeAll(ids);
+    _removeMemberships(ids);
     _persistIndex();
   }
 
   /// 清空图库(存储管理):内存态与盘上文件一并清,发号器保留不复用。
-  void clearAll() {
+  Future<void> clearAll() async {
+    final store = ref.read(appStoresProvider).gallery;
+    final albums = ref.read(albumsProvider.notifier);
+    _selectionRevision++;
     state = const GalleryState(results: [], selectedId: null);
-    ref.read(appStoresProvider).gallery.clearAllFiles(seq: _seq);
+    final clearFiles = store.clearAllFiles(seq: _seq);
     ref.read(gallerySearchProvider.notifier).clear();
+    await albums.clearAll();
+    await clearFiles;
   }
 }

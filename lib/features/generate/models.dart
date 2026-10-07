@@ -30,12 +30,17 @@ class CharacterPrompt {
     this.enabled = true,
     this.position, // 'A1'..'E5';null = AUTO
     this.activeTab = CharTab.positive,
+    this.avatar,
   });
 
   final String id;
   final String name;
   final String positive;
   final String negative;
+
+  /// 头像:从灵感角色库选来时带上的预览图(http URL 或本机文件路径)。
+  /// 只在角色卡上显示,不进载荷;null = 没有(手写 / AI 写的 / 导入的角色)。
+  final String? avatar;
 
   /// 编辑器原文草稿(含禁用 `~tag~` / 折叠 `<#名字: …>` 等仅编辑期语法),
   /// 空 = 与定稿无差别,不必单独存。有效性由读取侧判定,见 [pickEditorText]。
@@ -55,6 +60,7 @@ class CharacterPrompt {
     bool? enabled,
     Object? position = _unset,
     CharTab? activeTab,
+    Object? avatar = _unset,
   }) {
     return CharacterPrompt(
       id: id,
@@ -66,8 +72,75 @@ class CharacterPrompt {
       enabled: enabled ?? this.enabled,
       position: position == _unset ? this.position : position as String?,
       activeTab: activeTab ?? this.activeTab,
+      avatar: avatar == _unset ? this.avatar : avatar as String?,
     );
   }
+}
+
+/// 主体那一行在分区列表里的 id。主体的词不存在分区里,就是 [GenerateState.prompt]
+/// 本身;列表里这一项只记它的名字和排在第几行。
+const kMainSectionId = 'main';
+
+/// 主提示词的一个分区(画风 / 场景 / 镜头…)。纯界面层的分类:载荷里没有分区,
+/// 出图前按行序和主体拼成一整串(见 prompt_sections.dart 的 composeSections)。
+///
+/// 和角色一样各有正负两面、开关和编辑器草稿,只是没有站位。
+class PromptSection {
+  const PromptSection({
+    required this.id,
+    required this.name,
+    this.positive = '',
+    this.negative = '',
+    this.positiveRaw = '',
+    this.negativeRaw = '',
+    this.enabled = true,
+    this.artist = false,
+  });
+
+  /// 主体那一行(见 [kMainSectionId])。
+  const PromptSection.main({this.name = '主体'})
+    : id = kMainSectionId,
+      positive = '',
+      negative = '',
+      positiveRaw = '',
+      negativeRaw = '',
+      enabled = true,
+      artist = false;
+
+  final String id;
+  final String name;
+  final String positive;
+  final String negative;
+
+  /// 编辑器原文草稿,同 [CharacterPrompt.positiveRaw]。
+  final String positiveRaw;
+  final String negativeRaw;
+
+  final bool enabled;
+
+  /// 从灵感库「画风」类加进来的一格(画师串词典里收的也算)。名字清空时回到
+  /// 「画风」而不是「分区 N」。
+  final bool artist;
+
+  bool get isMain => id == kMainSectionId;
+
+  PromptSection copyWith({
+    String? name,
+    String? positive,
+    String? negative,
+    String? positiveRaw,
+    String? negativeRaw,
+    bool? enabled,
+  }) => PromptSection(
+    id: id,
+    name: name ?? this.name,
+    positive: positive ?? this.positive,
+    negative: negative ?? this.negative,
+    positiveRaw: positiveRaw ?? this.positiveRaw,
+    negativeRaw: negativeRaw ?? this.negativeRaw,
+    enabled: enabled ?? this.enabled,
+    artist: artist,
+  );
 }
 
 class VibeItem {
@@ -205,6 +278,22 @@ class InpaintJob {
   /// 蒙版记忆因此不再需要图库那套按图存盘的实现 —— 遮罩跟着创作页状态走,
   /// 工作区一起持久化,重启也在。
   final Uint8List? grid;
+
+  /// 发送尺寸(宽, 高):遮罩与底图同尺寸,读遮罩的 PNG 头即得。重绘只能按这个
+  /// 尺寸发 —— 声明的宽高和图对不上,服务端拒单,贴回也对不上框。读不出 null。
+  (int, int)? get sendSize => _pngSizeOf(mask);
+}
+
+/// 只读 PNG 头拿宽高(IHDR 在 offset 16 / 20),不解码整图;不是 PNG 给 null。
+(int, int)? _pngSizeOf(Uint8List b) {
+  const sig = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+  if (b.length < 24) return null;
+  for (var i = 0; i < sig.length; i++) {
+    if (b[i] != sig[i]) return null;
+  }
+  final d = ByteData.sublistView(b);
+  final w = d.getUint32(16), h = d.getUint32(20);
+  return w > 0 && h > 0 ? (w, h) : null;
 }
 
 /// 局部重绘贴回:结果(发送框尺寸)中 tight 区域贴回原图对应位置。
@@ -1105,12 +1194,16 @@ enum Panel {
   kreaPrompt,
 }
 
+/// 没选过预设时用的那一档:新用户的第一张画布、存档里没记的,同 web 默认档。
+const kDefaultPromptPresetId = 'heavy';
+
 class GenerateState {
   const GenerateState({
     required this.prompt,
     required this.negativePrompt,
     this.promptRaw = '',
     this.negativePromptRaw = '',
+    this.sections = const [],
     required this.characters,
     required this.vibes,
     required this.charRefs,
@@ -1119,9 +1212,11 @@ class GenerateState {
     required this.anlas,
     required this.openPanels,
     this.loras = const [],
+    this.loraMem = const {},
     this.kreaStyleRefs = const [],
     this.kreaStyleRefWeight = 1.0,
     this.inpaint,
+    this.promptPresetId = kDefaultPromptPresetId,
   });
 
   factory GenerateState.initial() => const GenerateState(
@@ -1139,11 +1234,20 @@ class GenerateState {
   final String prompt;
   final String negativePrompt;
 
+  /// 当前画布用的提示词预设。每张画布各存一份,换预设只改这一张;记的档
+  /// 后来被删了,用的时候按「无」算(见 [selectedPromptPresetId])。
+  final String promptPresetId;
+
   /// 编辑器原文草稿(含禁用/折叠等仅编辑期语法),空 = 与定稿无差别。
   /// [prompt] 恒为定稿:发给 NAI 的、算 token 的、拼预设的都只看它,
   /// 草稿不参与生成链路的任何一环。有效性判定见 [pickEditorText]。
   final String promptRaw;
   final String negativePromptRaw;
+
+  /// 主提示词的分区,按卡上的行序;空 = 没分区(卡片是原来的样子)。
+  /// 非空时恰有一项是主体([PromptSection.isMain]),它的词就是 [prompt]。
+  /// 只活在创作页:生成快照里已拼进 [prompt](见 composeSections)。
+  final List<PromptSection> sections;
 
   final List<CharacterPrompt> characters;
   final List<VibeItem> vibes;
@@ -1154,8 +1258,13 @@ class GenerateState {
   final Set<Panel> openPanels;
 
   /// 挂载的 LoRA(anima / krea 共用一份;NAI 模型生成时由模块剥离层清掉)。
-  /// 两边的库互不通用,切换父类时由 [GenerateNotifier.setModel] 清空。
+  /// 两边的库互不通用,换底模时收进 [loraMem]、换上另一边上次挂的
+  /// (见 [withLoraBaseOf])。
   final List<ActiveLora> loras;
+
+  /// 不在用的那个底模上次挂的 LoRA(`anima` / `krea` → 列表)。模型跟画布走之后,
+  /// 在 Anima 画布和 Krea 画布之间来回切,各自挂的不能被清掉。
+  final Map<String, List<ActiveLora>> loraMem;
 
   /// Krea 风格参考图(krea 专属;其它父类生成时由剥离层清掉)。
   final List<KreaStyleRefItem> kreaStyleRefs;
@@ -1185,11 +1294,26 @@ class GenerateState {
       if (r.enabled && r.image != null) r,
   ].take(kMaxKreaStyleRefs).toList();
 
+  /// 要换到 [model] 时按 LoRA 底模换挂载列表:当前挂的收进 [loraMem],换上新底模
+  /// 上次挂的。底模没变原样返回。切模型、切画布都走这里,来回切不丢。
+  ///
+  /// 不能留着旧底模的:上一个库的 LR 编号在新库里查无此条,发出去服务端静默丢弃,
+  /// 等于白跑一次生成。
+  GenerateState withLoraBaseOf(String model) {
+    final from = loraBaseOf(params.model);
+    final to = loraBaseOf(model);
+    if (from == to) return this;
+    final mem = {...loraMem}..remove(to);
+    if (loras.isNotEmpty) mem[from] = loras;
+    return copyWith(loras: loraMem[to] ?? const [], loraMem: mem);
+  }
+
   GenerateState copyWith({
     String? prompt,
     String? negativePrompt,
     String? promptRaw,
     String? negativePromptRaw,
+    List<PromptSection>? sections,
     List<CharacterPrompt>? characters,
     List<VibeItem>? vibes,
     List<CharRefItem>? charRefs,
@@ -1198,15 +1322,18 @@ class GenerateState {
     int? anlas,
     Set<Panel>? openPanels,
     List<ActiveLora>? loras,
+    Map<String, List<ActiveLora>>? loraMem,
     List<KreaStyleRefItem>? kreaStyleRefs,
     double? kreaStyleRefWeight,
     Object? inpaint = _unset,
+    String? promptPresetId,
   }) {
     return GenerateState(
       prompt: prompt ?? this.prompt,
       negativePrompt: negativePrompt ?? this.negativePrompt,
       promptRaw: promptRaw ?? this.promptRaw,
       negativePromptRaw: negativePromptRaw ?? this.negativePromptRaw,
+      sections: sections ?? this.sections,
       characters: characters ?? this.characters,
       vibes: vibes ?? this.vibes,
       charRefs: charRefs ?? this.charRefs,
@@ -1215,9 +1342,11 @@ class GenerateState {
       anlas: anlas ?? this.anlas,
       openPanels: openPanels ?? this.openPanels,
       loras: loras ?? this.loras,
+      loraMem: loraMem ?? this.loraMem,
       kreaStyleRefs: kreaStyleRefs ?? this.kreaStyleRefs,
       kreaStyleRefWeight: kreaStyleRefWeight ?? this.kreaStyleRefWeight,
       inpaint: inpaint == _unset ? this.inpaint : inpaint as InpaintJob?,
+      promptPresetId: promptPresetId ?? this.promptPresetId,
     );
   }
 }

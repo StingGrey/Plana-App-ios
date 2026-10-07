@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../../core/util/haptics.dart';
 import '../generate_state.dart';
 import '../models.dart';
 import '../res_rules.dart';
@@ -15,6 +16,14 @@ final double _axisMax = kMaxDim.toDouble();
 // 可视化配色(在浅色画布上可读,语义同 web:绿=免费线,红=上限线)。
 const _vizFree = FixedSemantic.ok;
 const _vizOver = FixedSemantic.danger;
+
+// 可吸附的两条等像素线:免费线 / 上限线。
+const _pixelLines = [kFreePixelThreshold, kMaxTotalPixels];
+
+// 吸附圈(画布 dp):离线 8 以内吸上,拉出 12 才松开 —— 滞回,
+// 免得手指停在圈边时来回跳、连着振。
+const _snapInDp = 8.0;
+const _snapOutDp = 12.0;
 
 /// 分辨率 Sheet:预设三档(小图免费/大图/壁纸)+ 自定义档(拖拽画布)
 /// + 统一档位状态条(MP·比例·免费/付费/超限)+ 确认生效。数值/交互对齐 web 桌面端。
@@ -88,14 +97,14 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
         children: [
           Row(
             children: [
-              Expanded(
-                child: Text(
-                  '分辨率',
-                  style: context.texts.titleMedium!.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
+              Text(
+                '分辨率',
+                style: context.texts.titleMedium!.copyWith(
+                  fontWeight: FontWeight.w700,
                 ),
               ),
+              const HelpDot(Help.resolution, size: 30, iconSize: 18),
+              const Spacer(),
               IconButton(
                 onPressed: () => Navigator.pop(context),
                 icon: const Icon(Icons.close, size: 20),
@@ -151,12 +160,7 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
           ),
           const SizedBox(height: 12),
           _StatusStrip(width: _effW, height: _effH),
-          const SizedBox(height: 10),
-          const InfoNote(
-            '免费档(≤1.05MP)· Opus ≤28 步单张免费;更大按张扣 Anlas',
-            icon: Icons.info_outline,
-          ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 16),
           FilledButton(
             onPressed: over
                 ? null
@@ -181,7 +185,7 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
   }
 }
 
-/// 档位状态条:MP · 比例 + 免费/付费/超限徽章(与 web classifyPixelStatus 同义)。
+/// 档位状态条:MP · 比例 + 免费/消耗点数/超出上限徽章(与 web classifyPixelStatus 同义)。
 class _StatusStrip extends StatelessWidget {
   const _StatusStrip({required this.width, required this.height});
 
@@ -194,8 +198,8 @@ class _StatusStrip extends StatelessWidget {
     final tier = classifyPixels(width, height);
     final (label, color) = switch (tier) {
       PixelTier.free => ('免费', scheme.tertiary),
-      PixelTier.paid => ('付费', scheme.primary),
-      PixelTier.over => ('超限', scheme.error),
+      PixelTier.paid => ('消耗点数', scheme.primary),
+      PixelTier.over => ('超出上限', scheme.error),
     };
     return Row(
       children: [
@@ -238,8 +242,9 @@ class _StatusStrip extends StatelessWidget {
 }
 
 /// 自定义档:拖拽画布(左上锚定,右下角把手定 W/H)+ 读数/交换 + 缩到免费/上限。
-/// 触屏在画布任意处按下/拖动即把右下角吸到手指,较桌面「抓把手」更顺。
-class _CanvasEditor extends StatelessWidget {
+/// 触屏在画布任意处按下/拖动即把右下角吸到手指,较桌面「抓把手」更顺;
+/// 拖到免费线/上限线附近自动吸到线内侧那格。读数框点开可手输。
+class _CanvasEditor extends StatefulWidget {
   const _CanvasEditor({
     required this.width,
     required this.height,
@@ -250,17 +255,63 @@ class _CanvasEditor extends StatelessWidget {
   final int height;
   final void Function(int w, int h) onChanged;
 
+  @override
+  State<_CanvasEditor> createState() => _CanvasEditorState();
+}
+
+class _CanvasEditorState extends State<_CanvasEditor> {
+  /// 本次拖拽吸住的线(像素预算),null = 没吸。只管手势判定,不进 build。
+  int? _stuck;
+
   void _fromLocal(Offset local, double side) {
-    final fx = (local.dx / side).clamp(0.0, 1.0);
-    final fy = (local.dy / side).clamp(0.0, 1.0);
-    final w = snapDim((fx * _axisMax).round());
-    final h = snapDim((fy * _axisMax).round());
-    onChanged(w, h);
+    final x = (local.dx / side).clamp(0.0, 1.0) * _axisMax;
+    final y = (local.dy / side).clamp(0.0, 1.0) * _axisMax;
+    final dpPerPx = side / _axisMax;
+    int? line;
+    var nearest = double.infinity;
+    for (final budget in _pixelLines) {
+      final d = distanceToPixelLine(x, y, budget) * dpPerPx;
+      final reach = budget == _stuck ? _snapOutDp : _snapInDp;
+      if (d <= reach && d < nearest) {
+        line = budget;
+        nearest = d;
+      }
+    }
+    if (line != null && line != _stuck) Haptics.selection();
+    _stuck = line;
+    if (line != null) {
+      final r = snapToPixelLine(x, y, line);
+      widget.onChanged(r.w, r.h);
+    } else {
+      widget.onChanged(snapDim(x.round()), snapDim(y.round()));
+    }
+  }
+
+  /// 读数框手输:走通用手输弹窗,步长 64、范围同画布。
+  Future<void> _input({required bool isWidth}) async {
+    final v = await showParamInput(
+      context,
+      title: isWidth ? '宽度' : '高度',
+      value: (isWidth ? widget.width : widget.height).toDouble(),
+      min: kMinDim.toDouble(),
+      max: kMaxDim.toDouble(),
+      divisions: (kMaxDim - kMinDim) ~/ kResSnapStep,
+    );
+    if (v == null || !mounted) return;
+    final n = v.round();
+    if (isWidth) {
+      widget.onChanged(n, widget.height);
+    } else {
+      widget.onChanged(widget.width, n);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
+    final width = widget.width;
+    final height = widget.height;
+    final onChanged = widget.onChanged;
     final tier = classifyPixels(width, height);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -279,6 +330,8 @@ class _CanvasEditor extends StatelessWidget {
                   behavior: HitTestBehavior.opaque,
                   onPanDown: (d) => _fromLocal(d.localPosition, side),
                   onPanUpdate: (d) => _fromLocal(d.localPosition, side),
+                  onPanEnd: (_) => _stuck = null,
+                  onPanCancel: () => _stuck = null,
                   child: CustomPaint(
                     painter: _ResCanvasPainter(
                       width: width,
@@ -292,8 +345,9 @@ class _CanvasEditor extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 10),
-        // 读数 + 动作:交换钮挪到长宽之间(替代 ×)省出横向空间;动作组用 Wrap,
-        // 数值很大又同时出两个 chip 时整组自动换行,不再把「缩到免费」挤出界。
+        // 读数 + 动作:交换钮夹在长宽之间(替代 ×)。动作按档位只出一个:
+        // 消耗点数 → 缩到免费,超出上限 → 缩到上限。Wrap 兜底:字号调大时整组换行,
+        // 不会把 chip 挤出界。
         Wrap(
           alignment: WrapAlignment.spaceBetween,
           crossAxisAlignment: WrapCrossAlignment.center,
@@ -303,47 +357,36 @@ class _CanvasEditor extends StatelessWidget {
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  '$width',
-                  style: mono(
-                    context,
-                    size: 16,
-                  ).copyWith(fontWeight: FontWeight.w700),
+                ParamValueBox(
+                  text: '$width',
+                  onTap: () => _input(isWidth: true),
                 ),
                 const SizedBox(width: 6),
                 _SwapBtn(onTap: () => onChanged(height, width)),
                 const SizedBox(width: 6),
-                Text(
-                  '$height',
-                  style: mono(
-                    context,
-                    size: 16,
-                  ).copyWith(fontWeight: FontWeight.w700),
+                ParamValueBox(
+                  text: '$height',
+                  onTap: () => _input(isWidth: false),
                 ),
               ],
             ),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (tier == PixelTier.over) ...[
-                  _QuickChip(
-                    '缩到上限',
-                    onTap: () {
-                      final r = clampToMaxPixels(width, height);
-                      onChanged(r.w, r.h);
-                    },
-                  ),
-                  const SizedBox(width: 8),
-                ],
-                if (tier != PixelTier.free)
-                  _QuickChip(
-                    '缩到免费',
-                    onTap: () {
-                      final r = scaleToFree(width, height);
-                      onChanged(r.w, r.h);
-                    },
-                  ),
-              ],
+            // 免费档淡出但照常占位:chip 比读数行高一点,按需插拔会把整个面板
+            // 顶高/缩回;常驻占位则三档布局完全一致。
+            AnimatedOpacity(
+              duration: Motion.fast,
+              opacity: tier == PixelTier.free ? 0 : 1,
+              child: IgnorePointer(
+                ignoring: tier == PixelTier.free,
+                child: _QuickChip(
+                  tier == PixelTier.over ? '缩到上限' : '缩到免费',
+                  onTap: () {
+                    final r = tier == PixelTier.over
+                        ? clampToMaxPixels(width, height)
+                        : scaleToFree(width, height);
+                    onChanged(r.w, r.h);
+                  },
+                ),
+              ),
             ),
           ],
         ),
@@ -392,7 +435,7 @@ class _ResCanvasPainter extends CustomPainter {
       canvas.drawLine(Offset(0, c), Offset(s, c), grid);
     }
 
-    // 等像素双曲线:免费线(绿)/上限线(红)
+    // 等像素双曲线:免费线(绿)/上限线(红);右下角贴在哪条上,哪条描实
     _hyperbola(canvas, s, kFreePixelThreshold, _vizFree, 3, 3);
     _hyperbola(canvas, s, kMaxTotalPixels, _vizOver, 4, 3);
 
@@ -470,11 +513,12 @@ class _ResCanvasPainter extends CustomPainter {
       }
     }
     if (!started) return;
+    final hit = isOnPixelLine(width, height, pixels);
     final paint = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1
-      ..color = color.withValues(alpha: .5);
-    canvas.drawPath(_dash(path, on, off), paint);
+      ..strokeWidth = hit ? 1.6 : 1
+      ..color = color.withValues(alpha: hit ? .9 : .5);
+    canvas.drawPath(hit ? path : _dash(path, on, off), paint);
   }
 
   Path _dash(Path src, double on, double off) {

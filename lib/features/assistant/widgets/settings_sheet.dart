@@ -14,7 +14,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/ui/setting_row.dart';
 import '../../generate/widgets/common.dart' show dropFocusSoon, hintSnack;
-import '../agent_model.dart' show assistantBotAuthorizedProvider;
+import '../agent_model.dart'
+    show assistantBotAuthorizedProvider, assistantEndpointProvider;
 import '../assistant_settings.dart';
 import '../assistant_state.dart';
 import '../preset_rules.dart';
@@ -42,6 +43,7 @@ class _SettingsSheet extends ConsumerWidget {
     final s = ref.watch(assistantSettingsProvider).value;
     final n = ref.read(assistantSettingsProvider.notifier);
     final authorized = ref.watch(assistantBotAuthorizedProvider);
+    final customEndpoint = ref.watch(assistantEndpointProvider) != null;
     return SettingSheet(
       title: '助手设置',
       children: [
@@ -62,6 +64,13 @@ class _SettingsSheet extends ConsumerWidget {
             step: AssistantSettings.fontSizeStep,
             format: (v) => v.toStringAsFixed(0),
             onChanged: (v) => n.patch((o) => o.copyWith(fontSize: v)),
+          ),
+          SettingRow(
+            icon: Icons.keyboard_outlined,
+            title: '流式输出',
+            desc: '逐字显示回复',
+            value: s.stream,
+            onChanged: (v) => n.patch((o) => o.copyWith(stream: v)),
           ),
           settingSection(context, '出图'),
           SettingRow(
@@ -104,7 +113,7 @@ class _SettingsSheet extends ConsumerWidget {
             value: s.historyTurns.toDouble(),
             min: AssistantSettings.historyTurnsMin.toDouble(),
             max: AssistantSettings.historyTurnsMax.toDouble(),
-            step: 1,
+            step: AssistantSettings.historyTurnsStep.toDouble(),
             format: (v) => v.toStringAsFixed(0),
             onChanged: (v) =>
                 n.patch((o) => o.copyWith(historyTurns: v.round())),
@@ -126,6 +135,16 @@ class _SettingsSheet extends ConsumerWidget {
                 ? libraryScopeDesc(o)
                 : '需要 Bot 授权',
             onChanged: (v) => n.patch((o) => o.copyWith(libraryScope: v)),
+          ),
+          SettingRow(
+            icon: Icons.person_outline,
+            title: 'OC 使用占位符',
+            desc: customEndpoint
+                ? '本地与公共 OC 只给 AI 占位符，出图时还原；调整原设时请关闭'
+                : '仅自定义接口渠道可用',
+            value: customEndpoint && s.ocPlaceholders,
+            enabled: customEndpoint,
+            onChanged: (v) => n.patch((o) => o.copyWith(ocPlaceholders: v)),
           ),
           settingSection(context, '规则'),
           SettingNavRow(

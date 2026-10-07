@@ -3,17 +3,21 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/app_info.dart';
 import 'core/auth/auth_mode.dart';
+import 'core/auth/credential_store.dart';
+import 'core/auth/secure_storage.dart';
 import 'core/platform/drop_import.dart';
 import 'core/store/app_stores.dart';
 import 'core/store/gen_settings.dart';
 import 'core/theme/app_theme.dart';
 import 'core/theme/theme_settings.dart';
 import 'core/ui/input_focus_guard.dart';
+import 'core/ui/nav_bar_guard.dart';
 import 'core/util/haptics.dart';
 import 'core/util/image_scramble.dart' show registerPngPkgLicense;
-import 'features/generate/widgets/common.dart' show sharedAxisRoute;
+import 'features/generate/widgets/common.dart' show hintSnack, sharedAxisRoute;
 import 'features/import/import_panel.dart';
 import 'features/onboarding/welcome_page.dart';
+import 'features/profile/account_page.dart';
 import 'features/shell/app_shell.dart';
 import 'features/editor/data/local_tag_db.dart';
 
@@ -28,12 +32,16 @@ Future<void> main() async {
   // 外观预读(首帧不闪色)现在直接取内存态 —— 设置已随 AppStores 一次读全,
   // 不再需要第二笔 I/O,也不必再解一次 Keystore。
   final stores = await AppStores.open();
+  // 凭据出口:平时走 Keystore 加密存储,这台机留不住时改存文件。要排在 AppStores
+  // 之后 —— 判定用得上它刚从加密存储迁出来的接入方式。
+  final creds = await CredentialStore.open(stores.prefs);
   await tagDbReady;
   final themeInit = loadThemeSettings(stores.prefs);
   runApp(
     ProviderScope(
       overrides: [
         appStoresProvider.overrideWithValue(stores),
+        secureStorageProvider.overrideWithValue(creds),
         themeInitProvider.overrideWithValue(themeInit),
         localTagDbProvider.overrideWithValue(tagDb),
       ],
@@ -122,15 +130,19 @@ class _PlanaAppState extends ConsumerState<PlanaApp> {
       darkTheme: AppTheme.dark(ts.seed.color),
       themeMode: ts.mode,
       navigatorObservers: [_inputFocusGuard],
-      home: const _AuthGate(),
-      builder: (context, child) => Stack(
-        fit: StackFit.expand,
-        children: [
-          child ?? const SizedBox.shrink(),
-          if (_dropState != DropImportState.idle)
-            _DropImportOverlay(state: _dropState),
-        ],
+      // 一层 builder 里办两件事:三键导航机上整个应用让出系统导航栏(见
+      // [NavBarGuard]),以及在最上层盖拖放导入浮层(桌面端拖文件进来时)。
+      builder: (context, child) => NavBarGuard(
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            child ?? const SizedBox.shrink(),
+            if (_dropState != DropImportState.idle)
+              _DropImportOverlay(state: _dropState),
+          ],
+        ),
       ),
+      home: const _AuthGate(),
     );
   }
 }
@@ -201,8 +213,45 @@ class _AuthGate extends ConsumerWidget {
     // 读失败一律按首启处理:宁可多走一次欢迎,也不让人卡在空界面
     final primed = gs.value?.notifyPrimed ?? false;
     if (!primed || mode.value == null) return const WelcomePage();
-    return const AppShell();
+    return const _CredentialLostHint(child: AppShell());
   }
+}
+
+/// 加密存储这次启动被系统清过(见 [CredentialStore])时,进主界面提示一次。
+class _CredentialLostHint extends ConsumerStatefulWidget {
+  const _CredentialLostHint({required this.child});
+
+  final Widget child;
+
+  @override
+  ConsumerState<_CredentialLostHint> createState() =>
+      _CredentialLostHintState();
+}
+
+class _CredentialLostHintState extends ConsumerState<_CredentialLostHint> {
+  @override
+  void initState() {
+    super.initState();
+    final creds = ref.read(secureStorageProvider);
+    if (creds is! CredentialStore || !creds.takeLostNotice()) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      hintSnack(
+        context,
+        '已存的 Key 被系统清掉了,重新添加后不会再丢',
+        icon: Icons.key_off_outlined,
+        actionLabel: '去添加',
+        onAction: () {
+          if (mounted) {
+            Navigator.of(context).push(sharedAxisRoute(const AccountPage()));
+          }
+        },
+      );
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }
 
 class _SplashHold extends StatelessWidget {

@@ -53,12 +53,26 @@ Future<T?> _sheet<T>(BuildContext context, Widget child) =>
 /// 拆角色卡**只对 NAI 做**:Anima / Krea 没有角色分离这回事,给它们拆出来的卡
 /// 会被模块剥离层当场收走,白忙一场还让人以为丢了东西 —— 那两家一律整段
 /// (含各角色段)折叠进主提示词。
-({int added, int dropped}) codexAddToPrompt(WidgetRef ref, CodexEntry e) {
+///
+/// 主提示词分过区([asSection] 或已有分区)时,公共部分不折叠,自成一格
+/// (格子叫「法典」,见 GenerateNotifier.addEntrySections)。
+({int added, int dropped}) codexAddToPrompt(
+  WidgetRef ref,
+  CodexEntry e, {
+  bool asSection = false,
+}) {
   final gen = ref.read(generateProvider);
   final isNai = providerOfModel(gen.params.model) == GenProvider.nai;
+  final section = asSection || gen.sections.isNotEmpty;
+  void put(String content) => section
+      ? _codexSectionInto(ref, e, content)
+      : _codexFoldInto(ref, e, content, gen);
 
   // 非 NAI:整条(公共 + 角色段)一起进主提示词,一个字不丢
-  if (!isNai) return _codexFoldInto(ref, e, e.fullText, gen);
+  if (!isNai) {
+    put(e.fullText);
+    return (added: 0, dropped: 0);
+  }
 
   // 字段里带角色段 → 直接用;否则退回内联写法的拆分
   final fromField = [
@@ -79,7 +93,7 @@ Future<T?> _sheet<T>(BuildContext context, Widget child) =>
       : (hasChars ? split!.base : e.tags);
 
   // 公共部分为空(全站 401 条 tags 就是空的)时不折叠 —— 否则插进去一个空组。
-  _codexFoldInto(ref, e, base, gen);
+  put(base);
 
   if (!hasChars) return (added: 0, dropped: 0);
   final added = ref.read(generateProvider.notifier).addCharactersFilled([
@@ -91,6 +105,19 @@ Future<T?> _sheet<T>(BuildContext context, Widget child) =>
       ),
   ]);
   return (added: added, dropped: chars.length - added);
+}
+
+/// 一段内容自成一格(不折叠),格子叫「法典」。空段跳过。
+void _codexSectionInto(WidgetRef ref, CodexEntry e, String content) {
+  if (content.trim().isEmpty) return;
+  ref.read(generateProvider.notifier).addEntrySections([
+    TagEntry(
+      id: 'codex_${e.id}',
+      category: TagCategory.other,
+      name: e.title,
+      positive: content,
+    ),
+  ], name: '法典');
 }
 
 /// 把一段内容作为**命名折叠组**追加进主提示词(复用灵感页同一条链路:草稿带回
@@ -555,7 +582,10 @@ class _DetailSheetState extends ConsumerState<_DetailSheet>
                             color: scheme.surfaceContainerHigh,
                             borderRadius: BorderRadius.circular(12),
                           ),
-                          child: PromptChips(sections: _codexPromptSections(e)),
+                          child: Consumer(
+                            builder: (_, ref, _) =>
+                                _codexChips(ref, widget.codex.id, e),
+                          ),
                         ),
                     ],
                   ),
@@ -1335,6 +1365,7 @@ class _CodexHeroImagesState extends ConsumerState<_CodexHeroImages>
   /// 垫毛玻璃底。整段复制仍走底部那枚「复制」—— 芯片不可选字,
   /// 点它就是点卡片,照样翻回去。
   Widget _promptFace() => _PromptFace(
+    codexId: widget.codex.id,
     entry: widget.entry,
     bgUrl: _imgCount == 0
         ? null
@@ -1531,17 +1562,24 @@ class _BlurredBackdropState extends State<_BlurredBackdrop> {
 /// 提示词面:只读芯片流,例图毛玻璃垫底(无图词条素色)。
 /// 装得下就禁止内滚 —— 内层滚动区会把竖向拖动全吃掉,整张弹层跟着卡住。
 /// 芯片高度没法按字预算,改从真实布局读:帧后看 maxScrollExtent。
-class _PromptFace extends StatefulWidget {
-  const _PromptFace({required this.entry, this.bgUrl});
+/// 对照表在这层 watch 而不是交给芯片自己:表到了芯片换字、宽度会变,
+/// 这层跟着重建才会重新量一遍。
+class _PromptFace extends ConsumerStatefulWidget {
+  const _PromptFace({
+    required this.codexId,
+    required this.entry,
+    this.bgUrl,
+  });
 
+  final String codexId;
   final CodexEntry entry;
   final String? bgUrl;
 
   @override
-  State<_PromptFace> createState() => _PromptFaceState();
+  ConsumerState<_PromptFace> createState() => _PromptFaceState();
 }
 
-class _PromptFaceState extends State<_PromptFace> {
+class _PromptFaceState extends ConsumerState<_PromptFace> {
   final _scroll = ScrollController();
   bool _fits = false;
 
@@ -1567,7 +1605,7 @@ class _PromptFaceState extends State<_PromptFace> {
       controller: _scroll,
       padding: const EdgeInsets.all(14),
       physics: _fits ? const NeverScrollableScrollPhysics() : null,
-      child: PromptChips(sections: _codexPromptSections(widget.entry)),
+      child: _codexChips(ref, widget.codexId, widget.entry),
     );
     if (widget.bgUrl == null) {
       return ColoredBox(color: scheme.surfaceContainerHigh, child: content);
@@ -1580,6 +1618,17 @@ class _PromptFaceState extends State<_PromptFace> {
       ],
     );
   }
+}
+
+/// 法典词条的芯片流:译名先查原站的对照表([codexTagZhProvider]),查不到才
+/// 退回 app 自己的词库 / 后端。
+PromptChips _codexChips(WidgetRef ref, String codexId, CodexEntry e) {
+  final zh = ref.watch(codexTagZhProvider(codexId));
+  return PromptChips(
+    sections: _codexPromptSections(e),
+    preferredTrans: zh.value?.lookup,
+    preferredTransLoading: zh.isLoading && !zh.hasError,
+  );
 }
 
 /// 法典词条按 [PromptChips] 的口径分段:与 [CodexEntry.fullText] 一致,

@@ -5,10 +5,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/theme/app_theme.dart';
-import '../../../core/ui/responsive_grid.dart';
+import '../../../core/store/ui_prefs.dart';
+import '../../../core/ui/pinch_columns.dart';
+import '../../../core/ui/scroll_memory.dart';
 import '../../generate/widgets/common.dart' show hintSnack;
 import 'codex_card.dart';
 import 'codex_favorites.dart';
+import 'codex_masonry.dart';
 import 'codex_models.dart';
 import 'codex_providers.dart';
 import 'codex_sheets.dart';
@@ -25,12 +28,28 @@ class CodexView extends ConsumerStatefulWidget {
 const _edge = 14.0;
 const _gap = 10.0;
 
-class _CodexViewState extends ConsumerState<CodexView> {
+/// 瀑布流默认列数;捏合可在 1 ~ 4 列之间换。偏好里与标签库四类同表,键 `codex`。
+const _kCols = 2;
+const _kColsKey = 'codex';
+
+class _CodexViewState extends ConsumerState<CodexView>
+    with SingleTickerProviderStateMixin, PinchColumnsMixin {
   String _search = '';
   List<String> _catPath = const []; // 分类树选中路径(空=全部;前缀匹配词条 path)
   Timer? _debounce;
   bool _introScheduled = false; // 首次说明弹窗本会话是否已排期(防重复弹)
-  final _scroll = ScrollController();
+  final _masonry = CodexMasonry(gap: _gap);
+
+  /// 正在显示的是哪一部(build 时定下)。换法典时按它把当前状态存回原主。
+  String? _viewId;
+
+  /// 每部法典各记各的搜索词与分类筛选,换走再换回来原样还原。
+  /// 滚动位置记在 [ScrollMemory] 里,键带法典 id。
+  final _views = <String, ({String search, List<String> cat})>{};
+
+  late final _scroll = MemoScrollController.keyed(
+    () => 'inspiration.codex.${_viewId ?? ''}',
+  );
 
   /// 搜索框要能被程序清空(换法典时),所以不能是裸 TextField。
   final _searchCtrl = TextEditingController();
@@ -42,6 +61,30 @@ class _CodexViewState extends ConsumerState<CodexView> {
     _scroll.dispose();
     super.dispose();
   }
+
+  // ---- 双指捏合改列数(见 PinchColumnsMixin) ----
+
+  @override
+  int get initialGridColumns =>
+      ref.read(uiPrefsProvider).inspirationColumns[_kColsKey] ?? _kCols;
+
+  @override
+  int get minGridColumns => 1;
+
+  @override
+  int get maxGridColumns => 4;
+
+  @override
+  ScrollController get pinchScrollController => _scroll;
+
+  @override
+  void onGridColumnsChanged(int cols) => ref
+      .read(uiPrefsProvider.notifier)
+      .patch(
+        (p) => p.copyWith(
+          inspirationColumns: {...p.inspirationColumns, _kColsKey: cols},
+        ),
+      );
 
   void _onSearch(String v) {
     _debounce?.cancel();
@@ -70,23 +113,26 @@ class _CodexViewState extends ConsumerState<CodexView> {
 
   @override
   Widget build(BuildContext context) {
-    // 换法典后重置分类筛选**与搜索**。选择器已挪到外层顶栏,靠 provider 联动重置。
+    // 换法典:当前这部的搜索与分类存回它名下,换上目标那部上次的(没去过就是空)。
+    // 选择器在外层顶栏,靠 provider 联动。
     //
-    // 搜索原来是漏掉的:关键词跨法典留着,新法典多半一条都匹配不上,于是切过去
-    // 只看到「没有匹配的词条」—— 而搜索框在上面还原样显示着旧关键词,没人会想到
-    // 是它在过滤。三样一起清:输入框文本、过滤用的 _search、以及**防抖里压着的
-    // 那次**(不取消的话它会在切换后才落地,把刚清掉的关键词又写回去)。
-    ref.listen(selectedCodexProvider, (_, _) {
-      if (!mounted) return;
+    // 搜索不能跨法典带过去:新法典多半一条都匹配不上,切过去只看到「没有匹配的
+    // 词条」,没人会想到是上面那个旧关键词在过滤。输入框文本、过滤用的 _search、
+    // 以及**防抖里压着的那次**三样一起换(不取消的话它会在切换后才落地,把旧
+    // 关键词写进新法典)。滚动位置不用管:网格按法典 id 换 key 重建,从那部的
+    // 账上落位。
+    ref.listen(selectedCodexProvider, (_, next) {
+      if (!mounted || next == null || next == _viewId) return;
       _debounce?.cancel();
-      _searchCtrl.clear();
-      // 滚动位置也得归零。它没有分法典记账(不同于标签库的 ScrollMemory),
-      // 不重置就直接带到新法典上 —— 旧法典翻到几百条的位置,切到一本短的会被
-      // 钳到列表末尾,看着像打开就在底部。
-      if (_scroll.hasClients) _scroll.jumpTo(0);
+      final from = _viewId;
+      if (from != null) {
+        _views[from] = (search: _searchCtrl.text, cat: _catPath);
+      }
+      final to = _views[next];
+      _searchCtrl.text = to?.search ?? '';
       setState(() {
-        _catPath = const [];
-        _search = '';
+        _catPath = to?.cat ?? const [];
+        _search = to?.search ?? '';
       });
     });
     final indexAsync = ref.watch(codexIndexProvider);
@@ -96,7 +142,7 @@ class _CodexViewState extends ConsumerState<CodexView> {
           _error('法典索引加载失败', () => ref.invalidate(codexIndexProvider)),
       data: (index) {
         if (index.isEmpty) return _msg('暂无法典');
-        final selId = _resolveSelectedId(index);
+        final selId = _viewId = _resolveSelectedId(index);
         final meta = index.firstWhere((m) => m.id == selId);
         // 首次进入法典功能:读盘确认为「没读过」时弹一次说明。
         if (ref.watch(codexIntroProvider) == false) _maybeShowIntro();
@@ -172,6 +218,10 @@ class _CodexViewState extends ConsumerState<CodexView> {
       error: (e, _) =>
           _error('法典加载失败', () => ref.invalidate(codexDataProvider(meta.id))),
       data: (d) {
+        // 词条到手就把这部的中文对照也拉上:点开详情时表多半已就绪,芯片不用
+        // 先出离线词库的译名、再被对照表换一遍字。listen 不 watch —— 表到了
+        // 这层不用重建。
+        ref.listen(codexTagZhProvider(meta.id), (_, _) {});
         final media =
             ref.watch(codexMediaProvider).value ?? CodexMedia.fallback;
         final entries = _filtered(d);
@@ -388,95 +438,54 @@ class _CodexViewState extends ConsumerState<CodexView> {
     );
   }
 
-  Widget _grid(CodexMeta meta, CodexMedia media, List<CodexEntry> entries) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final count = responsiveImageColumns(constraints.maxWidth);
-        final colW =
-            (constraints.maxWidth - _edge * 2 - _gap * (count - 1)) / count;
-        final columns = _splitColumns(entries, colW, count);
-        return CustomScrollView(
-          controller: _scroll,
-          physics: const AlwaysScrollableScrollPhysics(),
-          slivers: [
-            SliverCrossAxisGroup(
-              slivers: [
-                for (var i = 0; i < count; i++)
-                  _column(
-                    meta,
-                    media,
-                    entries,
-                    columns[i],
-                    leftPad: i == 0 ? _edge : _gap / 2,
-                    rightPad: i == count - 1 ? _edge : _gap / 2,
+  /// 瀑布流。几何见 [CodexMasonryLayout];捏合与过渡只重建 pinchBuilder 里那一块,
+  /// 上面的筛选(上万条逐条比对)不跟着每帧重跑。
+  Widget _grid(CodexMeta meta, CodexMedia media, List<CodexEntry> entries) =>
+      pinchLayer(
+        child: pinchBuilder((_) {
+          // 例图按落定列数下的列宽解码(gridColumns 在换档过渡中是起点那一档)
+          final cols = gridColumns;
+          final decodeW =
+              (MediaQuery.sizeOf(context).width -
+                  _edge * 2 -
+                  _gap * (cols - 1)) /
+              cols;
+          return CustomScrollView(
+            key: ValueKey(meta.id), // 换法典即换一份列表,从那部的滚动账上落位
+            controller: _scroll,
+            physics: pinchPhysics(const AlwaysScrollableScrollPhysics()),
+            slivers: [
+              // 顶部不留边:筛选行自带下外边距,再留一道就叠出双倍空隙
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(_edge, 0, _edge, _gap),
+                sliver: SliverGrid(
+                  gridDelegate: zoomGridDelegate(
+                    (n) => _masonry.delegate(entries, n),
                   ),
-              ],
-            ),
-            const SliverToBoxAdapter(child: SizedBox(height: 20)),
-          ],
-        );
-      },
-    );
-  }
-
-  /// [all] = 当前筛选出的整批(详情页左右滑动就在这批里翻);
-  /// [items] = 本列分到的那部分。
-  Widget _column(
-    CodexMeta meta,
-    CodexMedia media,
-    List<CodexEntry> all,
-    List<CodexEntry> items, {
-    required double leftPad,
-    required double rightPad,
-  }) {
-    // 顶部不留边:筛选行自带下外边距,再留一道就叠出双倍空隙
-    return SliverPadding(
-      padding: EdgeInsets.only(left: leftPad, right: rightPad),
-      sliver: SliverList.builder(
-        itemCount: items.length,
-        itemBuilder: (_, i) => Padding(
-          padding: const EdgeInsets.only(bottom: _gap),
-          child: CodexCard(
-            codex: meta,
-            entry: items[i],
-            media: media,
-            onTap: () {
-              // 瀑布流按列拆过,序号要回到整批里取(左右翻按筛选后的原始顺序)
-              final idx = all.indexWhere((x) => x.id == items[i].id);
-              if (idx < 0) return;
-              showCodexDetailSheet(
-                context,
-                meta,
-                media,
-                entries: all,
-                index: idx,
-              );
-            },
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// 响应式瀑布流:按估算高度贪心塞进当前最矮列。
-  List<List<CodexEntry>> _splitColumns(
-    List<CodexEntry> items,
-    double colW,
-    int count,
-  ) {
-    final columns = [for (var i = 0; i < count; i++) <CodexEntry>[]];
-    final heights = List<double>.filled(count, 0);
-    for (final e in items) {
-      final h = colW / (e.aspect <= 0 ? 0.75 : e.aspect) + 40;
-      var shortest = 0;
-      for (var i = 1; i < count; i++) {
-        if (heights[i] < heights[shortest]) shortest = i;
-      }
-      columns[shortest].add(e);
-      heights[shortest] += h;
-    }
-    return columns;
-  }
+                  delegate: SliverChildBuilderDelegate(
+                    (_, i) => CodexCard(
+                      codex: meta,
+                      entry: entries[i],
+                      media: media,
+                      decodeWidth: decodeW,
+                      // 详情页左右滑动就在当前筛选出的这一整批里翻
+                      onTap: () => showCodexDetailSheet(
+                        context,
+                        meta,
+                        media,
+                        entries: entries,
+                        index: i,
+                      ),
+                    ),
+                    childCount: entries.length,
+                  ),
+                ),
+              ),
+              const SliverToBoxAdapter(child: SizedBox(height: 20)),
+            ],
+          );
+        }),
+      );
 
   Widget _error(String text, VoidCallback onRetry) {
     final scheme = context.scheme;

@@ -10,9 +10,12 @@ import '../../core/theme/app_theme.dart';
 import '../../core/util/prompt_convert.dart' show replacePromptUnderscores;
 import '../../core/theme/editor_theme.dart';
 import '../generate/generate_state.dart';
+import '../generate/models.dart' show PromptSection;
 import '../generate/widgets/common.dart' show hintSnack;
+import 'chrome_scroll.dart';
 import 'data/suggestions.dart';
 import 'data/tag_completion.dart';
+import 'data/tag_favorites.dart';
 import 'data/tag_translation_service.dart';
 import 'editor_models.dart';
 import 'prompt_blacklist.dart';
@@ -40,12 +43,20 @@ import '../../core/util/haptics.dart';
 /// 两种形态共用同一个 [RichTagController] —— 芯片模式下正文没挂在树上,
 /// 但所有改文本的操作仍旧改它,于是切回来时状态天然一致。
 class EditorPage extends ConsumerStatefulWidget {
-  const EditorPage({super.key, required this.positive, this.charId});
+  const EditorPage({
+    super.key,
+    required this.positive,
+    this.charId,
+    this.sectionId,
+  });
 
   final bool positive;
 
   /// 编辑目标:null = 创作页主提示词,否则 = 该 id 的角色提示词。
   final String? charId;
+
+  /// 编辑目标是主提示词的某个分区(见 PromptSection);与 [charId] 互斥。
+  final String? sectionId;
 
   @override
   ConsumerState<EditorPage> createState() => _EditorPageState();
@@ -105,7 +116,15 @@ class _EditorPageState extends ConsumerState<EditorPage>
   /// 选和放分成两个阶段,两类误触才不会互相干扰。
   bool _chipPlacing = false;
   double _chipMult = 1.0; // 芯片模式批量面板的统一数值权重读数
-  String? _charName; // 编辑角色时的名字(顶栏标题);主提示词会话为 null
+  String? _charName; // 编辑角色 / 分区时的名字(顶栏标题);主提示词会话为 null
+
+  /// 滚动正文时收起顶栏与权重面板(见 [_onContentScroll])。补全条不收:
+  /// 它只在打字时出现,而打字本身就会把这里放回来。
+  bool _chromeHidden = false;
+  final ChromeScrollTracker _chromeScroll = ChromeScrollTracker();
+
+  /// 底栏展开钮拉出的收藏托盘是否展开。
+  bool _trayOpen = false;
 
   /// 正文形态。设置即真相 —— 底栏那颗切换直接改设置,不另存一份局部状态,
   /// 免得「设置里是芯片、页面还停在文本」这种两头对不上的中间态。
@@ -157,28 +176,43 @@ class _EditorPageState extends ConsumerState<EditorPage>
     // 编辑目标进页面即钉死。角色名只读一次:名字是 app 内部写的
     // (自动编号 / 导入带入),会话中不会变,不必挂 watch。
     final id = widget.charId;
-    final hit = [
-      for (final c in ref.read(generateProvider).characters)
-        if (c.id == id) c,
-    ];
-    final char = hit.isEmpty ? null : hit.first;
-    _charName = char?.name;
+    final sectionId = id == null ? widget.sectionId : null;
+    final gen0 = ref.read(generateProvider);
+    final char = gen0.characters.where((c) => c.id == id).firstOrNull;
+    final section = gen0.sections.where((s) => s.id == sectionId).firstOrNull;
+    // 分过区时主体也写上名字,和点别的分区进来一样
+    _charName = id != null
+        ? char?.name
+        : sectionId != null
+        ? section?.name
+        : gen0.sections.where((s) => s.isMain).firstOrNull?.name;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final gen = ref.read(generateProvider);
-      // 角色会话即使没命中(角色已被删)也**不**退回主提示词:那正是
+      // 角色 / 分区会话即使没命中(已被删)也**不**退回主提示词:那正是
       // 这个页面从前的 bug——回写会静默盖掉用户的主提示词。
       // 载入原文草稿(带回禁用/折叠);草稿过期(提示词被编辑器之外改过)
       // 时 pickEditorText 自动退回定稿。
+      final (String pos, String neg) = switch ((id, sectionId)) {
+        (null, null) => (
+          pickEditorText(gen.promptRaw, gen.prompt),
+          pickEditorText(gen.negativePromptRaw, gen.negativePrompt),
+        ),
+        (null, _) => (
+          pickEditorText(section?.positiveRaw ?? '', section?.positive ?? ''),
+          pickEditorText(section?.negativeRaw ?? '', section?.negative ?? ''),
+        ),
+        _ => (
+          pickEditorText(char?.positiveRaw ?? '', char?.positive ?? ''),
+          pickEditorText(char?.negativeRaw ?? '', char?.negative ?? ''),
+        ),
+      };
       _notifier.load(
-        positive: id == null
-            ? pickEditorText(gen.promptRaw, gen.prompt)
-            : pickEditorText(char?.positiveRaw ?? '', char?.positive ?? ''),
-        negative: id == null
-            ? pickEditorText(gen.negativePromptRaw, gen.negativePrompt)
-            : pickEditorText(char?.negativeRaw ?? '', char?.negative ?? ''),
+        positive: pos,
+        negative: neg,
         startPositive: widget.positive,
         charId: id,
+        sectionId: sectionId,
       );
       // **不抢焦点**:进页面就弹输入法,半屏被键盘吃掉,而多数人进来第一件事
       // 是看词条、点标签、调权重,不是打字。想输入点一下正文即可(TextField
@@ -242,9 +276,9 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _controller.refresh();
     _muting = false;
     if (_panelTok != null && _query.isEmpty) _reroute();
-    // 补全条的译文也是显示时现查(transOf)。结果快照没变,不重建就一直空着 ——
-    // 只重绘注音层不够,那是另一棵树。
-    if (!_result.isEmpty) setState(() {});
+    // 补全条与收藏托盘的译文也是显示时现查(transOf)。结果快照没变,不重建
+    // 就一直空着 —— 只重绘注音层不够,那是另一棵树。
+    if (!_result.isEmpty || _trayOpen) setState(() {});
   }
 
   /// 把注音未命中的词喂给后端翻译通道(增强模式;离线模式 no-op)。
@@ -295,6 +329,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
       _prevText = next.activeText;
       _prevSel = _controller.selection;
       _muting = false;
+      _setChromeHidden(false); // 撤销 / 切正负换了一整份正文,收着的放回来
       _reroute();
       _feedTranslation(next.activeText); // 载入/切 tab 的既有文本也问翻译
     }
@@ -306,8 +341,19 @@ class _EditorPageState extends ConsumerState<EditorPage>
 
   void _onCtrl() {
     if (_muting) return;
+    final prevSel = _prevSel;
     _prevSel = _controller.selection;
     final text = _controller.text;
+    // 改字或挪光标 = 手回到了正文上:滚动时收起的顶栏与面板放回来。
+    // 只比落点不比整个选区 —— 输入法会发只改 affinity 的选区更新,那不是手动的。
+    // 拖手柄途中不放:顶栏一撑开正文就在手指底下平移(见 [_setCursorDragging]),
+    // 松手那一下再放。
+    if (!_cursorDragging &&
+        (text != _prevText ||
+            _prevSel.baseOffset != prevSel.baseOffset ||
+            _prevSel.extentOffset != prevSel.extentOffset)) {
+      _setChromeHidden(false);
+    }
     if (text != _prevText) {
       if (_guardFoldEdit(text)) return; // 折叠被啃 → 改判为整只删,已自行落地
       final filtered = filterPromptBlacklist(
@@ -750,8 +796,14 @@ class _EditorPageState extends ConsumerState<EditorPage>
     // _query / _result 原样保留,弹层列表不跳
   }
 
-  /// 程序化改文本(补全/权重/删除),同步撤销与路由
-  void _applyText(String text, int cursor, {bool structural = true}) {
+  /// 程序化改文本(补全/权重/删除),同步撤销与路由。[extracted] 见
+  /// [EditorNotifier.editActive]。
+  void _applyText(
+    String text,
+    int cursor, {
+    bool structural = true,
+    PromptSection? extracted,
+  }) {
     final filtered = filterPromptBlacklist(
       text,
       _autoRemoveBlacklist,
@@ -769,7 +821,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _syncedText = text;
     _prevSel = _controller.selection;
     _muting = false;
-    _notifier.editActive(text, structural: structural);
+    _notifier.editActive(text, structural: structural, extracted: extracted);
     // 打字走 _onCtrl 会喂翻译,这条路径 _muting 压掉了 _onCtrl,必须自己喂 ——
     // 否则**所有**程序化改文本(折叠展开/补全插入/多选批量)带进来的新词
     // 都问不到后端翻译,只能退出重进页面才补上(_syncFromProvider 那次)。
@@ -914,6 +966,34 @@ class _EditorPageState extends ConsumerState<EditorPage>
     }
   }
 
+  void _toggleTray() {
+    Haptics.selection();
+    setState(() => _trayOpen = !_trayOpen);
+    // 收藏卡带译文:缺的交给后端翻译通道(离线模式 no-op)
+    if (_trayOpen) _transSvc.request(ref.read(tagFavoritesProvider));
+  }
+
+  /// 托盘里点了一枚收藏:芯片模式接在末尾;文本模式落在光标处 —— 光标在词里
+  /// 就接在这枚词后面,在空隙里就插在原地。
+  void _insertFavorite(String tag) {
+    Haptics.selection();
+    if (_chipMode) {
+      _appendTag(tag);
+      return;
+    }
+    final text = _controller.text;
+    final sel = _controller.selection;
+    final off = sel.isValid ? sel.end : text.length;
+    final toks = parseToks(text);
+    final i = tokIndexAt(text, off, toks);
+    final (next, cursor) = insertUnitAt(
+      text,
+      i >= 0 ? toks[i].segEnd : off,
+      tag,
+    );
+    _applyText(next, cursor);
+  }
+
   /// 形态切换后的收尾:清掉另一头才有意义的状态。设置载回(冷启动时持久化的
   /// chipMode 到货)也走这里,所以这里只做清理,不碰焦点。
   void _onModeChanged(bool chip) {
@@ -928,6 +1008,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
       _chipMult = 1.0;
       _panelTok = null;
       _multiRange = null;
+      _chromeHidden = false;
       _resetInput();
     });
   }
@@ -942,6 +1023,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
     final units = topLevelUnits(_controller.text, _foldBodies).length;
     setState(() {
       _chipSel = next;
+      _chromeHidden = false; // 点了芯片 = 要操作了,面板得在
       _chipPlacing =
           (enterPlacing || _chipPlacing) &&
           next.isNotEmpty &&
@@ -973,6 +1055,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
   /// (框里有字时退格删的是字,占位符在最前面轮不到它)——那一下转成
   /// 「删掉最后一枚标签」。见 [kChipInputPad]。
   void _onInputChanged(String raw) {
+    _setChromeHidden(false);
     var body = chipInputBody(raw);
     final wasEmpty = _prevInputBody.isEmpty;
     final filtered = filterPromptBlacklist(
@@ -1142,6 +1225,52 @@ class _EditorPageState extends ConsumerState<EditorPage>
     if (out.isEmpty) return;
     Clipboard.setData(ClipboardData(text: out));
     hintSnack(context, '已复制 ${ordered.length} 项', icon: Icons.check);
+  }
+
+  /// 提取所选为新分区:所选从这一段拿掉,原样(权重、禁用、折叠都带着)放进
+  /// 新建的一格,接在分区列表最后;在负面页提取的进那一格的负面。
+  /// [remove] 按各自的多选方式删掉所选并清掉选中,返回删后的正文与光标。
+  ///
+  /// 先删后建:删不动(选区和折叠连在同一个组里,同「删除」会原样退回)就
+  /// 不建格。这一步进撤销档时记着建出的那一格,撤回正文时一并拿掉。
+  /// 整组选中时组权重跟着走,只取一部分不带(见 [extractUnitsDraft])。
+  void _extractUnits(Set<int> sel, (String, int) Function() remove) {
+    final text = _controller.text;
+    final draft = expandFolds(
+      extractUnitsDraft(text, _foldBodies, sel),
+      _foldBodies,
+    ).trim();
+    if (draft.isEmpty) return;
+    final (next, cursor) = remove();
+    if (next == text) {
+      hintSnack(context, '所选和折叠连在一起,没法提取');
+      return;
+    }
+    final section = ref
+        .read(generateProvider.notifier)
+        .addSectionFrom(
+          draft,
+          positive: ref.read(editorProvider).activePositive,
+        );
+    _applyText(next, cursor, extracted: section);
+    _save(); // 当场回写:别让这几枚在原处和新分区里同时存着
+    hintSnack(context, '已提取到「${section.name}」', icon: Icons.check);
+  }
+
+  void _chipExtract() => _extractUnits(_chipSel, () {
+    final out = deleteUnits(_controller.text, _foldBodies, _chipSel);
+    _setChipSel({});
+    return out;
+  });
+
+  void _multiExtract() {
+    final r = _multiRange;
+    if (r == null) return;
+    _extractUnits(_rangeSel(r), () {
+      final out = batchDelete(_controller.text, r.$1, r.$2);
+      setState(() => _multiRange = null);
+      return out;
+    });
   }
 
   /// 多选移动落地:所选顶层单元整批搬到间隙 [to]。折叠占位符作为一整块
@@ -1480,13 +1609,34 @@ class _EditorPageState extends ConsumerState<EditorPage>
   /// 到顶只剩原地弹。
   void _setCursorDragging(bool v) {
     if (_cursorDragging == v) return;
-    setState(() => _cursorDragging = v);
+    setState(() {
+      _cursorDragging = v;
+      // 松手 = 光标落定,该看这枚词的面板了:滚动时收起的一并放回来
+      if (!v) _chromeHidden = false;
+    });
   }
 
   /// 关闭词条栏(下次移光标进词内会再出现)
   void _closePanel() {
     if (_panelTok == null) return;
     setState(() => _panelTok = null);
+  }
+
+  // ---- 滚动收起顶栏与权重面板 ----
+
+  void _setChromeHidden(bool v) {
+    if (_chromeHidden == v) return;
+    setState(() => _chromeHidden = v);
+  }
+
+  /// 正文滚动 → 收起 / 放出顶栏与权重面板,判定见 [ChromeScrollTracker]。
+  bool _onContentScroll(ScrollNotification n) {
+    // 拖光标手柄时框架会自己贴边滚正文,这时一动顶栏,正文就在手指底下平移;
+    // 松手时 [_setCursorDragging] 统一放出
+    if (_cursorDragging) return false;
+    final v = _chromeScroll.update(n, hidden: _chromeHidden);
+    if (v != null) _setChromeHidden(v);
+    return false;
   }
 
   @override
@@ -1556,18 +1706,26 @@ class _EditorPageState extends ConsumerState<EditorPage>
     // 即触发本 build 重灌 + 重绘。
     final foldBodies = ref.watch(editorProvider.select((s) => s.foldBodies));
     _controller.foldBodies = foldBodies;
+    // 权重面板(词条栏 / 批量面板)一弹出,顶栏就让位;补全条不算。
+    // 拖光标期间 dock 是冻住的那份,顶栏跟着不动,松手再定。
+    final dock = _dock();
+    final weightDock = dock is TagPanel || dock is BatchPanel;
 
     return Theme(
       data: editorTheme(context),
       child: Builder(
         builder: (context) => PopScope(
-          // 芯片模式选中着东西时,返回键先退选(形态本身是常驻偏好,不该被
-          // 返回键改掉),再按一次才离开编辑器
-          canPop: !(settings.chipMode && (_chipSel.isNotEmpty || _chipPlacing)),
+          // 托盘展开着时返回键先收托盘;芯片模式选中着东西时先退选(形态本身
+          // 是常驻偏好,不该被返回键改掉)。收完再按一次才离开编辑器
+          canPop:
+              !_trayOpen &&
+              !(settings.chipMode && (_chipSel.isNotEmpty || _chipPlacing)),
           onPopInvokedWithResult: (didPop, _) {
             if (didPop) {
               _save();
               _dismissKeyboard(); // 系统返回手势也走这里,不能只挂在返回按钮上
+            } else if (_trayOpen) {
+              setState(() => _trayOpen = false);
             } else if (_chipPlacing) {
               // 先退落位阶段,选中留着 —— 用户多半只是想改一下选哪几枚
               setState(() => _chipPlacing = false);
@@ -1579,95 +1737,124 @@ class _EditorPageState extends ConsumerState<EditorPage>
             body: SafeArea(
               child: Column(
                 children: [
-                  EditorTopBar(
-                    charName: _charName,
-                    onBack: () {
-                      // 先收键盘再出栈:让退场动画一开始就是完整半屏,
-                      // 不是「键盘收一半、页面滑一半」两段各走各的
-                      _dismissKeyboard();
-                      Navigator.of(context).maybePop();
-                    },
-                    onSettings: _openSettings,
-                    onReplaceUnderscores: _replaceUnderscores,
+                  // 滚动正文时、或权重面板在时整栏收起:贴底对齐 + 裁切,
+                  // 读起来是往上滑走。见 [_onContentScroll]。
+                  ClipRect(
+                    child: AnimatedAlign(
+                      duration: Motion.fast,
+                      curve: Motion.standard,
+                      alignment: Alignment.bottomCenter,
+                      heightFactor: _chromeHidden || weightDock ? 0 : 1,
+                      child: EditorTopBar(
+                        charName: _charName,
+                        character: widget.charId != null,
+                        sectionId: widget.charId == null
+                            ? widget.sectionId
+                            : null,
+                        onBack: () {
+                          // 先收键盘再出栈:让退场动画一开始就是完整半屏,
+                          // 不是「键盘收一半、页面滑一半」两段各走各的
+                          _dismissKeyboard();
+                          Navigator.of(context).maybePop();
+                        },
+                        onSettings: _openSettings,
+                        // iOS 移植方的「下划线替换为空格」入口,上游这一版顶栏
+                        // 没有这颗钮,别丢
+                        onReplaceUnderscores: _replaceUnderscores,
+                      ),
+                    ),
                   ),
                   Expanded(
                     // 两种正文形态。切正/负时编辑区随方向轻滑 + 淡入
                     // (单实例,不复制 TextField——controller/focus 不能
                     // 同时挂两棵树)
-                    child: settings.chipMode
-                        ? ChipFlowView(
-                            controller: _controller,
-                            foldBodies: foldBodies,
-                            selection: _chipSel,
-                            onSelectionChanged: _setChipSel,
-                            onLongPressChip: _chipLongPress,
-                            onMove: _moveUnits,
-                            input: _input,
-                            inputFocus: _inputFocus,
-                            onInputChanged: _onInputChanged,
-                            onInputSubmitted: (_) => _commitInput(),
-                            placing: _chipPlacing,
-                            translating: _transSvc.isPending,
-                            showTrans: settings.showTranslation,
-                            fontSize: settings.chipFontSize,
-                            promptBlacklist:
-                                settings.promptBlacklistMode == PromptBlacklistMode.highlight
-                                ? settings.promptBlacklist
-                                : const [],
-                          )
-                        : ClipRect(
-                            child: SlideTransition(
-                              position: _tabSlide,
-                              child: FadeTransition(
-                                opacity: _tabAnim.drive(
-                                  Tween(begin: .25, end: 1.0),
-                                ),
-                                child: AnnotatedField(
-                                  controller: _controller,
-                                  focusNode: _focus,
-                                  scrollController: _scroll,
-                                  showTrans: settings.showTranslation,
-                                  showWeightWash: settings.showWeightWash,
-                                  fontSize: settings.fontSize,
-                                  onCursorDrag: _setCursorDragging,
-                                  onFoldTap: _unfoldByName,
-                                  hint: '点击输入标签,可输入中文自动触发翻译与联想',
-                                ),
-                              ),
-                            ),
-                          ),
-                  ),
-                  // 拖光标期间只是**淡出**,位置照占:见 [_setCursorDragging]。
-                  AnimatedOpacity(
-                    duration: Motion.quick,
-                    curve: Motion.standard,
-                    opacity: _cursorDragging ? 0 : 1,
-                    child: IgnorePointer(
-                      ignoring: _cursorDragging,
-                      child:
-                          // dock 入场:淡入 + 轻微上滑(高度瞬时占位,不撑盒子,避免橡皮筋)
-                          // 离场(关面板/收补全)比入场快:走了就别在路上磨蹭。
-                          AnimatedSwitcher(
-                            duration: Motion.fast,
-                            reverseDuration: Motion.quick,
-                            switchInCurve: Motion.emphasized,
-                            switchOutCurve: Motion.standard,
-                            layoutBuilder: (current, previous) => Stack(
-                              alignment: Alignment.bottomCenter,
-                              children: [...previous, ?current],
-                            ),
-                            transitionBuilder: (child, anim) => FadeTransition(
-                              opacity: anim,
+                    child: NotificationListener<ScrollNotification>(
+                      onNotification: _onContentScroll,
+                      child: settings.chipMode
+                          ? ChipFlowView(
+                              controller: _controller,
+                              foldBodies: foldBodies,
+                              selection: _chipSel,
+                              onSelectionChanged: _setChipSel,
+                              onLongPressChip: _chipLongPress,
+                              onMove: _moveUnits,
+                              input: _input,
+                              inputFocus: _inputFocus,
+                              onInputChanged: _onInputChanged,
+                              onInputSubmitted: (_) => _commitInput(),
+                              placing: _chipPlacing,
+                              translating: _transSvc.isPending,
+                              showTrans: settings.showTranslation,
+                              fontSize: settings.chipFontSize,
+                              promptBlacklist:
+                                  settings.promptBlacklistMode == PromptBlacklistMode.highlight
+                                  ? settings.promptBlacklist
+                                  : const [],
+                            )
+                          : ClipRect(
                               child: SlideTransition(
-                                position: Tween<Offset>(
-                                  begin: const Offset(0, 0.06),
-                                  end: Offset.zero,
-                                ).animate(anim),
-                                child: child,
+                                position: _tabSlide,
+                                child: FadeTransition(
+                                  opacity: _tabAnim.drive(
+                                    Tween(begin: .25, end: 1.0),
+                                  ),
+                                  child: AnnotatedField(
+                                    controller: _controller,
+                                    focusNode: _focus,
+                                    scrollController: _scroll,
+                                    showTrans: settings.showTranslation,
+                                    showWeightWash: settings.showWeightWash,
+                                    fontSize: settings.fontSize,
+                                    onCursorDrag: _setCursorDragging,
+                                    onFoldTap: _unfoldByName,
+                                    hint: '点击输入标签,可输入中文自动触发翻译与联想',
+                                  ),
+                                ),
                               ),
                             ),
-                            child: _dock(),
-                          ),
+                    ),
+                  ),
+                  // 滚动收起:贴顶对齐 + 裁切,往下沉进底栏后面。补全条不收。
+                  ClipRect(
+                    child: AnimatedAlign(
+                      duration: Motion.fast,
+                      curve: Motion.standard,
+                      alignment: Alignment.topCenter,
+                      heightFactor: _chromeHidden && _query.isEmpty ? 0 : 1,
+                      // 拖光标期间只是**淡出**,位置照占:见 [_setCursorDragging]。
+                      child: AnimatedOpacity(
+                        duration: Motion.quick,
+                        curve: Motion.standard,
+                        opacity: _cursorDragging ? 0 : 1,
+                        child: IgnorePointer(
+                          ignoring: _cursorDragging,
+                          child:
+                              // dock 入场:淡入 + 轻微上滑(高度瞬时占位,不撑盒子,避免橡皮筋)
+                              // 离场(关面板/收补全)比入场快:走了就别在路上磨蹭。
+                              AnimatedSwitcher(
+                                duration: Motion.fast,
+                                reverseDuration: Motion.quick,
+                                switchInCurve: Motion.emphasized,
+                                switchOutCurve: Motion.standard,
+                                layoutBuilder: (current, previous) => Stack(
+                                  alignment: Alignment.bottomCenter,
+                                  children: [...previous, ?current],
+                                ),
+                                transitionBuilder: (child, anim) =>
+                                    FadeTransition(
+                                      opacity: anim,
+                                      child: SlideTransition(
+                                        position: Tween<Offset>(
+                                          begin: const Offset(0, 0.06),
+                                          end: Offset.zero,
+                                        ).animate(anim),
+                                        child: child,
+                                      ),
+                                    ),
+                                child: dock,
+                              ),
+                        ),
+                      ),
                     ),
                   ),
                   if (settings.promptBlacklistMode == PromptBlacklistMode.highlight)
@@ -1696,6 +1883,9 @@ class _EditorPageState extends ConsumerState<EditorPage>
                   EditorBottomBar(
                     onToggleMode: _toggleChipMode,
                     chipMode: settings.chipMode,
+                    trayOpen: _trayOpen,
+                    onToggleTray: _toggleTray,
+                    onInsertFavorite: _insertFavorite,
                   ),
                 ],
               ),
@@ -1719,6 +1909,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
     required VoidCallback onToggleDisabled,
     required VoidCallback onDelete,
     required VoidCallback onClose,
+    required VoidCallback onExtract,
     VoidCallback? onUnfold,
   }) {
     final units = topLevelUnits(_controller.text, _foldBodies);
@@ -1756,6 +1947,8 @@ class _EditorPageState extends ConsumerState<EditorPage>
           ? 0
           : parseToks(_foldBodies[fold.name] ?? '').length,
       onCopy: () => _copyUnits(live),
+      // 分区只属于主提示词:角色会话不给
+      onExtract: widget.charId == null ? onExtract : null,
       onWrap: onWrap,
       onStepMult: onStepMult,
       onClearWeight: onClearWeight,
@@ -1800,6 +1993,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
           onToggleDisabled: _chipToggleDisabled,
           onDelete: _chipDelete,
           onClose: () => _setChipSel({}),
+          onExtract: _chipExtract,
           onUnfold: _chipUnfold,
         );
       }
@@ -1817,6 +2011,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
           onToggleDisabled: _multiToggleDisabled,
           onDelete: _multiDelete,
           onClose: _multiClose,
+          onExtract: _multiExtract,
         );
       }
     }
@@ -1869,6 +2064,11 @@ class _EditorPageState extends ConsumerState<EditorPage>
         onAddRelated: _addRelated,
         onRename: _chipMode ? _chipRename : null,
         onClose: _chipMode ? () => _setChipSel({}) : _closePanel,
+        favorited: ref
+            .watch(tagFavoriteKeysProvider)
+            .contains(metaKey(tok.name)),
+        onToggleFavorite: () =>
+            ref.read(tagFavoritesProvider.notifier).toggle(tok.name),
       );
     }
     return const SizedBox.shrink(key: ValueKey('dock-empty'));

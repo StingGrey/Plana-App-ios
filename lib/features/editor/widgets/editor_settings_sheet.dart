@@ -53,8 +53,8 @@ class EditorSettingsSheet extends ConsumerWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             // 抓手与标题栏留在滚动区**外面**:整片都塞进 SingleChildScrollView
-            // 的话,下拉手势全被滚动条吃掉,弹层自带的下拉关闭永远轮不到
-            // (真机反馈:拉不动也没地方点关)。右侧再给一个 ✕ 兜底。
+            // 的话,下拉手势全被滚动条吃掉,弹层自带的下拉关闭永远轮不到。
+            // 右侧再给一个 ✕ 兜底。
             Padding(
               padding: const EdgeInsets.only(top: 10),
               child: Center(

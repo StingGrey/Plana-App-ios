@@ -952,7 +952,7 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
           // 从前这里写的是 `_lastTabIndex == 0 ? 0 : 8` —— 可这个 Padding 在
           // TabBarView **外面**,序号一翻,两页一起往下挪 8px;而序号是滑到
           // 半程才翻的,和横向滑动动画脱钩,看上去就是列表在切换途中平白下沉
-          // 一截(真机反馈)。跨页共享的盒子不能按当前页调尺寸。
+          // 一截。跨页共享的盒子不能按当前页调尺寸。
           Padding(
             padding: const EdgeInsets.fromLTRB(_kEdge, 8, _kEdge, 0),
             child: _segTabs(scheme, all?.length ?? 0),

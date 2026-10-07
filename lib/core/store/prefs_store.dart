@@ -32,8 +32,12 @@ class PrefsStore {
   /// **新增非机密设置项时必须登记在这里** —— 漏登记的后果是老用户升级后
   /// 那一项静默回落默认值(旧值还躺在 secure storage 里,再没人读)。
   ///
-  /// 反过来,`nai_access_token` / `bot_session` / `auth_mode` 三个是真凭据,
-  /// **留在 secure storage,不要加进来**。
+  /// 反过来,NAI Key / `bot_session` / 助手自填接口这些真凭据**不要加进来**,
+  /// 它们走 `CredentialStore`。
+  ///
+  /// `auth_mode` 只是「选了哪种接入」,不是机密,2026-10 起也搬过来:留在加密
+  /// 存储里的话,Keystore 一出事它就跟凭据一起没了,用户每次冷启动都被踢回
+  /// 首启引导。
   static const migrateKeys = <String>[
     'theme_settings',
     'editor_settings',
@@ -44,6 +48,7 @@ class PrefsStore {
     'save_settings',
     'storage_settings',
     'gen_settings',
+    'auth_mode',
   ];
 
   /// [legacyRead] / [legacyDelete] 仅供测试注入(`FlutterSecureStorage` 是具体类,
@@ -55,6 +60,19 @@ class PrefsStore {
     Future<void> Function(String key)? legacyDelete,
   }) async {
     final file = File('${supportRoot.path}/settings.json');
+    final store = PrefsStore._(file, await _load(file));
+    await store._migrateFromSecure(
+      legacyRead ?? ((k) => kSecureStorage.read(key: k)),
+      legacyDelete ?? ((k) => kSecureStorage.delete(key: k)),
+    );
+    return store;
+  }
+
+  /// 只读写 [file] 这一份,不做迁移 —— 凭据改存文件时用(见 `CredentialStore`)。
+  static Future<PrefsStore> openFile(File file) async =>
+      PrefsStore._(file, await _load(file));
+
+  static Future<Map<String, String>> _load(File file) async {
     final map = <String, String>{};
     try {
       if (await file.exists()) {
@@ -67,14 +85,9 @@ class PrefsStore {
         }
       }
     } catch (e) {
-      logd('[prefs] 载入失败(按默认设置起步): $e');
+      logd('[prefs] 载入失败(按空表起步): $e');
     }
-    final store = PrefsStore._(file, map);
-    await store._migrateFromSecure(
-      legacyRead ?? ((k) => kSecureStorage.read(key: k)),
-      legacyDelete ?? ((k) => kSecureStorage.delete(key: k)),
-    );
-    return store;
+    return map;
   }
 
   /// 一次性迁移:本地没有、secure storage 里有 → 搬过来,并从 secure storage 删掉。
@@ -121,6 +134,14 @@ class PrefsStore {
 
   Future<void> delete({required String key}) async {
     _map.remove(key);
+    await _flush();
+  }
+
+  /// 整表快照与清空:只给凭据文件的 `readAll` / `deleteAll` 用。
+  Map<String, String> snapshot() => Map.of(_map);
+
+  Future<void> clear() async {
+    _map.clear();
     await _flush();
   }
 

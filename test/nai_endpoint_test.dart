@@ -10,6 +10,8 @@ import 'package:msgpack_dart/msgpack_dart.dart' as msgpack;
 import 'package:plana_app/core/net/gen_abort.dart';
 import 'package:plana_app/core/net/nai_client.dart';
 import 'package:plana_app/core/net/nai_endpoint.dart';
+import 'package:plana_app/core/net/nai_proxy.dart';
+import 'package:plana_app/core/store/app_stores.dart';
 
 /// 一帧流式消息:4 字节大端长度 + msgpack。
 List<int> _frame(Map<String, dynamic> msg) {
@@ -33,6 +35,45 @@ void main() {
     expect(normalizeNaiBase('$kNaiOfficialBase/'), '');
     expect(naiBaseOf(''), kNaiOfficialBase);
     expect(naiBaseOf('http://127.0.0.1:9'), 'http://127.0.0.1:9');
+  });
+
+  test('代理只顶替官方基址,第三方地址照旧', () {
+    expect(naiBaseOf('', proxy: true), kNaiProxyBase);
+    // 不带 /image 前缀时 Worker 转去 api 子域,登录会打错地方
+    expect(kNaiProxyBase, endsWith('/image'));
+    expect(naiBaseOf('http://127.0.0.1:9', proxy: true), 'http://127.0.0.1:9');
+  });
+
+  test('拨代理开关:官方客户端换线路,第三方的不动', () {
+    final c = ProviderContainer();
+    addTearDown(c.dispose);
+    const third = 'http://127.0.0.1:9';
+    final thirdClient = c.read(naiClientProvider(third));
+    expect(c.read(naiClientProvider('')).host, kNaiOfficialBase);
+
+    c.read(naiProxyProvider.notifier).set(true);
+    expect(c.read(naiClientProvider('')).host, kNaiProxyBase);
+    expect(c.read(naiClientProvider(third)), same(thirdClient));
+    expect(thirdClient.host, third);
+  });
+
+  test('代理开关落盘:重启读回来,关掉删键', () {
+    final stores = AppStores.ephemeral();
+    ProviderContainer boot() {
+      final c = ProviderContainer(
+        overrides: [appStoresProvider.overrideWithValue(stores)],
+      );
+      addTearDown(c.dispose);
+      return c;
+    }
+
+    final c = boot();
+    expect(c.read(naiProxyProvider), isFalse);
+    c.read(naiProxyProvider.notifier).set(true);
+    expect(boot().read(naiProxyProvider), isTrue);
+    c.read(naiProxyProvider.notifier).set(false);
+    expect(stores.prefs.get('nai_proxy'), isNull);
+    expect(boot().read(naiProxyProvider), isFalse);
   });
 
   test('接口地址形态校验:要协议要主机,不收查询串', () {
@@ -149,6 +190,55 @@ void main() {
       await arrived.future; // 请求真在飞了再取消
       abort.abort();
       await expectLater(pending, throwsA(isA<NaiException>()));
+    });
+  });
+
+  test('查点数:令牌被拒(401)跟查不通分得开', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((req) async {
+      // 官方对已删的号、编的假令牌都回这一句
+      final dead = req.headers.value('authorization') == 'Bearer dead';
+      req.response
+        ..statusCode = dead ? 401 : 503
+        ..headers.contentType = ContentType.json
+        ..write(
+          jsonEncode(
+            dead
+                ? {'statusCode': 401, 'message': 'Unauthorized'}
+                : {'statusCode': 503, 'message': 'Service Unavailable'},
+          ),
+        );
+      await req.response.close();
+    });
+    addTearDown(() => server.close(force: true));
+
+    Future<Object?> errorOf(NaiClient client, String token) async {
+      try {
+        await client.subscription(token);
+      } catch (e) {
+        return e;
+      }
+      return null;
+    }
+
+    final client = NaiClient(base: 'http://127.0.0.1:${server.port}');
+    await withRealHttp(() async {
+      expect(naiTokenRejected(await errorOf(client, 'dead')), isTrue);
+
+      final busy = await errorOf(client, 'ok');
+      expect(busy, isA<NaiException>());
+      expect(naiTokenRejected(busy), isFalse);
+
+      // 连不上(端口已关)也不算被拒
+      final gone = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final port = gone.port;
+      await gone.close(force: true);
+      final offline = await errorOf(
+        NaiClient(base: 'http://127.0.0.1:$port'),
+        'dead',
+      );
+      expect(offline, isA<NaiException>());
+      expect(naiTokenRejected(offline), isFalse);
     });
   });
 }

@@ -33,8 +33,12 @@
 
 - **参数导入** 高级导入面板完整展示图片内嵌的元数据并支持逐项勾选,兼容 NAI 隐写信息与 ComfyUI / A1111 元数据
 
-- **生成历史** 结果原图与参数快照本地留存,可按模型与标签检索,导出时元数据可保留、清除或改写;
-  支持按住抬起预览、胶片条拖至垃圾条删除、网格多选批量操作
+- **本地图库** 原图与参数快照本地留存,可按模型与标签检索,导出时元数据可保留、清除或改写;
+  支持按住抬起预览、胶片条拖至垃圾条删除、网格多选批量操作;删除图片后继续显示相邻作品;
+  日期可按今天、近 7 / 30 天、指定日期或范围筛选,范围日历支持拖动起止日期
+
+- **按生成时间导出** 批量按从旧到新的顺序逐张保存,文件名和拍摄日期保留生成时间;
+  PNG 可同时保留自定义生成信息,手机相册的添加日期仍为实际导出时刻
 
 - **素材库** 灵感库按角色 / 画风 / 场景归类存储并可生成预览图;Vibe 库支持 `.naiv4vibe` 导入导出与逐模型编码管理;
   角色参考图库留存用过的参考图
@@ -144,7 +148,7 @@ NAI 5 载荷契约、Argon2id 派生均由参考向量钉住,改动对不上即�
 | 来源 | 用途 |
 |---|---|
 | [Danbooru](https://danbooru.donmai.us/) | 标签体系与别名数据 |
-| [Auto-NovelAI-Refactor](https://github.com/zhulinyv/Auto-NovelAI-Refactor) · zhulinyv | 离线补全词库(`assets/danbooru.tsv`,随包分发)的标签表、热度与绝大部分中文译名,取自其 `danbooru_e621_merged_with_zh.csv`(GPL-3.0) |
+| [Auto-NovelAI-Refactor](https://github.com/zhulinyv/Auto-NovelAI-Refactor) · zhulinyv | 离线补全词库(`assets/danbooru.tsv`,随包分发)的标签表、热度、类目与中文译名,取自其 `danbooru_tags_full_zh.csv`(GPL-3.0) |
 | [DanbooruSearchOnline](https://github.com/SuzumiyaAkizuki/DanbooruSearchOnline) · SuzumiyaAkizuki | 增强补全的在线中文搜词、译名与一句话简介 |
 | [quicktagcloud](https://novelai.quicktagcloud.com/) | 法典图鉴的全部数据(词条 / 画师串 / 合集 / 例图)。只读接入,数据不随包分发,本应用不修改也不发布法典内容,所有内容归原作者所有 |
 | [@huggingface/tokenizers](https://github.com/huggingface/tokenizers) | T5 分词器移植的参照实现 |

@@ -114,16 +114,17 @@ void main() {
         const v5 = 'NAI 5.0 Full';
         expect(estimateCost(_s(model: v5), isOpus: true), 0);
         // 832×1216 @28 步:base 19.29 → ceil 20,V5 ×1.5 = 30
-        expect(
-          estimateCost(_s(model: v5), isOpus: true, v5Charged: true),
-          30,
-        );
+        expect(estimateCost(_s(model: v5), isOpus: true, v5Charged: true), 30);
       });
 
       test('只影响 V5 —— 4.5 的免费额度跟这块电池无关', () {
         expect(estimateCost(_s(), isOpus: true, v5Charged: true), 0);
         expect(
-          estimateCost(_s(model: 'NAI 4.0 Full'), isOpus: true, v5Charged: true),
+          estimateCost(
+            _s(model: 'NAI 4.0 Full'),
+            isOpus: true,
+            v5Charged: true,
+          ),
           0,
         );
       });
@@ -210,6 +211,52 @@ void main() {
       final r = scaleToFree(1216, 1600);
       expect(r.w * r.h, lessThanOrEqualTo(kFreePixelThreshold));
       expect(classifyPixels(r.w, r.h), PixelTier.free);
+    });
+
+    test('贴线判定:常用免费尺寸都在免费线上', () {
+      expect(isOnPixelLine(1024, 1024, kFreePixelThreshold), isTrue);
+      expect(isOnPixelLine(832, 1216, kFreePixelThreshold), isTrue);
+      expect(isOnPixelLine(1216, 832, kFreePixelThreshold), isTrue);
+      expect(isOnPixelLine(1024, 960, kFreePixelThreshold), isFalse);
+      expect(isOnPixelLine(1024, 3072, kMaxTotalPixels), isTrue);
+      // 上限线在 w<1024 处已出画布,贴着底边不算在线上
+      expect(isOnPixelLine(960, 3072, kMaxTotalPixels), isFalse);
+    });
+
+    test('吸附:对角线上的点吸到 1024×1024,出画布的线端吸到边角', () {
+      expect(snapToPixelLine(1060, 1060, kFreePixelThreshold), (
+        w: 1024,
+        h: 1024,
+      ));
+      expect(snapToPixelLine(3072, 300, kFreePixelThreshold), (
+        w: 3072,
+        h: 320,
+      ));
+      expect(snapToPixelLine(950, 3072, kMaxTotalPixels), (w: 1024, h: 3072));
+    });
+
+    test('吸附落点:64 对齐、在画布内、紧贴线内侧不越线', () {
+      for (final budget in [kFreePixelThreshold, kMaxTotalPixels]) {
+        for (var x = 64.0; x <= kMaxDim; x += 37) {
+          final y = budget / x;
+          if (y > kMaxDim) continue;
+          // 线上、线内、线外各取一点(模拟手指在吸附圈里偏一点)
+          for (final dy in [-40.0, 0.0, 40.0]) {
+            final r = snapToPixelLine(x, y + dy, budget);
+            expect(r.w % kResSnapStep, 0);
+            expect(r.h % kResSnapStep, 0);
+            expect(r.w, inInclusiveRange(kMinDim, kMaxDim));
+            expect(r.h, inInclusiveRange(kMinDim, kMaxDim));
+            expect(r.w * r.h, lessThanOrEqualTo(budget));
+            expect(isOnPixelLine(r.w, r.h, budget), isTrue);
+          }
+        }
+      }
+    });
+
+    test('到线距离:线上为 0,原点无穷远', () {
+      expect(distanceToPixelLine(1024, 1024, kFreePixelThreshold), 0);
+      expect(distanceToPixelLine(0, 0, kFreePixelThreshold), double.infinity);
     });
 
     test('比例显示:常规化简,超 99 退化为小数比', () {

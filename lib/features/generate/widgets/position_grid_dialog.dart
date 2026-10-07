@@ -244,7 +244,8 @@ class _PositionDialogState extends ConsumerState<_PositionDialog> {
                     ),
                   ],
                 ),
-                const SizedBox(height: 12),
+                // 头部那行被关闭键的点击区撑到 40 高,文字下方本就空着一截
+                const SizedBox(height: 4),
                 // 角色切换条:一处切换所有角色,无需反复开关弹窗。
                 // 单行横滑而不是 Wrap 竖排:V5 一图最多 32 个角色,竖排能占掉
                 // 半屏,把真正要操作的定位画布挤到画面外;打开时把当前角色滚进
@@ -265,7 +266,8 @@ class _PositionDialogState extends ConsumerState<_PositionDialog> {
                     ),
                   ),
                 ),
-                const SizedBox(height: 14),
+                // V5 画布自带上下留白(给贴边的点溢出用),再叠这段就成了双份
+                if (!isV5) const SizedBox(height: 14),
                 // 定位区。AUTO 开着时这些坐标压根不发出去,所以整块压暗并挡住
                 // 手势 —— 摆得动却不生效是最难受的一种:人会以为自己摆错了,
                 // 反复试。要改先把下面那个开关关掉,那是唯一的入口,也看得见。

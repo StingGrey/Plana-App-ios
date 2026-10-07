@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -8,15 +7,18 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
-import '../../core/net/remote_image.dart';
+import '../../core/store/ui_prefs.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/ui/pinch_columns.dart';
 import '../../core/ui/responsive_grid.dart';
 import '../../core/ui/scroll_memory.dart';
 import '../../core/ui/selection_bar.dart';
 import '../editor/editor_models.dart' show draftOf, outputOf, pickEditorText;
+import '../generate/canvas_state.dart';
 import '../generate/gen_modules.dart';
 import '../generate/generate_state.dart';
 import '../generate/models.dart' show maxCharactersOf;
+import '../generate/style_recipes.dart';
 import '../generate/widgets/common.dart'
     show confirmDialog, hintSnack, sharedAxisRoute;
 import '../online_gallery/online_gallery_page.dart';
@@ -27,6 +29,10 @@ import 'public_tags.dart';
 import 'tag_editor_page.dart';
 import 'tag_library.dart';
 import 'tag_models.dart';
+import 'widgets/scope_seg_tabs.dart';
+import 'widgets/tag_card.dart';
+import 'widgets/tag_filter_chips.dart';
+import 'widgets/tag_filter_sheet.dart';
 import 'widgets/tag_sheets.dart';
 import '../../core/util/haptics.dart';
 
@@ -52,7 +58,10 @@ class InspirationPage extends ConsumerStatefulWidget {
 }
 
 class _InspirationPageState extends ConsumerState<InspirationPage>
-    with AutomaticKeepAliveClientMixin, SingleTickerProviderStateMixin {
+    with
+        AutomaticKeepAliveClientMixin,
+        TickerProviderStateMixin,
+        PinchColumnsMixin {
   TagCategory _cat = TagCategory.character;
 
   /// 选中「法典」分类:正文切换为只读的法典浏览器 [CodexView],其余分类照旧。
@@ -61,13 +70,17 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   bool _codex = false;
   static const _kCodexSel = '__codex__';
 
+  /// 法典正文进过一次就一直挂着(切回标签库时只是藏起来),没进过不建、不拉数据。
+  bool _codexBuilt = false;
+
   late final TabController _tab = TabController(length: 2, vsync: this);
-  // 初始分类的记忆直接灌进 initialScrollOffset;换分类走 _switchCategory 落位。
-  late final _mineScroll = ScrollController(
-    initialScrollOffset: ScrollMemory.read(_scrollKey(_cat, false)) ?? 0,
+  // 账本 key 跟着当前分类走;网格按分类 + 分段换 key 重建,新网格从各自的账上落位
+  // (换分类、换分段、骨架换成内容都一样)。
+  late final _mineScroll = MemoScrollController.keyed(
+    () => _scrollKey(_cat, false),
   );
-  late final _pubScroll = ScrollController(
-    initialScrollOffset: ScrollMemory.read(_scrollKey(_cat, true)) ?? 0,
+  late final _pubScroll = MemoScrollController.keyed(
+    () => _scrollKey(_cat, true),
   );
 
   /// 每分类已选 id(我的/公共库两 scope 共用一套,对齐 web selectionMap)。
@@ -77,12 +90,26 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
 
   /// 筛选:null=全部;[_kFavFilter]=收藏;其余为标签名。
   String? _filter;
-  static const _kFavFilter = ' fav';
+  static const _kFavFilter = TagFilterChips.favorites;
 
   /// 画风的「适用模型」筛选:null=全部;[kGenericModelFilter]=只看通用;
   /// 其余是 [ArtistModelGroup] 的 name。与 [_filter] 是两个正交的维度,
   /// 可以同时生效(「收藏的 + 标了 NAI 5 的」)。
   String? _modelFilter;
+
+  /// 作者筛选:null=全部;其余是条目的归属键(QQ 号,存量数据可能是个名字串)。
+  /// 角色/画风(有公共库的两类)都吃这一维,与 [_modelFilter] 同样正交。
+  String? _authorFilter;
+
+  /// 作者目录(QQ 号 → 昵称)。build 时从 [tagAuthorNamesProvider] 取一份存下来,
+  /// 好让 [_matches] 这些深处的过滤函数不必层层传参;取不到就是空表(显示 QQ 号)。
+  Map<String, String> _authorNames = const {};
+
+  /// 排序档,每个分类记各的。与搜索/筛选不同,**换分类不重置** —— 它是「我想
+  /// 怎么看这一类」的偏好,回来还想看到上次那个排法。
+  final Map<TagCategory, TagSort> _sortBy = {};
+
+  TagSort get _sortMode => _sortBy[_cat] ?? defaultTagSort(_cat);
 
   /// 批量操作进行中(禁重入)。
   bool _busy = false;
@@ -97,8 +124,6 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
       final i = _tab.animation!.value.round();
       if (i != _tabIndex && mounted) setState(() => _tabIndex = i);
     });
-    _mineScroll.addListener(() => _saveScroll(_mineScroll, false));
-    _pubScroll.addListener(() => _saveScroll(_pubScroll, true));
   }
 
   @override
@@ -137,28 +162,44 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   String _scrollKey(TagCategory c, bool pub) =>
       'inspiration.${c.name}.${pub ? 'public' : 'mine'}';
 
-  /// 持续记账(内容不可滚时跳过,否则会把记忆冲成 0)。
-  void _saveScroll(ScrollController ctrl, bool pub) {
-    if (!ctrl.hasClients || ctrl.positions.length != 1) return;
-    final p = ctrl.position;
-    if (!p.hasContentDimensions || p.maxScrollExtent <= 0) return;
-    ScrollMemory.write(_scrollKey(_cat, pub), p.pixels);
-  }
+  // ---- 双指捏合改列数(见 PinchColumnsMixin) ----
 
-  void _jumpTo(ScrollController ctrl, double want) {
-    if (!ctrl.hasClients || ctrl.positions.length != 1) return;
-    final p = ctrl.position;
-    if (!p.hasContentDimensions) return;
-    final target = want.clamp(0.0, p.maxScrollExtent);
-    if ((p.pixels - target).abs() > 1) ctrl.jumpTo(target);
+  /// 表里记过就按记的来(捏过的地方是显式选择);没记过按可用宽度自适应 ——
+  /// 平板横屏默认就该是四到六列,不该停在手机那两列上等用户捏。
+  int _savedCols(TagCategory c) =>
+      ref.read(uiPrefsProvider).inspirationColumns[c.name] ??
+      _columnCount(MediaQuery.sizeOf(context).width);
+
+  @override
+  int get initialGridColumns => _savedCols(_cat);
+
+  @override
+  int get minGridColumns => 1;
+
+  /// 横幅卡(画风)封顶 3 列:再多一列,卡片矮到名字条和角上的按钮就把图盖满了。
+  @override
+  int get maxGridColumns => _def.previewAspect > 1 ? 3 : 4;
+
+  @override
+  ScrollController get pinchScrollController =>
+      _def.hasPublic && _tabIndex == 1 ? _pubScroll : _mineScroll;
+
+  @override
+  void onGridColumnsChanged(int cols) {
+    final key = _cat.name;
+    ref
+        .read(uiPrefsProvider.notifier)
+        .patch(
+          (p) => p.copyWith(
+            inspirationColumns: {...p.inspirationColumns, key: cols},
+          ),
+        );
   }
 
   void _switchCategory(TagCategory c) {
     if (c == _cat) return;
-    // 目标位置必须在换 _cat **之前**读:换完之后旧偏移还挂在同一个控制器上,
-    // 记账监听会先把旧值写进新分类的账,读到的就不是原位了。
-    final wantMine = ScrollMemory.read(_scrollKey(c, false)) ?? 0;
-    final wantPub = ScrollMemory.read(_scrollKey(c, true)) ?? 0;
+    // 滚动位置不用在这里搬:网格的 widget key 带分类,换完 _cat 就是一份新列表,
+    // 挂上控制器时从新分类的账上落位(见 [MemoScrollController])。
     setState(() {
       _cat = c;
       _search = '';
@@ -166,12 +207,8 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
       _modelFilter = null;
       if (!tagCategoryDef(c).hasPublic) _tab.index = 0;
     });
-    // 新分类的列表要等这一帧布好才有 maxScrollExtent,落位排到帧后。
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _jumpTo(_mineScroll, wantMine);
-      _jumpTo(_pubScroll, wantPub);
-    });
+    // 换完 _cat 再换:上限跟着新分类的卡片形状走
+    jumpGridColumns(_savedCols(c));
   }
 
   // ---- 数据 ----
@@ -179,11 +216,28 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   bool _matches(TagEntry e, String q) {
     if (q.isEmpty) return true;
     bool has(String s) => s.toLowerCase().contains(q);
+    final author = e.createdBy?.trim();
     return has(e.name) ||
         has(e.positive) ||
         e.aliases.any(has) ||
-        e.tags.any(has);
+        e.tags.any(has) ||
+        // 作者:昵称和 QQ 号都算命中,搜索框里输哪个都能找到他发的东西。
+        // ⚠ QQ 号要 5 位起才比 —— 画风名本身就是 A1..Z99 这种编号,再让「5」
+        //   去撞每个作者的号码,一搜就是满屏不相干的串。
+        (author != null &&
+            author.isNotEmpty &&
+            ((q.length >= 5 && has(author)) ||
+                has(_authorNames[author] ?? '')));
   }
+
+  /// 作者筛选。归属键为空的条目(纯本地 / 公共库里的无主老数据)不属于任何人,
+  /// 筛作者时一律不出现。
+  List<TagEntry> _byAuthor(List<TagEntry> list) => _authorFilter == null
+      ? list
+      : [
+          for (final e in list)
+            if (e.createdBy?.trim() == _authorFilter) e,
+        ];
 
   /// 标签被删(标签池管理里删掉正在筛选的那个)后按「全部」处理,
   /// 不让列表空掉却没有任何选中态。
@@ -195,23 +249,13 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
 
   /// 「我的」的完整来源 = 本地条目 + 公共库里我发布的(本地没副本的补进来,
   /// 标 created;对齐 web mineAll)。归属判定优先 owner_id,与服务端一致。
-  List<TagEntry> _mineAll(TagLibraryState lib) {
-    final local = lib.of(_cat);
-    if (!_def.hasPublic) return local;
-    final myId = ref.watch(botSessionProvider).value?.botUserId;
-    final pub = ref.watch(publicTagsProvider(_cat)).value;
-    if (myId == null || pub == null) return local;
-    final haveId = {for (final e in local) e.publicId};
-    final haveName = {for (final e in local) e.name};
-    return [
-      ...local,
-      for (final p in pub)
-        if (p.createdBy == myId &&
-            !haveId.contains(p.publicId) &&
-            !haveName.contains(p.name))
-          p.copyWith(origin: TagOrigin.created),
-    ];
-  }
+  List<TagEntry> _mineAll(TagLibraryState lib) => _def.hasPublic
+      ? mergeMineTags(
+          lib.of(_cat),
+          ref.watch(botSessionProvider).value?.botUserId,
+          ref.watch(publicTagsProvider(_cat)).value,
+        )
+      : lib.of(_cat);
 
   List<TagEntry> _mineList(TagLibraryState lib) {
     final q = _search.trim().toLowerCase();
@@ -231,7 +275,7 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
           if (e.tags.contains(filter)) e,
       ];
     }
-    list = _byModel(list);
+    list = _byAuthor(_byModel(list));
     _sort(list);
     return list;
   }
@@ -250,19 +294,28 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
       for (final e in all)
         if (_matches(e, q)) e,
     ];
-    final out = _byModel(list);
+    final out = _byAuthor(_byModel(list));
     _sort(out);
     return out;
   }
 
-  /// 画风按编号自然序(A1<A2<A10);其余最新在前。
   void _sort(List<TagEntry> list) {
-    if (_cat == TagCategory.artist) {
-      list.sort((a, b) => naturalCompare(a.name, b.name));
-    } else {
-      list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    switch (_sortMode) {
+      case TagSort.number:
+        list.sort((a, b) => naturalCompare(a.name, b.name));
+      case TagSort.time:
+        list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      // 按作者是**切组**不是排序:组内还是该分类原本的顺序,不然点开一栏
+      // 里面又是一团乱序。
+      case TagSort.author:
+        _sortNatural(list);
     }
   }
+
+  /// 分类原本的排法:画风按编号自然序(A1<A2<A10),其余最新在前。
+  void _sortNatural(List<TagEntry> list) => _cat == TagCategory.artist
+      ? list.sort((a, b) => naturalCompare(a.name, b.name))
+      : list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
   // ---- 回填(语义对齐 web;app 编辑器无芯片协议,按约定插裸内容) ----
 
@@ -281,6 +334,8 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   }
 
   Future<void> _afterConfirm(List<TagEntry> used, String message) async {
+    // 写进的是此刻的当前画布,提示条里的「套用」也按它回写
+    final canvasId = ref.read(canvasWorkspaceProvider).activeId;
     await ref.read(tagLibraryProvider.notifier).markUsed(_cat, [
       for (final e in used) e.id,
     ]);
@@ -300,6 +355,10 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     if (!mounted) return;
     hintSnack(context, message, icon: Icons.check_circle_outline);
     ref.read(shellIndexProvider.notifier).select(kTabCreate);
+    // 画风带推荐参数、且对得上当前模型的,弹窗问套不套
+    if (_cat == TagCategory.artist) {
+      await offerStyleRecipe(context, ref, used, canvasId: canvasId);
+    }
   }
 
   /// 角色 → 加入角色卡(带名追加,上限按模型截断,见 maxCharactersOf)。
@@ -307,9 +366,17 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     final entries = _resolveSelected(lib);
     if (entries.isEmpty) return;
     final cap = maxCharactersOf(ref.read(generateProvider).params.model);
+    final pubPreview = publicPreviewsOf(
+      ref.read(publicTagsProvider(_cat)).value,
+    );
     final added = ref.read(generateProvider.notifier).addNamedCharactersFrom([
       for (final e in entries)
-        (name: e.name, positive: e.positive, negative: e.negative),
+        (
+          name: e.name,
+          positive: e.positive,
+          negative: e.negative,
+          avatar: tagPreviewOf(e, pubPreview),
+        ),
     ]);
     if (added == 0) {
       hintSnack(context, '角色已满 $cap 个', icon: Icons.block_outlined);
@@ -322,10 +389,16 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   }
 
   /// 角色「主提示词」/ 画风/场景/其他「确认选择」:正负向拼进主提示词。
+  /// 主提示词分过区时,每个条目自成一格、不折叠(同提示词卡头的「灵感库」)。
   Future<void> _confirmToPrompt(TagLibraryState lib) async {
     final entries = _resolveSelected(lib);
     if (entries.isEmpty) return;
     final gen = ref.read(generateProvider);
+    if (gen.sections.isNotEmpty) {
+      ref.read(generateProvider.notifier).addEntrySections(entries);
+      await _afterConfirm(entries, '已加入提示词');
+      return;
+    }
     // 追加到编辑器原文草稿(带回既有的禁用/折叠),每个条目自成一个折叠组;
     // 定稿由 outputOf 从草稿导出 —— 两者必须同时写,只写定稿的话草稿会被
     // 判过期作废,这次加进去的折叠(以及用户原有的禁用词)就一起没了。
@@ -352,70 +425,96 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     final scheme = context.scheme;
     final lib = ref.watch(tagLibraryProvider).value ?? const TagLibraryState();
     final def = _def;
+    _authorNames = ref.watch(tagAuthorNamesProvider).value ?? const {};
 
-    // 法典模式:只留分类胶囊的顶栏 + 只读浏览器,无搜索/分段/筛选/选择栏
-    // (法典自带选择器与搜索)。
-    if (_codex) {
-      return Scaffold(
-        body: Column(
-          children: [
-            _topBarCodex(scheme, lib),
-            const Expanded(child: CodexView()),
-          ],
-        ),
-      );
-    }
-
+    // 标签库与法典两套正文都挂着、只显示其一:来回切换时两边的滚动位置、
+    // 搜索框、分段都原样还在(原来是整块拆掉重建,切回来就回到顶上)。
     return Scaffold(
-      body: Column(
+      body: Stack(
+        fit: StackFit.expand,
         children: [
-          _topBar(scheme, lib),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(_kEdge, 8, _kEdge, 0),
-            child: TextField(
-              key: ValueKey('tag-search-${def.webId}'),
-              onChanged: (v) => setState(() => _search = v),
-              decoration: InputDecoration(
-                isDense: true,
-                hintText: def.searchHint,
-                prefixIcon: const Icon(Icons.search, size: 20),
-                filled: true,
-                fillColor: scheme.surfaceContainerHigh,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none,
-                ),
-                contentPadding: const EdgeInsets.symmetric(vertical: 8),
-                // 「适用模型」筛选挂在搜索框里:它和左边的标签筛选是两个正交维度,
-                // 塞进同一条 chip 行既会让人以为是同一组单选,标签一多还会被挤到
-                // 屏幕外。挂这儿两个 scope 都有,且不多占一行高度。
-                suffixIcon: _cat == TagCategory.artist
-                    ? _modelFilterButton(scheme)
-                    : null,
-                suffixIconConstraints: const BoxConstraints(
-                  minWidth: 0,
-                  maxWidth: 190,
-                ),
+          _shown(!_codex, _tagBody(scheme, lib, def)),
+          // 法典模式:只留分类胶囊的顶栏 + 只读浏览器,无搜索/分段/筛选/选择栏
+          // (法典自带选择器与搜索)。
+          if (_codexBuilt)
+            _shown(
+              _codex,
+              Column(
+                children: [
+                  _topBarCodex(scheme, lib),
+                  const Expanded(child: CodexView()),
+                ],
+              ),
+            ),
+        ],
+      ),
+      bottomNavigationBar: _codex ? null : _selectionBar(scheme, lib),
+    );
+  }
+
+  /// 藏起来但不拆:不绘制、不接手势、不占焦点、动画停走,状态全留着。
+  Widget _shown(bool on, Widget child) => Offstage(
+    offstage: !on,
+    child: TickerMode(
+      enabled: on,
+      child: ExcludeFocus(excluding: !on, child: child),
+    ),
+  );
+
+  Widget _tagBody(ColorScheme scheme, TagLibraryState lib, TagCategoryDef def) {
+    return Column(
+      children: [
+        _topBar(scheme, lib),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(_kEdge, 8, _kEdge, 0),
+          child: TextField(
+            key: ValueKey('tag-search-${def.webId}'),
+            onChanged: (v) => setState(() => _search = v),
+            decoration: InputDecoration(
+              isDense: true,
+              hintText: def.searchHint,
+              prefixIcon: const Icon(Icons.search, size: 20),
+              filled: true,
+              fillColor: scheme.surfaceContainerHigh,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide.none,
+              ),
+              contentPadding: const EdgeInsets.symmetric(vertical: 8),
+              // 「作者 / 适用模型」筛选挂在搜索框里:它们和左边的标签筛选是正交
+              // 维度,塞进同一条 chip 行既会让人以为是同一组单选,标签一多还会被
+              // 挤到屏幕外。挂这儿两个 scope 都有,且不多占一行高度。
+              // 只给有公共库的两类(角色/画风)—— 场景/其他的条目全是自己的,
+              // 没有「别人」可筛。
+              suffixIcon: def.hasPublic ? _filterButton(scheme) : null,
+              suffixIconConstraints: const BoxConstraints(
+                minWidth: 0,
+                maxWidth: 190,
               ),
             ),
           ),
-          if (def.hasPublic)
-            Padding(
-              // 「我的」下面紧跟筛选行,间距由它顶出,这里不再留底距;
-              // 公共态没有筛选行,分段行会直接贴上网格首个分组头(顶衬仅 2),
-              // 补一档底距回到与上方各行相同的 8 节奏。
-              padding: EdgeInsets.fromLTRB(
-                _kEdge,
-                8,
-                _kEdge,
-                _tabIndex == 0 ? 0 : 8,
-              ),
-              child: _segTabs(scheme, lib.of(_cat).length),
+        ),
+        if (def.hasPublic)
+          Padding(
+            // 「我的」下面紧跟筛选行,间距由它顶出,这里不再留底距;
+            // 公共态没有筛选行,分段行会直接贴上网格首个分组头(顶衬仅 2),
+            // 补一档底距回到与上方各行相同的 8 节奏。
+            padding: EdgeInsets.fromLTRB(
+              _kEdge,
+              8,
+              _kEdge,
+              _tabIndex == 0 ? 0 : 8,
             ),
-          if (_tabIndex == 0 || !def.hasPublic) _filterChips(lib),
-          Expanded(
-            // 禁 TabBarView 横滑:横滑手势留给 shell PageView 切底部 tab
-            // (与场景/其他分类行为一致),scope 切换走分段控件点按。
+            child: ScopeSegTabs(
+              controller: _tab,
+              mineCount: lib.of(_cat).length,
+            ),
+          ),
+        if (_tabIndex == 0 || !def.hasPublic) _filterChips(lib),
+        Expanded(
+          // 禁 TabBarView 横滑:横滑手势留给 shell PageView 切底部 tab
+          // (与场景/其他分类行为一致),scope 切换走分段控件点按。
+          child: pinchLayer(
             child: def.hasPublic
                 ? TabBarView(
                     controller: _tab,
@@ -424,9 +523,8 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
                   )
                 : _mineTab(lib),
           ),
-        ],
-      ),
-      bottomNavigationBar: _selectionBar(scheme, lib),
+        ),
+      ],
     );
   }
 
@@ -438,6 +536,8 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
         children: [
           _categoryPill(scheme, lib),
           const Spacer(),
+          // 排序只给有公共库的两类:场景/其他的条目全是自己的,没有作者可分组
+          if (_def.hasPublic) _sortButton(scheme),
           IconButton(
             tooltip: '在线画廊',
             icon: const Icon(Icons.public),
@@ -458,6 +558,37 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
             ).push(sharedAxisRoute(TagEditorPage(cat: _cat))),
           ),
         ],
+      ),
+    );
+  }
+
+  /// 顶栏的排序按钮。不是默认档时图标点主色 —— 「列表怎么变了个顺序」
+  /// 得能一眼找到是这儿改的。
+  Widget _sortButton(ColorScheme scheme) {
+    final mode = _sortMode;
+    final on = mode != defaultTagSort(_cat);
+    return PopupMenuButton<TagSort>(
+      tooltip: '排序:${mode.label}',
+      offset: const Offset(0, 44),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      onSelected: (v) => setState(() => _sortBy[_cat] = v),
+      itemBuilder: (_) => [
+        for (final s in tagSortOptions(_cat))
+          PopupMenuItem(
+            value: s,
+            child: Row(
+              children: [
+                Text(s.label),
+                const Spacer(),
+                if (s == mode)
+                  Icon(Icons.check, size: 18, color: scheme.primary),
+              ],
+            ),
+          ),
+      ],
+      icon: Icon(
+        Icons.sort,
+        color: on ? scheme.primary : scheme.onSurfaceVariant,
       ),
     );
   }
@@ -489,7 +620,7 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   /// 分类选择(四类标签库 + 法典)。法典是特殊项:切模式,不走 [_switchCategory]。
   void _onPickCat(Object v) {
     if (v == _kCodexSel) {
-      setState(() => _codex = true);
+      setState(() => _codex = _codexBuilt = true);
     } else if (v is TagCategory) {
       if (_codex) setState(() => _codex = false);
       _switchCategory(v);
@@ -608,108 +739,6 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     ],
   );
 
-  Widget _segTabs(ColorScheme scheme, int mineCount) {
-    return SizedBox(
-      height: 42,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: scheme.surfaceContainerHigh,
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Stack(
-          children: [
-            // 视觉层:滑动指示器 + 渐变标签(随 tab 动画重建,无手势)。
-            Positioned.fill(
-              child: AnimatedBuilder(
-                animation: _tab.animation!,
-                builder: (context, _) {
-                  final t = _tab.animation!.value.clamp(0.0, 1.0);
-                  return LayoutBuilder(
-                    builder: (context, c) {
-                      final segW = c.maxWidth / 2;
-                      return Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          Positioned(
-                            top: 3,
-                            bottom: 3,
-                            left: 3 + t * segW,
-                            width: segW - 6,
-                            child: DecoratedBox(
-                              decoration: BoxDecoration(
-                                color: scheme.surface,
-                                borderRadius: BorderRadius.circular(9),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withValues(alpha: .06),
-                                    blurRadius: 4,
-                                    offset: const Offset(0, 1),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          Row(
-                            children: [
-                              _segLabel(
-                                0,
-                                Icons.bookmark_outline,
-                                '我的 · $mineCount',
-                                t,
-                              ),
-                              _segLabel(1, Icons.public, '公共库', t),
-                            ],
-                          ),
-                        ],
-                      );
-                    },
-                  );
-                },
-              ),
-            ),
-            // 手势层:稳定不重建,整段任意位置可点。
-            Positioned.fill(
-              child: Row(
-                children: [
-                  for (var i = 0; i < 2; i++)
-                    Expanded(
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () => _tab.animateTo(i),
-                        child: const SizedBox.expand(),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _segLabel(int i, IconData icon, String label, double t) {
-    final scheme = context.scheme;
-    final sel = i == 0 ? 1 - t : t;
-    final color = Color.lerp(scheme.onSurfaceVariant, scheme.primary, sel);
-    return Expanded(
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, size: 15, color: color),
-          const SizedBox(width: 6),
-          Text(
-            label,
-            style: context.texts.labelLarge!.copyWith(
-              fontWeight: FontWeight.w700,
-              color: color,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   /// 当前模型筛选的显示名;null = 全部。
   String? get _modelFilterLabel {
     final f = _modelFilter;
@@ -721,20 +750,35 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     return null;
   }
 
-  /// 搜索框右侧的「适用模型」筛选:没筛时是个漏斗图标,筛着时变成带 × 的药丸 ——
-  /// 「有没有在筛、筛的哪一档」得一眼看见,否则会出现"我的串怎么少了"。
-  Widget _modelFilterButton(ColorScheme scheme) {
-    final label = _modelFilterLabel;
+  /// 作者的显示名:查得到昵称就显示昵称,查不到就是那串 QQ 号。
+  String _authorLabel(String id) => _authorNames[id] ?? id;
+
+  /// 漏斗里的两维有没有在筛(空列表的说法要跟着变:是"没匹配上"而不是"库是空的")。
+  bool get _narrowed => _authorFilter != null || _modelFilter != null;
+
+  /// 药丸上的字;null = 没在筛。两维都筛着就并排写 ——「有没有在筛、筛的哪一档」
+  /// 得一眼看见,否则会出现"我的串怎么少了"。
+  String? get _filterPillLabel {
+    final parts = [
+      if (_authorFilter != null) _authorLabel(_authorFilter!),
+      ?_modelFilterLabel,
+    ];
+    return parts.isEmpty ? null : parts.join(' · ');
+  }
+
+  /// 搜索框右侧的筛选入口:没筛时是个漏斗图标,筛着时变成带 × 的药丸。
+  Widget _filterButton(ColorScheme scheme) {
+    final label = _filterPillLabel;
     if (label == null) {
       return IconButton(
-        tooltip: '按适用模型筛选',
+        tooltip: '筛选',
         visualDensity: VisualDensity.compact,
         icon: Icon(
           Icons.filter_alt_outlined,
           size: 20,
           color: scheme.onSurfaceVariant,
         ),
-        onPressed: _pickModelFilter,
+        onPressed: _pickFilters,
       );
     }
     return Padding(
@@ -746,21 +790,29 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            InkWell(
-              onTap: _pickModelFilter,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(10, 5, 4, 5),
-                child: Text(
-                  label,
-                  style: context.texts.labelMedium!.copyWith(
-                    color: scheme.onPrimary,
-                    fontWeight: FontWeight.w700,
+            // 昵称可长可短,药丸宽度封顶在 suffixIconConstraints,超了就截断
+            Flexible(
+              child: InkWell(
+                onTap: _pickFilters,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(10, 5, 4, 5),
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: context.texts.labelMedium!.copyWith(
+                      color: scheme.onPrimary,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
               ),
             ),
             InkWell(
-              onTap: () => setState(() => _modelFilter = null),
+              onTap: () => setState(() {
+                _authorFilter = null;
+                _modelFilter = null;
+              }),
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(2, 5, 8, 5),
                 child: Icon(Icons.close, size: 15, color: scheme.onPrimary),
@@ -772,132 +824,39 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     );
   }
 
-  Future<void> _pickModelFilter() async {
-    final scheme = context.scheme;
-    // 「全部」用哨兵而不是 null:点外面关掉 sheet 返回的也是 null,
-    // 两者混在一起会变成"随手关掉就把筛选清了"。
-    const all = '__all__';
-    final picked = await showModalBottomSheet<String>(
-      context: context,
-      builder: (_) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 6),
-              child: Text(
-                '按适用模型筛选',
-                style: context.texts.titleSmall!.copyWith(
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-            for (final e in <(String, String)>[
-              (all, '全部'),
-              for (final g in ArtistModelGroup.values) (g.name, g.filterLabel),
-              (kGenericModelFilter, '$kGenericModelLabel(没标注的)'),
-            ])
-              ListTile(
-                dense: true,
-                title: Text(e.$2),
-                trailing: (_modelFilter ?? all) == e.$1
-                    ? Icon(Icons.check, size: 18, color: scheme.primary)
-                    : null,
-                onTap: () => Navigator.pop(context, e.$1),
-              ),
-            const SizedBox(height: 8),
-          ],
-        ),
-      ),
+  Future<void> _pickFilters() async {
+    // 候选作者只从**当前 scope 里真有的条目**上点:公共 tab 数公共库、我的 tab
+    // 数我的那些,免得补全里列出一串在这个列表里根本搜不到的人。
+    final lib = ref.read(tagLibraryProvider).value ?? const TagLibraryState();
+    final pub = ref.read(publicTagsProvider(_cat)).value;
+    final scope = _tabIndex == 1 && _def.hasPublic
+        ? (pub ?? const <TagEntry>[])
+        : mergeMineTags(
+            lib.of(_cat),
+            ref.read(botSessionProvider).value?.botUserId,
+            pub,
+          );
+    final picked = await showTagFilterSheet(
+      context,
+      authors: collectTagAuthors(scope, _authorNames),
+      current: (author: _authorFilter, model: _modelFilter),
+      // 适用模型只有画风有;角色那张表就少这一节。
+      hasModels: _cat == TagCategory.artist,
     );
     if (!mounted || picked == null) return; // null = 点外面关掉,不改
-    setState(() => _modelFilter = picked == all ? null : picked);
+    setState(() {
+      _authorFilter = picked.author;
+      _modelFilter = picked.model;
+    });
   }
 
-  /// 「全部 / 收藏 / 标签…」筛选行(我的 scope;标签=池∪在用)。
-  /// 药丸 chip + 主色实底标记选中,与 Vibe 管理器同款。
-  Widget _filterChips(TagLibraryState lib) {
-    final scheme = context.scheme;
-    final tags = lib.knownTags(_cat);
-    final filter = _validFilter(lib);
-    Widget chip(String label, bool sel, VoidCallback onTap, {IconData? icon}) =>
-        Padding(
-          padding: const EdgeInsets.only(right: 8),
-          child: ChoiceChip(
-            // 图标放进 label(自控间距),不用 avatar(默认间距太大)
-            label: icon == null
-                ? Text(label)
-                : Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        icon,
-                        size: 15,
-                        color: sel ? scheme.onPrimary : scheme.onSurfaceVariant,
-                      ),
-                      const SizedBox(width: 3),
-                      Text(label),
-                    ],
-                  ),
-            selected: sel,
-            onSelected: (_) => onTap(),
-            visualDensity: VisualDensity.compact,
-            shape: const StadiumBorder(),
-            labelStyle: context.texts.labelMedium!.copyWith(
-              fontWeight: FontWeight.w600,
-              color: sel ? scheme.onPrimary : scheme.onSurfaceVariant,
-            ),
-            selectedColor: scheme.primary,
-            backgroundColor: scheme.surfaceContainerHigh,
-            side: BorderSide.none,
-            showCheckmark: false,
-          ),
-        );
-    return SizedBox(
-      height: 48,
-      child: Row(
-        children: [
-          Expanded(
-            // 横向滚动:标签再多也不会溢出
-            child: ListView(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.fromLTRB(_kEdge, 4, 4, 4),
-              children: [
-                chip(
-                  '全部',
-                  filter == null,
-                  () => setState(() => _filter = null),
-                ),
-                chip(
-                  '收藏',
-                  filter == _kFavFilter,
-                  () => setState(() => _filter = _kFavFilter),
-                  icon: Icons.star_rounded,
-                ),
-                for (final t in tags)
-                  chip(
-                    t,
-                    filter == t,
-                    () => setState(() => _filter = _filter == t ? null : t),
-                  ),
-              ],
-            ),
-          ),
-          IconButton(
-            tooltip: '标签池管理',
-            icon: Icon(
-              Icons.settings_outlined,
-              size: 20,
-              color: scheme.onSurfaceVariant,
-            ),
-            onPressed: () => showTagPoolSheet(context, ref, _cat),
-          ),
-          const SizedBox(width: _kIconEdge),
-        ],
-      ),
-    );
-  }
+  Widget _filterChips(TagLibraryState lib) => TagFilterChips(
+    tags: lib.knownTags(_cat),
+    filter: _validFilter(lib),
+    onChanged: (filter) => setState(() => _filter = filter),
+    onManageTags: () => showTagPoolSheet(context, ref, _cat),
+    edge: _kEdge,
+  );
 
   // ---- 我的 / 公共库 ----
 
@@ -905,10 +864,16 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     final list = _mineList(lib);
     if (list.isEmpty) {
       return _empty(
-        _search.isNotEmpty || _filter != null
+        _search.isNotEmpty || _filter != null || _narrowed
             ? '没有匹配的${_def.label}'
             : '还没有${_def.label},点右上角 + 新建',
       );
+    }
+    // 按作者排序:整个 scope 改成一个作者一栏(我的这边同理 —— 自建的归自己
+    // 那栏,收藏来的归原作者,「我收藏了谁的东西」一眼能看出来)
+    if (_sortMode == TagSort.author) {
+      final groups = _authorGroups(list);
+      return _railWrap(groups, _mineScroll, _grid(groups, _mineScroll, false));
     }
     // 自建/我发布的在上,公共库收藏来的单独一组在下(对齐 web)
     final mine = [
@@ -963,7 +928,9 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
 
   Widget _publicContent(AsyncValue<List<TagEntry>> async) {
     return async.when(
-      loading: () => _SkeletonGrid(aspect: _cardAspect),
+      loading: () => pinchBuilder(
+        (_) => _SkeletonGrid(aspect: _cardAspect, cols: gridColumns),
+      ),
       error: (e, _) {
         // 会话过期后端回 401/403,与无会话同样给「去授权」出口,
         // 别让人困在「重试永远失败」里。
@@ -979,45 +946,94 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
             ),
           );
         }
-        return _empty(
-          '公共库加载失败',
-          action: ('重试', () => ref.invalidate(publicTagsProvider(_cat))),
-        );
+        return _empty('公共库加载失败', action: ('重试', _reloadPublic));
       },
       data: (all) {
         final list = _publicList(all);
         if (list.isEmpty) {
           return RefreshIndicator(
-            onRefresh: () async => ref.invalidate(publicTagsProvider(_cat)),
+            onRefresh: () async => _reloadPublic(),
             child: ListView(
               physics: const AlwaysScrollableScrollPhysics(),
               children: [
                 SizedBox(
                   height: 320,
                   child: _empty(
-                    _search.isNotEmpty ? '没有匹配的${_def.label}' : '公共库暂无内容',
+                    _search.isNotEmpty || _narrowed
+                        ? '没有匹配的${_def.label}'
+                        : '公共库暂无内容',
                   ),
                 ),
               ],
             ),
           );
         }
-        final groups = <_Group>[
-          (
-            header: _sectionHeader(
-              Icons.public,
-              '公共${_def.label}',
-              list.length,
-            ),
-            items: list,
-          ),
-        ];
+        final groups = _sortMode == TagSort.author
+            ? _authorGroups(list)
+            : <_Group>[
+                (
+                  header: _sectionHeader(
+                    Icons.public,
+                    '公共${_def.label}',
+                    list.length,
+                  ),
+                  items: list,
+                ),
+              ];
         return RefreshIndicator(
-          onRefresh: () async => ref.invalidate(publicTagsProvider(_cat)),
+          onRefresh: () async => _reloadPublic(),
           child: _railWrap(groups, _pubScroll, _grid(groups, _pubScroll, true)),
         );
       },
     );
+  }
+
+  /// 下拉刷新 / 重试:公共库和作者目录一起重来 —— 只刷条目的话,新作者的
+  /// 昵称要等下次冷启动才补得上,列表里会先冒出一串光秃秃的 QQ 号。
+  void _reloadPublic() {
+    ref.invalidate(publicTagsProvider(_cat));
+    ref.invalidate(tagAuthorNamesProvider);
+  }
+
+  /// 按作者切组:一个作者一栏,条目多的在前;没署名的老数据兜底成「未认领」
+  /// 收在最后(对齐 web 的分组画廊)。标题写成 `昵称(QQ 号)`。
+  List<_Group> _authorGroups(List<TagEntry> list) {
+    final byAuthor = <String, List<TagEntry>>{};
+    final unclaimed = <TagEntry>[];
+    for (final e in list) {
+      final id = e.createdBy?.trim();
+      if (id == null || id.isEmpty) {
+        unclaimed.add(e);
+      } else {
+        (byAuthor[id] ??= []).add(e);
+      }
+    }
+    final ids = byAuthor.keys.toList()
+      ..sort((a, b) {
+        final c = byAuthor[b]!.length.compareTo(byAuthor[a]!.length);
+        return c != 0 ? c : _authorLabel(a).compareTo(_authorLabel(b));
+      });
+    return [
+      for (final id in ids)
+        (
+          header: _sectionHeader(
+            Icons.account_circle_outlined,
+            authorDisplay(id, _authorNames),
+            byAuthor[id]!.length,
+          ),
+          items: byAuthor[id]!,
+        ),
+      if (unclaimed.isNotEmpty)
+        (
+          header: _sectionHeader(
+            Icons.no_accounts_outlined,
+            '未认领',
+            unclaimed.length,
+            muted: true,
+          ),
+          items: unclaimed,
+        ),
+    ];
   }
 
   Widget _sectionHeader(
@@ -1034,11 +1050,16 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
         children: [
           Icon(icon, size: 15, color: color),
           const SizedBox(width: 6),
-          Text(
-            label,
-            style: context.texts.labelLarge!.copyWith(
-              fontWeight: FontWeight.w700,
-              color: color,
+          // 作者栏的标题是 `昵称(QQ 号)`,可以很长:截断,别把分隔线顶出行外
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: context.texts.labelLarge!.copyWith(
+                fontWeight: FontWeight.w700,
+                color: color,
+              ),
             ),
           ),
           const SizedBox(width: 6),
@@ -1110,42 +1131,48 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   }
 
   Widget _grid(List<_Group> groups, ScrollController ctrl, bool isPublic) {
-    // 有 publicId 的条目(收藏/我发布的)一律用当前公共库的 http 预览:
-    // 随当前后端地址,不受备份剥离本机预览、也不受端口变化影响。
-    final pubPreview = <String, String>{
-      for (final p
-          in ref.read(publicTagsProvider(_cat)).value ?? const <TagEntry>[])
-        if (p.publicId != null && p.previewUrl != null)
-          p.publicId!: p.previewUrl!,
-    };
-    return CustomScrollView(
-      controller: ctrl,
-      physics: const AlwaysScrollableScrollPhysics(),
-      slivers: [
-        for (final g in groups) ...[
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(_kEdge, 2, _kEdge, 0),
-            sliver: SliverToBoxAdapter(child: g.header),
-          ),
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(_kEdge, 8, _kEdge, 16),
-            sliver: SliverLayoutBuilder(
-              builder: (context, constraints) => SliverGrid(
-                gridDelegate: _MasonryGridDelegate(
-                  crossAxisCount: _columnCount(constraints.crossAxisExtent),
-                  mainAxisSpacing: _gap,
-                  crossAxisSpacing: _gap,
-                  aspects: [for (final e in g.items) _entryAspect(e)],
+    final pubPreview = publicPreviewsOf(
+      ref.read(publicTagsProvider(_cat)).value,
+    );
+    // 分组、预览表在外面算好;捏合与过渡只重建下面这一块(见 pinchBuilder)
+    return pinchBuilder((_) {
+      // 远端预览按**落定**列数下的格宽解码(gridColumns 在换档过渡中是起点那一档)。
+      // 不给的话 RemoteImage 按实时格宽解码,过渡那几百毫秒里每一帧都是一路新解码。
+      final cols = gridColumns;
+      final decodeW =
+          (MediaQuery.sizeOf(context).width - _kEdge * 2 - _gap * (cols - 1)) /
+          cols;
+      // 瀑布流落格直接按 zoomGridDelegate 给的列数走:换档过渡中列数每帧在
+      // 两档之间插值,回头再用 SliverLayoutBuilder 量实宽会慢一档,落位就抖。
+      return CustomScrollView(
+        // 换分类 / 分段即换一份列表,从各自的滚动账上落位
+        key: ValueKey(_scrollKey(_cat, isPublic)),
+        controller: ctrl,
+        physics: pinchPhysics(const AlwaysScrollableScrollPhysics()),
+        slivers: [
+          for (final g in groups) ...[
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(_kEdge, 2, _kEdge, 0),
+              sliver: SliverToBoxAdapter(child: g.header),
+            ),
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(_kEdge, 8, _kEdge, 16),
+              sliver: SliverGrid(
+                gridDelegate: zoomGridDelegate(
+                  (n) => _MasonryGridDelegate(
+                    crossAxisCount: n,
+                    mainAxisSpacing: _gap,
+                    crossAxisSpacing: _gap,
+                    aspects: [for (final e in g.items) _entryAspect(e)],
+                  ),
                 ),
                 delegate: SliverChildBuilderDelegate((context, i) {
                   final e = g.items[i];
-                  final preview =
-                      (e.publicId != null ? pubPreview[e.publicId] : null) ??
-                      e.previewUrl;
-                  return _TagCard(
+                  return TagCard(
                     key: ValueKey(e.id),
                     entry: e,
-                    previewUrl: preview,
+                    previewUrl: tagPreviewOf(e, pubPreview),
+                    decodeWidth: decodeW,
                     selected: _sel.contains(e.id),
                     isPublic: isPublic,
                     collected:
@@ -1165,16 +1192,19 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
                 }, childCount: g.items.length),
               ),
             ),
-          ),
+          ],
         ],
-      ],
-    );
+      );
+    });
   }
 
-  /// 画风分类包一层右缘字母导航。
+  /// 画风分类包一层右缘字母导航。**只在按编号排时**有:换成时间/作者以后
+  /// 列表不再是字母序,字母条跳过去就是错位。
   Widget _railWrap(List<_Group> groups, ScrollController ctrl, Widget child) {
     final total = groups.fold(0, (n, g) => n + g.items.length);
-    if (!_def.alphabetRail || total < 12) return child;
+    if (!_def.alphabetRail || _sortMode != TagSort.number || total < 12) {
+      return child;
+    }
     // 用 Set 去重:'#' 桶(数字开头排最前、CJK 排最后)可能不相邻,
     // 只留首次出现,跳转恒到首个。
     final seen = <String>{};
@@ -1203,7 +1233,9 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     if (!ctrl.hasClients) return;
     final w = context.size?.width ?? 400;
     final gridWidth = (w - _kEdge * 2).clamp(1.0, double.infinity);
-    final columns = _columnCount(gridWidth);
+    // 列数走捏合那档,不按宽度现推:捏到六列时按宽度算的是两列,
+    // 瀑布流的高度账对不上,跳过去就是错的。
+    final columns = gridColumns;
     // 逐组累加(组头 + 该组瀑布流高度),命中组内直接取布局算出的纵坐标。
     // 不能再用旧版固定两列的 `i ~/ 2`:平板扩列后会跳到完全错误的位置。
     var offset = 0.0;
@@ -1635,9 +1667,12 @@ class _MasonryGridLayout extends SliverGridLayout {
 
 /// 公共库加载态:骨架网格(卡片形状 + 呼吸微光),比干等一个转圈更有"内容在来"。
 class _SkeletonGrid extends StatefulWidget {
-  const _SkeletonGrid({required this.aspect});
+  const _SkeletonGrid({required this.aspect, required this.cols});
 
   final double aspect;
+
+  /// 当前列数。跟着捏合那档走,骨架与随后的内容列数一致、不跳位。
+  final int cols;
 
   @override
   State<_SkeletonGrid> createState() => _SkeletonGridState();
@@ -1659,383 +1694,35 @@ class _SkeletonGridState extends State<_SkeletonGrid>
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final columns = responsiveImageColumns(constraints.maxWidth);
-        final count = columns * 3;
-        return GridView.custom(
-          gridDelegate: _MasonryGridDelegate(
-            crossAxisCount: columns,
-            mainAxisSpacing: _gap,
-            crossAxisSpacing: _gap,
-            aspects: [for (var i = 0; i < count; i++) widget.aspect],
-          ),
-          padding: const EdgeInsets.fromLTRB(_kEdge, 42, _kEdge, 16),
-          physics: const NeverScrollableScrollPhysics(),
-          childrenDelegate: SliverChildBuilderDelegate(
-            (context, i) => FadeTransition(
-              opacity: Tween(
-                begin: .35,
-                end: .7,
-              ).animate(CurvedAnimation(parent: _c, curve: Curves.easeInOut)),
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: scheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(16),
-                ),
-              ),
-            ),
-            childCount: count,
-          ),
-        );
-      },
-    );
-  }
-}
-
-/// 图片加载完淡入(缓存命中的同步图不淡),让预览逐张柔和显现而非硬蹦。
-Widget _fadeInFrame(
-  BuildContext context,
-  Widget child,
-  int? frame,
-  bool wasSync,
-) {
-  if (wasSync) return child;
-  return AnimatedOpacity(
-    opacity: frame == null ? 0 : 1,
-    duration: Motion.medium,
-    curve: Curves.easeOut,
-    child: child,
-  );
-}
-
-/// 网格卡:预览图(无图=名称定色相的斜纹占位)+ 底部名称条 + 来源角标;
-/// 左上选择圈,右上 ⋮(我的)/ ❤ 收藏(公共)。点卡选择,长按看详情。
-class _TagCard extends StatelessWidget {
-  const _TagCard({
-    super.key,
-    required this.entry,
-    this.previewUrl,
-    required this.selected,
-    required this.isPublic,
-    this.collected = false,
-    required this.onTap,
-    required this.onLongPress,
-    this.onCollect,
-    this.onMenu,
-  });
-
-  final TagEntry entry;
-
-  /// 实际渲染的预览(可能是按 publicId 从公共库补的 http,覆盖 entry 自身)。
-  final String? previewUrl;
-  final bool selected;
-  final bool isPublic;
-  final bool collected;
-  final VoidCallback onTap;
-  final VoidCallback onLongPress;
-  final VoidCallback? onCollect;
-  final ValueChanged<String>? onMenu;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = context.scheme;
-    final modelGroups = artistModelGroups(entry.models);
-    return AnimatedContainer(
-      duration: Motion.fast,
-      clipBehavior: Clip.antiAlias,
-      decoration: BoxDecoration(borderRadius: BorderRadius.circular(16)),
-      foregroundDecoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: selected ? scheme.primary : scheme.outlineVariant,
-          width: selected ? 1.8 : 1,
-        ),
+    // 列数不在这儿按宽度现推:骨架与随后的内容必须同列,否则淡入淡出那一下
+    // 整片格子会跳一次位。捏合换档时外面用 pinchBuilder 把 cols 一起送进来。
+    final count = widget.cols * 3;
+    return GridView.custom(
+      gridDelegate: _MasonryGridDelegate(
+        crossAxisCount: widget.cols,
+        mainAxisSpacing: _gap,
+        crossAxisSpacing: _gap,
+        aspects: [for (var i = 0; i < count; i++) widget.aspect],
       ),
-      child: Material(
-        color: scheme.surfaceContainer,
-        child: InkWell(
-          onTap: onTap,
-          onLongPress: onLongPress,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              switch (previewUrl) {
-                null => _HueStripes(name: entry.name),
-                final u when u.startsWith('http') => RemoteImage(
-                  u,
-                  fit: BoxFit.cover,
-                  gaplessPlayback: true,
-                  frameBuilder: _fadeInFrame,
-                  errorBuilder: (_, _, _) => _HueStripes(name: entry.name),
-                ),
-                final u => Image.file(
-                  File(u),
-                  fit: BoxFit.cover,
-                  gaplessPlayback: true,
-                  frameBuilder: _fadeInFrame,
-                  errorBuilder: (_, _, _) => _HueStripes(name: entry.name),
-                ),
-              },
-              Positioned(
-                left: 0,
-                right: 0,
-                bottom: 0,
-                child: Container(
-                  padding: const EdgeInsets.fromLTRB(10, 14, 8, 7),
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        Colors.transparent,
-                        Colors.black.withValues(alpha: .62),
-                      ],
-                    ),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      // 适用模型角标(按分档归并:标了 V5 Full + Curated 只出一个)。
-                      // 没标注的不画 —— 「通用」是默认档,给每张卡都挂一个反而是噪音。
-                      if (modelGroups.isNotEmpty) ...[
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            for (final g in modelGroups.take(2))
-                              Container(
-                                margin: const EdgeInsets.only(right: 4),
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 5,
-                                  vertical: 1,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withValues(alpha: .22),
-                                  borderRadius: BorderRadius.circular(4),
-                                ),
-                                child: Text(
-                                  g.label,
-                                  style: const TextStyle(
-                                    fontSize: 9,
-                                    fontWeight: FontWeight.w700,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                              ),
-                            if (modelGroups.length > 2)
-                              Text(
-                                '+${modelGroups.length - 2}',
-                                style: const TextStyle(
-                                  fontSize: 9,
-                                  fontWeight: FontWeight.w700,
-                                  color: Colors.white70,
-                                ),
-                              ),
-                          ],
-                        ),
-                        const SizedBox(height: 3),
-                      ],
-                      Text(
-                        entry.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w800,
-                          color: selected ? scheme.primary : Colors.white,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              Positioned(
-                top: 7,
-                left: 7,
-                child: AnimatedContainer(
-                  duration: Motion.fast,
-                  width: 24,
-                  height: 24,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: selected
-                        ? scheme.primary
-                        : Colors.black.withValues(alpha: .3),
-                    border: selected
-                        ? null
-                        : Border.all(color: Colors.white70, width: 1.5),
-                  ),
-                  child: selected
-                      ? Icon(Icons.check, size: 16, color: scheme.onPrimary)
-                      : null,
-                ),
-              ),
-              // 公共卡:右上角收藏钮(40px 圆钮 + 半透明底,已收藏=实心红心);
-              // 我的卡:右上角 ⋮ 菜单。
-              if (isPublic)
-                Positioned(
-                  right: 6,
-                  top: 6,
-                  child: Material(
-                    color: collected
-                        ? Colors.white.withValues(alpha: .92)
-                        : Colors.black.withValues(alpha: .42),
-                    shape: const CircleBorder(),
-                    clipBehavior: Clip.antiAlias,
-                    child: InkWell(
-                      onTap: onCollect,
-                      child: SizedBox(
-                        width: 40,
-                        height: 40,
-                        child: Icon(
-                          collected ? Icons.favorite : Icons.favorite_border,
-                          size: 21,
-                          color: collected ? scheme.error : Colors.white,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              if (!isPublic)
-                Positioned(
-                  right: 6,
-                  top: 6,
-                  child: Material(
-                    color: Colors.black.withValues(alpha: .42),
-                    shape: const CircleBorder(),
-                    clipBehavior: Clip.antiAlias,
-                    child: SizedBox(
-                      width: 40,
-                      height: 40,
-                      child: PopupMenuButton<String>(
-                        onSelected: onMenu,
-                        padding: EdgeInsets.zero,
-                        icon: const Icon(
-                          Icons.more_vert,
-                          size: 20,
-                          color: Colors.white,
-                        ),
-                        itemBuilder: (_) => [
-                          const PopupMenuItem(
-                            value: 'edit',
-                            child: _MenuRow(Icons.edit_outlined, '编辑'),
-                          ),
-                          const PopupMenuItem(
-                            value: 'copy',
-                            child: _MenuRow(Icons.copy, '复制提示词'),
-                          ),
-                          const PopupMenuItem(
-                            value: 'delete',
-                            child: _MenuRow(
-                              Icons.delete_outline,
-                              '删除',
-                              danger: true,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _MenuRow extends StatelessWidget {
-  const _MenuRow(this.icon, this.label, {this.danger = false});
-
-  final IconData icon;
-  final String label;
-  final bool danger;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = danger ? context.scheme.error : context.scheme.onSurfaceVariant;
-    return Row(
-      children: [
-        Icon(icon, size: 18, color: c),
-        const SizedBox(width: 10),
-        Text(label, style: TextStyle(color: danger ? c : null)),
-      ],
-    );
-  }
-}
-
-/// 无预览图的占位:名称哈希定色相的深色渐变 + 斜纹 + 名称水印
-/// (对齐 web HorizontalCard 的 hashHue 占位,同名恒同色)。
-class _HueStripes extends StatelessWidget {
-  const _HueStripes({required this.name});
-
-  final String name;
-
-  @override
-  Widget build(BuildContext context) {
-    var h = 0;
-    for (final c in name.codeUnits) {
-      h = (h * 31 + c) & 0x7fffffff;
-    }
-    final hue = (h % 360).toDouble();
-    return CustomPaint(
-      painter: _HueStripePainter(hue),
-      child: Center(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10),
-          child: Text(
-            name.toUpperCase(),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 4,
-              color: Colors.white.withValues(alpha: .2),
+      padding: const EdgeInsets.fromLTRB(_kEdge, 42, _kEdge, 16),
+      physics: const NeverScrollableScrollPhysics(),
+      childrenDelegate: SliverChildBuilderDelegate(
+        (context, i) => FadeTransition(
+          opacity: Tween(
+            begin: .35,
+            end: .7,
+          ).animate(CurvedAnimation(parent: _c, curve: Curves.easeInOut)),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(16),
             ),
           ),
         ),
+        childCount: count,
       ),
     );
   }
-}
-
-class _HueStripePainter extends CustomPainter {
-  const _HueStripePainter(this.hue);
-
-  final double hue;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final a = HSLColor.fromAHSL(1, hue, .38, .20).toColor();
-    final b = HSLColor.fromAHSL(1, (hue + 24) % 360, .42, .13).toColor();
-    canvas.drawRect(
-      Offset.zero & size,
-      Paint()
-        ..shader = LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [a, b],
-        ).createShader(Offset.zero & size),
-    );
-    final stripe = Paint()..color = Colors.black.withValues(alpha: .16);
-    const w = 14.0;
-    for (double x = -size.height; x < size.width; x += w * 2.4) {
-      final path = Path()
-        ..moveTo(x, size.height)
-        ..lineTo(x + size.height, 0)
-        ..lineTo(x + size.height + w, 0)
-        ..lineTo(x + w, size.height)
-        ..close();
-      canvas.drawPath(path, stripe);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _HueStripePainter old) => old.hue != hue;
 }
 
 /// 右缘字母导航条(画风):按住/竖向拖动跳转到该字母首个条目,

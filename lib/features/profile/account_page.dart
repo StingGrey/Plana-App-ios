@@ -7,6 +7,7 @@ import '../../core/auth/nai_keys.dart';
 import '../../core/net/backend_config.dart';
 import '../../core/net/nai_client.dart';
 import '../../core/net/nai_key_status.dart';
+import '../../core/net/nai_proxy.dart';
 import '../../core/theme/app_theme.dart';
 import '../editor/data/completion_source.dart';
 import '../generate/widgets/common.dart'
@@ -16,7 +17,7 @@ import '../stats/stats_providers.dart' show fmtInt;
 import 'token_manage_page.dart';
 import '../../core/util/haptics.dart';
 
-/// 账号与接入(我的页二级):接入方式切换、Token / Bot 凭据、标签补全来源。
+/// 账号与接入(我的页二级):接入方式切换、Token / Bot 凭据、直连代理、标签补全来源。
 class AccountPage extends ConsumerStatefulWidget {
   const AccountPage({super.key});
 
@@ -86,6 +87,11 @@ class _AccountPageState extends ConsumerState<AccountPage> {
             onManage: _openTokens,
           ),
           const SizedBox(height: 12),
+          _ProxyCard(
+            on: ref.watch(naiProxyProvider),
+            onChanged: (v) => ref.read(naiProxyProvider.notifier).set(v),
+          ),
+          const SizedBox(height: 12),
           _BotCard(
             session: session,
             backendUrl: backendUrl,
@@ -132,10 +138,10 @@ class _TokenCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    // 摆出来的就是**真会被用到**的:主账号恒在,副账号要勾了并发生成才算。
+    // 摆出来的就是**真会被用到**的:主账号恒在,副账号勾了任一个参与条件才算。
     final on = [
       for (final k in keys)
-        if (k.forGenerate) k,
+        if (k.joins) k,
     ];
     final shown = _quickSwitchSlice(on);
 
@@ -237,6 +243,44 @@ class _TokenCard extends StatelessWidget {
   }
 }
 
+/// 代理开关:官方那几把改经 Plana 的 Worker 转发(见 `kNaiProxyBase`),
+/// 手机够不着 NovelAI 时开。第三方的 key 不受影响。
+///
+/// 单独一张而不塞进上面的 Token 卡:那张只摆号不摆地址,这个开关也不属于
+/// 哪一把 Key。
+class _ProxyCard extends StatelessWidget {
+  const _ProxyCard({required this.on, required this.onChanged});
+
+  final bool on;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: context.scheme.surfaceContainerLow,
+      borderRadius: BorderRadius.circular(16),
+      clipBehavior: Clip.antiAlias,
+      child: SwitchListTile(
+        value: on,
+        onChanged: onChanged,
+        title: Text(
+          '代理访问 NovelAI',
+          style: context.texts.bodyMedium!.copyWith(
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        subtitle: Text(
+          kNaiProxyHint,
+          style: context.texts.labelSmall!.copyWith(
+            color: context.scheme.outline,
+          ),
+        ),
+        contentPadding: const EdgeInsets.fromLTRB(16, 2, 10, 2),
+      ),
+    );
+  }
+}
+
 /// 账号页这张卡最多摆几块。存得下十几把,但这里是「随手换个号」的地方:
 /// 一行两块,再多就把生成方式、Bot、补全那几张卡全顶到屏外了。看全的、
 /// 调顺序的、增删的都在[TokenManagePage]。
@@ -254,7 +298,9 @@ List<NaiKey> _quickSwitchSlice(List<NaiKey> on) {
   return [...head.take(_kQuickSwitchMax - 1), on[at]];
 }
 
-/// 参与生成的这几个号**加起来**的点数与额度。
+/// 参与生成的这几个号**加起来**的点数与额度 —— 只算 app 真会动用的那部分:
+/// 点数只加勾了「参与点数生成」的号,额度只加勾了「参与免费生成」的号。只参与
+/// 免费生成的号,它的点数一分都不会被花,算进来就是虚数。
 ///
 /// 额度按**相加**算(两个号各 87% / 50% → 137%),不是取平均:平均水位看着像
 /// 单号的电量,跟「一共还能出多少张」对不上 —— 这套口径与 [NaiUsageX.batteryPct]
@@ -280,9 +326,9 @@ class _TotalsLine extends ConsumerWidget {
       final sub = ref.watch(naiKeyStatusProvider(naiTargetOf(k))).value;
       if (sub == null) continue;
       got++;
-      anlas += sub.anlas;
+      if (k.joinPaid) anlas += sub.anlas;
       final u = sub.usage;
-      if (u != null) {
+      if (u != null && k.joinFree) {
         hasUsage = true;
         pct += u.batteryPct;
       }
