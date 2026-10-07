@@ -4,7 +4,7 @@
 
 # Plana App
 
-**NovelAI 第三方 Android 客户端** —— 可能是最舒适的 AI 绘图移动创作端
+**NovelAI 第三方 Android 客户端** —— 更舒适的 AI 绘图移动创作端
 
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/mc5024/Plana-App?label=release)](https://github.com/mc5024/Plana-App/releases)
