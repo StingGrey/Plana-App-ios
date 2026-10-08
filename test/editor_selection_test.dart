@@ -49,7 +49,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump(const Duration(seconds: 4));
   });
-  testWidgets('词条面板展开且键盘占位时正负 tab 仍可见可切换', (tester) async {
+  testWidgets('词条面板展开且键盘占位时顶栏和正负 tab 均可操作', (tester) async {
     await tester.binding.setSurfaceSize(const Size(390, 700));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final container = ProviderContainer(
@@ -85,6 +85,9 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
     expect(find.byType(TagPanel), findsOneWidget);
+    expect(find.byTooltip('保存并返回').hitTestable(), findsOneWidget);
+    expect(find.byTooltip('编辑器设置').hitTestable(), findsOneWidget);
+    expect(find.byTooltip('下划线替换为空格').hitTestable(), findsOneWidget);
     final bar = tester.getRect(find.byType(EditorBottomBar));
     expect(bar.bottom, closeTo(400, 1));
     expect(bar.top, greaterThan(0));
