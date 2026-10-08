@@ -48,6 +48,18 @@ extension OnlineGalleryRatingX on OnlineGalleryRating {
   }
 }
 
+enum OnlineGalleryTagCategory {
+  artist('画师 · Artist'),
+  copyright('作品 · Copyright'),
+  character('角色 · Character'),
+  general('通用 · General'),
+  meta('元信息 · Meta'),
+  unknown('未分类');
+
+  const OnlineGalleryTagCategory(this.label);
+  final String label;
+}
+
 class OnlineGalleryItem {
   const OnlineGalleryItem({
     required this.id,
@@ -59,6 +71,7 @@ class OnlineGalleryItem {
     this.rating = 'g',
     this.score = 0,
     this.tags = const [],
+    this.tagCategories = const {},
     this.author = '',
     this.createdAt,
     this.title = '',
@@ -77,6 +90,24 @@ class OnlineGalleryItem {
   final String rating;
   final int score;
   final List<String> tags;
+  final Map<String, OnlineGalleryTagCategory> tagCategories;
+
+  Map<OnlineGalleryTagCategory, List<String>> get groupedTags => {
+    for (final category in OnlineGalleryTagCategory.values)
+      if (tags.any(
+        (tag) =>
+            (tagCategories[tag] ?? OnlineGalleryTagCategory.unknown) ==
+            category,
+      ))
+        category: tags
+            .where(
+              (tag) =>
+                  (tagCategories[tag] ?? OnlineGalleryTagCategory.unknown) ==
+                  category,
+            )
+            .toSet()
+            .toList(),
+  };
   final String author;
   final DateTime? createdAt;
   final String title;
@@ -97,6 +128,7 @@ class OnlineGalleryItem {
     String? rating,
     int? score,
     List<String>? tags,
+    Map<String, OnlineGalleryTagCategory>? tagCategories,
     String? author,
     DateTime? createdAt,
     String? title,
@@ -114,6 +146,7 @@ class OnlineGalleryItem {
     rating: rating ?? this.rating,
     score: score ?? this.score,
     tags: tags ?? this.tags,
+    tagCategories: tagCategories ?? this.tagCategories,
     author: author ?? this.author,
     createdAt: createdAt ?? this.createdAt,
     title: title ?? this.title,
@@ -133,6 +166,9 @@ class OnlineGalleryItem {
     'rating': rating,
     'score': score,
     'tags': tags,
+    'tagCategories': tagCategories.map(
+      (tag, category) => MapEntry(tag, category.name),
+    ),
     'author': author,
     if (createdAt != null) 'createdAt': createdAt!.toIso8601String(),
     'title': title,
@@ -159,8 +195,21 @@ class OnlineGalleryItem {
       rating: raw['rating']?.toString() ?? 'g',
       score: _int(raw['score']),
       tags: rawTags is List
-          ? [for (final tag in rawTags) if (tag is String && tag.isNotEmpty) tag]
+          ? [
+              for (final tag in rawTags)
+                if (tag is String && tag.isNotEmpty) tag,
+            ]
           : const [],
+      tagCategories: raw['tagCategories'] is Map
+          ? {
+              for (final entry in (raw['tagCategories'] as Map).entries)
+                entry.key.toString(): OnlineGalleryTagCategory.values
+                    .firstWhere(
+                      (category) => category.name == entry.value,
+                      orElse: () => OnlineGalleryTagCategory.unknown,
+                    ),
+            }
+          : const {},
       author: raw['author']?.toString() ?? '',
       createdAt: DateTime.tryParse(raw['createdAt']?.toString() ?? ''),
       title: raw['title']?.toString() ?? '',
@@ -173,7 +222,11 @@ class OnlineGalleryItem {
 }
 
 class OnlineGalleryDetail {
-  const OnlineGalleryDetail({required this.item, this.description = '', this.raw = const {}});
+  const OnlineGalleryDetail({
+    required this.item,
+    this.description = '',
+    this.raw = const {},
+  });
 
   final OnlineGalleryItem item;
   final String description;
@@ -187,6 +240,7 @@ class OnlineGalleryState {
     this.query = '',
     this.items = const [],
     this.page = 1,
+    this.listRevision = 0,
     this.hasMore = true,
     this.loading = false,
     this.loadingMore = false,
@@ -204,6 +258,7 @@ class OnlineGalleryState {
   final String query;
   final List<OnlineGalleryItem> items;
   final int page;
+  final int listRevision;
   final bool hasMore;
   final bool loading;
   final bool loadingMore;
@@ -213,11 +268,13 @@ class OnlineGalleryState {
   final Map<String, OnlineGalleryItem> favorites;
   final String rankingPeriod;
   final int dateDays;
+
   /// When enabled, source-side watermark/censor tags are filtered from the
   /// result list and copied prompt text.
   final bool outputFilter;
 
-  bool isFavorite(OnlineGalleryItem item) => favorites.containsKey(item.stableId);
+  bool isFavorite(OnlineGalleryItem item) =>
+      favorites.containsKey(item.stableId);
 
   /// Items eligible for the selected output filter. The filter follows the
   /// source-neutral tag semantics used by the desktop client: source-side
@@ -259,7 +316,9 @@ class OnlineGalleryState {
   }
 
   static bool _fullyWrapped(String value, String opening, String closing) {
-    if (value.length < 2 || !value.startsWith(opening) || !value.endsWith(closing)) {
+    if (value.length < 2 ||
+        !value.startsWith(opening) ||
+        !value.endsWith(closing)) {
       return false;
     }
     var depth = 0;
@@ -298,7 +357,8 @@ class OnlineGalleryState {
         .map((part) => part.trim())
         .where((part) {
           final normalized = _normalizeOutputTag(part);
-          return normalized.isNotEmpty && !_outputNoiseTags.contains(normalized);
+          return normalized.isNotEmpty &&
+              !_outputNoiseTags.contains(normalized);
         })
         .join(', ');
   }
@@ -309,6 +369,7 @@ class OnlineGalleryState {
     String? query,
     List<OnlineGalleryItem>? items,
     int? page,
+    int? listRevision,
     bool? hasMore,
     bool? loading,
     bool? loadingMore,
@@ -325,6 +386,7 @@ class OnlineGalleryState {
     query: query ?? this.query,
     items: items ?? this.items,
     page: page ?? this.page,
+    listRevision: listRevision ?? this.listRevision,
     hasMore: hasMore ?? this.hasMore,
     loading: loading ?? this.loading,
     loadingMore: loadingMore ?? this.loadingMore,
@@ -338,7 +400,8 @@ class OnlineGalleryState {
   );
 }
 
-int _int(Object? value) => value is num ? value.toInt() : int.tryParse('$value') ?? 0;
+int _int(Object? value) =>
+    value is num ? value.toInt() : int.tryParse('$value') ?? 0;
 
 String encodeOnlineFavorites(Map<String, OnlineGalleryItem> favorites) =>
     jsonEncode([for (final item in favorites.values) item.toJson()]);

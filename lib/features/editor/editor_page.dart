@@ -105,6 +105,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
   bool _sheetOpen = false; // 形态 B(分类竖向列表)弹层是否打开
   Tok? _panelTok; // 光标所在词条(显示词条栏)
   bool _cursorDragging = false; // 正在拖水滴手柄挪光标(吸底面板暂时收起)
+
   (int, int)? _multiRange; // 划词多选覆盖的词条区间 [first, last](批量面板)
   double _multiMult = 1.0; // 批量面板的统一数值权重读数
   List<String> _related = const []; // 当前词的关联标签(异步拉取)
@@ -394,14 +395,17 @@ class _EditorPageState extends ConsumerState<EditorPage>
 
   int _insertedLength(String before, String after) {
     var prefix = 0;
-    final shortest = before.length < after.length ? before.length : after.length;
+    final shortest = before.length < after.length
+        ? before.length
+        : after.length;
     while (prefix < shortest && before[prefix] == after[prefix]) {
       prefix++;
     }
     var suffix = 0;
     while (suffix < before.length - prefix &&
         suffix < after.length - prefix &&
-        before[before.length - 1 - suffix] == after[after.length - 1 - suffix]) {
+        before[before.length - 1 - suffix] ==
+            after[after.length - 1 - suffix]) {
       suffix++;
     }
     return after.length - prefix - suffix;
@@ -1665,8 +1669,12 @@ class _EditorPageState extends ConsumerState<EditorPage>
         if (p.entitySuggest != next.entitySuggest && _query.isNotEmpty) {
           _scheduleQuery();
         }
-        final blacklistChanged = !listEquals(p.promptBlacklist, next.promptBlacklist);
-        final blacklistModeChanged = p.promptBlacklistMode != next.promptBlacklistMode;
+        final blacklistChanged = !listEquals(
+          p.promptBlacklist,
+          next.promptBlacklist,
+        );
+        final blacklistModeChanged =
+            p.promptBlacklistMode != next.promptBlacklistMode;
         if (blacklistChanged || blacklistModeChanged) {
           _controller.promptBlacklist = next.promptBlacklist;
           _controller.highlightPromptBlacklist =
@@ -1735,159 +1743,189 @@ class _EditorPageState extends ConsumerState<EditorPage>
           },
           child: Scaffold(
             body: SafeArea(
-              child: Column(
-                children: [
-                  // 滚动正文时、或权重面板在时整栏收起:贴底对齐 + 裁切,
-                  // 读起来是往上滑走。见 [_onContentScroll]。
-                  ClipRect(
-                    child: AnimatedAlign(
-                      duration: Motion.fast,
-                      curve: Motion.standard,
-                      alignment: Alignment.bottomCenter,
-                      heightFactor: _chromeHidden || weightDock ? 0 : 1,
-                      child: EditorTopBar(
-                        charName: _charName,
-                        character: widget.charId != null,
-                        sectionId: widget.charId == null
-                            ? widget.sectionId
-                            : null,
-                        onBack: () {
-                          // 先收键盘再出栈:让退场动画一开始就是完整半屏,
-                          // 不是「键盘收一半、页面滑一半」两段各走各的
-                          _dismissKeyboard();
-                          Navigator.of(context).maybePop();
-                        },
-                        onSettings: _openSettings,
-                        // iOS 移植方的「下划线替换为空格」入口,上游这一版顶栏
-                        // 没有这颗钮,别丢
-                        onReplaceUnderscores: _replaceUnderscores,
+              child: LayoutBuilder(
+                builder: (context, constraints) => Column(
+                  children: [
+                    // 滚动正文时、或权重面板在时整栏收起:贴底对齐 + 裁切,
+                    // 读起来是往上滑走。见 [_onContentScroll]。
+                    ClipRect(
+                      child: AnimatedAlign(
+                        duration: Motion.fast,
+                        curve: Motion.standard,
+                        alignment: Alignment.bottomCenter,
+                        heightFactor: _chromeHidden || weightDock ? 0 : 1,
+                        child: EditorTopBar(
+                          charName: _charName,
+                          character: widget.charId != null,
+                          sectionId: widget.charId == null
+                              ? widget.sectionId
+                              : null,
+                          onBack: () {
+                            // 先收键盘再出栈:让退场动画一开始就是完整半屏,
+                            // 不是「键盘收一半、页面滑一半」两段各走各的
+                            _dismissKeyboard();
+                            Navigator.of(context).maybePop();
+                          },
+                          onSettings: _openSettings,
+                          // iOS 移植方的「下划线替换为空格」入口,上游这一版顶栏
+                          // 没有这颗钮,别丢
+                          onReplaceUnderscores: _replaceUnderscores,
+                        ),
                       ),
                     ),
-                  ),
-                  Expanded(
-                    // 两种正文形态。切正/负时编辑区随方向轻滑 + 淡入
-                    // (单实例,不复制 TextField——controller/focus 不能
-                    // 同时挂两棵树)
-                    child: NotificationListener<ScrollNotification>(
-                      onNotification: _onContentScroll,
-                      child: settings.chipMode
-                          ? ChipFlowView(
-                              controller: _controller,
-                              foldBodies: foldBodies,
-                              selection: _chipSel,
-                              onSelectionChanged: _setChipSel,
-                              onLongPressChip: _chipLongPress,
-                              onMove: _moveUnits,
-                              input: _input,
-                              inputFocus: _inputFocus,
-                              onInputChanged: _onInputChanged,
-                              onInputSubmitted: (_) => _commitInput(),
-                              placing: _chipPlacing,
-                              translating: _transSvc.isPending,
-                              showTrans: settings.showTranslation,
-                              fontSize: settings.chipFontSize,
-                              promptBlacklist:
-                                  settings.promptBlacklistMode == PromptBlacklistMode.highlight
-                                  ? settings.promptBlacklist
-                                  : const [],
-                            )
-                          : ClipRect(
-                              child: SlideTransition(
-                                position: _tabSlide,
-                                child: FadeTransition(
-                                  opacity: _tabAnim.drive(
-                                    Tween(begin: .25, end: 1.0),
+                    Expanded(
+                      // 两种正文形态。切正/负时编辑区随方向轻滑 + 淡入
+                      // (单实例,不复制 TextField——controller/focus 不能
+                      // 同时挂两棵树)
+                      child: NotificationListener<ScrollNotification>(
+                        onNotification: _onContentScroll,
+                        child: settings.chipMode
+                            ? ChipFlowView(
+                                controller: _controller,
+                                foldBodies: foldBodies,
+                                selection: _chipSel,
+                                onSelectionChanged: _setChipSel,
+                                onLongPressChip: _chipLongPress,
+                                onMove: _moveUnits,
+                                input: _input,
+                                inputFocus: _inputFocus,
+                                onInputChanged: _onInputChanged,
+                                onInputSubmitted: (_) => _commitInput(),
+                                placing: _chipPlacing,
+                                translating: _transSvc.isPending,
+                                showTrans: settings.showTranslation,
+                                fontSize: settings.chipFontSize,
+                                promptBlacklist:
+                                    settings.promptBlacklistMode ==
+                                        PromptBlacklistMode.highlight
+                                    ? settings.promptBlacklist
+                                    : const [],
+                              )
+                            : ClipRect(
+                                child: SlideTransition(
+                                  position: _tabSlide,
+                                  child: FadeTransition(
+                                    opacity: _tabAnim.drive(
+                                      Tween(begin: .25, end: 1.0),
+                                    ),
+                                    child: AnnotatedField(
+                                      controller: _controller,
+                                      focusNode: _focus,
+                                      scrollController: _scroll,
+                                      showTrans: settings.showTranslation,
+                                      showWeightWash: settings.showWeightWash,
+                                      fontSize: settings.fontSize,
+                                      onCursorDrag: _setCursorDragging,
+                                      onFoldTap: _unfoldByName,
+                                      hint: '点击输入标签,可输入中文自动触发翻译与联想',
+                                    ),
                                   ),
-                                  child: AnnotatedField(
-                                    controller: _controller,
-                                    focusNode: _focus,
-                                    scrollController: _scroll,
-                                    showTrans: settings.showTranslation,
-                                    showWeightWash: settings.showWeightWash,
-                                    fontSize: settings.fontSize,
-                                    onCursorDrag: _setCursorDragging,
-                                    onFoldTap: _unfoldByName,
-                                    hint: '点击输入标签,可输入中文自动触发翻译与联想',
+                                ),
+                              ),
+                      ),
+                    ),
+                    // 限制词条面板的高度，键盘或关联标签展开时仍为正/负 tab 留位。
+                    ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxHeight: constraints.maxHeight * .5,
+                      ),
+                      child: SingleChildScrollView(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // 滚动收起:贴顶对齐 + 裁切,往下沉进底栏后面。补全条不收。
+                            ClipRect(
+                              child: AnimatedAlign(
+                                duration: Motion.fast,
+                                curve: Motion.standard,
+                                alignment: Alignment.topCenter,
+                                heightFactor: _chromeHidden && _query.isEmpty
+                                    ? 0
+                                    : 1,
+                                // 拖光标期间只是**淡出**,位置照占:见 [_setCursorDragging]。
+                                child: AnimatedOpacity(
+                                  duration: Motion.quick,
+                                  curve: Motion.standard,
+                                  opacity: _cursorDragging ? 0 : 1,
+                                  child: IgnorePointer(
+                                    ignoring: _cursorDragging,
+                                    child:
+                                        // dock 入场:淡入 + 轻微上滑(高度瞬时占位,不撑盒子,避免橡皮筋)
+                                        // 离场(关面板/收补全)比入场快:走了就别在路上磨蹭。
+                                        AnimatedSwitcher(
+                                          duration: Motion.fast,
+                                          reverseDuration: Motion.quick,
+                                          switchInCurve: Motion.emphasized,
+                                          switchOutCurve: Motion.standard,
+                                          layoutBuilder: (current, previous) =>
+                                              Stack(
+                                                alignment:
+                                                    Alignment.bottomCenter,
+                                                children: [
+                                                  ...previous,
+                                                  ?current,
+                                                ],
+                                              ),
+                                          transitionBuilder: (child, anim) =>
+                                              FadeTransition(
+                                                opacity: anim,
+                                                child: SlideTransition(
+                                                  position: Tween<Offset>(
+                                                    begin: const Offset(
+                                                      0,
+                                                      0.06,
+                                                    ),
+                                                    end: Offset.zero,
+                                                  ).animate(anim),
+                                                  child: child,
+                                                ),
+                                              ),
+                                          child: dock,
+                                        ),
                                   ),
                                 ),
                               ),
                             ),
-                    ),
-                  ),
-                  // 滚动收起:贴顶对齐 + 裁切,往下沉进底栏后面。补全条不收。
-                  ClipRect(
-                    child: AnimatedAlign(
-                      duration: Motion.fast,
-                      curve: Motion.standard,
-                      alignment: Alignment.topCenter,
-                      heightFactor: _chromeHidden && _query.isEmpty ? 0 : 1,
-                      // 拖光标期间只是**淡出**,位置照占:见 [_setCursorDragging]。
-                      child: AnimatedOpacity(
-                        duration: Motion.quick,
-                        curve: Motion.standard,
-                        opacity: _cursorDragging ? 0 : 1,
-                        child: IgnorePointer(
-                          ignoring: _cursorDragging,
-                          child:
-                              // dock 入场:淡入 + 轻微上滑(高度瞬时占位,不撑盒子,避免橡皮筋)
-                              // 离场(关面板/收补全)比入场快:走了就别在路上磨蹭。
-                              AnimatedSwitcher(
-                                duration: Motion.fast,
-                                reverseDuration: Motion.quick,
-                                switchInCurve: Motion.emphasized,
-                                switchOutCurve: Motion.standard,
-                                layoutBuilder: (current, previous) => Stack(
-                                  alignment: Alignment.bottomCenter,
-                                  children: [...previous, ?current],
-                                ),
-                                transitionBuilder: (child, anim) =>
-                                    FadeTransition(
-                                      opacity: anim,
-                                      child: SlideTransition(
-                                        position: Tween<Offset>(
-                                          begin: const Offset(0, 0.06),
-                                          end: Offset.zero,
-                                        ).animate(anim),
-                                        child: child,
-                                      ),
-                                    ),
-                                child: dock,
-                              ),
+                          ],
                         ),
                       ),
                     ),
-                  ),
-                  if (settings.promptBlacklistMode == PromptBlacklistMode.highlight)
-                    AnimatedBuilder(
-                      animation: Listenable.merge([_controller, _input]),
-                      builder: (context, _) {
-                        final count =
-                            blacklistedPromptToks(
-                              _controller.text,
-                              settings.promptBlacklist,
-                              foldBodies: foldBodies,
-                            ).length +
-                            blacklistedPromptToks(_inputText, settings.promptBlacklist).length;
-                        return AnimatedSwitcher(
-                          duration: Motion.fast,
-                          child: count == 0
-                              ? const SizedBox.shrink()
-                              : PromptBlacklistBar(
-                                  key: const ValueKey('prompt-blacklist-bar'),
-                                  count: count,
-                                  onDeleteAll: _deleteAllBlacklisted,
-                                ),
-                        );
-                      },
+                    if (settings.promptBlacklistMode ==
+                        PromptBlacklistMode.highlight)
+                      AnimatedBuilder(
+                        animation: Listenable.merge([_controller, _input]),
+                        builder: (context, _) {
+                          final count =
+                              blacklistedPromptToks(
+                                _controller.text,
+                                settings.promptBlacklist,
+                                foldBodies: foldBodies,
+                              ).length +
+                              blacklistedPromptToks(
+                                _inputText,
+                                settings.promptBlacklist,
+                              ).length;
+                          return AnimatedSwitcher(
+                            duration: Motion.fast,
+                            child: count == 0
+                                ? const SizedBox.shrink()
+                                : PromptBlacklistBar(
+                                    key: const ValueKey('prompt-blacklist-bar'),
+                                    count: count,
+                                    onDeleteAll: _deleteAllBlacklisted,
+                                  ),
+                          );
+                        },
+                      ),
+                    EditorBottomBar(
+                      onToggleMode: _toggleChipMode,
+                      chipMode: settings.chipMode,
+                      trayOpen: _trayOpen,
+                      onToggleTray: _toggleTray,
+                      onInsertFavorite: _insertFavorite,
                     ),
-                  EditorBottomBar(
-                    onToggleMode: _toggleChipMode,
-                    chipMode: settings.chipMode,
-                    trayOpen: _trayOpen,
-                    onToggleTray: _toggleTray,
-                    onInsertFavorite: _insertFavorite,
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),

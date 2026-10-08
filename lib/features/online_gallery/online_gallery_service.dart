@@ -22,7 +22,8 @@ class OnlineGalleryPageResult {
 /// notifier deal only with [OnlineGalleryItem], so adding a new source does not
 /// leak API response shapes into the UI.
 class OnlineGalleryService {
-  OnlineGalleryService({http.Client? client}) : _client = client ?? http.Client();
+  OnlineGalleryService({http.Client? client})
+    : _client = client ?? http.Client();
 
   final http.Client _client;
   static const _timeout = Duration(seconds: 25);
@@ -84,8 +85,14 @@ class OnlineGalleryService {
         final base = _donmaiBase(item.source);
         final response = await _getJson('$base/posts/${item.id}.json');
         if (response is! Map) throw const FormatException('详情格式异常');
-        final parsed = _donmaiItem(item.source, Map<String, dynamic>.from(response));
-        return OnlineGalleryDetail(item: parsed, raw: Map<String, dynamic>.from(response));
+        final parsed = _donmaiItem(
+          item.source,
+          Map<String, dynamic>.from(response),
+        );
+        return OnlineGalleryDetail(
+          item: parsed,
+          raw: Map<String, dynamic>.from(response),
+        );
       case OnlineGallerySource.gelbooru:
         final html = await _getText(
           'https://gelbooru.com/index.php?page=post&s=view&id=${Uri.encodeQueryComponent(item.id)}',
@@ -96,7 +103,9 @@ class OnlineGalleryService {
         return OnlineGalleryDetail(item: parsed);
       case OnlineGallerySource.aiTag:
         final assetBase = await _getAiTagAssetBase();
-        final response = await _getJson('https://aitag.win/api/work/${Uri.encodeComponent(item.id)}');
+        final response = await _getJson(
+          'https://aitag.win/api/work/${Uri.encodeComponent(item.id)}',
+        );
         if (response is! Map) throw const FormatException('AI TAG 详情格式异常');
         final copy = item;
         final rows = response['images'];
@@ -121,9 +130,11 @@ class OnlineGalleryService {
             prompt: prompt,
             negativePrompt: negativePrompt,
           ),
-          description: _plainText(response['work'] is Map
-              ? (response['work'] as Map)['caption']?.toString() ?? ''
-              : ''),
+          description: _plainText(
+            response['work'] is Map
+                ? (response['work'] as Map)['caption']?.toString() ?? ''
+                : '',
+          ),
           raw: Map<String, dynamic>.from(response),
         );
       case OnlineGallerySource.codex:
@@ -196,13 +207,19 @@ class OnlineGalleryService {
     return OnlineGalleryPageResult(items: items, hasMore: raw.isNotEmpty);
   }
 
-  OnlineGalleryItem _donmaiItem(OnlineGallerySource source, Map<String, dynamic> j) {
+  OnlineGalleryItem _donmaiItem(
+    OnlineGallerySource source,
+    Map<String, dynamic> j,
+  ) {
     final id = j['id']?.toString() ?? '';
     final file = _string(j['file_url']);
     final large = _string(j['large_file_url']);
     final preview = _string(j['preview_file_url']);
     final tagString = _string(j['tag_string']);
-    final tags = tagString.split(RegExp(r'\s+')).where((x) => x.isNotEmpty).toList();
+    final tags = tagString
+        .split(RegExp(r'\s+'))
+        .where((x) => x.isNotEmpty)
+        .toList();
     final created = DateTime.tryParse(_string(j['created_at']));
     return OnlineGalleryItem(
       id: id,
@@ -211,13 +228,22 @@ class OnlineGalleryService {
       // soft on a tablet, especially after the gallery is shown in six
       // columns. The large CDN rendition is still much smaller than the
       // original and is the right source for a retina-sized card.
-      previewUrl: large.isNotEmpty ? large : (preview.isNotEmpty ? preview : file),
+      previewUrl: large.isNotEmpty
+          ? large
+          : (preview.isNotEmpty ? preview : file),
       imageUrl: file.isNotEmpty ? file : (large.isNotEmpty ? large : preview),
       width: _int(j['image_width']),
       height: _int(j['image_height']),
       rating: _string(j['rating'], 'g'),
       score: _int(j['score']),
       tags: tags,
+      tagCategories: {
+        for (final category in OnlineGalleryTagCategory.values)
+          for (final tag in _string(
+            j['tag_string_${category.name}'],
+          ).split(RegExp(r'\s+')))
+            if (tag.isNotEmpty) tag: category,
+      },
       author: _string(j['uploader_name']),
       createdAt: created,
       title: '',
@@ -252,7 +278,8 @@ class OnlineGalleryService {
     // ignores `pid`. Use its explicit all-posts tag so page 2 advances when
     // the user has not entered a search term.
     final requestTags = tags.trim().isEmpty ? 'all' : tags;
-    final url = 'https://gelbooru.com/index.php?page=post&s=list&pid=${(page - 1) * 42}&tags=${Uri.encodeQueryComponent(requestTags)}';
+    final url =
+        'https://gelbooru.com/index.php?page=post&s=list&pid=${(page - 1) * 42}&tags=${Uri.encodeQueryComponent(requestTags)}';
     final html = await _getText(url);
     final items = <OnlineGalleryItem>[];
     final article = RegExp(
@@ -262,9 +289,24 @@ class OnlineGalleryService {
     final articles = article.allMatches(html).toList(growable: false);
     for (final match in articles) {
       final block = match.group(0) ?? '';
-      final id = RegExp(r'''id=["']p([^"']+)''', caseSensitive: false).firstMatch(block)?.group(1) ?? '';
-      final image = RegExp(r'''<img[^>]+src=["']([^"']+)''', caseSensitive: false).firstMatch(block)?.group(1) ?? '';
-      final title = RegExp(r'''\btitle=["']([^"']*)''', caseSensitive: false).firstMatch(block)?.group(1) ?? '';
+      final id =
+          RegExp(
+            r'''id=["']p([^"']+)''',
+            caseSensitive: false,
+          ).firstMatch(block)?.group(1) ??
+          '';
+      final image =
+          RegExp(
+            r'''<img[^>]+src=["']([^"']+)''',
+            caseSensitive: false,
+          ).firstMatch(block)?.group(1) ??
+          '';
+      final title =
+          RegExp(
+            r'''\btitle=["']([^"']*)''',
+            caseSensitive: false,
+          ).firstMatch(block)?.group(1) ??
+          '';
       if (id.isEmpty || image.isEmpty) continue;
       final tags = _gelTags(title);
       final rating = _ratingFromText(title);
@@ -287,32 +329,62 @@ class OnlineGalleryService {
     // Pagination is based on the number of source cards, not the number
     // surviving local filters. Otherwise a blacklist/rating selection can
     // incorrectly make page one look like the end of the Gelbooru feed.
-    return OnlineGalleryPageResult(items: items, hasMore: articles.length >= 20);
+    return OnlineGalleryPageResult(
+      items: items,
+      hasMore: articles.length >= 20,
+    );
   }
 
   OnlineGalleryItem _parseGelbooruDetail(OnlineGalleryItem base, String html) {
-    final section = RegExp(
-      r'''<section\b[^>]*\bclass=["'][^"']*\bimage-container\b[^"']*["'][^>]*>''',
-      caseSensitive: false,
-    ).firstMatch(html)?.group(0) ?? '';
-    final imageTag = RegExp(
-      r'''<img\b[^>]*\bid\s*=\s*["']image["'][^>]*>''',
-      caseSensitive: false,
-    ).firstMatch(html)?.group(0) ?? '';
+    final section =
+        RegExp(
+          r'''<section\b[^>]*\bclass=["'][^"']*\bimage-container\b[^"']*["'][^>]*>''',
+          caseSensitive: false,
+        ).firstMatch(html)?.group(0) ??
+        '';
+    final imageTag =
+        RegExp(
+          r'''<img\b[^>]*\bid\s*=\s*["']image["'][^>]*>''',
+          caseSensitive: false,
+        ).firstMatch(html)?.group(0) ??
+        '';
     String attribute(String name, String source) =>
-        RegExp("$name\\s*=\\s*[\\\"']([^\\\"']*)", caseSensitive: false)
-                .firstMatch(source)
-                ?.group(1) ??
-            '';
+        RegExp(
+          "$name\\s*=\\s*[\\\"']([^\\\"']*)",
+          caseSensitive: false,
+        ).firstMatch(source)?.group(1) ??
+        '';
 
     final image = attribute('src', imageTag);
     final tags = attribute('data-tags', section);
-    final w = int.tryParse(attribute('data-width', section)) ??
+    final w =
+        int.tryParse(attribute('data-width', section)) ??
         int.tryParse(attribute('width', imageTag)) ??
         base.width;
-    final h = int.tryParse(attribute('data-height', section)) ??
+    final h =
+        int.tryParse(attribute('data-height', section)) ??
         int.tryParse(attribute('height', imageTag)) ??
         base.height;
+    final categories = <String, OnlineGalleryTagCategory>{};
+    final categorizedTags = RegExp(
+      r"""<li\b[^>]*class=["'][^"']*tag-type-(artist|copyright|character|general|metadata|meta)[^"']*["'][^>]*>([\s\S]*?)</li>""",
+      caseSensitive: false,
+    );
+    for (final match in categorizedTags.allMatches(html)) {
+      final name = match.group(1)!.toLowerCase();
+      final category = OnlineGalleryTagCategory.values.byName(
+        name == 'metadata' ? 'meta' : name,
+      );
+      for (final link in RegExp(
+        r"""<a\b[^>]*href=["']([^"']*)["'][^>]*>([\s\S]*?)</a>""",
+        caseSensitive: false,
+      ).allMatches(match.group(2)!)) {
+        final href = _decodeHtml(link.group(1)!);
+        if (!href.contains('s=list') || !href.contains('tags=')) continue;
+        final tag = _plainText(link.group(2)!).trim().replaceAll(' ', '_');
+        if (tag.isNotEmpty) categories[tag] = category;
+      }
+    }
     return base.copyWith(
       imageUrl: image.isEmpty
           ? base.imageUrl
@@ -322,11 +394,14 @@ class OnlineGalleryService {
       previewUrl: base.previewUrl.isNotEmpty
           ? base.previewUrl
           : image.isEmpty
-              ? base.previewUrl
-              : _normalizeImageUrl(_decodeHtml(image)),
+          ? base.previewUrl
+          : _normalizeImageUrl(_decodeHtml(image)),
       width: w,
       height: h,
-      tags: tags.isEmpty ? base.tags : _gelTags(_decodeHtml(tags)),
+      tags: tags.isEmpty
+          ? {...base.tags, ...categories.keys}.toList()
+          : _gelTags(_decodeHtml(tags)),
+      tagCategories: {...base.tagCategories, ...categories},
     );
   }
 
@@ -340,7 +415,12 @@ class OnlineGalleryService {
   }) async {
     final assetBase = await _getAiTagAssetBase();
     final pageSize = 60;
-    final q = query.trim().split(RegExp(r'\s+')).where((x) => x.isNotEmpty).map((x) => '$x::1').join(' ');
+    final q = query
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((x) => x.isNotEmpty)
+        .map((x) => '$x::1')
+        .join(' ');
     final endpoint = feed == OnlineGalleryFeed.ranking
         ? 'https://aitag.win/api/rank/monthly/real'
         : 'https://aitag.win/api/ai_works_search';
@@ -403,7 +483,10 @@ class OnlineGalleryService {
       }
     }
     final total = _int(raw['total']);
-    return OnlineGalleryPageResult(items: items, hasMore: total == 0 ? rows.isNotEmpty : page * pageSize < total);
+    return OnlineGalleryPageResult(
+      items: items,
+      hasMore: total == 0 ? rows.isNotEmpty : page * pageSize < total,
+    );
   }
 
   Future<String> _getAiTagAssetBase() async {
@@ -456,8 +539,12 @@ class OnlineGalleryService {
   }
 
   String _aiTagProxyUrl(Uri uri) {
-    final query = uri.queryParameters.entries.map((entry) =>
-        '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}').join('&');
+    final query = uri.queryParameters.entries
+        .map(
+          (entry) =>
+              '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}',
+        )
+        .join('&');
     return 'https://r.jina.ai/http://${uri.host}${uri.path}${query.isEmpty ? '' : '?$query'}';
   }
 
@@ -472,7 +559,9 @@ class OnlineGalleryService {
       final arrayStart = text.indexOf('[');
       final start = objectStart < 0
           ? arrayStart
-          : (arrayStart < 0 ? objectStart : (objectStart < arrayStart ? objectStart : arrayStart));
+          : (arrayStart < 0
+                ? objectStart
+                : (objectStart < arrayStart ? objectStart : arrayStart));
       final objectEnd = text.lastIndexOf('}');
       final arrayEnd = text.lastIndexOf(']');
       final end = objectEnd > arrayEnd ? objectEnd : arrayEnd;
@@ -482,7 +571,9 @@ class OnlineGalleryService {
   }
 
   Future<String> _getText(String url) async {
-    final response = await _client.get(Uri.parse(url), headers: _headers(url)).timeout(_timeout);
+    final response = await _client
+        .get(Uri.parse(url), headers: _headers(url))
+        .timeout(_timeout);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw HttpException('在线画廊请求失败 (${response.statusCode})');
     }
@@ -491,18 +582,26 @@ class OnlineGalleryService {
 
   Map<String, String> _headers(String url) => {
     'User-Agent': _ua,
-    'Accept': url.contains('gelbooru.com') ? 'text/html,application/xhtml+xml,application/json' : 'application/json',
-    if (url.contains('cdn.donmai.us') || url.contains('donmai.us')) 'Referer': 'https://danbooru.donmai.us/',
+    'Accept': url.contains('gelbooru.com')
+        ? 'text/html,application/xhtml+xml,application/json'
+        : 'application/json',
+    if (url.contains('cdn.donmai.us') || url.contains('donmai.us'))
+      'Referer': 'https://danbooru.donmai.us/',
     if (url.contains('gelbooru.com')) 'Referer': 'https://gelbooru.com/',
     if (url.contains('aitag.win') || url.contains('ai-img.10118899.xyz'))
       'Referer': 'https://aitag.win/',
   };
 
-  String _donmaiBase(OnlineGallerySource source) => source == OnlineGallerySource.safebooru
+  String _donmaiBase(OnlineGallerySource source) =>
+      source == OnlineGallerySource.safebooru
       ? 'https://safebooru.donmai.us'
       : 'https://danbooru.donmai.us';
 
-  bool _passes(OnlineGalleryItem item, Set<String> ratings, Set<String> blacklist) =>
+  bool _passes(
+    OnlineGalleryItem item,
+    Set<String> ratings,
+    Set<String> blacklist,
+  ) =>
       (ratings.length >= 4 || ratings.contains(item.rating)) &&
       !_isBlacklisted(item, blacklist);
 
@@ -514,8 +613,9 @@ class OnlineGalleryService {
         .where((term) => term.isNotEmpty)
         .toList();
     if (terms.isEmpty) return true;
-    final text = '${item.tagText} ${item.title} ${item.author} ${item.description}'
-        .toLowerCase();
+    final text =
+        '${item.tagText} ${item.title} ${item.author} ${item.description}'
+            .toLowerCase();
     return terms.every(text.contains);
   }
 
@@ -530,8 +630,12 @@ class OnlineGalleryService {
 
   bool _isBlacklisted(OnlineGalleryItem item, Set<String> blacklist) {
     if (blacklist.isEmpty) return false;
-    final normalized = {for (final tag in item.tags) tag.toLowerCase().replaceAll(' ', '_')};
-    return blacklist.any((tag) => normalized.contains(tag.toLowerCase().replaceAll(' ', '_')));
+    final normalized = {
+      for (final tag in item.tags) tag.toLowerCase().replaceAll(' ', '_'),
+    };
+    return blacklist.any(
+      (tag) => normalized.contains(tag.toLowerCase().replaceAll(' ', '_')),
+    );
   }
 
   (String, String) _parsePromptPair(String raw) {
@@ -540,19 +644,19 @@ class OnlineGalleryService {
     try {
       final decoded = jsonDecode(value);
       if (decoded is Map) {
-        final positive = decoded['prompt'] ??
+        final positive =
+            decoded['prompt'] ??
             decoded['positive'] ??
             decoded['positive_prompt'] ??
             decoded['parameters'];
-        final negative = decoded['negative_prompt'] ??
-            decoded['negativePrompt'] ?? decoded['uc'];
+        final negative =
+            decoded['negative_prompt'] ??
+            decoded['negativePrompt'] ??
+            decoded['uc'];
         if (positive is! String || positive.trim().isEmpty) {
           return ('', negative?.toString().trim() ?? '');
         }
-        return (
-          positive.trim(),
-          negative?.toString().trim() ?? '',
-        );
+        return (positive.trim(), negative?.toString().trim() ?? '');
       }
     } catch (_) {}
     final match = RegExp(
@@ -590,24 +694,23 @@ class OnlineGalleryService {
   }
 
   String? _aiTagImageUrl(Map<String, dynamic> j, {String? assetBase}) {
-    final direct = [
-      j['image_url'],
-      j['thumbnail_url'],
-      j['preview_url'],
-      j['cover_url'],
-      j['url'],
-    ].map((value) => value?.toString().trim() ?? '').firstWhere(
-      (value) {
-        final uri = Uri.tryParse(value);
-        return uri != null &&
-            (uri.scheme == 'http' || uri.scheme == 'https') &&
-            uri.host.isNotEmpty;
-      },
-      orElse: () => '',
-    );
+    final direct =
+        [
+          j['image_url'],
+          j['thumbnail_url'],
+          j['preview_url'],
+          j['cover_url'],
+          j['url'],
+        ].map((value) => value?.toString().trim() ?? '').firstWhere((value) {
+          final uri = Uri.tryParse(value);
+          return uri != null &&
+              (uri.scheme == 'http' || uri.scheme == 'https') &&
+              uri.host.isNotEmpty;
+        }, orElse: () => '');
     if (direct.isNotEmpty) return direct;
 
-    final base = assetBase ??
+    final base =
+        assetBase ??
         _string(j['asset_base_url'], 'https://ai-img.10118899.xyz/');
     final path = _string(j['image_path'], _string(j['imagePath']));
     if (path.isNotEmpty) {
@@ -652,12 +755,40 @@ class OnlineGalleryService {
         .toString();
   }
 
-  String _join(String left, String right) => right.isEmpty ? left : (left.isEmpty ? right : '$left $right');
-  String _gelRating(String value) => switch (value) {'g' => 'general', 's' => 'sensitive', 'q' => 'questionable', _ => 'explicit'};
-  String _ratingFromText(String value) => value.contains('rating:explicit') ? 'e' : value.contains('rating:questionable') ? 'q' : value.contains('rating:sensitive') ? 's' : 'g';
-  int _scoreFromText(String value) => int.tryParse(RegExp(r'score:(-?\d+)').firstMatch(value)?.group(1) ?? '') ?? 0;
-  List<String> _gelTags(String value) => value.replaceAll(RegExp(r'\brating:\w+|\bscore:-?\d+', caseSensitive: false), '').split(RegExp(r'[ ,]+')).where((x) => x.isNotEmpty).toList();
-  String _decodeHtml(String value) => value.replaceAll('&amp;', '&').replaceAll('&quot;', '"').replaceAll('&#39;', "'").replaceAll('&lt;', '<').replaceAll('&gt;', '>');
+  String _join(String left, String right) =>
+      right.isEmpty ? left : (left.isEmpty ? right : '$left $right');
+  String _gelRating(String value) => switch (value) {
+    'g' => 'general',
+    's' => 'sensitive',
+    'q' => 'questionable',
+    _ => 'explicit',
+  };
+  String _ratingFromText(String value) => value.contains('rating:explicit')
+      ? 'e'
+      : value.contains('rating:questionable')
+      ? 'q'
+      : value.contains('rating:sensitive')
+      ? 's'
+      : 'g';
+  int _scoreFromText(String value) =>
+      int.tryParse(
+        RegExp(r'score:(-?\d+)').firstMatch(value)?.group(1) ?? '',
+      ) ??
+      0;
+  List<String> _gelTags(String value) => value
+      .replaceAll(
+        RegExp(r'\brating:\w+|\bscore:-?\d+', caseSensitive: false),
+        '',
+      )
+      .split(RegExp(r'[ ,]+'))
+      .where((x) => x.isNotEmpty)
+      .toList();
+  String _decodeHtml(String value) => value
+      .replaceAll('&amp;', '&')
+      .replaceAll('&quot;', '"')
+      .replaceAll('&#39;', "'")
+      .replaceAll('&lt;', '<')
+      .replaceAll('&gt;', '>');
   String _normalizeImageUrl(String value) {
     final decoded = value.trim();
     if (decoded.startsWith('//')) return 'https:$decoded';
@@ -665,10 +796,14 @@ class OnlineGalleryService {
     return decoded;
   }
 
-  String _plainText(String value) =>
-      value.replaceAll(RegExp(r'<[^>]+>'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
-  String _string(Object? value, [String fallback = '']) => value?.toString() ?? fallback;
-  int _int(Object? value) => value is num ? value.toInt() : int.tryParse('$value') ?? 0;
+  String _plainText(String value) => value
+      .replaceAll(RegExp(r'<[^>]+>'), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+  String _string(Object? value, [String fallback = '']) =>
+      value?.toString() ?? fallback;
+  int _int(Object? value) =>
+      value is num ? value.toInt() : int.tryParse('$value') ?? 0;
 }
 
 final onlineGalleryServiceProvider = Provider<OnlineGalleryService>((ref) {
@@ -717,6 +852,7 @@ class OnlineGalleryNotifier extends Notifier<OnlineGalleryState> {
     final serial = ++_loadSerial;
     final page = append ? state.page + 1 : 1;
     state = state.copyWith(
+      listRevision: append ? state.listRevision : state.listRevision + 1,
       loading: !append,
       loadingMore: append,
       error: null,
@@ -724,16 +860,18 @@ class OnlineGalleryNotifier extends Notifier<OnlineGalleryState> {
       page: page,
     );
     try {
-      final result = await ref.read(onlineGalleryServiceProvider).fetch(
-        state.source,
-        feed: state.feed,
-        query: state.query,
-        page: page,
-        ratings: state.ratings,
-        blacklist: state.blacklist,
-        rankingPeriod: state.rankingPeriod,
-        dateDays: state.dateDays,
-      );
+      final result = await ref
+          .read(onlineGalleryServiceProvider)
+          .fetch(
+            state.source,
+            feed: state.feed,
+            query: state.query,
+            page: page,
+            ratings: state.ratings,
+            blacklist: state.blacklist,
+            rankingPeriod: state.rankingPeriod,
+            dateDays: state.dateDays,
+          );
       if (serial != _loadSerial) return;
       final old = append ? state.items : const <OnlineGalleryItem>[];
       final seen = {for (final item in old) item.stableId};
@@ -762,17 +900,16 @@ class OnlineGalleryNotifier extends Notifier<OnlineGalleryState> {
 
   void setQuery(String query) {
     _invalidateLoads();
-    state = state.copyWith(
-      query: query,
-      loading: false,
-      loadingMore: false,
-    );
+    state = state.copyWith(query: query, loading: false, loadingMore: false);
     if (state.feed == OnlineGalleryFeed.favorites) {
       _refreshFavoritesView();
     }
   }
 
-  void _invalidateLoads() => ++_loadSerial;
+  void _invalidateLoads() {
+    ++_loadSerial;
+    state = state.copyWith(listRevision: state.listRevision + 1);
+  }
 
   OnlineGalleryItem? itemByStableId(String stableId) {
     for (final item in state.items) {
@@ -781,7 +918,8 @@ class OnlineGalleryNotifier extends Notifier<OnlineGalleryState> {
     return null;
   }
 
-  OnlineGalleryDetail? cachedDetail(OnlineGalleryItem item) => _details[item.stableId];
+  OnlineGalleryDetail? cachedDetail(OnlineGalleryItem item) =>
+      _details[item.stableId];
 
   /// Loads AI TAG's deferred media metadata once per work and patches the card
   /// in place. Other sources also benefit from the cache when a detail page is
@@ -800,7 +938,9 @@ class OnlineGalleryNotifier extends Notifier<OnlineGalleryState> {
     final scopeSource = state.source;
     final future = () async {
       try {
-        final detail = await ref.read(onlineGalleryServiceProvider).detail(item);
+        final detail = await ref
+            .read(onlineGalleryServiceProvider)
+            .detail(item);
         _details[key] = detail;
         if (state.source != scopeSource) return detail;
         final nextItems = [
@@ -858,12 +998,14 @@ class OnlineGalleryNotifier extends Notifier<OnlineGalleryState> {
   }
 
   void setOutputFilter(bool value) {
-    state = state.copyWith(outputFilter: value);
+    state = state.copyWith(
+      outputFilter: value,
+      listRevision: state.listRevision + 1,
+    );
     unawaited(
-      ref.read(prefsStoreProvider).write(
-        key: _outputFilterKey,
-        value: value ? '1' : '0',
-      ),
+      ref
+          .read(prefsStoreProvider)
+          .write(key: _outputFilterKey, value: value ? '1' : '0'),
     );
   }
 
@@ -958,10 +1100,9 @@ class OnlineGalleryNotifier extends Notifier<OnlineGalleryState> {
       loadingMore: false,
     );
     unawaited(
-      ref.read(prefsStoreProvider).write(
-        key: _blacklistKey,
-        value: blacklist.join('\n'),
-      ),
+      ref
+          .read(prefsStoreProvider)
+          .write(key: _blacklistKey, value: blacklist.join('\n')),
     );
     if (state.feed == OnlineGalleryFeed.favorites) {
       _refreshFavoritesView();
@@ -975,10 +1116,9 @@ class OnlineGalleryNotifier extends Notifier<OnlineGalleryState> {
     if (next.remove(item.stableId) == null) next[item.stableId] = item;
     state = state.copyWith(favorites: next);
     unawaited(
-      ref.read(prefsStoreProvider).write(
-        key: _favoritesKey,
-        value: encodeOnlineFavorites(next),
-      ),
+      ref
+          .read(prefsStoreProvider)
+          .write(key: _favoritesKey, value: encodeOnlineFavorites(next)),
     );
     if (state.feed == OnlineGalleryFeed.favorites) {
       _refreshFavoritesView();
@@ -997,7 +1137,8 @@ class OnlineGalleryNotifier extends Notifier<OnlineGalleryState> {
     )) {
       return false;
     }
-    if (state.dateDays > 0 && item.createdAt != null &&
+    if (state.dateDays > 0 &&
+        item.createdAt != null &&
         item.createdAt!.isBefore(
           (state.dateDays == 1
               ? DateTime(

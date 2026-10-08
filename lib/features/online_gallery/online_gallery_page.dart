@@ -16,8 +16,14 @@ import '../local_gallery/local_gallery_state.dart';
 import '../shell/shell_state.dart';
 import '../inspiration/codex/codex_view.dart';
 import '../inspiration/prompt_library_save.dart';
+import 'online_gallery_import_sheet.dart';
 import 'online_gallery_models.dart';
 import 'online_gallery_service.dart';
+
+// Keep the scroll bucket beside the cached gallery data, beyond a route's life.
+final onlineGalleryScrollStorageProvider = Provider(
+  (ref) => PageStorageBucket(),
+);
 
 /// Multi-source online reference gallery.
 class OnlineGalleryPage extends ConsumerStatefulWidget {
@@ -36,6 +42,7 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
   @override
   void initState() {
     super.initState();
+    _search.text = ref.read(onlineGalleryProvider).query;
     _scroll.addListener(_onScroll);
   }
 
@@ -47,7 +54,8 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
     super.dispose();
   }
 
-  OnlineGalleryNotifier get _notifier => ref.read(onlineGalleryProvider.notifier);
+  OnlineGalleryNotifier get _notifier =>
+      ref.read(onlineGalleryProvider.notifier);
 
   void _onScroll() => _maybeLoadMore();
 
@@ -112,8 +120,14 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, controller.text), child: const Text('应用')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, controller.text),
+            child: const Text('应用'),
+          ),
         ],
       ),
     );
@@ -122,7 +136,9 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
     final tags = value
         .split(RegExp(r'[\n,，\s]+'))
         .map((tag) => tag.trim().toLowerCase().replaceAll(' ', '_'))
-        .where((tag) => tag.isNotEmpty && !tag.contains(':') && !tag.contains('*'))
+        .where(
+          (tag) => tag.isNotEmpty && !tag.contains(':') && !tag.contains('*'),
+        )
         .toSet();
     _notifier.setBlacklist(tags);
   }
@@ -145,7 +161,9 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
                   title: Text(rating.label),
                   secondary: Icon(_ratingIcon(rating)),
                   onChanged: (on) => setLocal(() {
-                    on == true ? selected.add(rating.key) : selected.remove(rating.key);
+                    on == true
+                        ? selected.add(rating.key)
+                        : selected.remove(rating.key);
                   }),
                 ),
               Padding(
@@ -169,6 +187,12 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(onlineGalleryProvider);
+    ref.listen(onlineGalleryProvider.select((state) => state.query), (
+      _,
+      query,
+    ) {
+      if (_search.text != query) _search.text = query;
+    });
     final scheme = context.scheme;
     return Scaffold(
       appBar: AppBar(
@@ -227,7 +251,10 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
                     value: source,
                     child: Row(
                       children: [
-                        Icon(source == state.source ? Icons.check : Icons.public, size: 18),
+                        Icon(
+                          source == state.source ? Icons.check : Icons.public,
+                          size: 18,
+                        ),
                         const SizedBox(width: 10),
                         Text(source.label),
                       ],
@@ -243,7 +270,14 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
                 ),
                 child: Row(
                   children: [
-                    Expanded(child: Text(state.source.label, style: context.texts.bodyMedium!.copyWith(fontWeight: FontWeight.w700))),
+                    Expanded(
+                      child: Text(
+                        state.source.label,
+                        style: context.texts.bodyMedium!.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
                     Icon(Icons.expand_more, color: scheme.onSurfaceVariant),
                   ],
                 ),
@@ -281,7 +315,8 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
                 ),
               ],
               selected: {state.feed},
-              onSelectionChanged: (selection) => _notifier.setFeed(selection.first),
+              onSelectionChanged: (selection) =>
+                  _notifier.setFeed(selection.first),
               showSelectedIcon: false,
               style: const ButtonStyle(visualDensity: VisualDensity.compact),
             ),
@@ -292,7 +327,9 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
             visualDensity: VisualDensity.compact,
             icon: Icon(
               Icons.tune,
-              color: state.ratings.length < 4 ? scheme.primary : scheme.onSurfaceVariant,
+              color: state.ratings.length < 4
+                  ? scheme.primary
+                  : scheme.onSurfaceVariant,
             ),
             onPressed: _pickRatings,
           ),
@@ -315,7 +352,9 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
         decoration: InputDecoration(
           isDense: true,
           prefixIcon: const Icon(Icons.search, size: 20),
-          hintText: state.feed == OnlineGalleryFeed.ranking ? '搜索排行标签…' : '搜索标签…',
+          hintText: state.feed == OnlineGalleryFeed.ranking
+              ? '搜索排行标签…'
+              : '搜索标签…',
           suffixIcon: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -323,7 +362,9 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
                 Icon(Icons.block, size: 17, color: scheme.error),
               IconButton(
                 tooltip: _showFilters ? '收起筛选' : '展开筛选',
-                icon: Icon(_showFilters ? Icons.expand_less : Icons.expand_more),
+                icon: Icon(
+                  _showFilters ? Icons.expand_less : Icons.expand_more,
+                ),
                 onPressed: () => setState(() => _showFilters = !_showFilters),
               ),
             ],
@@ -410,9 +451,7 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
               ListTile(
                 leading: const Icon(Icons.date_range_outlined),
                 title: Text(
-                  days == 0
-                      ? '全部日期'
-                      : (days == 1 ? '今天' : '近 $days 天'),
+                  days == 0 ? '全部日期' : (days == 1 ? '今天' : '近 $days 天'),
                 ),
                 onTap: () => Navigator.pop(ctx, days),
               ),
@@ -439,7 +478,11 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.filter_alt_off_outlined, size: 50, color: scheme.outlineVariant),
+              Icon(
+                Icons.filter_alt_off_outlined,
+                size: 50,
+                color: scheme.outlineVariant,
+              ),
               const SizedBox(height: 10),
               const Text('当前筛选没有可显示的图片'),
               const SizedBox(height: 6),
@@ -465,7 +508,10 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
       onRefresh: () => _notifier.load(),
       child: LayoutBuilder(
         builder: (context, constraints) {
-          final columns = (constraints.maxWidth / 170).floor().clamp(2, 6).toInt();
+          final columns = (constraints.maxWidth / 170)
+              .floor()
+              .clamp(2, 6)
+              .toInt();
           final buckets = List.generate(columns, (_) => <OnlineGalleryItem>[]);
           final heights = List<double>.filled(columns, 0);
           for (final item in displayItems) {
@@ -479,40 +525,47 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
             final ratio = item.aspectRatio.clamp(.3, 3.5).toDouble();
             heights[target] += 1 / ratio + .22;
           }
-          return SingleChildScrollView(
-            controller: _scroll,
-            physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.fromLTRB(6, 6, 6, 24),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                for (var column = 0; column < columns; column++)
-                  Expanded(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 4),
-                      child: Column(
-                        children: [
-                          for (final item in buckets[column]) ...[
-                            _OnlineCard(
-                              item: item,
-                              favorite: state.isFavorite(item),
-                              onTap: () => Navigator.of(context).push(
-                                sharedAxisRoute(OnlineGalleryDetailPage(item: item)),
+          return PageStorage(
+            bucket: ref.watch(onlineGalleryScrollStorageProvider),
+            child: SingleChildScrollView(
+              key: PageStorageKey('online-gallery-${state.listRevision}'),
+              controller: _scroll,
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.fromLTRB(6, 6, 6, 24),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (var column = 0; column < columns; column++)
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        child: Column(
+                          children: [
+                            for (final item in buckets[column]) ...[
+                              _OnlineCard(
+                                item: item,
+                                favorite: state.isFavorite(item),
+                                onTap: () => Navigator.of(context).push(
+                                  sharedAxisRoute(
+                                    OnlineGalleryDetailPage(item: item),
+                                  ),
+                                ),
+                                onFavorite: () =>
+                                    _notifier.toggleFavorite(item),
                               ),
-                              onFavorite: () => _notifier.toggleFavorite(item),
-                            ),
-                            const SizedBox(height: 8),
+                              const SizedBox(height: 8),
+                            ],
+                            if (state.loadingMore)
+                              const SizedBox(
+                                height: 120,
+                                child: _LoadingTile(),
+                              ),
                           ],
-                          if (state.loadingMore)
-                            const SizedBox(
-                              height: 120,
-                              child: _LoadingTile(),
-                            ),
-                        ],
+                        ),
                       ),
                     ),
-                  ),
-              ],
+                ],
+              ),
             ),
           );
         },
@@ -526,9 +579,17 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
       children: [
         Icon(Icons.public_off_outlined, size: 52, color: scheme.outlineVariant),
         const SizedBox(height: 12),
-        Text(text, style: context.texts.titleSmall!.copyWith(fontWeight: FontWeight.w700)),
+        Text(
+          text,
+          style: context.texts.titleSmall!.copyWith(
+            fontWeight: FontWeight.w700,
+          ),
+        ),
         const SizedBox(height: 5),
-        Text('调整来源或搜索条件后重试', style: context.texts.bodySmall!.copyWith(color: scheme.outline)),
+        Text(
+          '调整来源或搜索条件后重试',
+          style: context.texts.bodySmall!.copyWith(color: scheme.outline),
+        ),
       ],
     ),
   );
@@ -541,11 +602,26 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
         children: [
           Icon(Icons.cloud_off_outlined, size: 50, color: scheme.error),
           const SizedBox(height: 12),
-          Text('在线画廊暂时不可用', style: context.texts.titleSmall!.copyWith(fontWeight: FontWeight.w700)),
+          Text(
+            '在线画廊暂时不可用',
+            style: context.texts.titleSmall!.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
+          ),
           const SizedBox(height: 6),
-          Text(error, textAlign: TextAlign.center, maxLines: 3, overflow: TextOverflow.ellipsis, style: context.texts.bodySmall!.copyWith(color: scheme.outline)),
+          Text(
+            error,
+            textAlign: TextAlign.center,
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+            style: context.texts.bodySmall!.copyWith(color: scheme.outline),
+          ),
           const SizedBox(height: 14),
-          FilledButton.icon(onPressed: () => _notifier.load(), icon: const Icon(Icons.refresh), label: const Text('重试')),
+          FilledButton.icon(
+            onPressed: () => _notifier.load(),
+            icon: const Icon(Icons.refresh),
+            label: const Text('重试'),
+          ),
         ],
       ),
     ),
@@ -569,7 +645,9 @@ class _OnlineCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final hasDimensions = item.width > 0 && item.height > 0;
-    final ratio = hasDimensions ? item.aspectRatio.clamp(.3, 3.5).toDouble() : .8;
+    final ratio = hasDimensions
+        ? item.aspectRatio.clamp(.3, 3.5).toDouble()
+        : .8;
     return Material(
       color: scheme.surfaceContainerLow,
       borderRadius: BorderRadius.circular(10),
@@ -584,7 +662,9 @@ class _OnlineCard extends StatelessWidget {
                 AspectRatio(
                   aspectRatio: ratio,
                   child: _RemoteThumb(
-                    url: item.previewUrl.isEmpty ? item.imageUrl : item.previewUrl,
+                    url: item.previewUrl.isEmpty
+                        ? item.imageUrl
+                        : item.previewUrl,
                     fit: hasDimensions ? BoxFit.cover : BoxFit.contain,
                   ),
                 ),
@@ -604,7 +684,9 @@ class _OnlineCard extends StatelessWidget {
                       favorite ? Icons.star : Icons.star_border,
                       color: favorite ? Colors.amber.shade300 : Colors.white,
                       size: 22,
-                      shadows: const [Shadow(blurRadius: 3, color: Colors.black54)],
+                      shadows: const [
+                        Shadow(blurRadius: 3, color: Colors.black54),
+                      ],
                     ),
                   ),
                 ),
@@ -619,12 +701,16 @@ class _OnlineCard extends StatelessWidget {
                       item.author.isEmpty ? '#${item.id}' : item.author,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: context.texts.labelSmall!.copyWith(fontWeight: FontWeight.w600),
+                      style: context.texts.labelSmall!.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
                   Text(
                     '${item.score}',
-                    style: context.texts.labelSmall!.copyWith(color: scheme.outline),
+                    style: context.texts.labelSmall!.copyWith(
+                      color: scheme.outline,
+                    ),
                   ),
                   const SizedBox(width: 3),
                   Icon(
@@ -643,11 +729,7 @@ class _OnlineCard extends StatelessWidget {
 }
 
 class _RemoteThumb extends StatefulWidget {
-  const _RemoteThumb({
-    required this.url,
-    required this.fit,
-    this.fallbackUrl,
-  });
+  const _RemoteThumb({required this.url, required this.fit, this.fallbackUrl});
 
   final String url;
   final BoxFit fit;
@@ -669,13 +751,14 @@ class _RemoteThumbState extends State<_RemoteThumb> {
     }
   }
 
-  Widget _placeholder(BuildContext context, {required bool broken}) => ColoredBox(
-    color: context.scheme.surfaceContainerHigh,
-    child: Icon(
-      broken ? Icons.broken_image_outlined : Icons.image_outlined,
-      color: context.scheme.outline,
-    ),
-  );
+  Widget _placeholder(BuildContext context, {required bool broken}) =>
+      ColoredBox(
+        color: context.scheme.surfaceContainerHigh,
+        child: Icon(
+          broken ? Icons.broken_image_outlined : Icons.image_outlined,
+          color: context.scheme.outline,
+        ),
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -732,12 +815,32 @@ class _RatingBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = switch (rating) {'g' => FixedSemantic.ok, 's' => FixedSemantic.warn, 'q' => Colors.orange, _ => context.scheme.error};
-    final label = switch (rating) {'g' => 'G', 's' => 'S', 'q' => 'Q', _ => 'E'};
+    final color = switch (rating) {
+      'g' => FixedSemantic.ok,
+      's' => FixedSemantic.warn,
+      'q' => Colors.orange,
+      _ => context.scheme.error,
+    };
+    final label = switch (rating) {
+      'g' => 'G',
+      's' => 'S',
+      'q' => 'Q',
+      _ => 'E',
+    };
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-      decoration: BoxDecoration(color: color.withValues(alpha: .92), borderRadius: BorderRadius.circular(5)),
-      child: Text(label, style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.w800)),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: .92),
+        borderRadius: BorderRadius.circular(5),
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 9,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
     );
   }
 }
@@ -748,10 +851,12 @@ class OnlineGalleryDetailPage extends ConsumerStatefulWidget {
   final OnlineGalleryItem item;
 
   @override
-  ConsumerState<OnlineGalleryDetailPage> createState() => _OnlineGalleryDetailPageState();
+  ConsumerState<OnlineGalleryDetailPage> createState() =>
+      _OnlineGalleryDetailPageState();
 }
 
-class _OnlineGalleryDetailPageState extends ConsumerState<OnlineGalleryDetailPage> {
+class _OnlineGalleryDetailPageState
+    extends ConsumerState<OnlineGalleryDetailPage> {
   OnlineGalleryDetail? _detail;
   String? _error;
   bool _loading = true;
@@ -774,10 +879,9 @@ class _OnlineGalleryDetailPageState extends ConsumerState<OnlineGalleryDetailPag
       });
     }
     try {
-      final result = await ref.read(onlineGalleryProvider.notifier).loadDetail(
-        widget.item,
-        force: force,
-      );
+      final result = await ref
+          .read(onlineGalleryProvider.notifier)
+          .loadDetail(widget.item, force: force);
       if (result == null) throw const FormatException('详情加载失败');
       if (!mounted) return;
       setState(() {
@@ -800,16 +904,24 @@ class _OnlineGalleryDetailPageState extends ConsumerState<OnlineGalleryDetailPag
     try {
       final url = _item.imageUrl.isEmpty ? _item.previewUrl : _item.imageUrl;
       final bytes = await ref.read(onlineGalleryServiceProvider).download(url);
-      final record = await ref.read(appStoresProvider).localGallery.importBytes(
-        bytes,
-        '${_item.source.key}_${_item.id}.${_item.fileExtension.isEmpty ? 'jpg' : _item.fileExtension}',
-        promptOverride: _item.prompt.isEmpty ? null : _item.prompt,
-        negativePromptOverride:
-            _item.negativePrompt.isEmpty ? null : _item.negativePrompt,
-      );
+      final record = await ref
+          .read(appStoresProvider)
+          .localGallery
+          .importBytes(
+            bytes,
+            '${_item.source.key}_${_item.id}.${_item.fileExtension.isEmpty ? 'jpg' : _item.fileExtension}',
+            promptOverride: _item.prompt.isEmpty ? null : _item.prompt,
+            negativePromptOverride: _item.negativePrompt.isEmpty
+                ? null
+                : _item.negativePrompt,
+          );
       ref.read(localGalleryProvider.notifier).refreshFromStore();
       if (!mounted) return;
-      hintSnack(context, '已保存到本地图库：${record.name}', icon: Icons.check_circle_outline);
+      hintSnack(
+        context,
+        '已保存到本地图库：${record.name}',
+        icon: Icons.check_circle_outline,
+      );
     } catch (e) {
       if (mounted) hintSnack(context, '保存失败：$e', icon: Icons.error_outline);
     } finally {
@@ -844,13 +956,10 @@ class _OnlineGalleryDetailPageState extends ConsumerState<OnlineGalleryDetailPag
           .importImageBytes(bytes, name);
     } catch (_) {}
     if (!mounted) return;
-    ref.read(generateProvider.notifier).addCharRef(
-      image: bytes,
-      name: name,
-      imageHash: stored?.id,
-    );
-    ref.read(shellIndexProvider.notifier).select(kTabCreate);
-    Navigator.of(context).pop();
+    ref
+        .read(generateProvider.notifier)
+        .addCharRef(image: bytes, name: name, imageHash: stored?.id);
+    _openGeneration();
   }
 
   Future<void> _useAsImg2Img() async {
@@ -859,33 +968,25 @@ class _OnlineGalleryDetailPageState extends ConsumerState<OnlineGalleryDetailPag
     try {
       final (width, height) = await decodeImageSize(bytes);
       final size = img2imgResolution(width, height);
-      ref.read(generateProvider.notifier).setImg2ImgImage(
-        image: bytes,
-        width: size.w,
-        height: size.h,
-      );
-      ref.read(shellIndexProvider.notifier).select(kTabCreate);
-      Navigator.of(context).pop();
+      ref
+          .read(generateProvider.notifier)
+          .setImg2ImgImage(image: bytes, width: size.w, height: size.h);
+      _openGeneration();
     } catch (_) {
       if (mounted) hintSnack(context, '无法读取图片尺寸', icon: Icons.error_outline);
     }
+  }
+
+  void _openGeneration() {
+    ref.read(shellIndexProvider.notifier).select(kTabCreate);
+    // Both the detail and gallery routes sit above the shell.
+    Navigator.of(context).popUntil((route) => route.isFirst);
   }
 
   String _promptCandidate() {
     final prompt = _item.prompt.trim();
     if (prompt.isNotEmpty) return prompt;
 
-    final rawPrompt = _detail?.raw['prompt']?.toString().trim() ?? '';
-    if (rawPrompt.isNotEmpty) return rawPrompt;
-
-    // Danbooru/Gelbooru store tags rather than an AI prompt. Use only the
-    // parsed tag list; never use the source HTML as a prompt fallback.
-    final description = _detail?.description.trim() ?? _item.description.trim();
-    if (description.isNotEmpty &&
-        !RegExp(r'<(?:html|head|body|script)\b', caseSensitive: false)
-            .hasMatch(description)) {
-      return description;
-    }
     return _item.tags.join(', ');
   }
 
@@ -909,15 +1010,20 @@ class _OnlineGalleryDetailPageState extends ConsumerState<OnlineGalleryDetailPag
   }
 
   Future<void> _usePrompt() async {
-    final galleryState = ref.read(onlineGalleryProvider);
-    final text = galleryState.filterOutputPrompt(_promptCandidate());
-    if (text.isEmpty) {
-      hintSnack(context, '这张作品没有可用的提示词', icon: Icons.info_outline);
-      return;
-    }
-    ref.read(generateProvider.notifier).setPrompts(positive: text);
-    ref.read(shellIndexProvider.notifier).select(kTabCreate);
-    Navigator.of(context).pop();
+    final selection = await showModalBottomSheet<GalleryPromptImport>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => OnlineGalleryImportSheet(
+        item: _item,
+        filter: ref.read(onlineGalleryProvider).filterOutputPrompt,
+      ),
+    );
+    if (selection == null || !mounted) return;
+    ref
+        .read(generateProvider.notifier)
+        .setPrompts(positive: selection.positive, negative: selection.negative);
+    _openGeneration();
   }
 
   @override
@@ -927,16 +1033,26 @@ class _OnlineGalleryDetailPageState extends ConsumerState<OnlineGalleryDetailPag
     final scheme = context.scheme;
     return Scaffold(
       appBar: AppBar(
-        title: Text('${_item.source.label} · ${_item.id}', maxLines: 1, overflow: TextOverflow.ellipsis),
+        title: Text(
+          '${_item.source.label} · ${_item.id}',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
         actions: [
           IconButton(
             tooltip: favorite ? '取消收藏' : '收藏',
             icon: Icon(favorite ? Icons.star : Icons.star_border),
-            onPressed: () => ref.read(onlineGalleryProvider.notifier).toggleFavorite(_item),
+            onPressed: () =>
+                ref.read(onlineGalleryProvider.notifier).toggleFavorite(_item),
           ),
           IconButton(
             tooltip: '保存到本地图库',
-            icon: _saving ? const SizedBox.square(dimension: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.download_outlined),
+            icon: _saving
+                ? const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.download_outlined),
             onPressed: _saving ? null : _saveLocal,
           ),
         ],
@@ -952,7 +1068,7 @@ class _OnlineGalleryDetailPageState extends ConsumerState<OnlineGalleryDetailPag
                 children: [
                   Expanded(
                     child: FilledButton.tonalIcon(
-                      onPressed: _usePrompt,
+                      onPressed: _loading ? null : _usePrompt,
                       icon: const Icon(Icons.auto_awesome, size: 18),
                       label: const Text('使用提示词'),
                     ),
@@ -1023,14 +1139,20 @@ class _OnlineGalleryDetailPageState extends ConsumerState<OnlineGalleryDetailPag
               borderRadius: BorderRadius.circular(10),
               child: ListTile(
                 dense: true,
-                leading: Icon(Icons.info_outline, color: scheme.onErrorContainer),
+                leading: Icon(
+                  Icons.info_outline,
+                  color: scheme.onErrorContainer,
+                ),
                 title: Text(
                   '详情暂时不可用，先显示预览图',
                   style: TextStyle(color: scheme.onErrorContainer),
                 ),
                 trailing: TextButton(
                   onPressed: _loadDetail,
-                  child: Text('重试', style: TextStyle(color: scheme.onErrorContainer)),
+                  child: Text(
+                    '重试',
+                    style: TextStyle(color: scheme.onErrorContainer),
+                  ),
                 ),
               ),
             ),
@@ -1046,8 +1168,8 @@ class _OnlineGalleryDetailPageState extends ConsumerState<OnlineGalleryDetailPag
               url: item.previewUrl.isEmpty ? item.imageUrl : item.previewUrl,
               fit: BoxFit.contain,
               fallbackUrl: item.imageUrl,
+            ),
           ),
-        ),
         ),
         const SizedBox(height: 14),
         Wrap(
@@ -1056,13 +1178,20 @@ class _OnlineGalleryDetailPageState extends ConsumerState<OnlineGalleryDetailPag
           children: [
             _DetailChip(label: '来源', value: item.source.label),
             _DetailChip(label: '评分', value: '${item.score}'),
-            if (item.width > 0) _DetailChip(label: '尺寸', value: '${item.width} × ${item.height}'),
-            if (item.author.isNotEmpty) _DetailChip(label: '作者', value: item.author),
+            if (item.width > 0)
+              _DetailChip(label: '尺寸', value: '${item.width} × ${item.height}'),
+            if (item.author.isNotEmpty)
+              _DetailChip(label: '作者', value: item.author),
           ],
         ),
         if (item.title.isNotEmpty) ...[
           const SizedBox(height: 18),
-          Text(item.title, style: context.texts.titleMedium!.copyWith(fontWeight: FontWeight.w700)),
+          Text(
+            item.title,
+            style: context.texts.titleMedium!.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
+          ),
         ],
         if (item.description.isNotEmpty) ...[
           const SizedBox(height: 14),
@@ -1078,30 +1207,56 @@ class _OnlineGalleryDetailPageState extends ConsumerState<OnlineGalleryDetailPag
         ],
         if (item.tags.isNotEmpty) ...[
           const SizedBox(height: 16),
-          Text('标签 (${item.tags.length})', style: context.texts.titleSmall!.copyWith(fontWeight: FontWeight.w700)),
-          const SizedBox(height: 7),
-          Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            children: [
-              for (final tag in item.tags.take(160))
-                InputChip(
-                  label: Text(tag, maxLines: 1, overflow: TextOverflow.ellipsis),
-                  onPressed: () {
-                    final current = ref.read(onlineGalleryProvider).query;
-                    final next = current.trim().isEmpty ? tag : '$current $tag';
-                    ref.read(onlineGalleryProvider.notifier).setQuery(next);
-                    Navigator.pop(context);
-                  },
-                  visualDensity: VisualDensity.compact,
-                ),
-            ],
+          Text(
+            '标签 (${item.tags.length})',
+            style: context.texts.titleSmall!.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
           ),
+          const SizedBox(height: 7),
+          for (final group in item.groupedTags.entries) ...[
+            Padding(
+              padding: const EdgeInsets.only(top: 12, bottom: 6),
+              child: Text(
+                '${group.key.label} (${group.value.length})',
+                style: context.texts.titleSmall!.copyWith(
+                  color: galleryTagColor(group.key, scheme),
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final tag in group.value)
+                  InputChip(
+                    label: Text(
+                      tag.replaceAll('_', ' '),
+                      style: TextStyle(
+                        color: galleryTagColor(group.key, scheme),
+                      ),
+                    ),
+                    onPressed: () {
+                      final current = ref.read(onlineGalleryProvider).query;
+                      final next = current.trim().isEmpty
+                          ? tag
+                          : '$current $tag';
+                      ref.read(onlineGalleryProvider.notifier).setQuery(next);
+                      unawaited(
+                        ref.read(onlineGalleryProvider.notifier).load(),
+                      );
+                      Navigator.pop(context);
+                    },
+                    visualDensity: VisualDensity.compact,
+                  ),
+              ],
+            ),
+          ],
         ],
       ],
     );
   }
-
 }
 
 class _DetailChip extends StatelessWidget {
@@ -1121,8 +1276,17 @@ class _DetailChip extends StatelessWidget {
       text: TextSpan(
         style: context.texts.labelMedium,
         children: [
-          TextSpan(text: '$label  ', style: TextStyle(color: context.scheme.outline)),
-          TextSpan(text: value, style: TextStyle(color: context.scheme.onSurface, fontWeight: FontWeight.w600)),
+          TextSpan(
+            text: '$label  ',
+            style: TextStyle(color: context.scheme.outline),
+          ),
+          TextSpan(
+            text: value,
+            style: TextStyle(
+              color: context.scheme.onSurface,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
         ],
       ),
     ),
@@ -1139,7 +1303,10 @@ class _TextSection extends StatelessWidget {
   Widget build(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      Text(title, style: context.texts.titleSmall!.copyWith(fontWeight: FontWeight.w700)),
+      Text(
+        title,
+        style: context.texts.titleSmall!.copyWith(fontWeight: FontWeight.w700),
+      ),
       const SizedBox(height: 7),
       Container(
         width: double.infinity,
@@ -1148,7 +1315,10 @@ class _TextSection extends StatelessWidget {
           color: context.scheme.surfaceContainerHigh,
           borderRadius: BorderRadius.circular(10),
         ),
-        child: SelectableText(text, style: context.texts.bodySmall!.copyWith(height: 1.55)),
+        child: SelectableText(
+          text,
+          style: context.texts.bodySmall!.copyWith(height: 1.55),
+        ),
       ),
     ],
   );
