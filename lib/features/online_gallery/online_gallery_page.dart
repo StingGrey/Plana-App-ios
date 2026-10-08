@@ -9,7 +9,8 @@ import '../../core/net/remote_image.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/util/image_ops.dart' show decodeImageSize, img2imgResolution;
 import '../generate/generate_state.dart';
-import '../generate/models.dart' show crSupportsModel;
+import '../generate/models.dart'
+    show crSupportsModel, providerOfModel, GenProvider;
 import '../generate/widgets/common.dart' show hintSnack, sharedAxisRoute;
 import '../char_library/char_library.dart';
 import '../local_gallery/local_gallery_state.dart';
@@ -62,7 +63,9 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
   void _maybeLoadMore() {
     if (!_scroll.hasClients) return;
     final state = ref.read(onlineGalleryProvider);
-    if (state.error != null ||
+    if ((state.source == OnlineGallerySource.aiTag &&
+            state.excludesAllAiPlatforms) ||
+        state.error != null ||
         state.feed == OnlineGalleryFeed.favorites ||
         !state.hasMore ||
         state.loading ||
@@ -80,7 +83,9 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final state = ref.read(onlineGalleryProvider);
-      if (state.error != null ||
+      if ((state.source == OnlineGallerySource.aiTag &&
+              state.excludesAllAiPlatforms) ||
+          state.error != null ||
           state.feed == OnlineGalleryFeed.favorites ||
           !state.hasMore ||
           state.loading ||
@@ -220,6 +225,7 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
             const Expanded(child: CodexView())
           else ...[
             _feedBar(state, scheme),
+            if (state.source == OnlineGallerySource.aiTag) _platformBar(state),
             _searchBar(state, scheme),
             AnimatedSize(
               duration: Motion.fast,
@@ -381,6 +387,39 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
     );
   }
 
+  Widget _platformBar(OnlineGalleryState state) {
+    final platforms = state.aiPlatforms;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            const Text('显示平台  '),
+            for (final platform in platforms)
+              Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: FilterChip(
+                  label: Text(platform),
+                  selected: !state.excludedPlatforms.contains(platform),
+                  onSelected: (on) {
+                    final excluded = {...state.excludedPlatforms};
+                    on ? excluded.remove(platform) : excluded.add(platform);
+                    _notifier.setExcludedPlatforms(excluded);
+                  },
+                  visualDensity: VisualDensity.compact,
+                ),
+              ),
+            TextButton(
+              onPressed: () => _notifier.setExcludedPlatforms({}),
+              child: const Text('全部平台'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _filterBar(OnlineGalleryState state, ColorScheme scheme) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 0, 14, 7),
@@ -471,9 +510,14 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
     if (state.error != null && state.items.isEmpty) {
       return _error(state.error!, scheme);
     }
+    if (state.source == OnlineGallerySource.aiTag &&
+        state.excludesAllAiPlatforms) {
+      return _empty('请至少选择一个生成平台', scheme);
+    }
     _scheduleLoadMoreCheck();
     if (displayItems.isEmpty) {
-      if (state.outputFilter && state.items.isNotEmpty) {
+      if ((state.outputFilter || state.excludedPlatforms.isNotEmpty) &&
+          state.items.isNotEmpty) {
         return Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -487,12 +531,15 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
               const Text('当前筛选没有可显示的图片'),
               const SizedBox(height: 6),
               Text(
-                '部分来源需要打开详情后才会提供完整元数据',
+                state.loadingMore ? '正在查找后续匹配作品…' : '可调整平台或内容筛选',
                 style: context.texts.bodySmall!.copyWith(color: scheme.outline),
               ),
               const SizedBox(height: 12),
               OutlinedButton(
-                onPressed: () => _notifier.setOutputFilter(false),
+                onPressed: () {
+                  _notifier.setOutputFilter(false);
+                  _notifier.setExcludedPlatforms({});
+                },
                 child: const Text('显示全部结果'),
               ),
             ],
@@ -692,6 +739,17 @@ class _OnlineCard extends StatelessWidget {
                 ),
               ],
             ),
+            if (item.source == OnlineGallerySource.aiTag)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 6, 8, 0),
+                child: Text(
+                  item.platform,
+                  style: context.texts.labelSmall!.copyWith(
+                    color: scheme.primary,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
             Padding(
               padding: const EdgeInsets.fromLTRB(8, 6, 5, 7),
               child: Row(
@@ -862,7 +920,10 @@ class _OnlineGalleryDetailPageState
   bool _loading = true;
   bool _saving = false;
 
-  OnlineGalleryItem get _item => _detail?.item ?? widget.item;
+  int _imageIndex = 0;
+  OnlineGalleryItem get _item => _detail != null && _detail!.images.isNotEmpty
+      ? _detail!.images[_imageIndex.clamp(0, _detail!.images.length - 1)]
+      : _detail?.item ?? widget.item;
 
   @override
   void initState() {
@@ -987,7 +1048,9 @@ class _OnlineGalleryDetailPageState
     final prompt = _item.prompt.trim();
     if (prompt.isNotEmpty) return prompt;
 
-    return _item.tags.join(', ');
+    return _item.source == OnlineGallerySource.aiTag
+        ? ''
+        : _item.tags.join(', ');
   }
 
   Future<void> _savePromptToLibrary() async {
@@ -1016,6 +1079,9 @@ class _OnlineGalleryDetailPageState
       showDragHandle: true,
       builder: (_) => OnlineGalleryImportSheet(
         item: _item,
+        naiTarget:
+            providerOfModel(ref.read(generateProvider).params.model) ==
+            GenProvider.nai,
         filter: ref.read(onlineGalleryProvider).filterOutputPrompt,
       ),
     );
@@ -1157,6 +1223,18 @@ class _OnlineGalleryDetailPageState
               ),
             ),
           ),
+        if ((_detail?.images.length ?? 0) > 1)
+          Wrap(
+            spacing: 6,
+            children: [
+              for (var i = 0; i < _detail!.images.length; i++)
+                ChoiceChip(
+                  label: Text('图片 ${i + 1}'),
+                  selected: _imageIndex == i,
+                  onSelected: (_) => setState(() => _imageIndex = i),
+                ),
+            ],
+          ),
         AspectRatio(
           key: const ValueKey('online-gallery-detail-image'),
           aspectRatio: imageRatio,
@@ -1177,6 +1255,8 @@ class _OnlineGalleryDetailPageState
           runSpacing: 7,
           children: [
             _DetailChip(label: '来源', value: item.source.label),
+            if (item.source == OnlineGallerySource.aiTag)
+              _DetailChip(label: '生成平台', value: item.platform),
             _DetailChip(label: '评分', value: '${item.score}'),
             if (item.width > 0)
               _DetailChip(label: '尺寸', value: '${item.width} × ${item.height}'),
@@ -1199,16 +1279,32 @@ class _OnlineGalleryDetailPageState
         ],
         if (item.prompt.isNotEmpty) ...[
           const SizedBox(height: 14),
-          _TextSection(title: '正向提示词', text: item.prompt),
+          _TextSection(
+            title: '正向提示词',
+            text: item.prompt,
+            source: item.promptSource,
+          ),
         ],
         if (item.negativePrompt.isNotEmpty) ...[
           const SizedBox(height: 14),
-          _TextSection(title: '负向提示词', text: item.negativePrompt),
+          _TextSection(
+            title: '负向提示词',
+            text: item.negativePrompt,
+            source: item.negativePromptSource,
+          ),
         ],
+        if (!_loading &&
+            item.source == OnlineGallerySource.aiTag &&
+            item.prompt.isEmpty &&
+            item.negativePrompt.isEmpty)
+          const Padding(
+            padding: EdgeInsets.only(top: 14),
+            child: Text('这张图没有可解析的生图提示词；作品标签不会作为提示词导入。'),
+          ),
         if (item.tags.isNotEmpty) ...[
           const SizedBox(height: 16),
           Text(
-            '标签 (${item.tags.length})',
+            '${item.source == OnlineGallerySource.aiTag ? '作品标签（非生图提示词）' : '标签'} (${item.tags.length})',
             style: context.texts.titleSmall!.copyWith(
               fontWeight: FontWeight.w700,
             ),
@@ -1294,10 +1390,15 @@ class _DetailChip extends StatelessWidget {
 }
 
 class _TextSection extends StatelessWidget {
-  const _TextSection({required this.title, required this.text});
+  const _TextSection({
+    required this.title,
+    required this.text,
+    this.source = '',
+  });
 
   final String title;
   final String text;
+  final String source;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -1307,6 +1408,8 @@ class _TextSection extends StatelessWidget {
         title,
         style: context.texts.titleSmall!.copyWith(fontWeight: FontWeight.w700),
       ),
+      if (source.isNotEmpty)
+        Text('来源：$source', style: context.texts.labelSmall),
       const SizedBox(height: 7),
       Container(
         width: double.infinity,

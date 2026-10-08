@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'online_gallery_models.dart';
+import 'ai_tag_metadata.dart';
 
 Color galleryTagColor(OnlineGalleryTagCategory category, ColorScheme scheme) =>
     switch (category) {
@@ -39,9 +40,11 @@ class OnlineGalleryImportSheet extends StatefulWidget {
     super.key,
     required this.item,
     required this.filter,
+    this.naiTarget = true,
   });
   final OnlineGalleryItem item;
   final String Function(String) filter;
+  final bool naiTarget;
 
   @override
   State<OnlineGalleryImportSheet> createState() =>
@@ -49,17 +52,23 @@ class OnlineGalleryImportSheet extends StatefulWidget {
 }
 
 class _OnlineGalleryImportSheetState extends State<OnlineGalleryImportSheet> {
-  late final Set<String> _selected = widget.item.tags.toSet();
+  late final Set<String> _selected = widget.item.importTags.toSet();
   late bool _useTags = widget.item.prompt.trim().isEmpty;
   bool _positive = true;
   bool _negative = false;
+  late bool _removeNetworks = widget.naiTarget;
 
-  String get _positiveText => widget.filter(
-    _useTags
-        ? widget.item.tags.where(_selected.contains).toSet().join(', ')
-        : widget.item.prompt,
+  String _clean(String value) =>
+      _removeNetworks ? removeExtraNetworkTags(value) : value;
+
+  String get _positiveText => _clean(
+    widget.filter(
+      _useTags
+          ? widget.item.importTags.where(_selected.contains).toSet().join(', ')
+          : widget.item.prompt,
+    ),
   );
-  String get _negativeText => widget.item.negativePrompt.trim();
+  String get _negativeText => _clean(widget.item.negativePrompt.trim());
 
   @override
   Widget build(BuildContext context) {
@@ -94,6 +103,15 @@ class _OnlineGalleryImportSheetState extends State<OnlineGalleryImportSheet> {
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 children: [
                   const Text('仅替换勾选的提示词，未勾选的部分保留原内容。'),
+                  if (hasExtraNetworkTags(
+                    '${widget.item.prompt} ${widget.item.negativePrompt} ${widget.item.importTags.join(', ')}',
+                  ))
+                    SwitchListTile(
+                      title: const Text('过滤 LoRA / LyCORIS 等模型调用标签'),
+                      subtitle: const Text('NAI 不支持这些标签；正负提示词都会过滤，保留普通描述。'),
+                      value: _removeNetworks,
+                      onChanged: (v) => setState(() => _removeNetworks = v),
+                    ),
                   CheckboxListTile(
                     title: const Text('正向提示词'),
                     value: _positive,
@@ -101,7 +119,7 @@ class _OnlineGalleryImportSheetState extends State<OnlineGalleryImportSheet> {
                   ),
                   if (_positive &&
                       widget.item.prompt.trim().isNotEmpty &&
-                      widget.item.tags.isNotEmpty)
+                      widget.item.importTags.isNotEmpty)
                     SegmentedButton<bool>(
                       segments: const [
                         ButtonSegment(value: false, label: Text('原始提示词')),
@@ -115,12 +133,12 @@ class _OnlineGalleryImportSheetState extends State<OnlineGalleryImportSheet> {
                     Row(
                       children: [
                         Text(
-                          '已选 ${_selected.length} / ${widget.item.tags.toSet().length} 个标签',
+                          '已选 ${_selected.length} / ${widget.item.importTags.toSet().length} 个标签',
                         ),
                         const Spacer(),
                         TextButton(
                           onPressed: () => setState(
-                            () => _selected.addAll(widget.item.tags),
+                            () => _selected.addAll(widget.item.importTags),
                           ),
                           child: const Text('全选'),
                         ),
@@ -130,12 +148,13 @@ class _OnlineGalleryImportSheetState extends State<OnlineGalleryImportSheet> {
                         ),
                       ],
                     ),
-                    for (final group in widget.item.groupedTags.entries) ...[
+                    for (final group
+                        in widget.item.importTagGroups.entries) ...[
                       CheckboxListTile(
                         contentPadding: EdgeInsets.zero,
                         tristate: true,
                         title: Text(
-                          '${group.key.label} (${group.value.length})',
+                          '${widget.item.source == OnlineGallerySource.aiTag ? '提示词标签' : group.key.label} (${group.value.length})',
                           style: TextStyle(
                             color: galleryTagColor(group.key, scheme),
                             fontWeight: FontWeight.w700,

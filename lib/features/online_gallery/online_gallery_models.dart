@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'ai_tag_metadata.dart';
 
 /// Online gallery sources supported by the mobile client.
 const Object _onlineUnset = Object();
@@ -79,6 +80,9 @@ class OnlineGalleryItem {
     this.prompt = '',
     this.negativePrompt = '',
     this.fileExtension = '',
+    this.platform = '未知',
+    this.promptSource = '',
+    this.negativePromptSource = '',
   });
 
   final String id;
@@ -115,6 +119,19 @@ class OnlineGalleryItem {
   final String prompt;
   final String negativePrompt;
   final String fileExtension;
+  final String platform;
+  final String promptSource;
+  final String negativePromptSource;
+
+  List<String> get importTags =>
+      source == OnlineGallerySource.aiTag ? splitGalleryPrompt(prompt) : tags;
+  Map<OnlineGalleryTagCategory, List<String>> get importTagGroups =>
+      source == OnlineGallerySource.aiTag
+      ? {
+          if (importTags.isNotEmpty)
+            OnlineGalleryTagCategory.general: importTags,
+        }
+      : groupedTags;
 
   String get stableId => '${source.key}:$id';
   double get aspectRatio => width > 0 && height > 0 ? width / height : 1;
@@ -136,6 +153,9 @@ class OnlineGalleryItem {
     String? prompt,
     String? negativePrompt,
     String? fileExtension,
+    String? platform,
+    String? promptSource,
+    String? negativePromptSource,
   }) => OnlineGalleryItem(
     id: id,
     source: source,
@@ -154,6 +174,9 @@ class OnlineGalleryItem {
     prompt: prompt ?? this.prompt,
     negativePrompt: negativePrompt ?? this.negativePrompt,
     fileExtension: fileExtension ?? this.fileExtension,
+    platform: platform ?? this.platform,
+    promptSource: promptSource ?? this.promptSource,
+    negativePromptSource: negativePromptSource ?? this.negativePromptSource,
   );
 
   Map<String, dynamic> toJson() => {
@@ -176,6 +199,9 @@ class OnlineGalleryItem {
     'prompt': prompt,
     'negativePrompt': negativePrompt,
     'extension': fileExtension,
+    'platform': platform,
+    'promptSource': promptSource,
+    'negativePromptSource': negativePromptSource,
   };
 
   static OnlineGalleryItem? fromJson(Object? raw) {
@@ -217,6 +243,9 @@ class OnlineGalleryItem {
       prompt: raw['prompt']?.toString() ?? '',
       negativePrompt: raw['negativePrompt']?.toString() ?? '',
       fileExtension: raw['extension']?.toString() ?? '',
+      platform: aiPlatform(raw['platform']),
+      promptSource: raw['promptSource']?.toString() ?? '',
+      negativePromptSource: raw['negativePromptSource']?.toString() ?? '',
     );
   }
 }
@@ -226,11 +255,13 @@ class OnlineGalleryDetail {
     required this.item,
     this.description = '',
     this.raw = const {},
+    this.images = const [],
   });
 
   final OnlineGalleryItem item;
   final String description;
   final Map<String, dynamic> raw;
+  final List<OnlineGalleryItem> images;
 }
 
 class OnlineGalleryState {
@@ -251,6 +282,7 @@ class OnlineGalleryState {
     this.rankingPeriod = 'day',
     this.dateDays = 0,
     this.outputFilter = true,
+    this.excludedPlatforms = const {},
   });
 
   final OnlineGallerySource source;
@@ -272,6 +304,20 @@ class OnlineGalleryState {
   /// When enabled, source-side watermark/censor tags are filtered from the
   /// result list and copied prompt text.
   final bool outputFilter;
+  final Set<String> excludedPlatforms;
+  Set<String> get aiPlatforms => {
+    'NAI',
+    'NAI_X',
+    'SD',
+    'ComfyUI',
+    '未知',
+    ...excludedPlatforms,
+    ...items
+        .where((i) => i.source == OnlineGallerySource.aiTag)
+        .map((i) => i.platform),
+  };
+  bool get excludesAllAiPlatforms =>
+      aiPlatforms.every(excludedPlatforms.contains);
 
   bool isFavorite(OnlineGalleryItem item) =>
       favorites.containsKey(item.stableId);
@@ -280,12 +326,13 @@ class OnlineGalleryState {
   /// source-neutral tag semantics used by the desktop client: source-side
   /// watermark/censor tags are hidden. Metadata-only rows remain eligible
   /// until a source's detail endpoint resolves the media.
-  List<OnlineGalleryItem> get displayItems => outputFilter
-      ? [
-          for (final item in items)
-            if (!_hasOutputNoise(item)) item,
-        ]
-      : items;
+  List<OnlineGalleryItem> get displayItems => [
+    for (final item in items)
+      if ((!outputFilter || !_hasOutputNoise(item)) &&
+          (item.source != OnlineGallerySource.aiTag ||
+              !excludedPlatforms.contains(item.platform)))
+        item,
+  ];
 
   static String _normalizeOutputTag(String value) {
     var normalized = value.trim().toLowerCase();
@@ -380,6 +427,7 @@ class OnlineGalleryState {
     String? rankingPeriod,
     int? dateDays,
     bool? outputFilter,
+    Set<String>? excludedPlatforms,
   }) => OnlineGalleryState(
     source: source ?? this.source,
     feed: feed ?? this.feed,
@@ -397,6 +445,7 @@ class OnlineGalleryState {
     rankingPeriod: rankingPeriod ?? this.rankingPeriod,
     dateDays: dateDays ?? this.dateDays,
     outputFilter: outputFilter ?? this.outputFilter,
+    excludedPlatforms: excludedPlatforms ?? this.excludedPlatforms,
   );
 }
 

@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 
 import '../../core/store/app_stores.dart';
 import 'online_gallery_models.dart';
+import 'ai_tag_metadata.dart';
 
 class OnlineGalleryPageResult {
   const OnlineGalleryPageResult({required this.items, required this.hasMore});
@@ -107,34 +108,46 @@ class OnlineGalleryService {
           'https://aitag.win/api/work/${Uri.encodeComponent(item.id)}',
         );
         if (response is! Map) throw const FormatException('AI TAG 详情格式异常');
-        final copy = item;
-        final rows = response['images'];
-        var image = copy.imageUrl;
-        var prompt = copy.prompt;
-        var negativePrompt = copy.negativePrompt;
-        if (rows is List && rows.isNotEmpty && rows.first is Map) {
-          final row = Map<String, dynamic>.from(rows.first as Map);
-          image = _aiTagImageUrl(row, assetBase: assetBase) ?? image;
-          final parsedPrompt = _parsePromptPair(
-            row['prompt_text']?.toString() ?? row['ai_json']?.toString() ?? '',
+        final work = response['work'] is Map
+            ? response['work'] as Map
+            : const {};
+        final rows = response['images'] is List
+            ? (response['images'] as List).whereType<Map>().toList()
+            : <Map>[];
+        int pageIndex(Map row) =>
+            int.tryParse(
+              RegExp(r'_p(\d+)').firstMatch('${row['file_name']}')?.group(1) ??
+                  '',
+            ) ??
+            0;
+        rows.sort((a, b) => pageIndex(a).compareTo(pageIndex(b)));
+        final images = <OnlineGalleryItem>[];
+        for (final rawRow in rows) {
+          final row = Map<String, dynamic>.from(rawRow);
+          final image =
+              _aiTagImageUrl(row, assetBase: assetBase) ?? item.imageUrl;
+          final prompts = parseAiTagPrompts(row);
+          images.add(
+            item.copyWith(
+              imageUrl: image,
+              previewUrl: image,
+              prompt: prompts.positive,
+              negativePrompt: prompts.negative,
+              promptSource: prompts.source,
+              negativePromptSource: prompts.negativeSource,
+              platform: aiPlatform(
+                row['image_type'] ??
+                    work['AI_type'] ??
+                    work['ai_type'] ??
+                    item.platform,
+              ),
+            ),
           );
-          prompt = parsedPrompt.$1.isEmpty ? prompt : parsedPrompt.$1;
-          negativePrompt = parsedPrompt.$2.isEmpty
-              ? negativePrompt
-              : parsedPrompt.$2;
         }
         return OnlineGalleryDetail(
-          item: copy.copyWith(
-            imageUrl: image,
-            previewUrl: image,
-            prompt: prompt,
-            negativePrompt: negativePrompt,
-          ),
-          description: _plainText(
-            response['work'] is Map
-                ? (response['work'] as Map)['caption']?.toString() ?? ''
-                : '',
-          ),
+          item: images.isEmpty ? item : images.first,
+          images: images,
+          description: _plainText(work['caption']?.toString() ?? ''),
           raw: Map<String, dynamic>.from(response),
         );
       case OnlineGallerySource.codex:
@@ -460,6 +473,7 @@ class OnlineGalleryService {
       final item = OnlineGalleryItem(
         id: id,
         source: OnlineGallerySource.aiTag,
+        platform: aiPlatform(j['AI_type'] ?? j['ai_type']),
         previewUrl: image,
         imageUrl: image,
         width: _int(j['width']),
@@ -821,6 +835,7 @@ class OnlineGalleryNotifier extends Notifier<OnlineGalleryState> {
   static const _favoritesKey = 'online_gallery_favorites_v1';
   static const _blacklistKey = 'online_gallery_blacklist_v1';
   static const _outputFilterKey = 'online_gallery_output_filter_v1';
+  static const _platformFilterKey = 'online_gallery_excluded_platforms_v1';
   int _loadSerial = 0;
   final _details = <String, OnlineGalleryDetail>{};
   final _detailLoads = <String, Future<OnlineGalleryDetail?>>{};
@@ -839,6 +854,10 @@ class OnlineGalleryNotifier extends Notifier<OnlineGalleryState> {
       favorites: savedFavorites,
       blacklist: blacklist,
       outputFilter: prefs.get(_outputFilterKey) != '0',
+      excludedPlatforms: (prefs.get(_platformFilterKey) ?? '')
+          .split('\n')
+          .where((s) => s.isNotEmpty)
+          .toSet(),
     );
   }
 
@@ -995,6 +1014,18 @@ class OnlineGalleryNotifier extends Notifier<OnlineGalleryState> {
         state.source != OnlineGallerySource.codex) {
       load();
     }
+  }
+
+  void setExcludedPlatforms(Set<String> value) {
+    state = state.copyWith(
+      excludedPlatforms: value,
+      listRevision: state.listRevision + 1,
+    );
+    unawaited(
+      ref
+          .read(prefsStoreProvider)
+          .write(key: _platformFilterKey, value: value.join('\n')),
+    );
   }
 
   void setOutputFilter(bool value) {
