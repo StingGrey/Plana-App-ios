@@ -34,13 +34,14 @@ const themeSeeds = <ThemeSeed>[
 /// 默认主题色(未选过时的档位)。
 const kDefaultSeedKey = 'sky';
 
-/// 外观与触感设置(持久化):深浅模式 + 主题色 + 振动总开关。
+/// 外观与触感设置(持久化):深浅模式 + 主题色 + 振动总开关 + 版式偏好。
 class ThemeSettings {
   const ThemeSettings({
     this.mode = ThemeMode.light,
     this.seedKey = kDefaultSeedKey,
     this.haptics = true,
     this.showAssistant = true,
+    this.compactCharCards = false,
   });
 
   final ThemeMode mode;
@@ -56,6 +57,9 @@ class ThemeSettings {
   /// (底栏首帧就得知道画几格),而这份是全 app 唯一一个同步加载的偏好。
   final bool showAssistant;
 
+  /// 创作页角色卡去掉头像预览,只留名称、位置与提示词。
+  final bool compactCharCards;
+
   ThemeSeed get seed => themeSeeds.firstWhere(
     (s) => s.key == seedKey,
     orElse: () => themeSeeds.firstWhere((s) => s.key == kDefaultSeedKey),
@@ -66,11 +70,13 @@ class ThemeSettings {
     String? seedKey,
     bool? haptics,
     bool? showAssistant,
+    bool? compactCharCards,
   }) => ThemeSettings(
     mode: mode ?? this.mode,
     seedKey: seedKey ?? this.seedKey,
     haptics: haptics ?? this.haptics,
     showAssistant: showAssistant ?? this.showAssistant,
+    compactCharCards: compactCharCards ?? this.compactCharCards,
   );
 
   /// 脏数据(旧版本/已下架的档位,如早先那档深蓝)回退默认。
@@ -81,6 +87,7 @@ class ThemeSettings {
         : kDefaultSeedKey,
     haptics: j['haptics'] != false,
     showAssistant: j['showAssistant'] != false,
+    compactCharCards: j['compactCharCards'] == true,
   );
 
   Map<String, dynamic> toJson() => {
@@ -88,6 +95,7 @@ class ThemeSettings {
     'seed': seedKey,
     'haptics': haptics,
     'showAssistant': showAssistant,
+    'compactCharCards': compactCharCards,
   };
 
   @override
@@ -96,10 +104,12 @@ class ThemeSettings {
       other.mode == mode &&
       other.seedKey == seedKey &&
       other.haptics == haptics &&
-      other.showAssistant == showAssistant;
+      other.showAssistant == showAssistant &&
+      other.compactCharCards == compactCharCards;
 
   @override
-  int get hashCode => Object.hash(mode, seedKey, haptics);
+  int get hashCode =>
+      Object.hash(mode, seedKey, haptics, showAssistant, compactCharCards);
 }
 
 const _key = 'theme_settings';

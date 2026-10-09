@@ -40,4 +40,11 @@ void main() {
     const off = ThemeSettings(haptics: false);
     expect(ThemeSettings.fromJson(off.toJson()).haptics, isFalse);
   });
+
+  test('紧凑角色卡:默认关,缺键的老存档也按关', () {
+    expect(const ThemeSettings().compactCharCards, isFalse);
+    expect(ThemeSettings.fromJson({'mode': 'dark'}).compactCharCards, isFalse);
+    const on = ThemeSettings(compactCharCards: true);
+    expect(ThemeSettings.fromJson(on.toJson()).compactCharCards, isTrue);
+  });
 }
