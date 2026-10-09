@@ -8,6 +8,9 @@ import '../../../core/ui/fade_in_once.dart';
 import '../artist_models.dart';
 import '../tag_models.dart';
 
+/// 打码时预览只解出这么多像素宽,再按最近邻放大成方块。
+const _kMosaicCells = 12;
+
 /// 卡片预览图:无图 = 名称定色相的斜纹占位;http 走磁盘缓存;本机路径直读。
 /// 加载完淡入,让预览逐张柔和显现而非硬蹦(只淡第一次,见 [FadeInOnce])。
 /// 灵感页网格、选角色面板、角色卡头像共用。
@@ -18,6 +21,7 @@ class TagCardPreview extends StatelessWidget {
     required this.name,
     this.decodeWidth,
     this.placeholder,
+    this.mosaic = false,
   });
 
   final String? url;
@@ -31,38 +35,49 @@ class TagCardPreview extends StatelessWidget {
   /// 无图 / 读图失败时的占位;null = 名称定色相的斜纹。
   final Widget? placeholder;
 
+  /// 打成马赛克(忽略 [decodeWidth])。
+  final bool mosaic;
+
   Widget get _empty => placeholder ?? _HueStripes(name: name);
 
   Widget _stripes(BuildContext context, Object error, StackTrace? stack) =>
       _empty;
 
   @override
-  Widget build(BuildContext context) => switch (url) {
-    null => _empty,
-    final u => FadeInOnce(
-      source: u,
-      builder: (context, frame) => u.startsWith('http')
-          ? RemoteImage(
-              u,
-              fit: BoxFit.cover,
-              decodeWidth: decodeWidth,
-              gaplessPlayback: true,
-              frameBuilder: frame,
-              errorBuilder: _stripes,
-            )
-          : Image.file(
-              File(u),
-              fit: BoxFit.cover,
-              cacheWidth: switch (decodeWidth) {
-                null => null,
-                final w => (w * MediaQuery.devicePixelRatioOf(context)).round(),
-              },
-              gaplessPlayback: true,
-              frameBuilder: frame,
-              errorBuilder: _stripes,
-            ),
-    ),
-  };
+  Widget build(BuildContext context) {
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+    final quality = mosaic ? FilterQuality.none : FilterQuality.medium;
+    return switch (url) {
+      null => _empty,
+      final u => FadeInOnce(
+        source: u,
+        builder: (context, frame) => u.startsWith('http')
+            ? RemoteImage(
+                u,
+                fit: BoxFit.cover,
+                decodeWidth: mosaic ? _kMosaicCells / dpr : decodeWidth,
+                filterQuality: quality,
+                gaplessPlayback: true,
+                frameBuilder: frame,
+                errorBuilder: _stripes,
+              )
+            : Image.file(
+                File(u),
+                fit: BoxFit.cover,
+                cacheWidth: mosaic
+                    ? _kMosaicCells
+                    : switch (decodeWidth) {
+                        null => null,
+                        final w => (w * dpr).round(),
+                      },
+                filterQuality: quality,
+                gaplessPlayback: true,
+                frameBuilder: frame,
+                errorBuilder: _stripes,
+              ),
+      ),
+    };
+  }
 }
 
 /// 网格卡:预览图(无图=名称定色相的斜纹占位)+ 底部名称条 + 来源角标;
@@ -82,6 +97,7 @@ class TagCard extends StatelessWidget {
     this.onMenu,
     this.decodeWidth,
     this.showCheck = true,
+    this.mosaic = false,
   });
 
   final TagEntry entry;
@@ -101,6 +117,9 @@ class TagCard extends StatelessWidget {
 
   /// 远端预览的解码宽(逻辑像素)。
   final double? decodeWidth;
+
+  /// 预览打码,正中一枚闭眼标;点卡做什么由调用方定。
+  final bool mosaic;
 
   @override
   Widget build(BuildContext context) => LayoutBuilder(
@@ -139,7 +158,24 @@ class TagCard extends StatelessWidget {
                 url: previewUrl,
                 name: entry.name,
                 decodeWidth: decodeWidth,
+                mosaic: mosaic,
               ),
+              if (mosaic)
+                Center(
+                  child: Container(
+                    width: btn,
+                    height: btn,
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: .42),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      Icons.visibility_off_outlined,
+                      size: compact ? 17 : 21,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
               Positioned(
                 left: 0,
                 right: 0,

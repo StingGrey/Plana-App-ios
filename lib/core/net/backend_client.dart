@@ -263,6 +263,7 @@ class PublicOcMeta {
     this.createdBy,
     this.ownerId,
     this.createdAt = 0,
+    this.mosaic = false,
   });
 
   final String enName; // 服务端主键
@@ -274,6 +275,9 @@ class PublicOcMeta {
   final String? createdBy;
   final String? ownerId;
   final int createdAt; // 秒
+
+  /// 预览图要先打码,点开才显示原图(`mosaic`;缺省 = 不码)。
+  final bool mosaic;
 
   String get displayName =>
       zhName != null && zhName!.isNotEmpty ? zhName! : enName;
@@ -1809,6 +1813,7 @@ class BackendClient {
             createdBy: o['created_by'] as String?,
             ownerId: o['owner_id'] as String?,
             createdAt: (o['created_at'] as num?)?.toInt() ?? 0,
+            mosaic: o['mosaic'] == true,
           ),
     ];
   }

@@ -86,6 +86,11 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   /// 每分类已选 id(我的/公共库两 scope 共用一套,对齐 web selectionMap)。
   final Map<TagCategory, Set<String>> _selected = {};
 
+  /// 公共库里点开过原图的打码条目(`分类/id`),本次运行内一直显示原图。
+  final _revealed = <String>{};
+
+  static String _revealKey(TagEntry e) => '${e.category.name}/${e.id}';
+
   String _search = '';
 
   /// 筛选:null=全部;[_kFavFilter]=收藏;其余为标签名。
@@ -1133,6 +1138,11 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
                 ),
                 delegate: SliverChildBuilderDelegate((context, i) {
                   final e = g.items[i];
+                  // 打码的公共条目:第一下点开原图,之后才是选择
+                  final masked =
+                      isPublic &&
+                      e.mosaic &&
+                      !_revealed.contains(_revealKey(e));
                   return TagCard(
                     key: ValueKey(e.id),
                     entry: e,
@@ -1140,6 +1150,7 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
                     decodeWidth: decodeW,
                     selected: _sel.contains(e.id),
                     isPublic: isPublic,
+                    mosaic: masked,
                     collected:
                         isPublic &&
                         ref
@@ -1149,7 +1160,9 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
                               publicId: e.publicId,
                               name: e.name,
                             ),
-                    onTap: () => _toggle(e),
+                    onTap: masked
+                        ? () => setState(() => _revealed.add(_revealKey(e)))
+                        : () => _toggle(e),
                     onLongPress: () => showTagDetailSheet(context, e),
                     onCollect: isPublic ? () => _collect(e) : null,
                     onMenu: isPublic ? null : (v) => _cardMenu(v, e),
