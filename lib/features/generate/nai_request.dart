@@ -16,6 +16,7 @@ const _modelMap = <String, String>{
   // 千万别漏了这张表只加 models.nai5Models —— naiModelId 对未知名兜底 4.5,
   // 那会静默生成错模型,是最难查的一类错。
   'NAI 5.0 Full': 'nai-diffusion-5-full',
+  'NAI 5.0 Full Medium': 'nai-diffusion-5-full-medium',
   'NAI 5.0 Curated': 'nai-diffusion-5-curated',
   'NAI 4.5 Full': 'nai-diffusion-4-5-full',
   'NAI 4.5 Curated': 'nai-diffusion-4-5-curated',
@@ -148,7 +149,7 @@ Map<String, double> _center(String? pos) {
   //   角色坐标要不要吸附到格心(freeformCharacterPosition)。载荷**结构**仍按
   //   底模判(下面的 isV4/isV5),那跟能力是两回事。
   final sendModel = inpaint != null ? inpaintModelId(model) : model;
-  final sampler = _samplerMap[p.sampler] ?? 'k_euler_ancestral';
+  final sampler = _samplerMap[p.naiSampler] ?? 'k_euler_ancestral';
   final isV4 = model.startsWith('nai-diffusion-4');
   // V5 载荷与 V4/V4.5 同构:仍用 v4_prompt/v4_negative_prompt 结构化提示词,
   // 仅 params_version 3→4(见下)。二者共用同一套结构化提示词分支。
@@ -211,7 +212,7 @@ Map<String, double> _center(String? pos) {
     'height': p.height,
     'scale': p.cfg,
     'sampler': sampler,
-    'steps': p.steps,
+    'steps': p.naiSteps,
     'n_samples': 1,
     // 下标按**最终要发的**模型算(重绘会换模型,数组长度可能跟着变);
     // 预设正/负前缀已在 controller 拼进 s
@@ -234,7 +235,7 @@ Map<String, double> _center(String? pos) {
     'controlnet_strength': 1,
     'legacy': false,
     'add_original_image': true,
-    'cfg_rescale': p.cfgRescale,
+    if (!isNai5MediumModel(p.model)) 'cfg_rescale': p.cfgRescale,
     // 官方能力表里 V5 的 noiseSchedule 是 false:请求清洗会先删掉 noise_schedule
     // 再硬写回 karras。照它来 —— 用户切到 V5 之前留下的值不该被带进来。
     'noise_schedule': isV5 ? 'karras' : p.noiseSchedule,

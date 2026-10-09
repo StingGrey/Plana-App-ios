@@ -78,10 +78,10 @@ Map<String, dynamic> buildBotParams(
     'width': p.width,
     'height': p.height,
     'seed': seed,
-    'steps': p.steps,
+    'steps': p.naiSteps,
     'scale': p.cfg,
-    'sampler': naiSamplerId(p.sampler),
-    'cfgRescale': p.cfgRescale,
+    'sampler': naiSamplerId(p.naiSampler),
+    if (!isNai5MediumModel(p.model)) 'cfgRescale': p.cfgRescale,
     // V5 没有 noiseSchedule 这项能力(后端也会再兜一道):
     // 别把用户切到 V5 之前留下的值带过去,与直连线同一口径
     'noiseSchedule': isV5 ? 'karras' : p.noiseSchedule,

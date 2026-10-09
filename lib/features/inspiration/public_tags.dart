@@ -38,6 +38,7 @@ final publicTagsProvider = FutureProvider.family<List<TagEntry>, TagCategory>((
             createdAt: o.createdAt * 1000,
             // 归属以服务端 owner_id 为准,存量数据回退 created_by(对齐 web)
             createdBy: o.ownerId ?? o.createdBy,
+            mosaic: o.mosaic,
           ),
       ];
     case TagCategory.artist:
@@ -64,7 +65,7 @@ final publicTagsProvider = FutureProvider.family<List<TagEntry>, TagCategory>((
 });
 
 /// 灵感页「我的」的完整来源 = 本地条目 + 公共库里我发布的(本地没副本的补进来,
-/// 标 created;对齐 web mineAll)。归属判定优先 owner_id,与服务端一致。
+/// 标 created、去掉打码;对齐 web mineAll)。归属判定优先 owner_id,与服务端一致。
 /// 纯函数:灵感页、它的筛选弹层、选角色面板都拿读来的值喂进来。
 List<TagEntry> mergeMineTags(
   List<TagEntry> local,
@@ -80,7 +81,7 @@ List<TagEntry> mergeMineTags(
       if (p.createdBy == myId &&
           !haveId.contains(p.publicId) &&
           !haveName.contains(p.name))
-        p.copyWith(origin: TagOrigin.created),
+        p.copyWith(origin: TagOrigin.created, mosaic: false),
   ];
 }
 

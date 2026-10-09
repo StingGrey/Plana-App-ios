@@ -79,6 +79,19 @@ class AppearancePage extends ConsumerWidget {
             ],
           ),
           const SizedBox(height: 16),
+          const SettingsLabel('创作页'),
+          SettingsCard(
+            children: [
+              _SwitchRow(
+                icon: Icons.view_agenda_outlined,
+                title: '紧凑角色卡',
+                value: ts.compactCharCards,
+                onChanged: (v) =>
+                    notifier.patch((x) => x.copyWith(compactCharCards: v)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
           const SettingsLabel('触感'),
           SettingsCard(
             children: [

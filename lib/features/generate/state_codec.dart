@@ -94,7 +94,7 @@ Future<EncodedState> encodeGenerateState(
       'sections': [
         for (final x in s.sections)
           x.isMain
-              ? {'id': x.id, 'name': x.name}
+              ? {'id': x.id, 'name': x.name, if (!x.enabled) 'enabled': false}
               : {
                   'id': x.id,
                   'name': x.name,
@@ -627,7 +627,10 @@ List<PromptSection> _decodeSections(Object? raw) {
     final name = str(e['name']);
     out.add(
       id == kMainSectionId
-          ? PromptSection.main(name: name.isEmpty ? '主体' : name)
+          ? PromptSection.main(
+              name: name.isEmpty ? '主体' : name,
+              enabled: e['enabled'] != false,
+            )
           : PromptSection(
               id: id,
               name: name,

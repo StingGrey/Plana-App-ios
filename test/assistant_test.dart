@@ -2701,31 +2701,99 @@ void main() {
       expect(parseAgentModels(live()).active, 'deepseek');
     });
 
-    test('没有 Bot 授权时后端渠道不算:没选自定义接口,顶栏就是没选', () async {
+    // 给 [free] 里那几条标上 free。live() 里有的条目推断成 Map<String, String>,
+    // 塞不进 bool,所以整份重建
+    Map<String, dynamic> withFree(Set<String> free) {
+      final j = live();
+      j['choices'] = {
+        for (final e in (j['choices'] as Map).entries)
+          e.key: {...e.value as Map, if (free.contains(e.key)) 'free': true},
+      };
+      return j;
+    }
+
+    Future<ProviderContainer> container({
+      required bool authorized,
+      required String pinned,
+      Set<String> free = const {},
+    }) async {
+      final j = withFree(free);
+      final c = ProviderContainer(
+        overrides: [
+          assistantBotAuthorizedProvider.overrideWithValue(authorized),
+          agentModelsProvider.overrideWith((ref) async => parseAgentModels(j)),
+          assistantModelPrefProvider.overrideWith(() => _PinnedPref(pinned)),
+        ],
+      );
+      addTearDown(c.dispose);
+      await c.read(agentModelsProvider.future);
+      await c.read(assistantModelPrefProvider.future);
+      return c;
+    }
+
+    test('free 读得出来,没写就是不免费', () {
+      final l = parseAgentModels(withFree({'glm'}));
+      expect(l.byKey('glm')!.free, isTrue);
+      expect(l.byKey('deepseek')!.free, isFalse);
+      expect([for (final c in l.free) c.key], ['glm']);
+    });
+
+    test('后端一条免费的都没标:没授权时后端渠道不算,顶栏就是没选', () async {
       Future<AgentModelChoice?> shown({
         required bool authorized,
         required String pinned,
-      }) async {
-        final c = ProviderContainer(
-          overrides: [
-            assistantBotAuthorizedProvider.overrideWithValue(authorized),
-            agentModelsProvider.overrideWith(
-              (ref) async => parseAgentModels(live()),
-            ),
-            assistantModelPrefProvider.overrideWith(() => _PinnedPref(pinned)),
-          ],
-        );
-        addTearDown(c.dispose);
-        await c.read(agentModelsProvider.future);
-        await c.read(assistantModelPrefProvider.future);
-        return c.read(assistantModelProvider);
-      }
+      }) async => (await container(
+        authorized: authorized,
+        pinned: pinned,
+      )).read(assistantModelProvider);
 
       expect((await shown(authorized: true, pinned: 'glm'))?.key, 'glm');
       expect((await shown(authorized: true, pinned: ''))?.key, 'deepseek');
       expect(await shown(authorized: false, pinned: 'glm'), isNull);
       // 没选过时也不能拿后端默认那条顶上
       expect(await shown(authorized: false, pinned: ''), isNull);
+      final c = await container(authorized: false, pinned: '');
+      expect(c.read(assistantBackendAvailableProvider), isFalse);
+      expect(c.read(assistantModelKeyProvider), '');
+    });
+
+    test('没授权只在免费的里挑,发的 key 跟显示的那条走', () async {
+      Future<(String?, String)> pick(String pinned, Set<String> free) async {
+        final c = await container(
+          authorized: false,
+          pinned: pinned,
+          free: free,
+        );
+        expect(c.read(assistantBackendAvailableProvider), isTrue);
+        return (
+          c.read(assistantModelProvider)?.key,
+          c.read(assistantModelKeyProvider),
+        );
+      }
+
+      // 选过的免费:就是它
+      expect(await pick('gemini', {'gemini', 'glm'}), ('gemini', 'gemini'));
+      // 选过的不免费:后端默认免费就用默认
+      expect(await pick('chatgpt', {'deepseek', 'glm'}), (
+        'deepseek',
+        'deepseek',
+      ));
+      // 默认也不免费:取第一条免费的(推荐在前),而且不能发空串让后端用默认
+      expect(await pick('', {'gemini', 'glm'}), ('glm', 'glm'));
+    });
+
+    test('有授权时免费标记不影响选择', () async {
+      final c = await container(
+        authorized: true,
+        pinned: 'chatgpt',
+        free: {'glm'},
+      );
+      expect(c.read(assistantModelProvider)?.key, 'chatgpt');
+      expect(c.read(assistantModelKeyProvider), 'chatgpt');
+      final d = await container(authorized: true, pinned: '', free: {'glm'});
+      expect(d.read(assistantModelProvider)?.key, 'deepseek');
+      // 没选过照旧发空串,让后端用全局默认
+      expect(d.read(assistantModelKeyProvider), '');
     });
   });
 

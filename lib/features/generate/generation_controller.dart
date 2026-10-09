@@ -629,7 +629,7 @@ class GenerationNotifier extends Notifier<GenPool> {
       return _fail(jobId, 'no-token', GenOutcome.notCharged); // 弹「去设置」
     }
 
-    final total = s.params.steps;
+    final total = s.params.naiSteps;
 
     // 打哪台机器:闸门给的那把 Key 自己的地址(第三方的 key 只在它那台上有效)。
     final client = ref.read(naiClientProvider(run.base));
@@ -1505,7 +1505,7 @@ class GenerationNotifier extends Notifier<GenPool> {
               ),
               width: b.params.width,
               height: b.params.height,
-              steps: b.params.steps,
+              steps: b.params.naiSteps,
               model: b.params.model,
               inpaint: job != null,
               // 判定留在这边而不是让账本去解析 model 串:那是存储层,不该认识

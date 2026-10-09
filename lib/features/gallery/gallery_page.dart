@@ -177,7 +177,11 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
   }
 
   Future<void> _shareResultAsync(String id) async {
-    final result = ref.read(galleryProvider).results.where((r) => r.id == id).firstOrNull;
+    final result = ref
+        .read(galleryProvider)
+        .results
+        .where((r) => r.id == id)
+        .firstOrNull;
     if (result == null) return;
     final settings = await ref.read(saveSettingsProvider.future);
     final prepared = await prepareShareFiles(
@@ -467,8 +471,7 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
       selectedId: previewImage == null ? history.selectedId : null,
       onSelect: selectResult,
       onShare: _shareResult,
-      onDelete: (id) =>
-          ref.read(galleryProvider.notifier).deleteResults([id]),
+      onDelete: (id) => ref.read(galleryProvider.notifier).deleteResults([id]),
       jobs: pool.newestFirst,
       selectedJobId: pool.selectedId,
       onSelectJob: (id) {
@@ -486,7 +489,7 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
                 child: Column(
                   children: [
                     Expanded(child: canvas),
-                    if (savedBanner != null) savedBanner,
+                    ?savedBanner,
                     if (showChrome) TabletResultToolbar(result: selected),
                   ],
                 ),
@@ -506,7 +509,7 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
         : Column(
             children: [
               Expanded(child: canvas),
-              if (savedBanner != null) savedBanner,
+              ?savedBanner,
               strip,
             ],
           );

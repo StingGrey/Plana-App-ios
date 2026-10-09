@@ -571,7 +571,7 @@ class _StatsPageState extends ConsumerState<StatsPage> {
       // 结算日跟着周期标签走,不写死 —— 那个分界日改过一次(27 → 23)
       sub = est?.me == null
           ? '按月阶梯分摊 · 每日流水'
-          : '本期预估 ¥${fmtInt(est!.me!.totalFee)} · ${est.cycleDay} 日结算'
+          : '本期预估 ¥${fmtFee(est!.me!.totalFee)} · ${est.cycleDay} 日结算'
                 '${settle?.paymentStatus == 'unpaid' ? ' · 上期待支付' : ''}';
     } else {
       final sum = ref.read(appStoresProvider).ledger.sumRange(_range);

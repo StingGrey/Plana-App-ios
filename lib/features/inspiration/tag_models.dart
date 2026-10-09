@@ -146,6 +146,7 @@ class TagEntry {
     this.createdBy,
     this.recipe,
     this.extra = const {},
+    this.mosaic = false,
   });
 
   /// 封面(首张预览)。
@@ -181,6 +182,9 @@ class TagEntry {
   final StyleRecipe? recipe;
   final Map<String, dynamic> extra;
 
+  /// 公共库预览要先打码(服务端给);只在公共库列表里有,不落盘、不进备份。
+  final bool mosaic;
+
   /// [publicId] 传 [clearPublicId] 哨兵可清空(取消发布/脱钩副本用)。
   static const clearPublicId = Object();
 
@@ -199,6 +203,7 @@ class TagEntry {
     List<String>? previews,
     String? createdBy,
     Object? recipe,
+    bool? mosaic,
   }) => TagEntry(
     id: id,
     category: category,
@@ -219,6 +224,7 @@ class TagEntry {
         ? null
         : (recipe as StyleRecipe? ?? this.recipe),
     extra: extra,
+    mosaic: mosaic ?? this.mosaic,
   );
 
   Map<String, dynamic> toJson() => {

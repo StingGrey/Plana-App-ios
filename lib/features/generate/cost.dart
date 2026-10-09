@@ -9,12 +9,16 @@ import 'models.dart';
 /// 超步数的图才感受得到。
 const _v5Multiplier = 1.5;
 
+/// V5 Full Medium 档:步数那一项再乘的系数(官方前端原值)。
+const _mediumStepFactor = 1 / 1.06521739;
+
 /// 单张 base 点数(不含 Vibe / 角色参考附加费,也不含免费档判定与图生图折算)。
 ///
 /// 逐字对齐官方前端 bundle(V5 上线后重扒,2026-08-23,与 web `costCalculator.ts`
 /// 及后端 `calculate_anlas_cost` 同源):
 ///
-///     M = ceil(A·px + B·px·steps)     // 无 SMEA(V4 起已废弃,本项目全程不发),系数恒 1
+///     M = ceil(A·px + B·px·steps·k)   // 无 SMEA(V4 起已废弃,本项目全程不发),系数恒 1
+///                                     // k:Medium 档 1/1.06521739,其余 1
 ///     if V5: M *= 1.5
 ///     max(ceil(M), 2)
 ///
@@ -23,9 +27,16 @@ const _v5Multiplier = 1.5;
 /// 差 1 点 —— 那种差额没法解释,只会让人怀疑两边都不准。
 ///
 /// ⚠ ×1.5 之后必须**再 ceil 一次**:括号里那步已经取整成整数,×1.5 会产生 .5。
-int _baseCost(int pixels, int steps, {required bool isV5}) {
+int _baseCost(
+  int pixels,
+  int steps, {
+  required bool isV5,
+  bool medium = false,
+}) {
+  final k = medium ? _mediumStepFactor : 1.0;
   var cost =
-      (2.951823174884865e-6 * pixels + 5.753298233447344e-7 * pixels * steps)
+      (2.951823174884865e-6 * pixels +
+              5.753298233447344e-7 * pixels * steps * k)
           .ceilToDouble();
   if (isV5) cost *= _v5Multiplier;
   return max(2, cost.ceil());
@@ -55,10 +66,15 @@ int estimateCost(
   final pixels = p.width * p.height;
   final free =
       isOpus &&
-      p.steps <= 28 &&
+      p.naiSteps <= 28 &&
       pixels <= 1048576 &&
       !_v5NoLongerFree(p.model, v5Charged);
-  var baseCost = _baseCost(pixels, p.steps, isV5: isNai5Model(p.model));
+  var baseCost = _baseCost(
+    pixels,
+    p.naiSteps,
+    isV5: isNai5Model(p.model),
+    medium: isNai5MediumModel(p.model),
+  );
   final i2i = s.img2img;
   if (i2i?.image != null) baseCost = max(2, (baseCost * i2i!.strength).ceil());
   // 两笔附加费都按**模型是否真会下发**计:V5 不支持 Vibe / 角色参考,载荷里
@@ -88,10 +104,15 @@ int estimateInpaintCost(
   final pixels = sendW * sendH;
   final free =
       isOpus &&
-      p.steps <= 28 &&
+      p.naiSteps <= 28 &&
       pixels <= 1048576 &&
       !_v5NoLongerFree(p.model, v5Charged);
-  var baseCost = _baseCost(pixels, p.steps, isV5: isNai5Model(p.model));
+  var baseCost = _baseCost(
+    pixels,
+    p.naiSteps,
+    isV5: isNai5Model(p.model),
+    medium: isNai5MediumModel(p.model),
+  );
   baseCost = max(2, (baseCost * strength).ceil());
   final vibeExtra = vibeSupportsModel(p.model)
       ? max(0, s.enabledVibes - 4) * 2

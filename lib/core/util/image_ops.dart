@@ -15,6 +15,23 @@ Future<(int, int)> decodeImageSize(Uint8List bytes) async {
   return size;
 }
 
+/// 转成 PNG:本来就是 PNG 的原样返回,其余格式(JPEG / WebP 等)解码后重编码。
+Future<Uint8List> ensurePng(Uint8List src) async {
+  const sig = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+  var isPng = src.length >= sig.length;
+  for (var i = 0; isPng && i < sig.length; i++) {
+    isPng = src[i] == sig[i];
+  }
+  if (isPng) return src;
+  final codec = await ui.instantiateImageCodec(src);
+  final frame = await codec.getNextFrame();
+  final img = frame.image;
+  final data = await img.toByteData(format: ui.ImageByteFormat.png);
+  img.dispose();
+  if (data == null) throw StateError('PNG 编码失败');
+  return data.buffer.asUint8List();
+}
+
 /// img2img 目标分辨率(与 web `setImg2imgWithAutoRes` 一致):
 /// 各边取整到 64 的倍数、最小 64;总像素超 1024×3072 则等比缩回。
 ({int w, int h}) img2imgResolution(int rawW, int rawH) {

@@ -98,13 +98,12 @@ class PromptSection {
   });
 
   /// 主体那一行(见 [kMainSectionId])。
-  const PromptSection.main({this.name = '主体'})
+  const PromptSection.main({this.name = '主体', this.enabled = true})
     : id = kMainSectionId,
       positive = '',
       negative = '',
       positiveRaw = '',
       negativeRaw = '',
-      enabled = true,
       artist = false;
 
   final String id;
@@ -420,9 +419,20 @@ const models = <String>[
 /// bot 线载荷由后端 convert 构造 —— 弹层两线都列(top_bar `nai5: true`)。
 /// 已支持:两档、分角色提示词(自由定位)、图生图;角色参考 / Vibe 官方未放出,
 /// 见各自门槛(crSupportsModel / vibeSupportsModel 仍排除 V5)。
-const nai5Models = <String>['NAI 5.0 Full', 'NAI 5.0 Curated'];
+const nai5Models = <String>[
+  'NAI 5.0 Full',
+  'NAI 5.0 Full Medium',
+  'NAI 5.0 Curated',
+];
 
 bool isNai5Model(String displayModel) => displayModel.startsWith('NAI 5.0');
+
+/// V5 Full 的 Medium 档:步数、采样器按官方固定,不发 CFG Rescale。
+bool isNai5MediumModel(String displayModel) =>
+    displayModel == 'NAI 5.0 Full Medium';
+
+const kNai5MediumSteps = 14;
+const kNai5MediumSampler = 'Euler Ancestral';
 
 /// 角色参考(Director/Precise Reference)仅 4.5 系模型支持(对齐 web 门槛)。
 /// 载荷构造 / 成本预估 / 卡片提示共用此判定,入参为 UI 展示名。
@@ -438,7 +448,7 @@ bool vibeSupportsModel(String displayModel) => !isNai5Model(displayModel);
 /// V4 系 512;NAI 5 官方抬到 Curated 703 / Full 1471。
 /// anima / krea 无官方口径,沿用 512 只作视觉参考。
 int tokenLimitOf(String displayModel) => switch (displayModel) {
-  'NAI 5.0 Full' => 1471,
+  'NAI 5.0 Full' || 'NAI 5.0 Full Medium' => 1471,
   'NAI 5.0 Curated' => 703,
   _ => 512,
 };
@@ -536,22 +546,20 @@ String animaTierOf(String displayModel) => switch (displayModel) {
 /// 适合尝试不同风格 / 标准版本),移动端 `MobileGeneratePage` 讲**规格**
 /// (蒸馏版、步数)—— 这里合成「规格 · 用途」,一行内给出选型要看的两件事。
 ///
-/// NAI 四档 web 两版一字不差,原样取用。步数与本 app [animaTierDefaults] /
-/// [kreaTierDefaults] 的实际取值对得上(Anima turbo 12 / aesthetic·base 36,
-/// Krea turbo 8 / raw 36),不是照抄的死文案 —— 改档位默认值时这几行要跟着改。
+/// 步数与本 app [animaTierDefaults] / [kreaTierDefaults] 的实际取值对得上
+/// (Anima turbo 12 / aesthetic·base 36,Krea turbo 8 / raw 36),不是照抄的
+/// 死文案 —— 改档位默认值时这几行要跟着改。
 /// 唯一不写步数的是 Anima 2.9B Beta,原因见该行注释。
 ///
 /// 去掉了 Anima Turbo 的「(默认)」:那在 web 指「anima 档位里的默认」,
 /// 而本 app 默认模型是 NAI 4.5 Full,七档平铺一张表会被读成"app 的默认"。
 /// 分隔符统一用 ` · `(web 的 NAI 用逗号、anima 用点,混着来一页两套版式)。
 const modelDescriptions = <String, String>{
-  // NAI 5 预载两行只写**已确认**的规格(token 上限官方已公布,SFW/NSFW 是
-  // Curated/Full 的品牌惯例);不写「未上线」—— 描述是静态的,上线当天改的
-  // 是后端,这三个字会一直挂着骗人。
-  'NAI 5.0 Full': '新一代旗舰 · 1471 token · NSFW',
-  'NAI 5.0 Curated': '新一代精选版 · 703 token · SFW',
-  'NAI 4.5 Full': '最新旗舰模型 · NSFW',
-  'NAI 4.5 Curated': '最新旗舰精选版 · SFW',
+  'NAI 5.0 Full': '最新旗舰模型 · 1471 token · NSFW',
+  'NAI 5.0 Full Medium': '最新旗舰 Medium 档 · 节约 40% 额度 · NSFW',
+  'NAI 5.0 Curated': '最新精选版 · 703 token · SFW',
+  'NAI 4.5 Full': 'V4.5 旧模型 · NSFW',
+  'NAI 4.5 Curated': 'V4.5 旧模型精选版 · SFW',
   'NAI 4.0 Full': 'V4 旧模型 · NSFW',
   'NAI 4.0 Curated': 'V4 旧模型精选版 · SFW',
   'Anima Turbo': '蒸馏版 · 12 步 · 快,适合初稿',
@@ -1068,8 +1076,13 @@ class GenParams {
   int get activeSteps => switch (providerOfModel(model)) {
     GenProvider.anima => animaSteps,
     GenProvider.krea => kreaSteps,
-    GenProvider.nai => steps,
+    GenProvider.nai => naiSteps,
   };
+
+  /// NAI 实际发送的步数 / 采样器(Medium 档固定,见 [isNai5MediumModel])。
+  int get naiSteps => isNai5MediumModel(model) ? kNai5MediumSteps : steps;
+  String get naiSampler =>
+      isNai5MediumModel(model) ? kNai5MediumSampler : sampler;
 
   /// 写回当前模型那份步数(步数滑杆/输入框共用,免得每处都再判一次父类)。
   GenParams withActiveSteps(int v) => switch (providerOfModel(model)) {
@@ -1123,7 +1136,7 @@ class GenParams {
   }
 
   /// Opus 免费判定(像素 ≤ 免费阈值 + ≤28 步),按像素而非预设成员,兼容自定义尺寸。
-  bool get isFree => steps <= 28 && width * height <= kFreePixelThreshold;
+  bool get isFree => naiSteps <= 28 && width * height <= kFreePixelThreshold;
 
   GenParams copyWith({
     String? model,
@@ -1245,7 +1258,8 @@ class GenerateState {
   final String negativePromptRaw;
 
   /// 主提示词的分区,按卡上的行序;空 = 没分区(卡片是原来的样子)。
-  /// 非空时恰有一项是主体([PromptSection.isMain]),它的词就是 [prompt]。
+  /// 最多一项是主体([PromptSection.isMain]),它的词就是 [prompt];主体那一行
+  /// 也能删(正向随之清空),这时列表里就没有它。
   /// 只活在创作页:生成快照里已拼进 [prompt](见 composeSections)。
   final List<PromptSection> sections;
 

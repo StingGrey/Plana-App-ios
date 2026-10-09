@@ -511,6 +511,7 @@ class RemoteImage extends StatelessWidget {
     this.width,
     this.height,
     this.decodeWidth,
+    this.filterQuality = FilterQuality.medium,
     this.gaplessPlayback = false,
     this.frameBuilder,
     this.loadingBuilder,
@@ -525,6 +526,7 @@ class RemoteImage extends StatelessWidget {
   /// 解码宽度上限(**逻辑像素**,内部乘 dpr);null = 取布局约束宽。
   final double? decodeWidth;
 
+  final FilterQuality filterQuality;
   final bool gaplessPlayback;
   final ImageFrameBuilder? frameBuilder;
   final ImageLoadingBuilder? loadingBuilder;
@@ -542,6 +544,7 @@ class RemoteImage extends StatelessWidget {
       fit: fit,
       width: width,
       height: height,
+      filterQuality: filterQuality,
       gaplessPlayback: gaplessPlayback,
       frameBuilder: frameBuilder,
       loadingBuilder: loadingBuilder,

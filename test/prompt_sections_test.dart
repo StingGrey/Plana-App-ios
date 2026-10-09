@@ -208,12 +208,63 @@ void main() {
     final r2 = gen.removeSection(last)!;
     expect(st().sections, isEmpty);
     expect(st().prompt, '1girl');
-    // 主体删不掉
-    gen.addSection();
-    expect(gen.removeSection(kMainSectionId), isNull);
     // 撤销:最后一格删掉时主体也没了,放回来连主体一起回来
     final restored = restoreSection(const [], r2.section, 1, main: r2.main);
     expect([for (final s in restored) s.id], [kMainSectionId, last]);
+  });
+
+  group('主体也能停用、删除', () {
+    test('停用主体:正向不进载荷,负面照旧(负面那行是整张卡的)', () {
+      gen.setPrompts(positive: '1girl', negative: 'lowres');
+      gen.addEntrySections([_a12]);
+      gen.updateSection(kMainSectionId, enabled: false);
+      final snap = stripHiddenModules(st(), const GenModuleSettings());
+      expect(snap.prompt, 'artist:wlop, artist:ask');
+      expect(snap.negativePrompt, 'lowres, blurry');
+      expect(mainEnabled(st().sections), isFalse);
+      // 外头写进了新的主体正向:主体自己打开
+      gen.setPrompts(positive: '2girls');
+      expect(mainEnabled(st().sections), isTrue);
+    });
+
+    test('删主体:正向清空、负面留着,别的格子都在;之后又写进正向,主体回到最上面', () {
+      gen.setPrompts(positive: '1girl', negative: 'lowres');
+      gen.addEntrySections([_a12]);
+      final r = gen.removeSection(kMainSectionId)!;
+      expect(r.section.isMain, isTrue);
+      expect(st().prompt, isEmpty);
+      expect(st().negativePrompt, 'lowres');
+      expect(_names(st().sections), ['画风']);
+      expect(
+        stripHiddenModules(st(), const GenModuleSettings()).negativePrompt,
+        'lowres, blurry',
+      );
+      // 读图导入写进了正向:主体那一行补回最上面,也照样进载荷
+      gen.replacePrompts(positive: '2girls');
+      expect(_names(withMainRow(st().sections, st().prompt)), ['主体', '画风']);
+      expect(
+        stripHiddenModules(st(), const GenModuleSettings()).prompt,
+        '2girls',
+      );
+      // 撤销删主体:放回原位
+      final back = restoreSection(
+        const [PromptSection(id: 'a', name: '画风')],
+        r.section,
+        r.index,
+        main: r.main,
+      );
+      expect([for (final s in back) s.id], [kMainSectionId, 'a']);
+    });
+
+    test('只剩一行停用的主体时留着它,开了才回到没分区', () {
+      gen.setPrompts(positive: '1girl');
+      gen.addSection();
+      gen.updateSection(kMainSectionId, enabled: false);
+      gen.removeSection(st().sections.last.id);
+      expect(_names(st().sections), ['主体']);
+      gen.updateSection(kMainSectionId, enabled: true);
+      expect(st().sections, isEmpty);
+    });
   });
 
   test('停用的格子不进载荷,读数口径也不算它', () {
@@ -312,6 +363,71 @@ void main() {
       ),
     ], name: '法典');
     expect(st().sections.last.name, '法典');
+  });
+
+  group('多选合并', () {
+    GenerateState base(List<PromptSection> secs) => GenerateState.initial()
+        .copyWith(prompt: '1girl', negativePrompt: 'lowres', sections: secs);
+    const a = PromptSection(
+      id: 'a',
+      name: '画风',
+      positive: 'artist:wlop',
+      negative: 'blurry',
+    );
+    const b = PromptSection(id: 'b', name: '画风', positive: 'watercolor');
+    const sc = PromptSection(id: 'c', name: '场景', positive: 'night');
+
+    test('留下最上面那格,词按行序从上往下接;挨着的几格合完拼出来的串不变', () {
+      final s = base(const [PromptSection.main(), a, b, sc]);
+      final before = composeSections(s).prompt;
+      final m = mergeSectionsIn(s, {'c', 'b', 'a'})!;
+      expect(_names(m.sections), ['主体', '画风']);
+      expect(m.sections[1].id, 'a');
+      expect(m.sections[1].positive, 'artist:wlop, watercolor, night');
+      expect(m.sections[1].negative, 'blurry');
+      expect(composeSections(m).prompt, before);
+      // 不挨着的两格:下面那格的词挪上来,接在上面那格后面
+      final gap = mergeSectionsIn(s, {'a', 'c'})!;
+      expect(_names(gap.sections), ['主体', '画风', '画风']);
+      expect(gap.sections[1].positive, 'artist:wlop, night');
+    });
+
+    test('勾了主体就合进主体,主体上面那格的词排在前;只剩主体回到没分区', () {
+      final m = mergeSectionsIn(base(const [a, PromptSection.main(), sc]), {
+        'main',
+        'a',
+        'c',
+      })!;
+      expect(m.sections, isEmpty);
+      expect(m.prompt, 'artist:wlop, 1girl, night');
+      expect(m.negativePrompt, 'blurry, lowres');
+    });
+
+    test('停用那格的词带着禁用标记进来,原来不出图的合完也不出图', () {
+      final off = a.copyWith(enabled: false);
+      final s = base([const PromptSection.main(), off, b]);
+      final before = composeSections(s).prompt;
+      final m = mergeSectionsIn(s, {'a', 'b'})!;
+      final merged = m.sections.last;
+      expect(merged.id, 'a');
+      expect(merged.enabled, isTrue);
+      expect(merged.positive, 'watercolor');
+      expect(merged.positiveRaw, contains('~artist:wlop~'));
+      expect(composeSections(m).prompt, before);
+      // 都停用:合完还是停用,不用打禁用标记
+      final both = mergeSectionsIn(
+        base([const PromptSection.main(), off, b.copyWith(enabled: false)]),
+        {'a', 'b'},
+      )!;
+      expect(both.sections.last.enabled, isFalse);
+      expect(both.sections.last.positive, 'artist:wlop, watercolor');
+    });
+
+    test('不到两格不合', () {
+      final s = base(const [PromptSection.main(), a]);
+      expect(mergeSectionsIn(s, {'a'}), isNull);
+      expect(mergeSectionsIn(s, {'a', 'x'}), isNull);
+    });
   });
 
   test('新画布沿用分区骨架、词清空;复制画布带上整组', () {

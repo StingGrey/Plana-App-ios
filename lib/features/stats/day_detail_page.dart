@@ -473,7 +473,11 @@ String modelLabel(String id) {
       : s.contains('4')
       ? '4.0'
       : '3';
-  final tier = s.contains('curated') ? ' Curated' : ' Full';
+  final tier = s.contains('curated')
+      ? ' Curated'
+      : s.contains('medium')
+      ? ' Full Medium'
+      : ' Full';
   return 'NAI $ver${s.contains('-3') && ver == '3' ? '' : tier}';
 }
 

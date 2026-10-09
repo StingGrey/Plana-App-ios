@@ -4,7 +4,7 @@
 
 # Plana App
 
-**NovelAI 第三方移动客户端** —— 可能是最舒适的 AI 绘图移动创作端
+**NovelAI 第三方移动客户端** —— 更舒适的 AI 绘图移动创作端
 
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/StingGrey/Plana-App-ios?include_prereleases&label=iOS%20release)](https://github.com/StingGrey/Plana-App-ios/releases)
@@ -29,16 +29,11 @@
 
 - **队列与循环** 多组标签可连续入队依次生成;循环出图可指定张数或不限,随时暂停
 
-- **NAI 5 适配** 角色画布定位、透明背景、Max 重绘等新特性均已适配
-
 - **参数导入** 高级导入面板完整展示图片内嵌的元数据并支持逐项勾选,兼容 NAI 隐写信息与 ComfyUI / A1111 元数据
 
 - **本地图库** 原图与参数快照本地留存,可按模型与标签检索,导出时元数据可保留、清除或改写;
   支持按住抬起预览、胶片条拖至垃圾条删除、网格多选批量操作;删除图片后继续显示相邻作品;
   日期可按今天、近 7 / 30 天、指定日期或范围筛选,范围日历支持拖动起止日期
-
-- **按生成时间导出** 批量按从旧到新的顺序逐张保存,文件名和拍摄日期保留生成时间;
-  PNG 可同时保留自定义生成信息,手机相册的添加日期仍为实际导出时刻
 
 - **素材库** 灵感库按角色 / 画风 / 场景归类存储并可生成预览图;Vibe 库支持 `.naiv4vibe` 导入导出与逐模型编码管理;
   角色参考图库留存用过的参考图
@@ -77,9 +72,15 @@ NAI 网页端的常规能力 —— 多角色与位置、Vibe Transfer、角色�
 **Token 直连 —— 完整可用,不依赖任何第三方服务。** 填入自己的 NovelAI Token(或用账号密码登录),
 请求直接发往 NovelAI,上面列出的功能全部可用,这是本应用的默认形态。
 
-应用另外内置了一个后端服务地址,用于内部使用的部分扩展能力,需授权。它是可选的 ——
-直连模式下完全无需授权也可使用,引导页与「我的 → 账号与接入」里可随时改成自建地址或留空彻底不用,
-但服务端不在本仓库内。
+### 关于 Bot 授权
+
+目前通过 Bot 授权的限定范围形式提供了一些公益性的扩展功能,由于服务器和额度资源有限,
+所以采用了限定范围,以邀请制授权的形式,未来如有能力会尝试扩展可用范围。
+
+对于云备份和公共库这两项功能则会在未来服务端完善后开放。
+
+授权完全可选:不授权不影响直连下的任何功能,引导页与「我的 → 账号与接入」里也可随时改成自建地址或留空彻底不用,
+服务端不在本仓库内。
 
 ## 开发计划
 
@@ -94,6 +95,8 @@ NAI 网页端的常规能力 —— 多角色与位置、Vibe Transfer、角色�
 ## 交流与反馈
 
 QQ 群:**1078261982**
+
+加入 QQ 群并不能获得 Bot 授权,不过欢迎在群内反馈建议。
 
 Bug 与功能建议走 [Issues](https://github.com/mc5024/Plana-App/issues)。
 
@@ -154,9 +157,11 @@ NAI 5 载荷契约、Argon2id 派生均由参考向量钉住,改动对不上即�
 | [DanbooruSearchOnline](https://github.com/SuzumiyaAkizuki/DanbooruSearchOnline) · SuzumiyaAkizuki | 增强补全的在线中文搜词、译名与一句话简介 |
 | [quicktagcloud](https://novelai.quicktagcloud.com/) | 法典图鉴的全部数据(词条 / 画师串 / 合集 / 例图)。只读接入,数据不随包分发,本应用不修改也不发布法典内容,所有内容归原作者所有 |
 | [@huggingface/tokenizers](https://github.com/huggingface/tokenizers) | T5 分词器移植的参照实现 |
+| [nai5-prompting](https://github.com/Miint-Sunny/nai5-prompting) · Miint-Sunny | AI 助手预设的漫画部分(`assets/prompts/nai5.json`,随包分发)(GPL-3.0) |
+| [anime_censor_detection](https://huggingface.co/deepghs/anime_censor_detection) · deepghs | 自动打码的检测模型(`assets/models/censor_n.ort`,随包分发),即其 `censor_detect_v1.0_n`,本项目只做了格式转换与量化(MIT) |
 | [NovelAI](https://novelai.net/) · Anlatan | 图像生成服务本身 |
 
-第三方内容的版权归其各自作者所有;其中随包分发的部分(标签库、T5 词表)见
+第三方内容的版权归其各自作者所有;其中随包分发的部分(标签库、T5 词表、打码模型、漫画预设)见
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md),其余仅作运行时索引与调用。
 
 ### 开源库

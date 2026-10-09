@@ -41,11 +41,11 @@ StyleRecipe recipeOf(GenParams p) {
   return switch (providerOfModel(p.model)) {
     GenProvider.nai => StyleRecipe(
       model: model,
-      steps: p.steps,
+      steps: p.naiSteps,
       cfg: p.cfg,
-      sampler: p.sampler,
+      sampler: p.naiSampler,
       scheduler: p.noiseSchedule,
-      cfgRescale: p.cfgRescale,
+      cfgRescale: isNai5MediumModel(p.model) ? 0 : p.cfgRescale,
       varietyPlus: p.varietyPlus,
     ),
     GenProvider.anima => StyleRecipe(

@@ -444,11 +444,16 @@ class AssistantNotifier extends Notifier<AssistantState> {
     final base = ref.read(backendBaseProvider).value ?? '';
     final sid = (await ref.read(botSessionProvider.future))?.sessionId ?? '';
     // 选了自定义接口就在本机跑 agent 循环,否则打 Plana 后端那条 SSE。
-    // 没有 Bot 授权只能走前一条:后端渠道要授权(界面上也不列)。
+    // 没有 Bot 授权时后端那条只能用免费模型:列表得先到货才知道是哪条。
     final endpoint = ref.read(assistantEndpointProvider);
     if (sid.isEmpty && endpoint == null) {
-      _pushError('没有 Bot 授权时只能用自定义接口,先在顶部选一个', AssistErrorKind.auth);
-      return;
+      try {
+        await ref.read(agentModelsProvider.future);
+      } catch (_) {}
+      if (ref.read(assistantModelKeyProvider).isEmpty) {
+        _pushError('没有 Bot 授权时只能用免费模型或自定义接口,先在顶部选一个', AssistErrorKind.auth);
+        return;
+      }
     }
 
     // 历史必须在把这条 user 消息追进去**之前**取,否则本轮问题会重复一遍。
@@ -676,6 +681,13 @@ class AssistantNotifier extends Notifier<AssistantState> {
       },
       onError: (Object e) {
         if (seq != _seq) return;
+        // 没授权被后端拒了:多半是那条免费模型刚被收回,重取列表换一条
+        if (sid.isEmpty &&
+            endpoint == null &&
+            e is BackendException &&
+            (e.status == 401 || e.status == 403)) {
+          ref.invalidate(agentModelsProvider);
+        }
         final msg = e is BackendException ? e.message : '$e';
         _pushError(msg, _kindOf(e));
       },

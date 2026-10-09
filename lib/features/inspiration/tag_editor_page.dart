@@ -21,6 +21,9 @@ import 'tag_library.dart';
 import 'tag_models.dart';
 import 'tag_preview_gen.dart';
 
+/// 新建时预填的名字和正负向(创作页「存到灵感库」带进来的)。
+typedef TagDraft = ({String name, String positive, String negative});
+
 /// 折叠式条目编辑器(创建/编辑统一,4 分类字段差异由配置驱动;
 /// UI 框架对齐设计稿 handoff 的手风琴方案,配色走 app 主题):
 /// 头部(返回/图标块/标题/已发布 chip/创建态进度环)→ 校验横幅 →
@@ -29,10 +32,13 @@ import 'tag_preview_gen.dart';
 /// 必填未齐时主按钮视觉禁用但可点(点了亮校验并展开缺失卡);
 /// 收藏副本(favorited)内容只读、仅标签可改。
 class TagEditorPage extends ConsumerStatefulWidget {
-  const TagEditorPage({super.key, required this.cat, this.edit});
+  const TagEditorPage({super.key, required this.cat, this.edit, this.draft});
 
   final TagCategory cat;
   final TagEntry? edit;
+
+  /// 新建时预填;[edit] 不为 null 时不看它。
+  final TagDraft? draft;
 
   @override
   ConsumerState<TagEditorPage> createState() => _TagEditorPageState();
@@ -58,9 +64,15 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
   late final bool _locked = _edit?.origin == TagOrigin.favorited;
   late final String _entryId = _edit?.id ?? TagLibrary.newId(widget.cat);
 
-  late final _name = TextEditingController(text: _edit?.name ?? '');
-  late final _positive = TextEditingController(text: _edit?.positive ?? '');
-  late final _negative = TextEditingController(text: _edit?.negative ?? '');
+  late final _name = TextEditingController(
+    text: _edit?.name ?? widget.draft?.name ?? '',
+  );
+  late final _positive = TextEditingController(
+    text: _edit?.positive ?? widget.draft?.positive ?? '',
+  );
+  late final _negative = TextEditingController(
+    text: _edit?.negative ?? widget.draft?.negative ?? '',
+  );
   late final List<String> _aliases = [...?_edit?.aliases];
   late final Set<String> _tags = {...?_edit?.tags};
 
@@ -104,7 +116,7 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
   @override
   void initState() {
     super.initState();
-    _showNegative = (_edit?.negative.trim().isNotEmpty ?? false);
+    _showNegative = _negative.text.trim().isNotEmpty;
     _showAliases = _aliases.isNotEmpty;
     // 必填联动进度环/校验态
     _name.addListener(() => setState(() {}));
@@ -1005,6 +1017,8 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
   }
 
   /// 手风琴字段卡:同刻最多展开一张;必填缺失且校验可见时红框+「必填」。
+  /// 底色同创作页的卡(亮色是灰底上的白卡),卡里的输入框、小按钮那一档灰
+  /// 才分得出来;收起的卡不描边,展开的描主色。
   Widget _section({
     required String id,
     required String title,
@@ -1021,14 +1035,14 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
       curve: Motion.standard,
       margin: const EdgeInsets.symmetric(vertical: 5),
       decoration: BoxDecoration(
-        color: scheme.surfaceContainer,
+        color: scheme.surfaceContainerLow,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
           color: errored
               ? scheme.error.withValues(alpha: .55)
               : expanded
               ? scheme.primary.withValues(alpha: .45)
-              : scheme.outlineVariant,
+              : Colors.transparent,
         ),
       ),
       child: Column(
@@ -1671,9 +1685,8 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
   Widget _recipeBody(ColorScheme scheme) {
     final r = _recipe;
     final importButton = OutlinedButton.icon(
-      onPressed: () => setState(
-        () => _recipe = recipeOf(ref.read(generateProvider).params),
-      ),
+      onPressed: () =>
+          setState(() => _recipe = recipeOf(ref.read(generateProvider).params)),
       icon: const Icon(Icons.download_outlined, size: 16),
       label: const Text('导入创作页', maxLines: 1, softWrap: false),
     );

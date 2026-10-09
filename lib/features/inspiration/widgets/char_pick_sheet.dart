@@ -28,6 +28,14 @@ typedef LibraryPick = ({PickedChar? tag, CodexFavorite? codex});
 /// 灵感库面板选中的全部,按勾选的先后(跨分类、跨标签库与法典)。
 typedef LibraryPicks = List<LibraryPick>;
 
+/// 创作页灵感库面板给哪几类标签库,顺序同灵感页(法典另算);「其他」不放。
+/// 「存到灵感库」也只给这几类,存进「其他」在面板里就选不到了。
+const kPanelTagCats = [
+  TagCategory.character,
+  TagCategory.artist,
+  TagCategory.scene,
+];
+
 /// 从灵感角色库选角色 —— 角色卡的头像、角色卡头的「角色库」共用。
 /// 形态照相册「移动到」那张面板:标题 + 封面卡网格,卡片就是灵感页那种竖版封面卡。
 ///
@@ -74,13 +82,6 @@ class _PickSheetState extends ConsumerState<_PickSheet> {
 
   /// 灵感库面板上次停在哪一类(进程内记着,下次打开接着看);null = 法典收藏。
   static TagCategory? _lastCat = TagCategory.artist;
-
-  /// 灵感库面板给哪几类标签库,顺序同灵感页(法典另算,排最后)。
-  static const _kPanelCats = [
-    TagCategory.character,
-    TagCategory.artist,
-    TagCategory.scene,
-  ];
 
   /// 当前分类;null = 法典收藏(只有灵感库面板有)。
   late TagCategory? _cat = widget.library ? _lastCat : TagCategory.character;
@@ -284,7 +285,7 @@ class _PickSheetState extends ConsumerState<_PickSheet> {
   /// 分类横排:角色、画风、场景 + 法典(只列收藏),某类勾了几个跟在名字后面。
   /// 「其他」不放进来。
   Widget _catTabs() {
-    final cats = _kPanelCats;
+    final cats = kPanelTagCats;
     int pickedIn(TagCategory c) =>
         _picks.values.where((p) => p.tag?.entry.category == c).length;
     final cat = _cat;
