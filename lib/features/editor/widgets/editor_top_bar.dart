@@ -6,7 +6,7 @@ import '../../../core/util/nai_tokenizer.dart';
 import '../../generate/generate_state.dart';
 import '../../generate/models.dart' show tokenLimitOf;
 import '../../generate/prompt_presets.dart';
-import '../../generate/prompt_sections.dart' show sectionTexts;
+import '../../generate/prompt_sections.dart' show mainEnabled, sectionTexts;
 import '../editor_state.dart';
 
 /// 编辑器顶栏(精简,单行):返回(=保存并退出)+ 进度条 + token 读数 + 设置。
@@ -57,11 +57,14 @@ class EditorTopBar extends ConsumerWidget {
               ),
             ),
           );
+    // 主体的正向停用了就不算(负面那侧一直算,同出图)
+    final mainOn =
+        gen == null || !st.activePositive || mainEnabled(gen.sections);
     final parts = gen == null
         ? const <String>[]
         : [
             // 分区会话:编辑器里是这一格,主体换成存着的那份
-            if (sectionId != null)
+            if (sectionId != null && mainOn)
               st.activePositive ? gen.prompt : gen.negative,
             ...sectionTexts(
               gen.sections,
@@ -76,7 +79,7 @@ class EditorTopBar extends ConsumerWidget {
     // 直接算会把整段折叠体漏掉——读数得按占位符展开后的真实定稿来。
     final tokens = totalPromptTokens(
       tok,
-      main: st.activeOutput,
+      main: sectionId == null && !mainOn ? '' : st.activeOutput,
       parts: parts,
       preset: presetSide,
     );

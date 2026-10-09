@@ -1,5 +1,12 @@
 import '../../core/util/prompt_tokens.dart' show cleanPromptToken, tokenizeSet;
-import '../editor/editor_models.dart' show draftOf, outputOf, pickEditorText;
+import '../editor/editor_models.dart'
+    show
+        draftOf,
+        outputOf,
+        pickEditorText,
+        setUnitsDisabled,
+        stripFolds,
+        topLevelUnits;
 import '../inspiration/tag_models.dart' show TagCategory, TagEntry;
 import 'models.dart';
 
@@ -9,6 +16,29 @@ import 'models.dart';
 /// 分区头尾的空白与逗号:拼接时去掉,免得出现 `a,, b`。
 String _clean(String s) =>
     s.trim().replaceAll(RegExp(r'^[,，\s]+|[,，\s]+$'), '');
+
+/// 这一格的这一侧进不进载荷。主体的负面一直进:卡上负面那行是整张卡的,
+/// 停用 / 删掉主体那一行只管它的正向。
+bool _on(PromptSection s, {required bool positive}) =>
+    (s.isMain && !positive) || s.enabled;
+
+/// 主体那一行删掉了,主体的词还在(负面一直在;正向是之后又被写进来的),
+/// 按排在最上面算 —— 卡上也是补在最上面(见 [withMainRow])。
+List<PromptSection> _withMain(List<PromptSection> list) =>
+    list.any((x) => x.isMain) ? list : [const PromptSection.main(), ...list];
+
+/// 卡上和改分区时用的那份行:主体那一行删掉之后主体又被写进了正向(读图导入、
+/// AI 助手…),主体回到最上面。
+List<PromptSection> withMainRow(List<PromptSection> list, String mainPrompt) =>
+    list.isEmpty || list.any((x) => x.isMain) || mainPrompt.trim().isEmpty
+    ? list
+    : [const PromptSection.main(), ...list];
+
+/// 主体的正向进不进载荷。没分区、主体那一行删掉了都算进:那时它要么就是
+/// 全部的词,要么是空的。
+bool mainEnabled(List<PromptSection> list) => list
+    .firstWhere((x) => x.isMain, orElse: () => const PromptSection.main())
+    .enabled;
 
 /// 按行序把主体和启用的分区拼成一整串。[main] 是主体那一侧的词(正或负)。
 ///
@@ -22,8 +52,8 @@ String joinSections(
   if (sections.isEmpty) return main;
   final seen = <String>{};
   return [
-    for (final s in sections)
-      if (s.isMain || s.enabled)
+    for (final s in _withMain(sections))
+      if (_on(s, positive: positive))
         _dropSeen(
           _clean(s.isMain ? main : (positive ? s.positive : s.negative)),
           seen,
@@ -59,8 +89,8 @@ String _joinDrafts(
   String mainDraft, {
   required bool positive,
 }) => [
-  for (final s in sections)
-    if (s.isMain || s.enabled)
+  for (final s in _withMain(sections))
+    if (_on(s, positive: positive))
       _clean(
         s.isMain
             ? mainDraft
@@ -112,9 +142,14 @@ List<String> sectionTexts(
       positive ? s.positive : s.negative,
 ];
 
-/// 有分区时恰好一个主体;只剩主体(或什么都没有)就整列清空,卡片回到原来的样子。
+/// 主体最多一行(可以没有:那一行删掉了)。只剩主体(或什么都没有)就整列清空,
+/// 卡片回到原来的样子 —— 剩下的主体是停用着的除外:回到原样就没处看出它停着,
+/// 正向会悄悄又进载荷。
 List<PromptSection> normalizeSections(List<PromptSection> list) {
-  if (!list.any((s) => !s.isMain)) return const [];
+  if (!list.any((s) => !s.isMain)) {
+    final main = list.where((s) => s.isMain).firstOrNull;
+    return main != null && !main.enabled ? [main] : const [];
+  }
   final out = <PromptSection>[];
   var hasMain = false;
   for (final s in list) {
@@ -124,15 +159,91 @@ List<PromptSection> normalizeSections(List<PromptSection> list) {
     }
     out.add(s);
   }
-  if (!hasMain) out.insert(0, const PromptSection.main());
   return out;
+}
+
+/// 整段的词都标成禁用(`~tag~`)。折叠先摊开:折叠单元套不了禁用。
+String disableAllTags(String draft) {
+  final plain = stripFolds(draft);
+  final n = topLevelUnits(plain, const {}).length;
+  if (n == 0) return plain;
+  return setUnitsDisabled(plain, const {}, [
+    for (var i = 0; i < n; i++) i,
+  ], true);
+}
+
+/// 多选「合并」:勾的几格合成一格。留下的是勾选里的主体(勾了的话,主体删不掉),
+/// 否则最上面那格,名字、位置不变;各格的词按行序从上往下接,挨着的几格合完
+/// 拼出来的串一字不差。有一格开着合完就开着,停用那几格的词带着禁用标记进来:
+/// 原来不出图的合完也不出图。不到两格返回 null。
+GenerateState? mergeSectionsIn(GenerateState s, Set<String> ids) {
+  final picked = [
+    for (final x in s.sections)
+      if (ids.contains(x.id)) x,
+  ];
+  if (picked.length < 2) return null;
+  final target = picked.firstWhere((x) => x.isMain, orElse: () => picked.first);
+  String pos(PromptSection x) => x.isMain
+      ? pickEditorText(s.promptRaw, s.prompt)
+      : pickEditorText(x.positiveRaw, x.positive);
+  String neg(PromptSection x) => x.isMain
+      ? pickEditorText(s.negativePromptRaw, s.negativePrompt)
+      : pickEditorText(x.negativeRaw, x.negative);
+  final on = picked.any((x) => x.enabled);
+  // 合完那一格(那一侧)开着,才需要给停用那几段打禁用标记;主体的负面
+  // 一直开着(见 _on),合进主体时负面那侧也就一直开着
+  final negOn = target.isMain || on;
+  String side(PromptSection x, String d, {required bool positive}) =>
+      (positive ? on : negOn) &&
+          !_on(x, positive: positive) &&
+          d.trim().isNotEmpty
+      ? disableAllTags(d)
+      : d;
+  String join(Iterable<String> parts) =>
+      parts.map(_clean).where((p) => p.isNotEmpty).join(', ');
+  final pDraft = join([
+    for (final x in picked) side(x, pos(x), positive: true),
+  ]);
+  final nDraft = join([
+    for (final x in picked) side(x, neg(x), positive: false),
+  ]);
+  final p = outputOf(pDraft), n = outputOf(nDraft);
+  final rest = [
+    for (final x in s.sections)
+      if (!ids.contains(x.id) || x.id == target.id) x,
+  ];
+  if (target.isMain) {
+    return s.copyWith(
+      prompt: p,
+      promptRaw: draftOf(pDraft, p),
+      negativePrompt: n,
+      negativePromptRaw: draftOf(nDraft, n),
+      sections: normalizeSections([
+        for (final x in rest) x.isMain ? x.copyWith(enabled: on) : x,
+      ]),
+    );
+  }
+  return s.copyWith(
+    sections: normalizeSections([
+      for (final x in rest)
+        x.id == target.id
+            ? x.copyWith(
+                positive: p,
+                positiveRaw: draftOf(pDraft, p),
+                negative: n,
+                negativeRaw: draftOf(nDraft, n),
+                enabled: on,
+              )
+            : x,
+    ]),
+  );
 }
 
 /// 新画布沿用的骨架:名字、顺序、开关留着,词清空。
 List<PromptSection> sectionSkeleton(List<PromptSection> list) => [
   for (final s in list)
     s.isMain
-        ? s
+        ? PromptSection.main(name: s.name)
         : PromptSection(
             id: s.id,
             name: s.name,
@@ -151,14 +262,17 @@ String nextSectionName(List<PromptSection> list) {
   return '分区 $n';
 }
 
-/// 删掉的分区放回原位。删的是最后一格时主体也跟着没了,[main] 是当时的主体。
+/// 删掉的分区放回原位。删的是最后一格时主体也跟着没了,[main] 是当时的主体
+/// (那时本来就没有主体那一行就是 null)。
 List<PromptSection> restoreSection(
   List<PromptSection> list,
   PromptSection removed,
   int index, {
-  PromptSection main = const PromptSection.main(),
+  PromptSection? main = const PromptSection.main(),
 }) {
-  final out = list.isEmpty ? [main] : [...list];
+  final out = list.isEmpty && main != null && !removed.isMain
+      ? [main]
+      : [...list];
   out.insert(index.clamp(0, out.length), removed);
   return normalizeSections(out);
 }

@@ -98,13 +98,12 @@ class PromptSection {
   });
 
   /// 主体那一行(见 [kMainSectionId])。
-  const PromptSection.main({this.name = '主体'})
+  const PromptSection.main({this.name = '主体', this.enabled = true})
     : id = kMainSectionId,
       positive = '',
       negative = '',
       positiveRaw = '',
       negativeRaw = '',
-      enabled = true,
       artist = false;
 
   final String id;
@@ -1259,7 +1258,8 @@ class GenerateState {
   final String negativePromptRaw;
 
   /// 主提示词的分区,按卡上的行序;空 = 没分区(卡片是原来的样子)。
-  /// 非空时恰有一项是主体([PromptSection.isMain]),它的词就是 [prompt]。
+  /// 最多一项是主体([PromptSection.isMain]),它的词就是 [prompt];主体那一行
+  /// 也能删(正向随之清空),这时列表里就没有它。
   /// 只活在创作页:生成快照里已拼进 [prompt](见 composeSections)。
   final List<PromptSection> sections;
 
