@@ -28,13 +28,17 @@ class TagLibraryState {
   List<String> poolOf(TagCategory c) => pools[c] ?? const [];
 
   /// 筛选行可用标签 = 标签池 ∪ 条目在用标签(对齐 web CompactPanel 并集)。
+  /// 池里的按池的顺序,只挂在条目上、不在池里的按字母序排在后面。
   List<String> knownTags(TagCategory c) {
-    final s = <String>{...poolOf(c)};
+    final pool = <String>{...poolOf(c)};
+    final extra = <String>{};
     for (final e in entries) {
-      if (e.category == c) s.addAll(e.tags);
+      if (e.category != c) continue;
+      for (final t in e.tags) {
+        if (!pool.contains(t)) extra.add(t);
+      }
     }
-    final out = s.toList()..sort();
-    return out;
+    return [...pool, ...(extra.toList()..sort())];
   }
 
   TagLibraryState copyWith({
@@ -274,11 +278,19 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
       _s.copyWith(
         pools: {
           ..._s.pools,
-          c: [..._s.poolOf(c), t]..sort(),
+          c: [..._s.poolOf(c), t],
         },
       ),
     );
     return true;
+  }
+
+  /// 调整标签顺序([from] / [to] 是 [TagLibraryState.knownTags] 里的下标,
+  /// [to] 已按移走 [from] 后的列表算)。不在池里的标签一并按新顺序写进池。
+  Future<void> movePoolTag(TagCategory c, int from, int to) async {
+    final list = _s.knownTags(c);
+    list.insert(to, list.removeAt(from));
+    await _set(_s.copyWith(pools: {..._s.pools, c: list}));
   }
 
   /// 删池中标签,并从该分类所有条目上剥离(对齐 web handleSavePool)。
