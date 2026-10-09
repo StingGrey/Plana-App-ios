@@ -2623,7 +2623,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
         _useAsBtn(
           scheme,
           Icons.palette_outlined,
-          '风格',
+          'Vibe',
           _useAsVibe,
           blocked: _moduleBlocked(GenModule.vibe),
         ),
@@ -2631,7 +2631,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
         _useAsBtn(
           scheme,
           Icons.face_retouching_natural,
-          '角色',
+          '参考',
           _useAsCharRef,
           blocked: _moduleBlocked(GenModule.charRef),
         ),
