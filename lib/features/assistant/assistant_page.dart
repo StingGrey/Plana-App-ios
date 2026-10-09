@@ -146,9 +146,9 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final st = ref.watch(assistantProvider);
-    // 没有 Bot 授权也能用,但只能走自定义接口:一个都没选就先挡住
+    // 没有 Bot 授权也能用,但只能走免费模型或自定义接口:两样都没有就先挡住
     final usable =
-        ref.watch(assistantBotAuthorizedProvider) ||
+        ref.watch(assistantBackendAvailableProvider) ||
         ref.watch(assistantEndpointProvider) != null;
     final supported = assistantSupportsModel(
       ref.watch(generateProvider.select((g) => g.params.model)),
