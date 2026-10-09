@@ -19,6 +19,7 @@ import '../../../core/net/anlas_provider.dart';
 import '../../../core/store/app_stores.dart';
 import '../../../core/util/haptics.dart';
 import '../../../core/util/image_ops.dart';
+import '../../../core/util/image_pick.dart';
 import '../gallery_state.dart';
 import '../albums/album_state.dart';
 import '../albums/album_ui.dart';
@@ -545,7 +546,7 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
       init = init.copyWith(enhanceScale: scales.first);
     }
 
-    final picked = await showModalBottomSheet<UpscaleSettings>(
+    final picked = await showModalBottomSheet<_UpscalePick>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
@@ -564,13 +565,17 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
     final galleryRevision = ref
         .read(galleryProvider.notifier)
         .selectionRevision;
-    await ref.read(upscaleSettingsProvider.notifier).set(picked);
-    if (!context.mounted) return;
-    final method = picked.method;
+    // 外部图只走 V5 超分,不改写记住的放大方式
+    final ext = picked.external;
+    if (ext == null) {
+      await ref.read(upscaleSettingsProvider.notifier).set(picked.settings);
+      if (!context.mounted) return;
+    }
+    final method = ext == null ? picked.settings.method : UpscaleMethod.naiV5;
 
     // 重绘放大:走生成管线(画布流式预览),不弹放大对话框
     if (method == UpscaleMethod.redraw) {
-      await _redraw(context, ref, bytes, picked, redrawInput);
+      await _redraw(context, ref, bytes, picked.settings, redrawInput);
       return;
     }
 
@@ -588,16 +593,17 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
     try {
       final r = await upscaleNai(
         ref,
-        bytes,
-        width: w,
-        height: h,
+        ext == null ? bytes : await ensurePng(ext.bytes),
+        width: ext?.width ?? w,
+        height: ext?.height ?? h,
         onStage: (s) => stage.value = s,
       );
       final png = r.png;
       final outW = r.width;
       final outH = r.height;
-      // 入库:新条目 + 放大角标,沿用原图 seed/输入参数(快照懒读补齐)
-      final input = await _inputOf(ref);
+      // 入库:新条目 + 放大角标,沿用原图 seed/输入参数(快照懒读补齐);
+      // 外部图没有这两样
+      final input = ext == null ? await _inputOf(ref) : null;
       await ref
           .read(galleryProvider.notifier)
           .addResultToGallery(
@@ -608,7 +614,7 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
             bytes: png,
             width: outW,
             height: outH,
-            seed: result.seed,
+            seed: ext == null ? result.seed : 0,
             badge: ResultBadge.upscaled,
             input: input,
           );
@@ -949,6 +955,8 @@ class _SaveAlbumChip extends ConsumerWidget {
 ///    V5 扩散),本地还能选倍率。
 ///  - **图生图放大**:以更高分辨率重新生成,画面会变。选倍率 + Magnitude 档,
 ///    强度/噪声两个滑杆可继续微调。
+///
+/// 标题栏「导入图片」换成手机里的外部图,此时只有 V5 超分。
 class _UpscalePanel extends ConsumerStatefulWidget {
   const _UpscalePanel({
     required this.init,
@@ -978,13 +986,51 @@ class _UpscalePanel extends ConsumerStatefulWidget {
   ConsumerState<_UpscalePanel> createState() => _UpscalePanelState();
 }
 
+/// 放大面板里导入的外部图(原始字节,发送前才转 PNG)。
+class _ExternalImage {
+  const _ExternalImage(this.name, this.bytes, this.width, this.height);
+
+  final String name;
+  final Uint8List bytes;
+  final int width;
+  final int height;
+}
+
+/// 面板的确认结果:[external] 非空 = 放大导入的外部图。
+typedef _UpscalePick = ({UpscaleSettings settings, _ExternalImage? external});
+
 class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
   late UpscaleSettings _s = widget.init;
 
-  /// 超分这条支路现在只剩 V5 一档;尺寸不合格时整条不可选。
-  bool get _upscaleOk => widget.naiV5Enabled;
+  _ExternalImage? _ext;
+  bool _importing = false;
 
-  bool get _isRedraw => _s.method == UpscaleMethod.redraw;
+  int get _w => _ext?.width ?? widget.width;
+  int get _h => _ext?.height ?? widget.height;
+
+  /// 外部图只有 V5 超分。
+  UpscaleMethod get _method => _ext == null ? _s.method : UpscaleMethod.naiV5;
+
+  /// 超分这条支路现在只剩 V5 一档;尺寸不合格时整条不可选。
+  bool get _upscaleOk =>
+      _ext == null ? widget.naiV5Enabled : naiV5UpscaleSupportsSize(_w, _h);
+
+  bool get _isRedraw => _method == UpscaleMethod.redraw;
+
+  Future<void> _importImage() async {
+    final file = await pickImageFile(context);
+    if (file == null || !mounted) return;
+    setState(() => _importing = true);
+    try {
+      final (w, h) = await decodeImageSize(file.bytes);
+      if (!mounted) return;
+      setState(() => _ext = _ExternalImage(file.baseName, file.bytes, w, h));
+    } catch (_) {
+      if (mounted) hintSnack(context, '无法读取这张图片', icon: Icons.error_outline);
+    } finally {
+      if (mounted) setState(() => _importing = false);
+    }
+  }
 
   /// [remember] = 顺手落盘。
   ///
@@ -1003,8 +1049,8 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
 
   /// 结果尺寸 —— 三条路三种算法,别互相套用(见各自函数的注释)。
   ({int w, int h}) get _target {
-    final w = widget.width, h = widget.height;
-    return switch (_s.method) {
+    final w = _w, h = _h;
+    return switch (_method) {
       UpscaleMethod.redraw => enhanceTargetSize(w, h, _s.enhanceScale),
       UpscaleMethod.naiV5 => naiV5UpscaleTargetSize(w, h),
     };
@@ -1014,8 +1060,8 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
   ///
   /// 两条路两种算法:V5 扩散按**源图**像素查表;图生图放大走生成公式
   /// (按**结果**尺寸 + 强度折算)。
-  int? get _cost => switch (_s.method) {
-    UpscaleMethod.naiV5 => naiV5UpscalePrice(widget.width, widget.height),
+  int? get _cost => switch (_method) {
+    UpscaleMethod.naiV5 => naiV5UpscalePrice(_w, _h),
     UpscaleMethod.redraw => _redrawCost(),
   };
 
@@ -1038,9 +1084,8 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
 
   /// 超分那一句话说明(含价钱);尺寸不受理时说清为什么。
   String get _upscaleNote => _upscaleOk
-      ? 'V5 扩散超分 · 固定 2× · '
-            '${naiV5UpscalePrice(widget.width, widget.height)} 点'
-      : '源图 ${widget.width}×${widget.height} 超过 3,145,728 像素,超分不受理';
+      ? 'V5 扩散超分 · 固定 2× · ${naiV5UpscalePrice(_w, _h)} 点'
+      : '源图 $_w×$_h 超过 3,145,728 像素,超分不受理';
 
   /// 当前倍率档在干什么。Max 档的尺寸是服务端定的,这里只能给估值。
   String get _scaleNote => switch (_s.enhanceScale) {
@@ -1074,30 +1119,46 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
         children: [
           // 抓手由 BottomSheetTheme(showDragHandle: true)统一提供,这里不再自画。
           Padding(
-            padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.photo_size_select_large,
-                  size: 20,
-                  color: scheme.primary,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  '放大',
-                  style: context.texts.titleMedium!.copyWith(
-                    fontWeight: FontWeight.w700,
+            padding: const EdgeInsets.fromLTRB(20, 0, 8, 6),
+            child: SizedBox(
+              height: 36,
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.photo_size_select_large,
+                    size: 20,
+                    color: scheme.primary,
                   ),
-                ),
-                const Spacer(),
-                Text(
-                  '${widget.width}×${widget.height}',
-                  style: mono(
-                    context,
-                    size: 11,
-                  ).copyWith(color: scheme.outline),
-                ),
-              ],
+                  const SizedBox(width: 8),
+                  Text(
+                    '放大',
+                    style: context.texts.titleMedium!.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    '$_w×$_h',
+                    style: mono(
+                      context,
+                      size: 11,
+                    ).copyWith(color: scheme.outline),
+                  ),
+                  const Spacer(),
+                  TextButton.icon(
+                    style: TextButton.styleFrom(
+                      minimumSize: const Size(0, 40),
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                    ),
+                    onPressed: _importing ? null : _importImage,
+                    icon: const Icon(
+                      Icons.add_photo_alternate_outlined,
+                      size: 18,
+                    ),
+                    label: const Text('导入图片'),
+                  ),
+                ],
+              ),
             ),
           ),
           Flexible(
@@ -1106,36 +1167,12 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // 支路:超分 = 只放大像素;图生图放大 = 重新生成,画面会变
-                  SegmentedButton<bool>(
-                    segments: [
-                      ButtonSegment(
-                        value: false,
-                        label: const Text('超分辨率'),
-                        enabled: _upscaleOk,
-                      ),
-                      ButtonSegment(
-                        value: true,
-                        label: const Text('图生图放大'),
-                        enabled: widget.redrawWhy == null,
-                      ),
-                    ],
-                    selected: {_isRedraw},
-                    showSelectedIcon: false,
-                    onSelectionChanged: (v) => _setMethod(
-                      v.first ? UpscaleMethod.redraw : UpscaleMethod.naiV5,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  if (widget.redrawWhy case final why?) ...[
-                    _note(scheme, why),
+                  if (_ext case final ext?) ...[
+                    _externalRow(scheme, ext),
                     const SizedBox(height: 10),
-                  ] else
-                    const SizedBox(height: 4),
-                  if (_isRedraw)
-                    ..._redrawSection(scheme)
-                  else
                     ..._upscaleSection(scheme),
+                  ] else
+                    ..._branchSection(scheme),
                 ],
               ),
             ),
@@ -1148,6 +1185,73 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
       ),
     );
   }
+
+  /// 导入的外部图:缩略图 + 文件名 + 取消(回到图库这张图)。
+  Widget _externalRow(ColorScheme scheme, _ExternalImage ext) {
+    const d = 44.0;
+    final px = (d * MediaQuery.devicePixelRatioOf(context)).round();
+    return Row(
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: Image.memory(
+            ext.bytes,
+            width: d,
+            height: d,
+            fit: BoxFit.cover,
+            // 按短边解码到缩略图尺寸,手机原图不整张解
+            cacheWidth: ext.width <= ext.height ? px : null,
+            cacheHeight: ext.width > ext.height ? px : null,
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            ext.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: context.texts.bodyMedium!.copyWith(color: scheme.onSurface),
+          ),
+        ),
+        IconButton(
+          onPressed: () => setState(() => _ext = null),
+          icon: const Icon(Icons.close_rounded, size: 20),
+          color: scheme.onSurfaceVariant,
+          tooltip: '取消',
+        ),
+      ],
+    );
+  }
+
+  /// 图库这张图:超分 / 图生图放大两条支路。
+  List<Widget> _branchSection(ColorScheme scheme) => [
+    // 支路:超分 = 只放大像素;图生图放大 = 重新生成,画面会变
+    SegmentedButton<bool>(
+      segments: [
+        ButtonSegment(
+          value: false,
+          label: const Text('超分辨率'),
+          enabled: _upscaleOk,
+        ),
+        ButtonSegment(
+          value: true,
+          label: const Text('图生图放大'),
+          enabled: widget.redrawWhy == null,
+        ),
+      ],
+      selected: {_isRedraw},
+      showSelectedIcon: false,
+      onSelectionChanged: (v) =>
+          _setMethod(v.first ? UpscaleMethod.redraw : UpscaleMethod.naiV5),
+    ),
+    const SizedBox(height: 8),
+    if (widget.redrawWhy case final why?) ...[
+      _note(scheme, why),
+      const SizedBox(height: 10),
+    ] else
+      const SizedBox(height: 4),
+    if (_isRedraw) ..._redrawSection(scheme) else ..._upscaleSection(scheme),
+  ];
 
   // ---- 超分辨率支路:官方下线传统 4× 之后只剩 V5 一档,没什么可选的了 ----
 
@@ -1289,7 +1393,11 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
         minimumSize: const Size.fromHeight(46),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(23)),
       ),
-      onPressed: cost == null ? null : () => Navigator.of(context).pop(_s),
+      onPressed: cost == null || _importing
+          ? null
+          : () => Navigator.of(
+              context,
+            ).pop<_UpscalePick>((settings: _s, external: _ext)),
       // 整块等比缩,不让任何一段省略号 —— 窄屏 + 四位数点数时两边都装不下。
       child: FittedBox(
         fit: BoxFit.scaleDown,
