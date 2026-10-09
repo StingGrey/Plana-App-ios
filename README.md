@@ -119,7 +119,7 @@ flutter build apk --release --target-platform android-arm64
 
 [下载最新 iOS 安装包](https://github.com/StingGrey/Plana-App-ios/releases)。发布包未签名，需使用自己的证书重签后安装。
 
-当前发布包要求 iOS 16 以上。需要 macOS、Xcode 与 CocoaPods;首次在项目根目录执行:
+当前发布包要求 iOS 16 以上。需要 macOS 与 Xcode;若生成的工程使用 CocoaPods，还需安装 CocoaPods。首次在项目根目录执行:
 
 ```bash
 chmod +x tool/prepare_ios.sh
@@ -131,9 +131,8 @@ chmod +x tool/prepare_ios.sh
 
 当前 iOS 首版不承诺切到后台后维持流式生成,详情见 [IOS_PORT.md](IOS_PORT.md)。
 
-没有 Mac 时，可在 GitHub 仓库的 **Actions** 页面手动运行
-`Build unsigned iOS IPA`，下载构建产物后用 Sideloadly / AltStore 重签安装。
-工作流配置见 `.github/workflows/build-ios-unsigned.yml`。
+发布包在本地 macOS 上编译，构建命令与 IPA 打包步骤见 [本地构建](IOS_PORT.md#本地构建未签名-ipa)。
+没有 Mac 时，可下载 Releases 中的 IPA，再用 Sideloadly / AltStore 重签安装。
 
 ### 测试
 

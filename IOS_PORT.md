@@ -23,8 +23,8 @@
 
 - macOS；
 - Xcode（首次安装后至少启动一次）；
-- Flutter 3.44 或更新版本；
-- CocoaPods。
+- Flutter 3.44.9 或更新版本（Dart 3.12.2+）；
+- 若生成的工程含有 `ios/Podfile`，还需安装 CocoaPods。
 
 在项目根目录执行：
 
@@ -36,11 +36,11 @@ chmod +x tool/prepare_ios.sh
 脚本会：
 
 1. 用你本机 Flutter 的模板创建 `ios/`；
-2. 设置最低 iOS 13；
+2. 设置最低 iOS 16；
 3. 写入照片读取、照片保存和局域网权限说明；
 4. 仅允许 ATS 本地网络访问，不为公网全局放开明文流量；
 5. 生成不含透明通道的 iOS App Icon；
-6. 安装 Pods；
+6. 获取依赖；工程使用 CocoaPods 时安装 Pods；
 7. 执行一次无签名 Debug 编译检查。
 
 如只想生成工程而暂不编译：
@@ -59,22 +59,29 @@ chmod +x tool/prepare_ios.sh
 
 免费 Apple ID 签名通常只能在设备上保留约 7 天；正式 TestFlight / App Store 分发需要 Apple Developer Program。
 
-## GitHub Actions 云端构建
+## 本地构建未签名 IPA
 
-仓库已包含 `.github/workflows/build-ios-unsigned.yml`，可使用 GitHub 提供的
-macOS runner 构建未签名 IPA，不要求自己的电脑安装 Xcode。
+在 macOS 的项目根目录准备工程并编译 Release 版本：
 
-1. 把整个项目推到 GitHub；
-2. 打开仓库的 **Actions**；
-3. 选择 **Build unsigned iOS IPA**；
-4. 点击 **Run workflow**；
-5. 完成后在该次运行底部下载 `Plana-App-iOS-unsigned` Artifact；
-6. 解压 Artifact，得到 `Plana-App-unsigned.ipa` 与 SHA-256 文件；
-7. 使用 Sideloadly、AltStore 等工具，以自己的 Apple ID 重签并安装。
+```bash
+./tool/prepare_ios.sh --skip-build
+flutter build ios --release --no-codesign
+```
 
-该 IPA 未签名，不能直接点开安装。工作流不会接触 Apple 密码、证书或
-Provisioning Profile。若以后要上传 TestFlight，应另外建立签名工作流，并把
-证书和 App Store Connect API Key 存入 GitHub Secrets，切勿写入仓库。
+编译产物是 `build/ios/iphoneos/Runner.app`。在临时目录打包，避免混入旧文件：
+
+```bash
+plana_package_dir=$(mktemp -d)
+mkdir -p "$plana_package_dir/Payload"
+ditto build/ios/iphoneos/Runner.app "$plana_package_dir/Payload/Runner.app"
+ditto -c -k --keepParent "$plana_package_dir/Payload" build/ios/Plana-App-unsigned.ipa
+rm -rf "$plana_package_dir"
+unzip -tq build/ios/Plana-App-unsigned.ipa
+shasum -a 256 build/ios/Plana-App-unsigned.ipa > build/ios/Plana-App-unsigned.sha256
+```
+
+该 IPA 未签名，需用 Sideloadly、AltStore 等工具，以自己的 Apple ID 重签安装。
+本地构建完成后可将 IPA 与 SHA-256 文件上传到 GitHub Releases。
 
 ## 首轮真机检查
 
