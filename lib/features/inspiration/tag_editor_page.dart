@@ -1017,6 +1017,8 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
   }
 
   /// 手风琴字段卡:同刻最多展开一张;必填缺失且校验可见时红框+「必填」。
+  /// 底色同创作页的卡(亮色是灰底上的白卡),卡里的输入框、小按钮那一档灰
+  /// 才分得出来;收起的卡不描边,展开的描主色。
   Widget _section({
     required String id,
     required String title,
@@ -1033,14 +1035,14 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
       curve: Motion.standard,
       margin: const EdgeInsets.symmetric(vertical: 5),
       decoration: BoxDecoration(
-        color: scheme.surfaceContainer,
+        color: scheme.surfaceContainerLow,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
           color: errored
               ? scheme.error.withValues(alpha: .55)
               : expanded
               ? scheme.primary.withValues(alpha: .45)
-              : scheme.outlineVariant,
+              : Colors.transparent,
         ),
       ),
       child: Column(
