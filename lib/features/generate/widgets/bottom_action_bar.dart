@@ -10,7 +10,8 @@ import '../gen_modules.dart';
 import '../generate_state.dart';
 import '../generation_controller.dart';
 import '../loop_controller.dart';
-import '../models.dart' show GenParams, kBatchMax, stepsRangeOf;
+import '../models.dart'
+    show GenParams, isNai5MediumModel, kBatchMax, stepsRangeOf;
 import '../vibe_encoder.dart';
 import '../../import/import_panel.dart';
 import 'advanced_sheet.dart';
@@ -153,8 +154,11 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
                   value: '${p.width}×${p.height}',
                   onTap: () => showResolutionSheet(context),
                 ),
-                if (!batchable) const SizedBox(width: 8),
-                const _StepsChip(),
+                // Medium 档步数固定,不给调
+                if (!isNai5MediumModel(sent.params.model)) ...[
+                  if (!batchable) const SizedBox(width: 8),
+                  const _StepsChip(),
+                ],
                 // 张数只有 anima / krea 有(NAI 那条路一单一张)。**不给它常驻
                 // 一个位置**:NAI 下摆个恒为 1、点了还得解释「这个模型不支持」
                 // 的读数,只是白占那条本来就挤的行。
@@ -661,6 +665,7 @@ class FloatingPillOverlay extends ConsumerWidget {
     // (只在这儿判「还该不该画」,真正把状态清掉交给下面那次 listen。)
     final okFor = switch (which) {
       FloatingPill.batch => p.batchable && p.effectiveBatch == p.batchCount,
+      FloatingPill.steps => !isNai5MediumModel(p.model),
       _ => true,
     };
     if (!okFor) which = FloatingPill.none;
@@ -668,6 +673,10 @@ class FloatingPillOverlay extends ConsumerWidget {
       sentParamsProvider.select(
         (x) => x.batchable && x.effectiveBatch == x.batchCount,
       ),
+      (_, _) => ref.read(floatingPillProvider.notifier).close(),
+    );
+    ref.listen<bool>(
+      sentParamsProvider.select((x) => isNai5MediumModel(x.model)),
       (_, _) => ref.read(floatingPillProvider.notifier).close(),
     );
     return AnimatedSwitcher(

@@ -58,6 +58,7 @@ bool _noiseSupported(String? n) => n != null && noiseSchedules.contains(n);
 String? _modelFromSource(String source) {
   final s = source.toLowerCase();
   if (s.contains('v5')) {
+    if (naiSourceIsV5Medium(source)) return 'NAI 5.0 Full Medium';
     return naiSourceIsV5Full(source) ? 'NAI 5.0 Full' : 'NAI 5.0 Curated';
   }
   if (s.contains('v4.5 curated')) return 'NAI 4.5 Curated';

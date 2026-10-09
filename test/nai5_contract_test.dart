@@ -7,6 +7,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plana_app/features/generate/bot_request.dart';
 import 'package:plana_app/features/generate/char_position.dart';
+import 'package:plana_app/features/generate/cost.dart';
 import 'package:plana_app/features/generate/models.dart';
 import 'package:plana_app/features/generate/nai_request.dart';
 import 'package:plana_app/features/generate/prompt_presets.dart';
@@ -232,6 +233,70 @@ void main() {
     test('归一化之后的串也吃得下(那时 hash 已经没了,只能看字面)', () {
       expect(naiSourceIsV5Full('NovelAI V5 Full'), isTrue);
       expect(naiSourceIsV5Full('NovelAI V5 Curated'), isFalse);
+    });
+
+    test('Medium 档的两个 hash 认成 Full Medium', () {
+      for (final src in [
+        'NovelAI Diffusion V5 93F4BD30',
+        'NovelAI Diffusion V5 70AB5786',
+        'NovelAI V5 Full Medium',
+      ]) {
+        expect(naiSourceIsV5Medium(src), isTrue, reason: src);
+        expect(naiSourceIsV5Full(src), isTrue, reason: src);
+      }
+      expect(naiSourceIsV5Medium('NovelAI Diffusion V5 657484A5'), isFalse);
+    });
+  });
+
+  group('V5 Full Medium', () {
+    test('文生图 / 重绘', () {
+      final id = naiModelId('NAI 5.0 Full Medium');
+      expect(id, 'nai-diffusion-5-full-medium');
+      expect(inpaintModelId(id), 'nai-diffusion-5-full-medium-inpainting');
+    });
+
+    test('按 V5 处理', () {
+      expect(isNai5Model('NAI 5.0 Full Medium'), isTrue);
+      expect(tokenLimitOf('NAI 5.0 Full Medium'), 1471);
+      expect(ucPresetValue('none', 'nai-diffusion-5-full-medium'), 4);
+    });
+
+    GenerateState medium({int w = 832, int h = 1216}) {
+      final s = _state('NAI 5.0 Full Medium');
+      return s.copyWith(
+        negativePrompt: 'lowres',
+        params: s.params.copyWith(
+          width: w,
+          height: h,
+          steps: 40,
+          sampler: 'DPM++ 2M',
+          cfgRescale: .3,
+        ),
+      );
+    }
+
+    test('步数 / 采样器固定,不发 CFG Rescale,负面照发', () {
+      final d =
+          buildNaiPayload(medium(), presetId: 'heavy').body['parameters']
+              as Map<String, dynamic>;
+      expect(d['steps'], 14);
+      expect(d['sampler'], 'k_euler_ancestral');
+      expect(d.containsKey('cfg_rescale'), isFalse);
+
+      final b = buildBotParams(medium(), seed: 1, presetId: 'heavy');
+      expect(b['steps'], 14);
+      expect(b['sampler'], 'k_euler_ancestral');
+      expect(b.containsKey('cfgRescale'), isFalse);
+      expect(b['negativePrompt'], 'lowres');
+    });
+
+    test('价格:按 14 步,步数项再乘 1/1.06521739', () {
+      expect(estimateCost(medium(), isOpus: false), 17);
+      expect(estimateCost(medium(w: 1024, h: 1024), isOpus: false), 18);
+      expect(estimateCost(medium(w: 1024, h: 1536), isOpus: false), 26);
+      expect(estimateCost(medium(w: 1536, h: 2048), isOpus: false), 51);
+      expect(estimateCost(medium(w: 1024, h: 1536), isOpus: true), 26);
+      expect(estimateCost(medium(), isOpus: true), 0);
     });
   });
 

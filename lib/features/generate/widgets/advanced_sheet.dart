@@ -86,6 +86,8 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
     // 被硬写回 karras。这个控件在 V5 下点了完全没反应,继续摆着就是骗人,
     // 所以按能力面藏掉。
     final isV5 = isNai5Model(draft.model);
+    // Medium 档步数、采样器固定,CFG Rescale 不发,三项都不给调。
+    final isMedium = isNai5MediumModel(draft.model);
     return Column(
       children: [
         Padding(
@@ -301,22 +303,24 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                   ),
                 ],
               ] else ...[
-                ParamSlider(
-                  label: '步数 Steps',
-                  help: Help.steps,
-                  value: draft.steps.toDouble(),
-                  min: 1,
-                  max: 50,
-                  divisions: 49,
-                  valueText: '${draft.steps}',
-                  trailing: AnimatedOpacity(
-                    duration: Motion.fast,
-                    opacity: draft.steps <= 28 ? 1 : 0,
-                    child: const CountBadge('≤28 免费'),
+                if (!isMedium) ...[
+                  ParamSlider(
+                    label: '步数 Steps',
+                    help: Help.steps,
+                    value: draft.steps.toDouble(),
+                    min: 1,
+                    max: 50,
+                    divisions: 49,
+                    valueText: '${draft.steps}',
+                    trailing: AnimatedOpacity(
+                      duration: Motion.fast,
+                      opacity: draft.steps <= 28 ? 1 : 0,
+                      child: const CountBadge('≤28 免费'),
+                    ),
+                    onChanged: (v) => _set(draft.copyWith(steps: v.round())),
                   ),
-                  onChanged: (v) => _set(draft.copyWith(steps: v.round())),
-                ),
-                const SizedBox(height: 8),
+                  const SizedBox(height: 8),
+                ],
                 ParamSlider(
                   label: '提示词引导 CFG',
                   help: Help.cfg,
@@ -334,9 +338,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                         selected: draft.varietyPlus,
                         onTap: () {
                           Haptics.selection();
-                          _set(
-                            draft.copyWith(varietyPlus: !draft.varietyPlus),
-                          );
+                          _set(draft.copyWith(varietyPlus: !draft.varietyPlus));
                         },
                       ),
                       const HelpDot(Help.varietyPlus, size: 30, iconSize: 17),
@@ -344,31 +346,33 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                   ),
                   onChanged: (v) => _set(draft.copyWith(cfg: v)),
                 ),
-                const SizedBox(height: 12),
-                HelpLabel(
-                  text: '采样器 Sampler',
-                  help: Help.sampler,
-                  style: context.texts.bodySmall!.copyWith(
-                    color: scheme.onSurfaceVariant,
+                if (!isMedium) ...[
+                  const SizedBox(height: 12),
+                  HelpLabel(
+                    text: '采样器 Sampler',
+                    help: Help.sampler,
+                    style: context.texts.bodySmall!.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 8),
-                GridView.count(
-                  crossAxisCount: 2,
-                  mainAxisSpacing: 7,
-                  crossAxisSpacing: 7,
-                  childAspectRatio: 4.4,
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  children: [
-                    for (final s in samplers)
-                      _SelectTile(
-                        label: s,
-                        selected: draft.sampler == s,
-                        onTap: () => _set(draft.copyWith(sampler: s)),
-                      ),
-                  ],
-                ),
+                  const SizedBox(height: 8),
+                  GridView.count(
+                    crossAxisCount: 2,
+                    mainAxisSpacing: 7,
+                    crossAxisSpacing: 7,
+                    childAspectRatio: 4.4,
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    children: [
+                      for (final s in samplers)
+                        _SelectTile(
+                          label: s,
+                          selected: draft.sampler == s,
+                          onTap: () => _set(draft.copyWith(sampler: s)),
+                        ),
+                    ],
+                  ),
+                ],
                 // V5 恒 karras,不给选(见上面 isV5 的说明)
                 if (!isV5) ...[
                   const SizedBox(height: 14),
@@ -471,7 +475,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                 ],
               ),
               // CFG Rescale 是 NAI 独有的;两个 Modal 渠道都没有这个参数
-              if (!isAnima && !isKrea) ...[
+              if (!isAnima && !isKrea && !isMedium) ...[
                 const SizedBox(height: 14),
                 ParamSlider(
                   label: 'CFG Rescale',

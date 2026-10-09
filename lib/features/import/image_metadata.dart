@@ -273,7 +273,16 @@ bool naiSourceIsV5Full(String source) {
   final s = source.toLowerCase();
   if (s.contains('curated')) return false;
   if (s.contains('full')) return true;
-  return _v5FullHashes.any(s.contains);
+  return _v5FullHashes.any(s.contains) || naiSourceIsV5Medium(source);
+}
+
+/// V5 Full Medium 档的两个权重指纹(取自 NAI 官方前端白名单)。
+const _v5MediumHashes = ['93f4bd30', '70ab5786'];
+
+/// 这串 Source 是不是 V5 Full 的 Medium 档(也算 Full,见 [naiSourceIsV5Full])。
+bool naiSourceIsV5Medium(String source) {
+  final s = source.toLowerCase();
+  return s.contains('medium') || _v5MediumHashes.any(s.contains);
 }
 
 /// 模型指纹 → 展示名(取自 NAI 官方前端源码)。
@@ -454,8 +463,12 @@ ImageMetadata? _parseNai(Map<String, dynamic> data) {
           // V5 的档次算得准(白名单,见 naiSourceIsV5Full),Full / Curated 都写出来。
           // 它的 Source 串里根本没有档次字样,不显式补上的话顶栏只会显示光秃秃
           // 一个「NovelAI V5」—— 而 V4/V4.5 那边有指纹表,一直是带档次的。
-          final full = naiSourceIsV5Full(rawSource);
-          source = 'NovelAI V$ver ${full ? 'Full' : 'Curated'}';
+          final tier = naiSourceIsV5Medium(rawSource)
+              ? 'Full Medium'
+              : naiSourceIsV5Full(rawSource)
+              ? 'Full'
+              : 'Curated';
+          source = 'NovelAI V$ver $tier';
         } else {
           // 其余版本只能靠字面找 curated。**认不出就不写档次** —— 指纹表
           // (_naiModelNameMap)已经覆盖了官方在用的那批,落到这里的是没见过的
