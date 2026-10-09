@@ -449,6 +449,8 @@ class BillingParty {
     this.v5Calls = 0,
     this.localCalls = 0,
     this.anlasUsed = 0,
+    this.relayCalls = 0,
+    this.relayFee = 0,
     this.totalFee = 0,
   });
 
@@ -467,6 +469,11 @@ class BillingParty {
   final int localCalls;
 
   final int anlasUsed;
+
+  /// 中转出图张数与金额(按张直计)。settlement / estimate 的 [totalFee] 已含这笔。
+  final int relayCalls;
+  final double relayFee;
+
   final double totalFee;
 
   factory BillingParty.fromJson(Map<String, dynamic> j) {
@@ -479,6 +486,8 @@ class BillingParty {
       v5Calls: (j['v5_calls'] as num?)?.toInt() ?? 0,
       localCalls: (j['local_calls'] as num?)?.toInt() ?? 0,
       anlasUsed: (j['anlas_used'] as num?)?.toInt() ?? 0,
+      relayCalls: (j['relay_calls'] as num?)?.toInt() ?? 0,
+      relayFee: (j['relay_fee'] as num?)?.toDouble() ?? 0,
       totalFee: total ?? (imgFee + anlasFee),
     );
   }
