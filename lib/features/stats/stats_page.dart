@@ -7,19 +7,17 @@ import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
 import '../../core/store/app_stores.dart';
 import '../../core/theme/app_theme.dart';
-import '../generate/gpu_rental.dart' show fmtYuan;
 import '../generate/widgets/common.dart' show sharedAxisRoute;
 import 'day_detail_page.dart';
-import 'gpu_bills_page.dart';
 import 'key_ledger.dart';
-import 'ledger_page.dart';
 import 'platform_page.dart';
 import 'stats_providers.dart';
 import 'stats_widgets.dart';
+import 'wallet_page.dart';
 
 /// 统计主页:右上角下拉切数据源(Bot 服务端 / 直连 Key 本机),
 /// 主体是纯数据——时间范围 + hero 大数字 + 随范围变化的可点趋势图
-/// + 六格指标;账单与全平台统计各自二级页。
+/// + 六格指标;钱包与全平台统计各自二级页(都只在 Bot 下列出)。
 class StatsPage extends ConsumerStatefulWidget {
   const StatsPage({super.key});
 
@@ -87,19 +85,17 @@ class _StatsPageState extends ConsumerState<StatsPage> {
           if (_bot && session == null) {
             children.add(
               const StatsCard(
-                child: Text('尚未 Bot 授权。在「我的 → 账号与接入」完成授权后,可查看服务端统计与账单。'),
+                child: Text('尚未 Bot 授权。在「我的 → 账号与接入」完成授权后,可查看用量统计与钱包。'),
               ),
             );
           } else {
             children.addAll(_dataSection(context));
           }
-          // 账单(服务端计费)与全平台大盘都只对 Bot 有意义,Key 模式不列
+          // 钱包(服务端计费)与全平台大盘都只对 Bot 有意义,Key 模式不列
           if (_bot) {
             if (session != null) {
               children.add(const SizedBox(height: 12));
-              children.add(_billingEntry(context));
-              children.add(const SizedBox(height: 10));
-              children.add(_gpuBillsEntry(context));
+              children.add(_walletEntry(context));
             }
             children.add(const SizedBox(height: 10));
             children.add(_platformEntry(context));
@@ -110,9 +106,7 @@ class _StatsPageState extends ConsumerState<StatsPage> {
               ref.invalidate(userStatsProvider);
               ref.invalidate(userStatsAllProvider);
               ref.invalidate(userDailyProvider);
-              ref.invalidate(billingEstimateProvider);
-              ref.invalidate(billingSettlementProvider);
-              ref.invalidate(gpuBillsProvider);
+              ref.invalidate(walletSummaryProvider);
               ref.invalidate(platformHourlyProvider);
             },
             child: ListView(
@@ -284,13 +278,17 @@ class _StatsPageState extends ConsumerState<StatsPage> {
             children: [
               Expanded(
                 child: () {
-                  final n = _billedCount(picked);
+                  final (:n, :loading) = _billedCount(picked);
                   return _DetailEntry(
-                    icon: Icons.toll_outlined,
-                    label: '点数详情',
+                    icon: _bot
+                        ? Icons.account_balance_wallet_outlined
+                        : Icons.toll_outlined,
+                    label: _bot
+                        ? DayDetailMode.points.botTitle
+                        : DayDetailMode.points.title,
                     value: n == null ? null : fmtInt(n),
                     unit: '笔',
-                    loading: _bot && n == null,
+                    loading: loading,
                     onTap: () => _openDay(picked, DayDetailMode.points),
                   );
                 }(),
@@ -456,17 +454,22 @@ class _StatsPageState extends ConsumerState<StatsPage> {
     ];
   }
 
-  /// 该格计费笔数:Key 数本机(计费生成 + 单笔操作);
-  /// Bot 取服务端当日逐笔(与详情页同一 provider,进页时命中缓存)。
-  /// 拉取中返回 null → 入口数值位显示骨架。
-  int? _billedCount(TrendPoint p) {
+  /// 该格笔数:Key 数本机(计费生成 + 单笔操作);
+  /// Bot 数当天的钱包流水(与详情页同一 provider,进页时命中缓存)。
+  /// 拉取中 loading 为真 → 入口数值位显示骨架;拉不到 n 为 null → 「—」。
+  ({int? n, bool loading}) _billedCount(TrendPoint p) {
     if (!_bot) {
       final ledger = ref.read(appStoresProvider).ledger;
       final key = KeyLedgerStore.dayKey(_dayOf(p));
-      return ledger.gensForDay(key).where((g) => g.pts > 0).length +
-          ledger.opsForDay(key).length;
+      return (
+        n:
+            ledger.gensForDay(key).where((g) => g.pts > 0).length +
+            ledger.opsForDay(key).length,
+        loading: false,
+      );
     }
-    return ref.watch(dayDetailsProvider(_dayOf(p))).value?.records.length;
+    final day = ref.watch(dayDetailsProvider(_dayOf(p)));
+    return (n: day.value?.items.length, loading: day.isLoading);
   }
 
   /// 选中格归属的日期(今日档整天;其余按 `MM-dd` 配当前年份还原)。
@@ -551,82 +554,49 @@ class _StatsPageState extends ConsumerState<StatsPage> {
     ];
   }
 
-  /// NAI 账单入口。Key 模式下它就是本机账本,标题不带「NAI」——
-  /// 那边压根没有服务端计费,更没有算力账单可对照。
-  Widget _billingEntry(BuildContext context) {
-    final scheme = context.scheme;
-    final String sub;
-    var loading = false;
-    if (_bot) {
-      final estAsync = ref.watch(billingEstimateProvider);
-      final est = estAsync.value;
-      final settle = ref.watch(billingSettlementProvider).value;
-      loading = estAsync.isLoading;
-      // 结算日跟着周期标签走,不写死 —— 那个分界日改过一次(27 → 23)
-      sub = est?.me == null
-          ? '按月阶梯分摊 · 每日流水'
-          : '本期预估 ¥${fmtFee(est!.me!.totalFee)} · ${est.cycleDay} 日结算'
-                '${settle?.paymentStatus == 'unpaid' ? ' · 上期待支付' : ''}';
-    } else {
-      final sum = ref.read(appStoresProvider).ledger.sumRange(_range);
-      sub =
-          '本机记录 · ${rangeLabels[_range]} '
-          '${fmtInt(sum.genPts + sum.vibePts + sum.upsPts)} 点';
-    }
-    return _EntryCard(
-      icon: Icons.receipt_long_outlined,
-      title: _bot ? 'NAI 账单' : '账单',
-      subWidget: loading
-          ? SkeletonText(
-              sample: '本期预估 ¥000 · 00 日结算',
-              style: context.texts.labelSmall!,
-              width: 132,
-            )
-          : Text(
-              sub,
-              style: context.texts.labelSmall!.copyWith(
-                color: scheme.onSurfaceVariant,
-              ),
-            ),
-      onTap: () => _push(LedgerPage(bot: _bot, range: _range)),
-    );
-  }
-
-  /// 算力账单入口(租卡 + 视频)。
+  /// 钱包入口(Bot)。
   ///
-  /// **和 NAI 那本分开列,不并成一页求和**:那本是订阅制月盘子按用量分摊
-  /// (阶梯、月结、有支付状态),这本是按次实付、直计不分摊。两个数加起来
-  /// 没有任何含义,摆在一张卡里只会让人以为能相加。
-  Widget _gpuBillsEntry(BuildContext context) {
+  /// 这里原来是两本账 ——「NAI 账单」(按月阶梯分摊)和「算力账单」(租卡 +
+  /// 视频按次实付);2026-10-18 起服务端并成了一个钱包,副行直接报余额。
+  Widget _walletEntry(BuildContext context) {
     final scheme = context.scheme;
-    final async = ref.watch(gpuBillsProvider);
-    final b = async.value;
-    final String sub;
-    if (b == null || !b.ok) {
-      sub = '独享实例与视频 · 按次实付';
-    } else if (b.isEmpty) {
-      sub = '暂无消费 · 免费共享出图不计费';
+    final async = ref.watch(walletSummaryProvider);
+    final w = async.value;
+    final style = context.texts.labelSmall!.copyWith(
+      color: scheme.onSurfaceVariant,
+    );
+    final Widget sub;
+    if (async.isLoading && w == null) {
+      sub = SkeletonText(
+        sample: '余额 ¥000.00',
+        style: context.texts.labelSmall!,
+        width: 84,
+      );
+    } else if (w == null) {
+      sub = Text('余额 · 流水 · 充值', style: style);
     } else {
-      sub =
-          '累计 ${fmtYuan(b.totalCost)} · 租卡 ${b.rentalHours} 小时'
-          '${b.running != null ? ' · 计费中' : ''}';
+      sub = Text.rich(
+        TextSpan(
+          children: [
+            const TextSpan(text: '余额 '),
+            TextSpan(
+              text: fmtFen(w.balanceFen, sign: false),
+              // 欠着钱标警示色:不点进去也该看得出来
+              style: w.owing
+                  ? TextStyle(color: scheme.error, fontWeight: FontWeight.w600)
+                  : null,
+            ),
+            if (w.pendingRentalCount > 0) const TextSpan(text: ' · 租卡进行中'),
+          ],
+        ),
+        style: style,
+      );
     }
     return _EntryCard(
-      icon: Icons.memory_outlined,
-      title: '算力账单',
-      subWidget: async.isLoading && b == null
-          ? SkeletonText(
-              sample: '累计 ¥00.00 · 租卡 0.0 小时',
-              style: context.texts.labelSmall!,
-              width: 150,
-            )
-          : Text(
-              sub,
-              style: context.texts.labelSmall!.copyWith(
-                color: scheme.onSurfaceVariant,
-              ),
-            ),
-      onTap: () => _push(const GpuBillsPage()),
+      icon: Icons.account_balance_wallet_outlined,
+      title: '钱包',
+      subWidget: sub,
+      onTap: () => _push(const WalletPage()),
     );
   }
 
