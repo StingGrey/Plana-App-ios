@@ -81,7 +81,7 @@ class _SaveSheetState extends ConsumerState<_SaveSheet> {
         final out = await processForSave(widget.bytes, settings);
         final dated = withPhoneCaptureDate(
           out,
-          widget.image.createdAt,
+          DateTime.now().millisecondsSinceEpoch,
           settings.format,
         );
         if (mounted && seq == _seq) setState(() => _size = dated.length);
@@ -230,7 +230,7 @@ class _SaveSheetState extends ConsumerState<_SaveSheet> {
                       _set(_s.copyWith(quality: v.roundToDouble() / 100)),
                 ),
                 Text(
-                  'JPG 不保留生成参数；保存时保留生成日期',
+                  'JPG 不保留生成参数',
                   style: context.texts.labelSmall!.copyWith(
                     color: scheme.outline,
                   ),
@@ -251,7 +251,7 @@ class _SaveSheetState extends ConsumerState<_SaveSheet> {
                           contentPadding: EdgeInsets.zero,
                           title: Text(switch (m) {
                             SaveMeta.original => '保留原始元数据',
-                            SaveMeta.clean => '清除生成信息（保留生成日期）',
+                            SaveMeta.clean => '清除生成信息',
                             SaveMeta.custom => '自定义提示词',
                           }, style: context.texts.bodyMedium),
                         ),

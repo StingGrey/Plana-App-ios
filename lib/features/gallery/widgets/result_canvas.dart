@@ -680,8 +680,8 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
     hintSnack(
       context,
       isMax
-          ? '开始 Max 重绘 ≈${target.w}×${target.h} · ${input.params.model}'
-          : '开始 ${scale.label} 重绘 ${t.w}×${t.h} · ${input.params.model}',
+          ? '开始 Max 重绘 ≈${target.w}×${target.h} · ${modelName(input.params.model)}'
+          : '开始 ${scale.label} 重绘 ${t.w}×${t.h} · ${modelName(input.params.model)}',
       icon: Icons.auto_fix_high,
     );
   }
@@ -707,7 +707,7 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
     );
   }
 
-  /// 点按保存:按默认保存设置处理后存相册，并保留生成时间。
+  /// 点按保存:按默认保存设置处理后存相册。
   Future<void> _download(BuildContext context, WidgetRef ref) async {
     final bytes = await _bytesOf(ref);
     if (!context.mounted || bytes == null) return;
@@ -1101,7 +1101,7 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
     final model = widget.redrawInput?.params.model;
     if (model == null) return null;
     if (!isNai5Model(model)) {
-      return 'Max 档只有 V5 有;当前模型是 $model,重绘也按它跑';
+      return 'Max 档只有 V5 有;当前模型是 ${modelName(model)},重绘也按它跑';
     }
     // 官方阈值:源图像素要小于 0.8×上限才提供 Max
     return 'Max 档要求源图小于 2,516,582 像素,'

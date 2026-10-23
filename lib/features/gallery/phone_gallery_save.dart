@@ -40,9 +40,17 @@ String phoneGalleryImageName(ResultImage image) {
   return 'plana_${stamp}_${_imageOrderKey(image.id)}_${image.seed}';
 }
 
-/// 字节已经经过 processForSave；只补充生成日期，不修改像素及 PNG 提示词。
-/// 日期写进 EXIF，保证系统重新扫描后仍保留。DATE_ADDED 由系统
-/// 记录真实添加时刻。旧版 Android / 其他平台沿用 gal 的相册兼容路径。
+int _lastSavedAt = 0;
+
+/// 保存时刻，逐张严格递增，批量保存在相册里仍按保存顺序排列。
+int _nextSavedAt() {
+  final now = DateTime.now().millisecondsSinceEpoch;
+  return _lastSavedAt = now > _lastSavedAt ? now : _lastSavedAt + 1;
+}
+
+/// 字节已经经过 processForSave；只补充拍摄日期（保存时刻），不修改像素及
+/// PNG 提示词。日期写进 EXIF，保证系统重新扫描后仍保留。
+/// 旧版 Android / 其他平台沿用 gal 的相册兼容路径。
 /// 调用方先按原逻辑申请保存权限；写入异常直接交回，不能盲目重试而重复存图。
 Future<int> saveProcessedImageToPhone(
   Uint8List bytes, {
@@ -51,7 +59,8 @@ Future<int> saveProcessedImageToPhone(
   String? album,
 }) async {
   final name = phoneGalleryImageName(image);
-  final dated = withPhoneCaptureDate(bytes, image.createdAt, format);
+  final savedAt = _nextSavedAt();
+  final dated = withPhoneCaptureDate(bytes, savedAt, format);
   if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
     final sdk = int.tryParse(await PhotoManager.systemVersion()) ?? 0;
     if (sdk >= 29) {
@@ -61,9 +70,7 @@ Future<int> saveProcessedImageToPhone(
         filename: filename,
         title: filename,
         relativePath: album == null ? 'Pictures/' : 'Pictures/$album/',
-        creationDate: image.createdAt > 0
-            ? DateTime.fromMillisecondsSinceEpoch(image.createdAt)
-            : null,
+        creationDate: DateTime.fromMillisecondsSinceEpoch(savedAt),
       );
       return dated.length;
     }

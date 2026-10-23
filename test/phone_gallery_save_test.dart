@@ -101,20 +101,22 @@ void main() {
   });
 
   for (final format in SaveFormat.values) {
-    test('Android $format 写入可扫描的生成日期、文件名和手机相册', () async {
+    test('Android $format 写入可扫描的保存时刻、文件名和手机相册', () async {
       final image = picture('gen1', 0);
       final bytes = pixels(format);
+      final before = DateTime.now().millisecondsSinceEpoch;
       await saveProcessedImageToPhone(
         bytes,
         image: image,
         format: format,
         album: '测试排序',
       );
+      final savedAt = writes.single['creationDate'] as int;
+      expect(savedAt, greaterThanOrEqualTo(before));
       expect(
         writes.single['image'],
-        withPhoneCaptureDate(bytes, image.createdAt, format),
+        withPhoneCaptureDate(bytes, savedAt, format),
       );
-      expect(writes.single['creationDate'], image.createdAt);
       expect(
         writes.single['filename'],
         '${phoneGalleryImageName(image)}.${format.name}',
@@ -125,14 +127,29 @@ void main() {
     });
   }
 
-  test('无生成日期不写 1970 年，默认存到 Pictures', () async {
+  test('无生成日期也写保存时刻，默认存到 Pictures', () async {
     await saveProcessedImageToPhone(
-      Uint8List(1),
+      pixels(SaveFormat.png),
       image: picture('gen0', 0).withCreatedAt(0),
       format: SaveFormat.png,
     );
-    expect(writes.single['creationDate'], isNull);
+    expect(writes.single['creationDate'], greaterThan(0));
+    expect(writes.single['filename'], startsWith('plana_unknown_'));
     expect(writes.single['relativePath'], 'Pictures/');
+  });
+
+  test('连续保存的拍摄时间严格递增', () async {
+    for (var i = 0; i < 5; i++) {
+      await saveProcessedImageToPhone(
+        pixels(SaveFormat.png),
+        image: picture('gen$i', i),
+        format: SaveFormat.png,
+      );
+    }
+    final times = writes.map((w) => w['creationDate'] as int).toList();
+    for (var i = 1; i < times.length; i++) {
+      expect(times[i], greaterThan(times[i - 1]));
+    }
   });
 
   test('旧 Android 继续使用原有相册路径和权限机制', () async {
@@ -238,7 +255,7 @@ void main() {
         await tester.pump(const Duration(milliseconds: 50));
       }
       expect(writes, hasLength(1));
-      expect(writes.single['creationDate'], old.createdAt);
+      expect(writes.single['filename'], '${phoneGalleryImageName(old)}.png');
       firstDone.complete();
       // 存完会给两张打「已保存」标记、排一次索引写。赶在防抖计时器于假时钟里
       // 触发前换到真实事件循环写掉 —— 假时钟里发起的 IO 永远等不到完成。
@@ -251,10 +268,14 @@ void main() {
         await stores.gallery.idle;
       });
       await tester.pumpAndSettle();
-      expect(writes.map((w) => w['creationDate']), [
-        old.createdAt,
-        newer.createdAt,
+      expect(writes.map((w) => w['filename']), [
+        '${phoneGalleryImageName(old)}.png',
+        '${phoneGalleryImageName(newer)}.png',
       ]);
+      expect(
+        writes.last['creationDate'] as int,
+        greaterThan(writes.first['creationDate'] as int),
+      );
       expect(
         writes.map((w) => w['relativePath']),
         everyElement(toAlbum ? 'Pictures/测试排序/' : 'Pictures/'),
@@ -274,7 +295,7 @@ void main() {
     });
   }
 
-  testWidgets('长按保存面板使用同样的生成时间和文件名', (tester) async {
+  testWidgets('长按保存面板使用同样的保存时刻和文件名', (tester) async {
     final stores = AppStores.ephemeral();
     final container = ProviderContainer(
       overrides: [appStoresProvider.overrideWithValue(stores)],
@@ -304,10 +325,13 @@ void main() {
     expect(find.text('${phoneGalleryImageName(image)}.png'), findsOneWidget);
     await tester.tap(find.text('单次保存'));
     await tester.pumpAndSettle();
-    expect(writes.single['creationDate'], image.createdAt);
     expect(
       writes.single['image'],
-      withPhoneCaptureDate(bytes, image.createdAt, SaveFormat.png),
+      withPhoneCaptureDate(
+        bytes,
+        writes.single['creationDate'] as int,
+        SaveFormat.png,
+      ),
     );
     expect(tester.takeException(), isNull);
   });

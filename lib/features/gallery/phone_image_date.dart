@@ -6,25 +6,25 @@ import 'package:image/image.dart' as img;
 import 'save_settings.dart';
 
 /// 系统扫描相册会从文件重新读取拍摄时间，单写 MediaStore.DATE_TAKEN
-/// 会被覆盖。给导出的副本补充 EXIF 时间、时区与毫秒，不重编码像素。
+/// 会被覆盖。给导出的副本补充 EXIF 拍摄时间、时区与毫秒，不重编码像素。
 /// 本函数在原始/清除/自定义生成信息的处理之后调用，不恢复已清除的信息。
 Uint8List withPhoneCaptureDate(
   Uint8List bytes,
-  int createdAt,
+  int takenAt,
   SaveFormat format,
 ) {
-  if (createdAt <= 0) return bytes;
+  if (takenAt <= 0) return bytes;
   if (format == SaveFormat.jpg) {
     final exif = img.decodeJpgExif(bytes) ?? img.ExifData();
-    _setDate(exif, createdAt);
+    _setDate(exif, takenAt);
     return img.injectJpgExif(bytes, exif) ??
-        (throw const FormatException('无法写入 JPG 生成日期'));
+        (throw const FormatException('无法写入 JPG 拍摄日期'));
   }
 
   const signature = [137, 80, 78, 71, 13, 10, 26, 10];
   if (bytes.length < 8 ||
       Iterable<int>.generate(8).any((i) => bytes[i] != signature[i])) {
-    throw const FormatException('无法写入 PNG 生成日期');
+    throw const FormatException('无法写入 PNG 拍摄日期');
   }
   final data = ByteData.sublistView(bytes);
   final chunks = <({String type, Uint8List raw})>[];
@@ -57,7 +57,7 @@ Uint8List withPhoneCaptureDate(
   if (!ended || !chunks.any((c) => c.type == 'IDAT')) {
     throw const FormatException('PNG 数据不完整');
   }
-  _setDate(exif, createdAt);
+  _setDate(exif, takenAt);
   final encoded = img.OutputBuffer();
   exif.write(encoded);
   final payload = encoded.getBytes();
@@ -83,8 +83,8 @@ Uint8List withPhoneCaptureDate(
   return out.takeBytes();
 }
 
-void _setDate(img.ExifData exif, int createdAt) {
-  final at = DateTime.fromMillisecondsSinceEpoch(createdAt);
+void _setDate(img.ExifData exif, int takenAt) {
+  final at = DateTime.fromMillisecondsSinceEpoch(takenAt);
   String pad(int n, [int width = 2]) => n.toString().padLeft(width, '0');
   final date =
       '${pad(at.year, 4)}:${pad(at.month)}:${pad(at.day)} '
