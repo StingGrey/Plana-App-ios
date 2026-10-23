@@ -9,6 +9,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/util/image_pick.dart';
 import '../../char_library/char_library.dart';
 import '../../char_library/char_library_page.dart';
+import '../canvas_state.dart';
 import '../generate_state.dart';
 import '../models.dart';
 import 'common.dart';
@@ -32,6 +33,9 @@ class _CharRefCardState extends ConsumerState<CharRefCard> {
   String? _selectedId;
 
   Future<void> _onAdd() async {
+    final canvasId = ref.read(canvasWorkspaceProvider).activeId;
+    // 选图到加进来之间切走了画布:没加的就不加了(图已进角色参考图库)
+    bool left() => ref.read(canvasWorkspaceProvider).activeId != canvasId;
     final files = await pickImageFiles(context);
     if (files.isEmpty || !mounted) return;
     // 互斥态在加图前取一次:加角色参考会顺手停掉 Vibe
@@ -40,7 +44,7 @@ class _CharRefCardState extends ConsumerState<CharRefCard> {
     for (final f in files) {
       final bytes = f.bytes;
       final hash = await compute(_sha256Hex, bytes); // 后台算内容哈希
-      if (!mounted) return;
+      if (!mounted || left()) return;
       // 顺手入库(同图去重;下次可从角色参考图库找回)
       try {
         await ref
@@ -49,7 +53,7 @@ class _CharRefCardState extends ConsumerState<CharRefCard> {
       } catch (_) {
         // 入库失败不影响本次使用
       }
-      if (!mounted) return;
+      if (!mounted || left()) return;
       lastId = ref
           .read(generateProvider.notifier)
           .addCharRef(image: bytes, name: f.baseName, imageHash: hash);
