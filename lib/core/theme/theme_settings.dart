@@ -42,6 +42,7 @@ class ThemeSettings {
     this.haptics = true,
     this.showAssistant = true,
     this.compactCharCards = false,
+    this.systemPicker,
   });
 
   final ThemeMode mode;
@@ -60,6 +61,10 @@ class ThemeSettings {
   /// 创作页角色卡去掉头像预览,只留名称、位置与提示词。
   final bool compactCharCards;
 
+  /// 选图走系统选择器(true)还是应用内图库(false);null = 没选过,按机型
+  /// 默认(见 `image_pick.dart` 的 `_inAppGallery`)。仅 Android 生效。
+  final bool? systemPicker;
+
   ThemeSeed get seed => themeSeeds.firstWhere(
     (s) => s.key == seedKey,
     orElse: () => themeSeeds.firstWhere((s) => s.key == kDefaultSeedKey),
@@ -71,12 +76,14 @@ class ThemeSettings {
     bool? haptics,
     bool? showAssistant,
     bool? compactCharCards,
+    bool? systemPicker,
   }) => ThemeSettings(
     mode: mode ?? this.mode,
     seedKey: seedKey ?? this.seedKey,
     haptics: haptics ?? this.haptics,
     showAssistant: showAssistant ?? this.showAssistant,
     compactCharCards: compactCharCards ?? this.compactCharCards,
+    systemPicker: systemPicker ?? this.systemPicker,
   );
 
   /// 脏数据(旧版本/已下架的档位,如早先那档深蓝)回退默认。
@@ -88,6 +95,10 @@ class ThemeSettings {
     haptics: j['haptics'] != false,
     showAssistant: j['showAssistant'] != false,
     compactCharCards: j['compactCharCards'] == true,
+    systemPicker: switch (j['systemPicker']) {
+      final bool v => v,
+      _ => null,
+    },
   );
 
   Map<String, dynamic> toJson() => {
@@ -96,6 +107,7 @@ class ThemeSettings {
     'haptics': haptics,
     'showAssistant': showAssistant,
     'compactCharCards': compactCharCards,
+    'systemPicker': ?systemPicker,
   };
 
   @override
@@ -105,11 +117,18 @@ class ThemeSettings {
       other.seedKey == seedKey &&
       other.haptics == haptics &&
       other.showAssistant == showAssistant &&
-      other.compactCharCards == compactCharCards;
+      other.compactCharCards == compactCharCards &&
+      other.systemPicker == systemPicker;
 
   @override
-  int get hashCode =>
-      Object.hash(mode, seedKey, haptics, showAssistant, compactCharCards);
+  int get hashCode => Object.hash(
+    mode,
+    seedKey,
+    haptics,
+    showAssistant,
+    compactCharCards,
+    systemPicker,
+  );
 }
 
 const _key = 'theme_settings';
