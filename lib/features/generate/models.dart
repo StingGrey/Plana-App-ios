@@ -427,6 +427,20 @@ const nai5Models = <String>[
 
 bool isNai5Model(String displayModel) => displayModel.startsWith('NAI 5.0');
 
+/// 界面上显示的模型名:NAI 去掉版本号的「.0」(`NAI 5.0 Full Medium` →
+/// `NAI 5 Full Medium`)。只管显示,存档与判定仍用全名。
+String modelName(String model) {
+  final parts = model.split(' ');
+  if (parts.length < 2 || parts.first != 'NAI') return model;
+  parts[1] = parts[1].replaceFirst(RegExp(r'\.0$'), '');
+  return parts.join(' ');
+}
+
+/// 顶栏模型入口的短名:再把 Medium 缩成 M(`NAI 5.0 Full Medium` →
+/// `NAI 5 Full M`),Full / Curated 不缩。
+String shortModelName(String model) =>
+    modelName(model).replaceFirst(RegExp(r' Medium$'), ' M');
+
 /// V5 Full 的 Medium 档:步数、采样器按官方固定,不发 CFG Rescale。
 bool isNai5MediumModel(String displayModel) =>
     displayModel == 'NAI 5.0 Full Medium';

@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/util/haptics.dart';
 import '../canvas_state.dart';
-import '../models.dart' show CharacterPrompt, GenParams;
+import '../models.dart' show CharacterPrompt, GenParams, modelName;
 import '../prompt_sections.dart' show joinSections;
 import '../style_recipes.dart' show recipeDetail, recipeOf;
 import 'bottom_action_bar.dart';
@@ -497,7 +497,7 @@ TextStyle _previewStyle(BuildContext context) =>
 /// 模型与参数那一行：「NAI 4.5 Full · 28 步 · CFG 5 · Euler Ancestral · karras」，
 /// 只报当前模型那一套，写法与画风推荐参数一致。
 String _samplingLine(CanvasSampling s) =>
-    '${s.model} · ${recipeDetail(recipeOf(s.writeInto(const GenParams())))}';
+    '${modelName(s.model)} · ${recipeDetail(recipeOf(s.writeInto(const GenParams())))}';
 
 /// 预览行：图标落在单选圆点那一列，正文与画布名左对齐。
 ///

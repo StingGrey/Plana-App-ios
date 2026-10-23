@@ -92,7 +92,7 @@ GenParams withRecipe(GenParams p, StyleRecipe r) =>
 
 /// 短摘要:「NAI 4.5 Full · 28 步 · CFG 5」。
 String recipeBrief(StyleRecipe r) =>
-    '${recipeModelName(r)} · ${r.steps} 步 · CFG ${_num(r.cfg)}';
+    '${modelName(recipeModelName(r))} · ${r.steps} 步 · CFG ${_num(r.cfg)}';
 
 /// 采样那几项:「28 步 · CFG 5 · Euler Ancestral · karras」,NAI 再带上
 /// 不为 0 的 Rescale 和开着的 Variety+。
@@ -154,7 +154,7 @@ class StyleRecipeTable extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        cell(('模型', model)),
+        cell(('模型', modelName(model))),
         const SizedBox(height: 10),
         for (var i = 0; i < cells.length; i += 2) ...[
           if (i > 0) const SizedBox(height: 10),

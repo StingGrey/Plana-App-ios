@@ -16,7 +16,8 @@ import 'top_bar_status.dart';
 
 /// 创作页顶栏的余额入口,以及它点开的「点数与额度」弹层。
 ///
-/// 点数常驻,后面接一格额度百分比 —— 两种接入方式那格的含义不同:
+/// 点数常驻,额度画成点数底下的一条进度条(精确百分比在弹层里)—— 两种接入方式
+/// 那条的含义不同:
 ///  - token 直连:**切到 NAI 5 时才出现**,是自己账户的 Opus 充电式额度。
 ///    额度用尽后免费尺寸图会转扣 Anlas,所以点数和额度两个数得同时在场。
 ///  - bot 授权:**常驻**,是我们发给你的个人配额(还能出几张)。常驻是因为
@@ -38,18 +39,34 @@ class AnlasChip extends ConsumerWidget {
     final quota = bot ? ref.watch(naiQuotaProvider).asData?.value : null;
     final usage = (!bot && m.isNai5Model(model)) ? sub?.usage : null;
 
-    // 第二格:bot 线报自己的配额,直连线报账户电池。两者都拿不到就不摆这一格
-    // (画个「—%」比不画更像出了故障)。
-    final (String?, Color?) badge = switch ((quota, usage)) {
+    // 共享号停用:点数恒 0、额度不生效,胶囊只报中转开关的状态
+    if (quota != null && quota.relayOnly) {
+      final (text, color) = relayStateOf(context, quota);
+      return TopBarStatus(
+        tooltip: '点数与额度',
+        value: text,
+        valueSample: _kAnlasSample,
+        detail: null,
+        icon: Icons.toll,
+        valueColor: color,
+        onTap: () => showAnlasSheet(context),
+      );
+    }
+
+    // 额度画成点数底下的进度条(填多少 = 剩多少):bot 线报自己的配额,直连线报
+    // 账户电池。两者都拿不到就只有图标 + 点数。
+    final meter = switch ((quota, usage)) {
       (final NaiQuota q, _) => (
-        q.isAdmin ? '∞' : '${quotaPct(q).round()}%',
-        quotaColor(context, q),
+        fraction: q.isAdmin ? 1.0 : quotaPct(q) / 100,
+        color: quotaColor(context, q),
+        label: q.isAdmin ? '∞' : '${quotaPct(q).round()}%',
       ),
       (_, final NaiUsage u) => (
-        '${u.batteryPct.round()}%',
-        usageColor(context, u),
+        fraction: u.fullPct > 0 ? u.batteryPct / u.fullPct : 0.0,
+        color: usageColor(context, u),
+        label: '${u.batteryPct.round()}%',
       ),
-      _ => (null, null),
+      _ => null,
     };
 
     return TopBarStatus(
@@ -58,17 +75,21 @@ class AnlasChip extends ConsumerWidget {
       // 「订阅额+已购额」的拆分留给弹层里的 Anlas 那行 —— 想分清
       // 哪截月底会重置的人,本来就会点进去看。
       value: sub == null ? null : fmtInt(sub.anlas),
+      valueSample: _kAnlasSample,
       // 还没数时数值位是一枚刷新图标:首次加载、换接入方式 / 主账号、
       // 弹层里点刷新,正在拉的时候它就转。
       loading: anlas.isLoading,
-      detail: badge.$1,
+      detail: null,
       icon: Icons.toll,
+      meter: meter,
       valueColor: scheme.primary,
-      detailColor: badge.$2,
       onTap: () => showAnlasSheet(context),
     );
   }
 }
+
+/// 顶栏点数位按五位数定宽:点数多少、中转状态几个字,这块都一样宽。
+const _kAnlasSample = '00,000';
 
 /// 点数读数(**弹层内**用):手里有已购额时摊开成「订阅额+已购额」,订阅额在前;
 /// 没有就一个数。
@@ -103,6 +124,15 @@ Color quotaColor(BuildContext context, NaiQuota q) {
   if (q.available < 1) return scheme.error;
   return quotaPct(q) <= 20 ? FixedSemantic.warn : scheme.primary;
 }
+
+/// 共享号停用后的中转状态(顶栏胶囊用):中转开着才出得了 NAI 图,所以直接报
+/// 能不能出。
+(String, Color) relayStateOf(BuildContext context, NaiQuota q) =>
+    !q.relayAvailable
+    ? ('停用', context.scheme.error)
+    : q.relayEnabled
+    ? ('中转', context.scheme.primary)
+    : ('未开', FixedSemantic.warn);
 
 /// 额度电池条。实心段 = 现在,后面那截半透明 = **24 小时后回充到的位置**
 /// (这就是「回充速率」那个数看得见的样子)。
@@ -246,6 +276,8 @@ class _AnlasSheetState extends ConsumerState<_AnlasSheet> {
     final usage = sub?.usage;
     final bot = ref.watch(authModeProvider).value == AuthMode.bot;
     final quota = bot ? ref.watch(naiQuotaProvider).asData?.value : null;
+    // 共享号停用:额度卡换成中转开关,点数和额度那几行都不摆
+    final relay = quota != null && quota.relayOnly;
 
     return SafeArea(
       child: SingleChildScrollView(
@@ -289,7 +321,9 @@ class _AnlasSheetState extends ConsumerState<_AnlasSheet> {
             // bot 线只摆**自己的**配额:池子那块是全平台水位,属于运维视角,
             // 放在个人弹层里会让人误以为「我还有 87%」,而自己可能只剩几张。
             // 它在全平台统计页(那儿才是看全局的地方)。
-            if (bot && quota != null)
+            if (relay)
+              _RelayCard(quota: quota)
+            else if (bot && quota != null)
               _MyQuotaCard(quota: quota)
             else if (!bot && usage != null)
               UsageCard(usage: usage),
@@ -298,9 +332,13 @@ class _AnlasSheetState extends ConsumerState<_AnlasSheet> {
               '订阅档位',
               bot ? 'Bot 授权' : (sub == null ? '—' : naiTierName(sub.tier)),
             ),
-            _divider(context),
-            _row(context, 'Anlas 点数', sub == null ? '—' : fmtAnlas(sub)),
-            if (bot) ...[
+            if (!relay) ...[
+              _divider(context),
+              _row(context, 'Anlas 点数', sub == null ? '—' : fmtAnlas(sub)),
+            ],
+            if (relay)
+              ...const <Widget>[]
+            else if (bot) ...[
               // 这两行讲的是**自己的**配额(池子那套不在这个弹层里)。
               // 拿不到时照样把行摆出来报「—」,不要静默少一块。
               _divider(context),
@@ -460,6 +498,136 @@ class _MyQuotaCard extends StatelessWidget {
               height: 1.35,
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 中转出图卡(共享号停用后替换「我的 NAI 5 额度」):状态 + 两档单价 + 开关。
+/// 不开就出不了 NAI 图,开关得在这里拨得到。
+class _RelayCard extends ConsumerStatefulWidget {
+  const _RelayCard({required this.quota});
+
+  final NaiQuota quota;
+
+  @override
+  ConsumerState<_RelayCard> createState() => _RelayCardState();
+}
+
+class _RelayCardState extends ConsumerState<_RelayCard> {
+  bool _busy = false;
+  bool _failed = false;
+
+  Future<void> _toggle(bool enabled) async {
+    setState(() {
+      _busy = true;
+      _failed = false;
+    });
+    try {
+      await ref.read(naiQuotaProvider.notifier).setRelay(enabled);
+    } catch (_) {
+      if (mounted) setState(() => _failed = true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    final q = widget.quota;
+    final on = q.relayEnabled;
+    final available = q.relayAvailable;
+    final (_, color) = relayStateOf(context, q);
+    final small = context.texts.bodySmall!.copyWith(
+      color: scheme.outline,
+      fontWeight: FontWeight.w600,
+      height: 1.35,
+    );
+
+    Widget price(String label, double yuan) => Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Row(
+        children: [
+          Text(
+            label,
+            style: context.texts.bodySmall!.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+          const Spacer(),
+          Text(
+            '¥${yuan.toStringAsFixed(2)} / 张',
+            style: mono(context, size: 13, weight: FontWeight.w700),
+          ),
+        ],
+      ),
+    );
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 13),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Text(
+                'NAI 出图 · 中转',
+                style: context.texts.bodyMedium!.copyWith(
+                  color: scheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                !available
+                    ? '暂不可用'
+                    : on
+                    ? '已开启'
+                    : '未开启',
+                style: context.texts.titleSmall!.copyWith(
+                  color: color,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          price('V5', q.relayPrice),
+          price('V4.5 及更早', q.relayPriceLegacy),
+          const SizedBox(height: 9),
+          Text(
+            !available
+                ? 'NAI 暂时出不了图,请联系管理员。其它模型不受影响'
+                : on
+                ? '出图成功才从钱包扣费。大图(总像素超过 1024×1024 或超过 28 步)'
+                      '和角色参考用不了'
+                : '开启后才能出 NAI 图,出图成功才从钱包扣费。其它模型不受影响',
+            style: small,
+          ),
+          if (available) ...[
+            const SizedBox(height: 12),
+            if (on)
+              OutlinedButton(
+                onPressed: _busy ? null : () => _toggle(false),
+                child: Text(_busy ? '设置中…' : '关闭中转'),
+              )
+            else
+              FilledButton(
+                onPressed: _busy ? null : () => _toggle(true),
+                child: Text(_busy ? '设置中…' : '开启中转'),
+              ),
+          ],
+          if (_failed) ...[
+            const SizedBox(height: 6),
+            Text('没有设置成功,请稍后再试', style: small.copyWith(color: scheme.error)),
+          ],
         ],
       ),
     );

@@ -66,53 +66,59 @@ class GenerateTopBar extends ConsumerWidget {
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 4),
       child: LayoutBuilder(
+        // 三段各占固定的格:画布靠左、模型在中间那格居中、读数靠右(读数自己
+        // 定宽)。名字长短变了只在各自格里截断,不推着别的段挪位
         builder: (context, constraints) => Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Flexible(
+            Expanded(
               flex: 4,
-              child: SizedBox(height: rowHeight, child: const CanvasPicker()),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: SizedBox(height: rowHeight, child: const CanvasPicker()),
+              ),
             ),
             const SizedBox(width: 4),
-            Flexible(
+            Expanded(
               flex: 5,
-              child: Tooltip(
-                message: '切换模型：$model',
-                child: Semantics(
-                  button: true,
-                  label: '切换模型，当前 $model',
-                  child: Material(
-                    color: Colors.transparent,
-                    borderRadius: BorderRadius.circular(12),
-                    clipBehavior: Clip.antiAlias,
-                    child: InkWell(
-                      onTap: () => _pickModel(context, ref),
-                      child: Padding(
-                        padding: const EdgeInsets.only(left: 2),
-                        child: SizedBox(
-                          height: rowHeight,
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Flexible(
-                                child: Text(
-                                  model,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: context.texts.bodyMedium!.copyWith(
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.w600,
-                                    color: scheme.onSurface,
+              child: Center(
+                child: Tooltip(
+                  message: '切换模型：$model',
+                  child: Semantics(
+                    button: true,
+                    label: '切换模型，当前 $model',
+                    child: Material(
+                      color: Colors.transparent,
+                      borderRadius: BorderRadius.circular(12),
+                      clipBehavior: Clip.antiAlias,
+                      child: InkWell(
+                        onTap: () => _pickModel(context, ref),
+                        child: Padding(
+                          padding: const EdgeInsets.only(left: 2),
+                          child: SizedBox(
+                            height: rowHeight,
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    m.shortModelName(model),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: context.texts.bodyMedium!.copyWith(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w600,
+                                      color: scheme.onSurface,
+                                    ),
                                   ),
                                 ),
-                              ),
-                              const SizedBox(width: 3),
-                              Icon(
-                                Icons.expand_more,
-                                size: 20,
-                                color: scheme.outline,
-                              ),
-                            ],
+                                const SizedBox(width: 3),
+                                Icon(
+                                  Icons.expand_more,
+                                  size: 20,
+                                  color: scheme.outline,
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                       ),
@@ -275,7 +281,7 @@ class _ModelSheetState extends State<_ModelSheet>
     final desc = m.modelDescriptions[model];
     return ListTile(
       onTap: () => Navigator.pop(context, model),
-      title: Text(model, style: context.texts.bodyMedium),
+      title: Text(m.modelName(model), style: context.texts.bodyMedium),
       // 副标题恒单行:文案本身已按一行裁,但系统字号调大/窄屏仍会折行 ——
       // 折了这张表就一页两套行高,ellipsis 兜住。
       subtitle: desc == null

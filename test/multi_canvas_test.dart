@@ -1251,22 +1251,68 @@ void main() {
     expect(find.text('NAI 4.5 Full'), findsOneWidget);
     await tester.tap(find.byTooltip('切换模型：NAI 4.5 Full'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('NAI 5.0 Curated'));
+    await tester.tap(find.text('NAI 5 Curated'));
     await tester.pumpAndSettle();
     expect(c.read(generateProvider).params.model, 'NAI 5.0 Curated');
-    expect(find.text('NAI 5.0 Curated'), findsOneWidget);
+    expect(find.text('NAI 5 Curated'), findsOneWidget);
     expect(find.text('1,234'), findsOneWidget);
-    expect(find.text('70%'), findsOneWidget);
+    // 额度画成点数底下的进度条,百分比只给读屏
+    expect(find.text('70%'), findsNothing);
+    expect(find.bySemanticsLabel(RegExp('1,234，70%')), findsOneWidget);
+    // 条画在读数框外,得落在这枚入口的可见范围里(被撑满行高就画出界、被裁掉)
+    final status = find.byTooltip('点数与额度');
+    final meter = find.descendant(
+      of: status,
+      matching: find.byWidgetPredicate(
+        (w) =>
+            w is CustomPaint &&
+            '${w.foregroundPainter.runtimeType}' == '_MeterPainter',
+      ),
+    );
+    expect(meter, findsOneWidget);
+    expect(
+      tester.getRect(meter).bottom + 6,
+      lessThanOrEqualTo(tester.getRect(status).bottom),
+    );
+    // 入口不裁切内容:条贴着左右边和下半截,按圆角一裁两头就成了斜边
+    expect(
+      find.descendant(
+        of: status,
+        matching: find.byWidgetPredicate(
+          (w) => w is Material && w.clipBehavior != Clip.none,
+        ),
+      ),
+      findsNothing,
+    );
     canvases.create();
     gen.setModel('NAI 4.0 Full');
     await tester.pumpAndSettle();
-    expect(find.text('NAI 4.0 Full'), findsOneWidget);
+    expect(find.text('NAI 4 Full'), findsOneWidget);
     canvases.select(a);
     await tester.pumpAndSettle();
-    expect(find.text('NAI 5.0 Curated'), findsOneWidget);
+    expect(find.text('NAI 5 Curated'), findsOneWidget);
     await tester.tap(find.byTooltip('点数与额度'));
     await tester.pumpAndSettle();
     expect(find.text('点数与额度'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('顶栏三段各占固定的格:画布名长短不推着模型和读数挪', (tester) async {
+    // 从一个字的画布名起步:默认画布那四个字在窄屏下本来就占满了格
+    final id = canvases.create();
+    canvases.rename(id, '雨');
+    gen.setModel('NAI 4.5 Full');
+    await pumpHeader(tester);
+    final model = find.byTooltip('切换模型：NAI 4.5 Full');
+    final status = find.byTooltip('点数与额度');
+    final modelX = tester.getCenter(model).dx;
+    final statusRect = tester.getRect(status);
+    canvases.rename(id, '雨夜街景与霓虹灯下的城市角色探索');
+    await tester.pumpAndSettle();
+    expect(find.text('雨夜街景与霓虹灯下的城市角色探索'), findsOneWidget);
+    expect(tester.getCenter(model).dx, modelX);
+    expect(tester.getRect(status), statusRect);
     expect(tester.takeException(), isNull);
     await tester.pump(const Duration(seconds: 1));
   });

@@ -48,6 +48,37 @@ void main() {
       expect(q.activated, isFalse);
       expect(q.available, 0);
     });
+
+    test('共享号停用 → 只看中转;两档单价各自读', () {
+      final q = NaiQuota.fromJson(const {
+        'daily_balance': 0,
+        'shared_pool': false,
+        'relay_enabled': true,
+        'relay_available': true,
+        'relay_price': 0.05,
+        'relay_price_legacy': 0.03,
+      });
+      expect(q.relayOnly, isTrue);
+      expect(q.relayEnabled, isTrue);
+      expect(q.relayAvailable, isTrue);
+      expect(q.relayPrice, 0.05);
+      expect(q.relayPriceLegacy, 0.03);
+      final off = q.copyWith(relayEnabled: false);
+      expect(off.relayEnabled, isFalse);
+      expect(off.relayOnly, isTrue);
+    });
+
+    test('老服务端没有中转字段 → 按共享号开着、中转未开算', () {
+      final q = NaiQuota.fromJson(const {'daily_balance': 8});
+      expect(q.relayOnly, isFalse);
+      expect(q.relayEnabled, isFalse);
+      expect(q.relayAvailable, isTrue);
+      // 旧档单价缺省跟着 V5 那档
+      expect(
+        NaiQuota.fromJson(const {'relay_price': 0.08}).relayPriceLegacy,
+        0.08,
+      );
+    });
   });
 
   group('读数', () {

@@ -507,7 +507,9 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     if (def.provider != p) {
       return '「${def.label}」是 ${providerLabel(def.provider)} 的功能';
     }
-    if (!def.supportsModel(model)) return '$model 不支持「${def.label}」';
+    if (!def.supportsModel(model)) {
+      return '${modelName(model)} 不支持「${def.label}」';
+    }
     return '「${def.label}」已在创作页模块里隐藏';
   }
 
@@ -572,7 +574,12 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
 
   List<_SettingSpec> _naiSettingItems(ImageMetadata m) => [
     if (_hasModel)
-      _SettingSpec('模型', _importModel!, _useModel, (v) => _useModel = v),
+      _SettingSpec(
+        '模型',
+        modelName(_importModel!),
+        _useModel,
+        (v) => _useModel = v,
+      ),
     if (_hasRes)
       _SettingSpec(
         '分辨率',
@@ -998,7 +1005,9 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
         added++;
         if (b == null) encOnly++;
       }
-      if (encOnly > 0) msgs.add('$encOnly 个 Vibe 仅编码,只在 $_importModel 下可用');
+      if (encOnly > 0) {
+        msgs.add('$encOnly 个 Vibe 仅编码,只在 ${modelName(_importModel!)} 下可用');
+      }
     }
 
     _finish(

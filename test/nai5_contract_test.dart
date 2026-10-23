@@ -433,8 +433,18 @@ void main() {
 
       test('发送时照实发,且坐标只认角色自己的(不再按下标代入)', () {
         final chars = [
-          const CharacterPrompt(id: 'a', name: 'a', positive: 'x', position: 'A1'),
-          const CharacterPrompt(id: 'b', name: 'b', positive: 'y', position: 'E5'),
+          const CharacterPrompt(
+            id: 'a',
+            name: 'a',
+            positive: 'x',
+            position: 'A1',
+          ),
+          const CharacterPrompt(
+            id: 'b',
+            name: 'b',
+            positive: 'y',
+            position: 'E5',
+          ),
         ];
         for (final on in [false, true]) {
           final body = buildNaiPayload(
@@ -500,5 +510,23 @@ void main() {
       ],
     });
     expect((neg[1] as Map)['char_caption'], 'bad hands');
+  });
+
+  test('显示名:去掉 .0,名字其余照旧;非 NAI 原样', () {
+    expect(modelName('NAI 5.0 Full Medium'), 'NAI 5 Full Medium');
+    expect(modelName('NAI 4.5 Curated'), 'NAI 4.5 Curated');
+    expect(modelName('NAI 4.0 Full'), 'NAI 4 Full');
+    expect(modelName('Krea 2 Raw'), 'Krea 2 Raw');
+  });
+
+  test('顶栏短名:去掉 .0,只把 Medium 缩成 M;非 NAI 原样', () {
+    expect(shortModelName('NAI 5.0 Full'), 'NAI 5 Full');
+    expect(shortModelName('NAI 5.0 Full Medium'), 'NAI 5 Full M');
+    expect(shortModelName('NAI 5.0 Curated'), 'NAI 5 Curated');
+    expect(shortModelName('NAI 4.5 Full'), 'NAI 4.5 Full');
+    expect(shortModelName('NAI 4.0 Curated'), 'NAI 4 Curated');
+    expect(shortModelName('Anima Turbo'), 'Anima Turbo');
+    expect(shortModelName('Krea 2 Raw'), 'Krea 2 Raw');
+    expect(shortModelName(''), '');
   });
 }
