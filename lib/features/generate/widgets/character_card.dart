@@ -8,6 +8,7 @@ import '../../editor/editor_page.dart';
 import '../../inspiration/tag_models.dart' show TagCategory, tagCategoryDef;
 import '../../inspiration/widgets/char_pick_sheet.dart';
 import '../../inspiration/widgets/tag_card.dart' show TagCardPreview;
+import '../canvas_state.dart';
 import '../char_position.dart';
 import '../generate_state.dart';
 import '../models.dart';
@@ -77,8 +78,8 @@ class CharacterCard extends ConsumerWidget {
       chevronPlaceholder: chars.isEmpty,
       body: chars.isEmpty
           ? null
-          // 长按卡片拖动排序。删除只走行内按钮 —— 横滑抹掉的是整份角色配置
-          // (提示词/站位/开关),而这里没有撤销可给。
+          // 长按卡片拖动排序。删除只走行内按钮(删了给撤销条),不做横滑删除
+          // —— 横滑一下就抹掉整份角色配置(提示词/站位/开关),太容易误触。
           : ReorderableListView(
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
@@ -229,6 +230,33 @@ class _CharacterTile extends ConsumerWidget {
         );
   }
 
+  /// 删除这张卡,提示条给撤销:原样放回原来的位置。撤销条挂着的这几秒里
+  /// 切了画布,也还给删的那张。
+  void _remove(BuildContext context, WidgetRef ref) {
+    final canvases = ref.read(canvasWorkspaceProvider.notifier);
+    final canvasId = ref.read(canvasWorkspaceProvider).activeId;
+    final chars = ref.read(generateProvider).characters;
+    final at = chars.indexWhere((c) => c.id == char.id);
+    if (at < 0) return;
+    final removed = chars[at];
+    ref.read(generateProvider.notifier).removeCharacter(removed.id);
+    hintSnack(
+      context,
+      '已删除「${removed.name}」',
+      icon: Icons.delete_outline,
+      actionLabel: '撤销',
+      onAction: () => canvases.updatePrompts(
+        canvasId,
+        (p) => p.characters.any((c) => c.id == removed.id)
+            ? p
+            : p.copyWith(
+                characters: [...p.characters]
+                  ..insert(at.clamp(0, p.characters.length), removed),
+              ),
+      ),
+    );
+  }
+
   void _openEditor(BuildContext context, {required bool positive}) =>
       Navigator.of(
         context,
@@ -263,9 +291,9 @@ class _CharacterTile extends ConsumerWidget {
     final promptStyle = context.texts.bodyMedium!;
     final countStyle = mono(
       context,
-      size: 11,
+      size: 12,
       weight: FontWeight.w500,
-    ).copyWith(color: scheme.outline);
+    ).copyWith(color: scheme.outline, height: 1.25);
 
     final name = InkWell(
       onTap: () => _rename(context, notifier),
@@ -294,55 +322,45 @@ class _CharacterTile extends ConsumerWidget {
       Icons.delete_outline,
       size: controlSize,
       color: scheme.error,
-      onTap: () => notifier.removeCharacter(char.id),
+      onTap: () => _remove(context, ref),
       tooltip: '删除角色',
     );
     void openPosition() => showPositionGridDialog(context, char.id);
     final positionTip = '设置角色位置：$positionLabel';
-    final positive = Padding(
-      padding: const EdgeInsets.only(right: 4),
-      child: Row(
-        crossAxisAlignment: compact
-            ? CrossAxisAlignment.center
-            : CrossAxisAlignment.end,
-        children: [
-          // 紧凑版的位置签排在正向预览左侧
-          if (compact) ...[
-            _PositionChip(
-              label: positionLabel,
-              auto: autoPos || positionLabel == 'AUTO',
-              enabled: enabled,
-              onTap: openPosition,
-            ),
-            const SizedBox(width: 8),
-          ],
-          Expanded(
-            child: Text(
-              char.positive.isEmpty ? '点击编辑提示词…' : char.positive,
-              maxLines: compact || hasNeg ? 1 : 2,
-              overflow: TextOverflow.ellipsis,
-              style: promptStyle.copyWith(
-                color: char.positive.isEmpty || !enabled
-                    ? scheme.outline
-                    : scheme.onSurfaceVariant,
-              ),
+    final positive = Row(
+      crossAxisAlignment: compact
+          ? CrossAxisAlignment.center
+          : CrossAxisAlignment.end,
+      children: [
+        // 紧凑版的位置签排在正向预览左侧
+        if (compact) ...[
+          _PositionChip(
+            label: positionLabel,
+            auto: autoPos || positionLabel == 'AUTO',
+            enabled: enabled,
+            onTap: openPosition,
+          ),
+          const SizedBox(width: 8),
+        ],
+        Expanded(
+          child: Text(
+            char.positive.isEmpty ? '点击编辑提示词…' : char.positive,
+            maxLines: compact || hasNeg ? 1 : 2,
+            overflow: TextOverflow.ellipsis,
+            style: promptStyle.copyWith(
+              color: char.positive.isEmpty || !enabled
+                  ? scheme.outline
+                  : scheme.onSurfaceVariant,
             ),
           ),
-          if (char.positive.isNotEmpty) ...[
-            const SizedBox(width: 8),
-            Text(
-              '${totalPromptTokens(tokenizer, main: char.positive)}',
-              style: countStyle,
-            ),
-          ],
-        ],
-      ),
+        ),
+      ],
     );
     final negative = InkWell(
       onTap: () => _openEditor(context, positive: false),
       borderRadius: BorderRadius.circular(6),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(0, 3, 4, 3),
+        padding: const EdgeInsets.symmetric(vertical: 3),
         child: Row(
           children: [
             Icon(Icons.block, size: 14, color: negColor),
@@ -355,14 +373,43 @@ class _CharacterTile extends ConsumerWidget {
                 style: promptStyle.copyWith(color: negColor),
               ),
             ),
-            const SizedBox(width: 8),
-            Text(
-              '${totalPromptTokens(tokenizer, main: char.negative)}',
-              style: countStyle,
-            ),
           ],
         ),
       ),
+    );
+    // 提示词区:正负两行预览,右侧 token 数上正向、下负面(同分区行)
+    final prompts = Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        Expanded(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              positive,
+              if (hasNeg) ...[SizedBox(height: compact ? 2 : 4), negative],
+            ],
+          ),
+        ),
+        const SizedBox(width: 8),
+        Padding(
+          padding: const EdgeInsets.only(right: 4, bottom: 3),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                '${totalPromptTokens(tokenizer, main: char.positive)}',
+                style: countStyle,
+              ),
+              Text(
+                '${totalPromptTokens(tokenizer, main: char.negative)}',
+                style: countStyle.copyWith(color: negColor),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
 
     return Material(
@@ -400,8 +447,7 @@ class _CharacterTile extends ConsumerWidget {
                       ],
                     ),
                     const SizedBox(height: 6),
-                    positive,
-                    if (hasNeg) ...[const SizedBox(height: 2), negative],
+                    prompts,
                   ],
                 )
               : Row(
@@ -461,8 +507,7 @@ class _CharacterTile extends ConsumerWidget {
                           ),
                           const SizedBox(height: 6),
                           // 名称和提示词都占满预览图右侧。
-                          positive,
-                          if (hasNeg) ...[const SizedBox(height: 4), negative],
+                          prompts,
                         ],
                       ),
                     ),
