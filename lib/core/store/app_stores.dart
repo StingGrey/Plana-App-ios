@@ -92,7 +92,10 @@ class AppStores {
     await workspace.load();
     await gallery.load();
     await albums.load(
-      liveImages: gallery.initialResults.map((r) => r.id).toSet(),
+      liveImages: {
+        for (final r in gallery.initialResults) r.id,
+        for (final t in gallery.initialTrash) t.image.id,
+      },
     );
     await ledger.load();
     await assistant.load();

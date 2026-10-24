@@ -14,7 +14,7 @@ import 'models.dart';
 
 /// 图库持久化(`<support>/gallery/`):每张结果 `images/<id>.png` 原图 +
 /// `thumbs/<id>.jpg` 缩略图(带透明的是 .png)+ `inputs/<id>.json` 参数快照(参考图外置
-/// blob 仓),旁挂 index.json(顺序/选中/发号器)。启动只读索引,像素
+/// blob 仓),旁挂 index.json(顺序/选中/发号器/回收站)。启动只读索引,像素
 /// 按需懒读——重启不丢图,也不把整库塞回内存。
 class GalleryStore {
   GalleryStore(this._blobs, Directory supportRoot)
@@ -38,6 +38,9 @@ class GalleryStore {
 
   /// 启动读出的图库(字节/快照皆空壳,懒读);首启为空。
   List<ResultImage> initialResults = const [];
+
+  /// 启动读出的回收站,新删的在前。
+  List<TrashedImage> initialTrash = const [];
   String? initialSelectedId;
   int seq = 0;
 
@@ -59,36 +62,15 @@ class GalleryStore {
       }
       seq = (j['seq'] as num?)?.toInt() ?? 0;
       initialSelectedId = j['selectedId'] as String?;
+      if (j['trash'] is List) {
+        initialTrash = List.unmodifiable([
+          for (final e in j['trash'] as List)
+            if (_parseItem(e) case final r?)
+              TrashedImage(r, ((e as Map)['dt'] as num?)?.toInt() ?? 0),
+        ]);
+      }
       if (j['items'] is List) {
-        final out = <ResultImage>[];
-        for (final e in j['items'] as List) {
-          if (e is! Map || e['id'] is! String) continue;
-          final id = e['id'] as String;
-          ResultBadge badge = ResultBadge.none;
-          for (final b in ResultBadge.values) {
-            if (b.name == e['badge']) badge = b;
-          }
-          out.add(
-            ResultImage(
-              id: id,
-              width: (e['w'] as num?)?.toInt() ?? 0,
-              height: (e['h'] as num?)?.toInt() ?? 0,
-              seed: (e['seed'] as num?)?.toInt() ?? 0,
-              badge: badge,
-              createdAt: (e['t'] as num?)?.toInt() ?? 0,
-              // 老索引没这键 → -1(不是批次产物)
-              batchIndex: (e['bi'] as num?)?.toInt() ?? -1,
-              saved: e['sv'] == true,
-              hasInput: e['hasInput'] == true,
-            ),
-          );
-          // 索引防抖窗口内被杀时 seq 可能落后于条目 id,取最大防撞车
-          final m = _seqRe.firstMatch(id);
-          if (m != null) {
-            final n = int.parse(m.group(1)!) + 1;
-            if (n > seq) seq = n;
-          }
-        }
+        final out = [for (final e in j['items'] as List) ?_parseItem(e)];
         initialResults = List.unmodifiable(await _backfillCreatedAt(out));
       }
     } catch (e) {
@@ -96,6 +78,48 @@ class GalleryStore {
       await _rebuildFromDisk();
     }
   }
+
+  /// 索引里的一条;坏条目返回 null。顺带把发号器推过它的 id。
+  ResultImage? _parseItem(Object? e) {
+    if (e is! Map || e['id'] is! String) return null;
+    final id = e['id'] as String;
+    ResultBadge badge = ResultBadge.none;
+    for (final b in ResultBadge.values) {
+      if (b.name == e['badge']) badge = b;
+    }
+    // 索引防抖窗口内被杀时 seq 可能落后于条目 id,取最大防撞车
+    final m = _seqRe.firstMatch(id);
+    if (m != null) {
+      final n = int.parse(m.group(1)!) + 1;
+      if (n > seq) seq = n;
+    }
+    return ResultImage(
+      id: id,
+      width: (e['w'] as num?)?.toInt() ?? 0,
+      height: (e['h'] as num?)?.toInt() ?? 0,
+      seed: (e['seed'] as num?)?.toInt() ?? 0,
+      badge: badge,
+      createdAt: (e['t'] as num?)?.toInt() ?? 0,
+      // 老索引没这键 → -1(不是批次产物)
+      batchIndex: (e['bi'] as num?)?.toInt() ?? -1,
+      saved: e['sv'] == true,
+      hasInput: e['hasInput'] == true,
+    );
+  }
+
+  static Map<String, Object?> _itemJson(ResultImage r) => {
+    'id': r.id,
+    'w': r.width,
+    'h': r.height,
+    'seed': r.seed,
+    'badge': r.badge.name,
+    't': r.createdAt,
+    // 批次内位置。只有批次产物才写,单张不占位 ——
+    // 这张索引每次出图都要整份重写,能省一个键是一个。
+    if (r.batchIndex >= 0) 'bi': r.batchIndex,
+    if (r.saved) 'sv': true,
+    'hasInput': r.hasInput,
+  };
 
   /// 生成时刻缺失(升级前的老索引)→ 原图文件 mtime 一次性回填并落索引,
   /// 之后不再 stat。mtime 在备份恢复场景可能失真,但它是老图唯一可用来源。
@@ -119,7 +143,12 @@ class GalleryStore {
     }
     if (changed) {
       // 防抖窗口内被杀也无妨:回填幂等,下次启动重来
-      scheduleIndex(results: out, selectedId: initialSelectedId, seq: seq);
+      scheduleIndex(
+        results: out,
+        trash: initialTrash,
+        selectedId: initialSelectedId,
+        seq: seq,
+      );
     }
     return out;
   }
@@ -172,6 +201,7 @@ class GalleryStore {
       logd('[gallery-store] 目录重建失败: $e');
     }
     initialResults = List.unmodifiable(out);
+    initialTrash = const []; // 回收站只记在索引里,重建时连同其余图一起回到列表
     initialSelectedId = out.isEmpty ? null : out.last.id;
     // 关键一行:发号器只进不退,否则新图会覆盖盘上老图
     if (maxSeq > seq) seq = maxSeq;
@@ -242,16 +272,19 @@ class GalleryStore {
   // 索引防抖:新增/点选共用,窗口内合并成一次全量重写
   Timer? _idxTimer;
   List<ResultImage>? _idxItems;
+  List<TrashedImage> _idxTrash = const [];
   String? _idxSelected;
   int _idxSeq = 0;
   Future<void> _indexWrite = Future.value();
 
   void scheduleIndex({
     required List<ResultImage> results,
+    List<TrashedImage> trash = const [],
     required String? selectedId,
     required int seq,
   }) {
     _idxItems = results;
+    _idxTrash = trash;
     _idxSelected = selectedId;
     _idxSeq = seq;
     _idxTimer?.cancel();
@@ -264,6 +297,7 @@ class GalleryStore {
     if (items == null) return _indexWrite;
     _idxItems = null;
     _idxTimer?.cancel();
+    final trash = _idxTrash;
     final selected = _idxSelected;
     final seq = _idxSeq;
     return _indexWrite = _enqueue(() async {
@@ -274,28 +308,17 @@ class GalleryStore {
           'v': 1,
           'seq': seq,
           'selectedId': ?selected,
-          'items': [
-            for (final r in items)
-              {
-                'id': r.id,
-                'w': r.width,
-                'h': r.height,
-                'seed': r.seed,
-                'badge': r.badge.name,
-                't': r.createdAt,
-                // 批次内位置。只有批次产物才写,单张不占位 ——
-                // 这张索引每次出图都要整份重写,能省一个键是一个。
-                if (r.batchIndex >= 0) 'bi': r.batchIndex,
-                if (r.saved) 'sv': true,
-                'hasInput': r.hasInput,
-              },
-          ],
+          'items': [for (final r in items) _itemJson(r)],
+          if (trash.isNotEmpty)
+            'trash': [
+              for (final t in trash) {..._itemJson(t.image), 'dt': t.deletedAt},
+            ],
         }),
       );
     });
   }
 
-  /// 删除若干条结果的文件(上限裁剪用):原图/缩略图/快照一并删。
+  /// 删除若干条结果的文件(上限裁剪 / 彻底删除用):原图/缩略图/快照一并删。
   /// 索引由调用方随后 scheduleIndex 重写。
   void deleteResultFiles(List<String> ids) {
     if (ids.isEmpty) return;

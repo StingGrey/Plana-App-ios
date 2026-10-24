@@ -17,6 +17,7 @@ import 'models.dart';
 import 'save_settings.dart';
 import 'share_pipeline.dart';
 import 'widgets/film_strip.dart';
+import 'widgets/gallery_grid_sheet.dart';
 import 'widgets/result_canvas.dart';
 
 /// 图库页:上方结果画布(大图 + 操作轨 + seed)、下方历史胶片条。
@@ -434,8 +435,22 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
               onShare: _shareOne,
               onFavorite: (id) => toggleFavorite(context, id),
               isFavorite: (id) => ref.read(albumsProvider).isFavorite(id),
-              onDelete: (id) =>
-                  ref.read(galleryProvider.notifier).deleteResults([id]),
+              onDelete: (id) {
+                final gallery = ref.read(galleryProvider.notifier);
+                final wasSelected = ref.read(galleryProvider).selectedId == id;
+                gallery.deleteResults([id]);
+                hintSnack(
+                  context,
+                  '已移到回收站',
+                  icon: Icons.delete_outline,
+                  actionLabel: '撤销',
+                  onAction: () {
+                    if (gallery.restoreTrash([id]) > 0 && wasSelected) {
+                      gallery.select(id);
+                    }
+                  },
+                );
+              },
               jobs: pool.newestFirst,
               selectedJobId: pool.selectedId,
               onSelectJob: (id) {
@@ -657,6 +672,9 @@ class _EmptyGallery extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final scheme = context.scheme;
     final inAlbum = ref.watch(galleryBrowseAlbumProvider) != null;
+    final hasTrash = ref.watch(
+      galleryProvider.select((s) => s.trash.isNotEmpty),
+    );
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -676,6 +694,11 @@ class _EmptyGallery extends ConsumerWidget {
             TextButton(
               onPressed: () => showAlbumBrowsePicker(context),
               child: const Text('选择相册'),
+            )
+          else if (hasTrash)
+            TextButton(
+              onPressed: () => showGalleryGrid(context, trash: true),
+              child: const Text('查看回收站'),
             ),
           Text(
             '去「创作」生成第一张',

@@ -54,11 +54,12 @@ import '../../../core/util/haptics.dart';
 /// 点选一张即回填画布并关闭;长按弹出该张的导入 / 保存 / 删除菜单。
 /// 多选只从右上角「多选」进,段头可整段全选,底部批量保存相册 / 分享 /
 /// 打包 ZIP / 批量删除 —— 批量操作只作用于当前可见集合。
-Future<void> showGalleryGrid(BuildContext context) =>
+/// [trash]:直接打开回收站(图库空了、只剩回收站时的入口)。
+Future<void> showGalleryGrid(BuildContext context, {bool trash = false}) =>
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      builder: (_) => const _GalleryGridSheet(),
+      builder: (_) => _GalleryGridSheet(trash: trash),
     );
 
 /// 「全部图库」首次打开时提一次长按 —— 网格里点一下是选中回填画布,
@@ -75,7 +76,9 @@ final Map<String, double> _albumOffsets = {};
 const _allAlbumKey = 'all-album';
 
 class _GalleryGridSheet extends ConsumerStatefulWidget {
-  const _GalleryGridSheet();
+  const _GalleryGridSheet({this.trash = false});
+
+  final bool trash;
 
   @override
   ConsumerState<_GalleryGridSheet> createState() => _GalleryGridSheetState();
@@ -256,7 +259,14 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
       _albumHome = false;
       _activeAlbumId = land.id;
     }
+    if (widget.trash) {
+      _albumHome = false;
+      _activeAlbumId = trashId;
+    }
     _ctrl;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) ref.read(galleryProvider.notifier).purgeExpiredTrash();
+    });
     // 相册数据是从备份恢复的 / 读不出来:打开时说一次(读不出来时「新建」是灰
     // 的,不说看不出为什么)。和下面的首次提示撞上时先说这个,那条留到下次。
     final albums = ref.read(appStoresProvider).albums;
@@ -321,8 +331,11 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
     _open.forward(from: 0);
   }
 
+  /// 正看着回收站。
+  bool get _inTrash => !_albumHome && _activeAlbumId == trashId;
+
   void _openAlbum(String? id) {
-    if (ref.read(galleryBrowseAlbumProvider) != id) {
+    if (id != trashId && ref.read(galleryBrowseAlbumProvider) != id) {
       ref.read(albumsProvider.notifier).browse(id);
     }
     _pendingAlbumId = id;
@@ -341,6 +354,7 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
     ResultImage? cover,
     Rect from, {
     required bool isSave,
+    IconData? icon,
   }) async {
     Haptics.medium();
     final warm = cover == null
@@ -358,23 +372,32 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
         result: cover,
         warm: warm,
         square: true,
-        actions: [
-          if (!isSave)
-            (
-              icon: Icons.move_to_inbox_outlined,
-              label: '设为保存相册',
-              value: 'save',
-            ),
-          // 「全部相册」不能改名也不能删
-          if (id != null)
-            (
-              icon: Icons.drive_file_rename_outline,
-              label: '重命名',
-              value: 'rename',
-            ),
-        ],
+        emptyIcon: icon ?? Icons.photo_library_outlined,
+        actions: id == trashId
+            ? const [(icon: Icons.restore, label: '全部恢复', value: 'restore')]
+            : [
+                if (!isSave)
+                  (
+                    icon: Icons.move_to_inbox_outlined,
+                    label: '设为保存相册',
+                    value: 'save',
+                  ),
+                // 「全部相册」不能改名也不能删
+                if (id != null)
+                  (
+                    icon: Icons.drive_file_rename_outline,
+                    label: '重命名',
+                    value: 'rename',
+                  ),
+              ],
         danger: id == null
             ? null
+            : id == trashId
+            ? (
+                icon: Icons.delete_forever_outlined,
+                label: '清空回收站',
+                value: 'empty',
+              )
             : (icon: Icons.delete_outline, label: '删除相册', value: 'delete'),
       ),
     );
@@ -383,8 +406,21 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
 
   Future<void> _albumMenu(String? id, String action) async {
     final notifier = ref.read(albumsProvider.notifier);
+    final gallery = ref.read(galleryProvider.notifier);
+    final trash = [for (final t in ref.read(galleryProvider).trash) t.image.id];
     try {
-      if (action == 'save') {
+      if (action == 'restore') {
+        final n = gallery.restoreTrash(trash);
+        hintSnack(context, '已恢复 $n 张', icon: Icons.restore);
+      } else if (action == 'empty') {
+        if (!await _confirmPurge('清空回收站?', '清空') || !mounted) return;
+        gallery.purgeTrash(trash);
+        hintSnack(
+          context,
+          '已彻底删除 ${trash.length} 张',
+          icon: Icons.delete_forever_outlined,
+        );
+      } else if (action == 'save') {
         _setSaveAlbum(id);
       } else if (action == 'rename' && id != null) {
         await showAlbumName(context, album: ref.read(albumsProvider).album(id));
@@ -548,8 +584,9 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
 
   @override
   void dispose() {
-    _resumeAllAlbum = !_albumHome;
-    _resumeAlbumId = _albumHome ? null : _activeAlbumId;
+    // 回收站不记:下次打开回到相册首页
+    _resumeAllAlbum = !_albumHome && !_inTrash;
+    _resumeAlbumId = _albumHome || _inTrash ? null : _activeAlbumId;
     _remember();
     WidgetsBinding.instance.removeObserver(this);
     _dateTick.cancel();
@@ -779,12 +816,17 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
               metaData: r.id,
               child: _GridThumb(
                 result: r,
-                selected: !_selecting && r.id == selectedId,
+                selected: !_selecting && !_inTrash && r.id == selectedId,
                 picked: _selecting && _picked.contains(r.id),
                 selecting: _selecting,
-                onTap: () {
+                // 回收站按删除时间分段,生成时刻不标
+                showTime: !_inTrash,
+                onTap: (from) {
                   if (_selecting) {
                     _toggle(r.id);
+                  } else if (_inTrash) {
+                    // 回收站里的图上不了画布,点一下就是抬起看看、恢复或彻底删除
+                    _thumbMenu(r.id, from);
                   } else {
                     // 胶片条跟到面板停的这本:两边不一致时,点的这张可能
                     // 不在胶片条里,画布上就显示不出来。
@@ -843,18 +885,20 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
                 : const <String>[];
             final allOn =
                 _selecting && !_albumHome && ids.every(_picked.contains);
-            final cover = _albumHome
+            final coverIcon = _albumHome ? albumCoverIcon(albumId) : null;
+            final cover = _albumHome && coverIcon == null
                 ? albumCoverOf(albumData, albumId, g.items)
                 : null;
-            // 「全部相册」「收藏」是固定的两本:不能多选,也没有改名 / 删除
+            // 「全部相册」「收藏」「回收站」是固定的:不能多选,也没有改名 / 删除
             final fixed =
-                _albumHome && (albumId == null || albumId == favoritesId);
+                _albumHome &&
+                (albumId == null ||
+                    albumId == favoritesId ||
+                    albumId == trashId);
             return GalleryStackCard(
               group: g,
               cover: cover,
-              emptyIcon: _albumHome && albumId == favoritesId
-                  ? Icons.favorite_border
-                  : Icons.photo_library_outlined,
+              coverIcon: coverIcon,
               // 相册多选勾的是整本;固定的两本不能选,不画勾选圈
               selecting: _selecting && !fixed,
               picked: _albumHome
@@ -863,24 +907,26 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
               isSaveAlbum: _albumHome && saveAlbum == albumId,
               stacked: !_albumHome,
               // 「全部相册」只有「设为保存相册」一项,已经是保存相册时就没有菜单;
-              // 「收藏」一项都没有
+              // 「收藏」一项都没有;回收站空着时也没有
               onLongPress:
                   _albumHome &&
                       !_selecting &&
                       !_pinching &&
                       albumId != favoritesId &&
+                      (albumId != trashId || g.items.isNotEmpty) &&
                       (albumId != null || saveAlbum != null)
                   ? (from) => _albumLongPress(
                       albumId,
                       cover,
                       from,
                       isSave: saveAlbum == albumId,
+                      icon: coverIcon,
                     )
                   : null,
               onTap: () => setState(() {
                 if (_selecting && _albumHome) {
                   if (albumId != null &&
-                      albumId != favoritesId &&
+                      !fixed &&
                       !_pickedAlbums.remove(albumId)) {
                     _pickedAlbums.add(albumId);
                   }
@@ -905,7 +951,9 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
   /// 撑到 40),排进去会把每个段头撑高一截 —— 一进多选,视口上方那些段头一齐
   /// 变高,整片网格就被往下推一段。叠上去之后段头在两种状态下一样高,点按区
   /// 照样竖着占满段头。
-  Widget _groupHeader(ColorScheme scheme, GalleryGroup g) {
+  ///
+  /// [note]:张数后面再跟一句(回收站报还剩几天)。
+  Widget _groupHeader(ColorScheme scheme, GalleryGroup g, {String? note}) {
     final ids = [for (final r in g.items) r.id];
     final allOn = ids.every(_picked.contains);
     return Stack(
@@ -923,7 +971,9 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
               ),
               const SizedBox(width: 7),
               Text(
-                '${g.items.length} 张',
+                note == null
+                    ? '${g.items.length} 张'
+                    : '${g.items.length} 张 · $note',
                 style: context.texts.bodySmall!.copyWith(
                   color: scheme.onSurfaceVariant,
                 ),
@@ -1424,6 +1474,40 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
     );
   }
 
+  /// 回收站多选的操作栏:恢复 / 彻底删除,样式同图片多选首行。
+  Widget _trashActions(bool canAct) {
+    final scheme = context.scheme;
+    return SizedBox(
+      height: _actH,
+      child: Row(
+        children: [
+          Expanded(
+            child: FilledButton.tonalIcon(
+              style: _mainActBtn,
+              onPressed: canAct ? _restorePicked : null,
+              icon: const Icon(Icons.restore, size: 19),
+              label: _fitLabel('恢复 (${_picked.length})'),
+            ),
+          ),
+          const SizedBox(width: _actGap),
+          Expanded(
+            child: FilledButton.icon(
+              style: _mainActBtn.merge(
+                FilledButton.styleFrom(
+                  backgroundColor: scheme.errorContainer,
+                  foregroundColor: scheme.onErrorContainer,
+                ),
+              ),
+              onPressed: canAct ? _purgePicked : null,
+              icon: const Icon(Icons.delete_forever_outlined, size: 19),
+              label: _fitLabel('彻底删除 (${_picked.length})'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _toggleAllAlbums() {
     final ids = [for (final a in ref.read(albumsProvider).albums) a.id];
     setState(() {
@@ -1707,7 +1791,15 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
   /// 之前是 showMenu 锚在手指坐标上 —— 图本身一点变化都没有,菜单跟哪张图
   /// 有关全靠猜。指向感只能由**图自己动**来给,锚点给不了。
   Future<void> _thumbMenu(String id, Rect from) async {
-    final r = _resultOf(id);
+    final inTrash = _inTrash;
+    final r = inTrash
+        ? ref
+              .read(galleryProvider)
+              .trash
+              .where((t) => t.image.id == id)
+              .firstOrNull
+              ?.image
+        : _resultOf(id);
     if (r == null) return;
     Haptics.medium();
     // 先把原图读出来**并解码**,再开抬起层。只读不解码不够:Image.memory
@@ -1725,24 +1817,48 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
     final albums = ref.read(albumsProvider);
     final isCover = albums.cover(_activeAlbumId)?.sourceImageId == id;
     final picked = await nav.push(
-      _ThumbMenuRoute(
-        from: at,
-        result: r,
-        warm: warm,
-        actions: [
-          ..._ThumbMenuRoute.imageActions,
-          albums.isFavorite(id)
-              ? (icon: Icons.favorite, label: '取消收藏', value: 'favorite')
-              : (icon: Icons.favorite_border, label: '收藏', value: 'favorite'),
-          isCover
-              ? (
-                  icon: Icons.hide_image_outlined,
-                  label: '取消封面',
-                  value: 'uncover',
-                )
-              : (icon: Icons.wallpaper_outlined, label: '设为封面', value: 'cover'),
-        ],
-      ),
+      inTrash
+          ? _ThumbMenuRoute(
+              from: at,
+              result: r,
+              warm: warm,
+              actions: const [
+                (icon: Icons.restore, label: '恢复', value: 'restore'),
+              ],
+              danger: (
+                icon: Icons.delete_forever_outlined,
+                label: '彻底删除',
+                value: 'purge',
+              ),
+            )
+          : _ThumbMenuRoute(
+              from: at,
+              result: r,
+              warm: warm,
+              actions: [
+                ..._ThumbMenuRoute.imageActions,
+                albums.isFavorite(id)
+                    ? (icon: Icons.favorite, label: '取消收藏', value: 'favorite')
+                    : (
+                        icon: Icons.favorite_border,
+                        label: '收藏',
+                        value: 'favorite',
+                      ),
+                // 收藏的封面是固定图标
+                if (albumCoverIcon(_activeAlbumId) == null)
+                  isCover
+                      ? (
+                          icon: Icons.hide_image_outlined,
+                          label: '取消封面',
+                          value: 'uncover',
+                        )
+                      : (
+                          icon: Icons.wallpaper_outlined,
+                          label: '设为封面',
+                          value: 'cover',
+                        ),
+              ],
+            ),
     );
     if (picked == null || !mounted) return;
     switch (picked) {
@@ -1760,6 +1876,13 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
         await _setCover(null);
       case 'delete':
         _deleteOne(id);
+      case 'restore':
+        ref.read(galleryProvider.notifier).restoreTrash([id]);
+        hintSnack(context, '已恢复', icon: Icons.restore);
+      case 'purge':
+        if (!await _confirmPurge('彻底删除这张作品?', '彻底删除') || !mounted) return;
+        ref.read(galleryProvider.notifier).purgeTrash([id]);
+        hintSnack(context, '已彻底删除', icon: Icons.delete_forever_outlined);
     }
   }
 
@@ -1871,12 +1994,77 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
   /// 再点删除,本身已是三步;弹窗只是给这条路再加一次点击。
   /// 批量删除那条仍然确认:一次十几张,误触代价不在一个量级。
   void _deleteOne(String id) {
+    final wasSelected = ref.read(galleryProvider).selectedId == id;
     ref.read(galleryProvider.notifier).deleteResults([id]);
     if (ref.read(galleryProvider).results.isEmpty) {
       Navigator.of(context).pop(); // 删空了,弹层没得看
+    }
+    _trashedSnack([id], reselect: wasSelected ? id : null);
+  }
+
+  /// 移进回收站后的提示,带撤销;[reselect] 撤销后重新选中这张。
+  /// 提示条挂在根 overlay 上,弹层关了它还在:撤销不能再经弹层的 ref。
+  void _trashedSnack(List<String> ids, {String? reselect}) {
+    final gallery = ref.read(galleryProvider.notifier);
+    hintSnack(
+      context,
+      ids.length == 1 ? '已移到回收站' : '已将 ${ids.length} 张移到回收站',
+      icon: Icons.delete_outline,
+      actionLabel: '撤销',
+      onAction: () {
+        if (gallery.restoreTrash(ids) > 0 && reselect != null) {
+          gallery.select(reselect);
+        }
+      },
+    );
+  }
+
+  void _restorePicked() {
+    final n = ref.read(galleryProvider.notifier).restoreTrash(_picked);
+    _exitSelect();
+    hintSnack(context, '已恢复 $n 张', icon: Icons.restore);
+  }
+
+  Future<void> _purgePicked() async {
+    final ids = _picked.toList();
+    if (ids.isEmpty) return;
+    if (!await _confirmPurge('彻底删除 ${ids.length} 张作品?', '彻底删除') || !mounted) {
       return;
     }
-    hintSnack(context, '已删除', icon: Icons.delete_outline);
+    ref.read(galleryProvider.notifier).purgeTrash(ids);
+    _exitSelect();
+    hintSnack(
+      context,
+      '已彻底删除 ${ids.length} 张',
+      icon: Icons.delete_forever_outlined,
+    );
+  }
+
+  /// 彻底删除前确认(单张、多选、清空回收站共用)。
+  Future<bool> _confirmPurge(String title, String confirm) async {
+    final scheme = context.scheme;
+    final yes = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        title: Text(title),
+        content: const Text('删除后无法恢复。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: scheme.error,
+              foregroundColor: scheme.onError,
+            ),
+            onPressed: () => Navigator.of(dctx).pop(true),
+            child: Text(confirm),
+          ),
+        ],
+      ),
+    );
+    return yes == true;
   }
 
   Future<void> _deletePicked() async {
@@ -1909,7 +2097,7 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
     if (ref.read(galleryProvider).results.isEmpty) {
       Navigator.of(context).pop(); // 删空了,弹层没得看
     }
-    hintSnack(context, '已删除 ${ids.length} 张', icon: Icons.delete_outline);
+    _trashedSnack(ids);
   }
 
   /// 多选「移动」:选一个相册就移过去,事后给撤销。在相册里是移出本相册、
@@ -1952,12 +2140,16 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
     final state = ref.watch(galleryProvider);
     final albumData = ref.watch(albumsProvider);
     ref.watch(gallerySaveTargetProvider);
-    if (!albumData.exists(_activeAlbumId)) {
+    if (_activeAlbumId != trashId && !albumData.exists(_activeAlbumId)) {
       _activeAlbumId = null;
       _albumHome = true;
     }
+    final inTrash = _inTrash;
     final results = state.results;
-    final albumResults = _albumHome || _activeAlbumId == null
+    final trashed = [for (final t in state.trash) t.image];
+    final albumResults = inTrash
+        ? trashed
+        : _albumHome || _activeAlbumId == null
         ? results
         : results
               .where((r) => albumData.contains(_activeAlbumId, r.id))
@@ -1968,15 +2160,19 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
     // 筛选管线(先廉价的时间,再查表)
     final terms = searchTerms(_query);
     final inDate = _dateFilter.matcher(now);
-    final filtered = <ResultImage>[
-      for (final r in albumResults)
-        if (inDate(r.createdAt) &&
-            _passModel(r, search.byId) &&
-            _passQuery(r, search.byId, terms))
-          r,
-    ];
+    // 回收站不筛选(筛选条在那一页不显示)
+    final filtered = inTrash
+        ? albumResults
+        : <ResultImage>[
+            for (final r in albumResults)
+              if (inDate(r.createdAt) &&
+                  _passModel(r, search.byId) &&
+                  _passQuery(r, search.byId, terms))
+                r,
+          ];
     final filtering =
-        _query.isNotEmpty || _modelFilter != null || _dateFilter.active;
+        !inTrash &&
+        (_query.isNotEmpty || _modelFilter != null || _dateFilter.active);
 
     // 弹层开着期间条目可能被裁剪/删除/筛掉,勾选集随之收敛 ——
     // 批量操作永远只作用于当前可见集合,不留筛选外的"隐形勾选"。
@@ -1998,9 +2194,20 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
     // 只有从没算出过结果时才提示。增量重算(每出一张新图)也会 isLoading 一帧,
     // 那一下闪字纯属噪音 —— 旧结果还在,画面根本没变。
     final grouping = tags.isLoading && !tags.hasValue;
+    // 回收站按删除那天分段,段头报还剩几天
+    final deletedAt = {for (final t in state.trash) t.image.id: t.deletedAt};
     final groups = !_albumHome && _groupBy.stacked
         ? groupByTags(filtered, tags.value ?? const {})
+        : inTrash
+        ? groupByDay(filtered, now, at: (r) => deletedAt[r.id] ?? 0)
         : groupByDay(filtered, now);
+    String? trashNote(GalleryGroup g) {
+      final at = deletedAt[g.items.first.id];
+      if (at == null) return null;
+      final left = kTrashKeepDays - galleryDaysSince(at, now);
+      return '${math.max(left, 1)} 天后删除';
+    }
+
     final albums = <GalleryGroup>[
       (key: _allAlbumKey, label: '全部相册', items: results),
       (
@@ -2016,6 +2223,7 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
               .where((r) => albumData.contains(album.id, r.id))
               .toList(),
         ),
+      (key: trashId, label: trashName, items: trashed),
     ];
 
     // 点开的那一堆:筛选变了/图删了可能已经不在,不在就自动退回封面墙
@@ -2177,8 +2385,9 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
                                   Text(
                                     // 各堆张数之和会大于总数(一张多角色的图进多堆),
                                     // 所以封面墙上报的仍是**去重后**的总数。
+                                    // 回收站不算一本相册
                                     _albumHome
-                                        ? '${albums.length} 个相册'
+                                        ? '${albums.length - 1} 个相册'
                                         : open != null
                                         ? '${open.items.length} 张'
                                         : filtering
@@ -2211,18 +2420,19 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
                               ),
                             if (!_albumHome) ...[
                               _topButton(scheme, hasList: filtered.isNotEmpty),
-                              IconButton(
-                                onPressed: _toggleSearch,
-                                visualDensity: VisualDensity.compact,
-                                tooltip: '搜索提示词标签',
-                                icon: Icon(
-                                  Icons.search,
-                                  size: 21,
-                                  color: _searchOpen
-                                      ? scheme.primary
-                                      : scheme.onSurfaceVariant,
+                              if (!inTrash)
+                                IconButton(
+                                  onPressed: _toggleSearch,
+                                  visualDensity: VisualDensity.compact,
+                                  tooltip: '搜索提示词标签',
+                                  icon: Icon(
+                                    Icons.search,
+                                    size: 21,
+                                    color: _searchOpen
+                                        ? scheme.primary
+                                        : scheme.onSurfaceVariant,
+                                  ),
                                 ),
-                              ),
                               TextButton(
                                 style: _headerBtn,
                                 onPressed: () => _enterSelect(),
@@ -2235,7 +2445,7 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
               ),
               // 搜索框(点放大镜展开;关闭即清词)
               ExpandBody(
-                expanded: !_albumHome && _searchOpen,
+                expanded: !_albumHome && !inTrash && _searchOpen,
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                   child: TextField(
@@ -2268,7 +2478,7 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
                 ),
               ),
               // 分组 + 筛选 chips + 检索索引回填进度
-              if (!_albumHome)
+              if (!_albumHome && !inTrash)
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                   // Column 默认把按内容收缩的横向滚动视图居中；占满行宽后
@@ -2350,6 +2560,8 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
                                     Icon(
                                       filtering
                                           ? Icons.search_off
+                                          : inTrash
+                                          ? Icons.delete_outline
                                           : Icons.image_outlined,
                                       size: 40,
                                       color: scheme.outline,
@@ -2358,6 +2570,8 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
                                     Text(
                                       filtering
                                           ? '没有符合条件的作品'
+                                          : inTrash
+                                          ? '回收站是空的'
                                           : _activeAlbumId == null
                                           ? '图库是空的'
                                           : '这个相册还没有图片',
@@ -2419,7 +2633,13 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
                                       else
                                         for (final g in groups) ...[
                                           SliverToBoxAdapter(
-                                            child: _groupHeader(scheme, g),
+                                            child: _groupHeader(
+                                              scheme,
+                                              g,
+                                              note: inTrash
+                                                  ? trashNote(g)
+                                                  : null,
+                                            ),
                                           ),
                                           _gridSliver(
                                             g.items,
@@ -2467,6 +2687,8 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
                           ),
                           child: _albumHome
                               ? _albumActions(canAlbumAct)
+                              : inTrash
+                              ? _trashActions(canAct)
                               : Column(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
@@ -2730,6 +2952,7 @@ class _GridThumb extends StatelessWidget {
     required this.selecting,
     required this.onTap,
     this.onLongPress,
+    this.showTime = true,
   });
 
   final ResultImage result;
@@ -2740,28 +2963,29 @@ class _GridThumb extends StatelessWidget {
   /// 多选模式:是否已勾选(主题色描边 + 勾选圆标)。
   final bool picked;
   final bool selecting;
-  final VoidCallback onTap;
 
-  /// 长按:带上**这张图当前占的屏幕矩形**(不是手指坐标)——
+  /// 点按与长按都带上**这张图当前占的屏幕矩形**(不是手指坐标)——
   /// 抬起动画要从这块地方长出来,菜单才看得出是属于哪一张的。
+  final void Function(Rect from) onTap;
   final void Function(Rect from)? onLongPress;
+
+  /// 右下角标生成时刻。
+  final bool showTime;
 
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final ring = selecting ? picked : selected;
+    void withRect(void Function(Rect from) f) {
+      final box = context.findRenderObject() as RenderBox?;
+      if (box == null || !box.hasSize) return;
+      // 减掉描边 + 让位的那 5,让抬起从图的边缘起算,不是从格子边缘
+      f((box.localToGlobal(Offset.zero) & box.size).deflate(5));
+    }
+
     return GestureDetector(
-      onTap: onTap,
-      onLongPress: onLongPress == null
-          ? null
-          : () {
-              final box = context.findRenderObject() as RenderBox?;
-              if (box == null || !box.hasSize) return;
-              // 减掉描边 + 让位的那 5,让抬起从图的边缘起算,不是从格子边缘
-              onLongPress!(
-                (box.localToGlobal(Offset.zero) & box.size).deflate(5),
-              );
-            },
+      onTap: () => withRect(onTap),
+      onLongPress: onLongPress == null ? null : () => withRect(onLongPress!),
       child: AnimatedContainer(
         duration: Motion.fast,
         curve: Motion.standard,
@@ -2819,7 +3043,7 @@ class _GridThumb extends StatelessWidget {
                   const Positioned(right: 5, top: 5, child: SavedMark()),
                 // 右下角生成时刻(日期由段头承担,段内标时刻才是增量信息)
                 if (galleryTimeBadge(result.createdAt) case final String t
-                    when t.isNotEmpty)
+                    when showTime && t.isNotEmpty)
                   Positioned(
                     right: 5,
                     bottom: 5,
@@ -2888,14 +3112,16 @@ class _ThumbMenuRoute extends PopupRoute<String> {
     this.actions = imageActions,
     this.danger = (icon: Icons.delete_outline, label: '删除', value: 'delete'),
     this.square = false,
+    this.emptyIcon = Icons.photo_library_outlined,
   });
 
   /// 缩略图在 overlay 坐标系里的原始矩形 —— 放大从这里长出来,
   /// 「浮起的是这一张」全指望它。
   final Rect from;
 
-  /// 浮起的图;null = 空相册,浮起一块占位。
+  /// 浮起的图;null = 空相册 / 固定图标封面,浮起一块画着 [emptyIcon] 的占位。
   final ResultImage? result;
+  final IconData emptyIcon;
 
   /// 开层前已读好并解码过的原图;null = 没赶上(读得慢/读失败),
   /// 层里自己去 watch,补上之前先用缩略图垫着。
@@ -3049,7 +3275,7 @@ class _LiftedThumb extends ConsumerWidget {
                           ? ColoredBox(
                               color: context.scheme.surfaceContainerHighest,
                               child: Icon(
-                                Icons.photo_library_outlined,
+                                route.emptyIcon,
                                 size: 48,
                                 color: context.scheme.onSurfaceVariant,
                               ),

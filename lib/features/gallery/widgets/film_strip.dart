@@ -5,7 +5,7 @@ import 'package:flutter/scheduler.dart' show Ticker;
 
 import '../../../core/theme/app_theme.dart';
 import '../../generate/gen_jobs.dart' show GenJob;
-import '../../generate/widgets/common.dart' show StripeThumb, hintSnack;
+import '../../generate/widgets/common.dart' show StripeThumb;
 import '../models.dart';
 import 'gallery_grid_sheet.dart';
 import 'result_badge_chip.dart';
@@ -50,7 +50,7 @@ const _bandCount = 3;
 ///
 /// 删除排在**最远**那条(再过两条带加两道缝,约 240):松手早了落在分享或
 /// 收藏上,顶多弹一下系统分享面板、或者收藏一下再撤销;反过来排的话,想分享
-/// 却松早了就是一次不可撤销的删除。拖过分享继续往上就到收藏、删除,不用绕 ——
+/// 却松早了就是一次删除。拖过分享继续往上就到收藏、删除,不用绕 ——
 /// 带是通宽的,而拖起来的那张本来就只能上下走(见 [_FilmThumb] 的 axis)。
 const _bandGap = 64.0;
 
@@ -103,7 +103,7 @@ class FilmStrip extends StatefulWidget {
   /// 这一张眼下收藏了没有:拿起时据此决定收藏那条写「收藏」还是「取消收藏」。
   final bool Function(String id) isFavorite;
 
-  /// 拖进删除区后删这一张(状态与盘上文件由调用方处理)。
+  /// 拖进删除区后删这一张(移进回收站与提示由调用方处理)。
   final ValueChanged<String> onDelete;
 
   /// 在跑的任务,**已按新→旧排好**(调用方给 `GenPool.newestFirst`)。
@@ -475,7 +475,6 @@ class _FilmStripState extends State<FilmStrip>
     Haptics.medium();
     _vacated.add('r:$id');
     widget.onDelete(id);
-    if (mounted) hintSnack(context, '已删除', icon: Icons.delete_outline);
   }
 
   /// 把选中缩略图滚到**视野中央**。位置按渲染同款公式推算(缩略图宽 +
@@ -907,8 +906,8 @@ class _FilmThumb extends StatelessWidget {
 }
 
 /// 上滑后浮出的落点:上删除、中收藏、下分享(为什么这么排见 [_bandGap]),只在
-/// 拖拽期间存在。悬停到哪条,哪条就亮起并把文案换成「松手 ×」—— 删除那下不可
-/// 撤销,得先让人看见自己正停在哪儿。
+/// 拖拽期间存在。悬停到哪条,哪条就亮起并把文案换成「松手 ×」—— 得先让人看见
+/// 自己正停在哪儿。
 class _DropBands extends StatefulWidget {
   const _DropBands({
     required this.favorite,

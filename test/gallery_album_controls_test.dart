@@ -777,7 +777,7 @@ void main() {
       tester
           .widgetList<GalleryStackCard>(find.byType(GalleryStackCard))
           .map((c) => c.group.label),
-      ['全部相册', '收藏', '旅行'],
+      ['全部相册', '收藏', '旅行', '回收站'],
     );
     expect(
       find.descendant(of: card('收藏'), matching: find.text('0 张')),
@@ -823,10 +823,23 @@ void main() {
       find.descendant(of: card('收藏'), matching: find.text('1 张')),
       findsOneWidget,
     );
+    // 封面固定是图标,不取图。
+    expect(
+      find.descendant(of: card('收藏'), matching: find.byType(ResultThumb)),
+      findsNothing,
+    );
+    expect(
+      find.descendant(
+        of: card('收藏'),
+        matching: find.byIcon(Icons.favorite_border),
+      ),
+      findsOneWidget,
+    );
 
     await tester.tap(find.text('收藏'));
     await tester.pumpAndSettle();
     await longPressImage('gen2');
+    expect(find.text('设为封面'), findsNothing);
     await tester.tap(find.text('取消收藏'));
     await settle(() => !container.read(albumsProvider).isFavorite('gen2'));
     expect(find.text('已取消收藏'), findsOneWidget);
@@ -839,6 +852,87 @@ void main() {
       findsOneWidget,
     );
     await backHome();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('删除进回收站，回收站里点图恢复，回到原相册', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      app(
+        Builder(
+          builder: (context) => TextButton(
+            onPressed: () => showGalleryGrid(context),
+            child: const Text('历史'),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('历史'));
+    await tester.pumpAndSettle();
+    Finder card(String album) => find.ancestor(
+      of: find.text(album),
+      matching: find.byType(GalleryStackCard),
+    );
+    Finder image(String id) =>
+        find.byWidgetPredicate((w) => w is MetaData && w.metaData == id);
+    // 回收站排在最后,空的时候也在,没有长按菜单。
+    expect(
+      find.descendant(of: card('回收站'), matching: find.text('0 张')),
+      findsOneWidget,
+    );
+    expect(tester.widget<GalleryStackCard>(card('回收站')).onLongPress, isNull);
+
+    await tester.tap(find.text('全部相册'));
+    await tester.pumpAndSettle();
+    await tester.longPress(image('gen1'));
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('删除'));
+    await tester.pumpAndSettle();
+    expect(find.text('已移到回收站'), findsOneWidget);
+    expect(image('gen1'), findsNothing);
+    expect(container.read(galleryProvider).trash.single.image.id, 'gen1');
+
+    await tester.pump(const Duration(seconds: 4));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('回到相册'));
+    await tester.pumpAndSettle();
+    expect(
+      find.descendant(of: card('回收站'), matching: find.text('1 张')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: card('回收站'), matching: find.byType(ResultThumb)),
+      findsNothing,
+    );
+    expect(
+      find.descendant(of: card('旅行'), matching: find.text('0 张')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('回收站'));
+    await tester.pumpAndSettle();
+    expect(find.text('1 张 · $kTrashKeepDays 天后删除'), findsOneWidget);
+    expect(find.byTooltip('搜索提示词标签'), findsNothing);
+    // 点一下就抬起,菜单里是恢复和彻底删除。
+    await tester.tap(image('gen1'));
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pumpAndSettle();
+    expect(find.text('彻底删除'), findsOneWidget);
+    await tester.tap(find.text('恢复'));
+    await tester.pumpAndSettle();
+    expect(find.text('回收站是空的'), findsOneWidget);
+    expect(container.read(galleryProvider).trash, isEmpty);
+    expect(
+      [for (final r in container.read(galleryProvider).results) r.id],
+      ['gen0', 'gen1', 'gen2'],
+    );
+    expect(container.read(albumsProvider).contains(albumId, 'gen1'), isTrue);
+    await tester.pump(const Duration(seconds: 4));
+    await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
   });
 

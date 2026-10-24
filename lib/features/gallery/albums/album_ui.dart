@@ -18,6 +18,13 @@ void albumError(BuildContext context, Object error) => hintSnack(
   icon: Icons.error_outline,
 );
 
+/// 收藏、回收站的固定封面图标;其余相册取图做封面,返回 null。
+IconData? albumCoverIcon(String? id) => switch (id) {
+  favoritesId => Icons.favorite_border,
+  trashId => Icons.delete_outline,
+  _ => null,
+};
+
 /// 收藏 / 取消收藏这一张。取消时给撤销:在「收藏」里看着的话,图会随即离开。
 Future<void> toggleFavorite(BuildContext context, String imageId) async {
   final container = ProviderScope.containerOf(context, listen: false);
@@ -241,9 +248,7 @@ class _AlbumChoiceSheet extends ConsumerWidget {
                           items: items,
                         ),
                         cover: albumCoverOf(albums, id, items),
-                        emptyIcon: id == favoritesId
-                            ? Icons.favorite_border
-                            : Icons.photo_library_outlined,
+                        coverIcon: albumCoverIcon(id),
                         // 当前那本:描边 + 左上角的勾,借多选的勾选圈来画;
                         // 其余几本不画空圈,免得看着像能多选
                         selecting: on,

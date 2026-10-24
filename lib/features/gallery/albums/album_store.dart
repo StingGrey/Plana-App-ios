@@ -30,8 +30,6 @@ class AlbumStore {
             ...data.memberships.keys,
             if (data.allPhotosCover?.sourceImageId != null)
               data.allPhotosCover!.sourceImageId!,
-            if (data.favoritesCover?.sourceImageId != null)
-              data.favoritesCover!.sourceImageId!,
             for (final a in data.albums)
               if (a.cover?.sourceImageId != null) a.cover!.sourceImageId!,
           };

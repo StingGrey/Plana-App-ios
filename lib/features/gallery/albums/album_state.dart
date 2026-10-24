@@ -99,6 +99,7 @@ class AlbumsNotifier extends Notifier<AlbumsData> {
     }
     if (name == allPhotosName ||
         name == favoritesName ||
+        name == trashName ||
         state.albums.any((a) => a.id != except && a.name == name)) {
       throw StateError('这个相册名称已存在');
     }

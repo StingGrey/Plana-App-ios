@@ -30,6 +30,7 @@ class GalleryStackCard extends StatelessWidget {
     this.stacked = true,
     this.cover,
     this.emptyIcon = Icons.photo_library_outlined,
+    this.coverIcon,
   });
 
   final GalleryGroup group;
@@ -56,6 +57,9 @@ class GalleryStackCard extends StatelessWidget {
   /// 没有图时封面上画的图标。
   final IconData emptyIcon;
 
+  /// 固定的图标封面(收藏、回收站):不管有没有图都画它。
+  final IconData? coverIcon;
+
   /// 封面墙所在面板的最低高度:两行半封面卡。相册、图片没几张时面板按内容缩,
   /// 但缩到这里为止。几何与相册首页、选相册面板的网格一致(两侧 12、列距 6、
   /// 行距 12、名字两行 44)。
@@ -76,7 +80,9 @@ class GalleryStackCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    final cover = this.cover ?? group.items.firstOrNull;
+    final cover = coverIcon != null
+        ? null
+        : this.cover ?? group.items.firstOrNull;
     final piled = stacked && group.items.length > 1;
     return GestureDetector(
       onTap: onTap,
@@ -138,7 +144,7 @@ class GalleryStackCard extends StatelessWidget {
                                       borderRadius: BorderRadius.circular(10),
                                     ),
                                     child: Icon(
-                                      emptyIcon,
+                                      coverIcon ?? emptyIcon,
                                       size: 36,
                                       color: scheme.onSurfaceVariant,
                                     ),

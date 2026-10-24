@@ -216,8 +216,8 @@ void main() {
     await tester.tap(find.text('历史'));
     await tester.pumpAndSettle();
     expect(find.text('全部相册'), findsOneWidget);
-    // 全部相册和收藏都是 0 张
-    expect(find.text('0 张'), findsNWidgets(2));
+    // 全部相册、收藏和回收站都是 0 张
+    expect(find.text('0 张'), findsNWidgets(3));
 
     await tester.tap(find.text('全部相册'));
     await tester.pumpAndSettle();

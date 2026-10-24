@@ -20,6 +20,16 @@ String galleryDayLabel(int dayKey, DateTime now) {
   return y == now.year ? '$m月$d日' : '$y年$m月$d日';
 }
 
+/// [ms] 那天到 [now] 那天隔了几个自然日(同一天为 0)。
+int galleryDaysSince(int ms, DateTime now) {
+  final d = DateTime.fromMillisecondsSinceEpoch(ms);
+  return DateTime.utc(
+    now.year,
+    now.month,
+    now.day,
+  ).difference(DateTime.utc(d.year, d.month, d.day)).inDays;
+}
+
 /// 缩略图右下角时刻(HH:mm)。段头已给出日期,逐张再标日期是纯重复,
 /// 标时刻才是段内的增量信息。无时间戳返回空串(不画)。
 String galleryTimeBadge(int createdAtMs) {
