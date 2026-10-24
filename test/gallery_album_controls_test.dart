@@ -377,7 +377,12 @@ void main() {
     await tester.tap(find.text('选择相册'));
     await tester.pumpAndSettle();
     // 和「保存到」同一个点选面板,当前这本描边;不是打开网格面板。
-    expect(find.byType(GalleryStackCard), findsNWidgets(4));
+    // 收藏不作浏览相册,不列出来。
+    expect(find.byType(GalleryStackCard), findsNWidgets(3));
+    expect(
+      find.byKey(const ValueKey('browse-album-choice-$favoritesId')),
+      findsNothing,
+    );
     expect(find.text('新建'), findsOneWidget);
     await tester.tap(find.byKey(ValueKey('browse-album-choice-$albumId')));
     await tester.pumpAndSettle();
@@ -652,6 +657,81 @@ void main() {
     await tester.pumpAndSettle();
     expect(container.read(galleryBrowseAlbumProvider), albumId);
     expect(container.read(galleryViewProvider).selectedId, 'gen1');
+
+    // 回到首页再结束:面板会记住关闭时停在哪一页。
+    await tester.tap(find.text('历史'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('回到相册'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('打开收藏胶片条不跟过去；在收藏里点图，胶片条里有就不动，没有就回全部相册', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final albums = container.read(albumsProvider.notifier);
+    // 旅行里只有 gen1;收藏 gen1、gen2。
+    await tester.runAsync(() async {
+      await albums.setFavorite('gen1', true);
+      await albums.setFavorite('gen2', true);
+    });
+    // 记下的浏览 / 保存相册是收藏时,一律按全部相册算。
+    container
+        .read(uiPrefsProvider.notifier)
+        .patch(
+          (p) => p.copyWith(
+            galleryBrowseAlbum: favoritesId,
+            gallerySaveAlbum: favoritesId,
+          ),
+        );
+    expect(container.read(galleryBrowseAlbumProvider), isNull);
+    expect(container.read(gallerySaveTargetProvider).albumId, isNull);
+    expect(() => albums.browse(favoritesId), throwsStateError);
+
+    albums.browse(albumId);
+    await tester.pumpWidget(
+      app(
+        Column(
+          children: [
+            Builder(
+              builder: (context) => TextButton(
+                onPressed: () => showGalleryGrid(context),
+                child: const Text('历史'),
+              ),
+            ),
+            const Expanded(child: GalleryPage()),
+          ],
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    Finder thumb(String id) => find.descendant(
+      of: find.byType(BottomSheet),
+      matching: find.byWidgetPredicate(
+        (w) => w is ResultThumb && w.result.id == id,
+      ),
+    );
+
+    await tester.tap(find.text('历史'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('收藏'));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('回到相册'), findsOneWidget);
+    expect(container.read(galleryBrowseAlbumProvider), albumId);
+
+    await tester.tap(thumb('gen1'));
+    await tester.pumpAndSettle();
+    expect(container.read(galleryBrowseAlbumProvider), albumId);
+    expect(container.read(galleryViewProvider).selectedId, 'gen1');
+
+    await tester.tap(find.text('历史'));
+    await tester.pumpAndSettle();
+    await tester.tap(thumb('gen2'));
+    await tester.pumpAndSettle();
+    expect(container.read(galleryBrowseAlbumProvider), isNull);
+    expect(container.read(galleryViewProvider).selectedId, 'gen2');
 
     // 回到首页再结束:面板会记住关闭时停在哪一页。
     await tester.tap(find.text('历史'));

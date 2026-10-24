@@ -12,14 +12,24 @@ final albumsProvider = NotifierProvider<AlbumsNotifier, AlbumsData>(
   AlbumsNotifier.new,
 );
 
-final galleryBrowseAlbumProvider = Provider<String?>((ref) {
-  final id = ref.watch(uiPrefsProvider).galleryBrowseAlbum;
-  return id.isEmpty || !ref.watch(albumsProvider).exists(id) ? null : id;
-});
+/// 记下的相册 id → 实际生效的那本:空、已删除、「收藏」都按全部相册算。
+/// 「收藏」只在网格面板里看,不作胶片条的浏览范围,也不作保存相册。
+String? _scopeOf(AlbumsData albums, String id) =>
+    id.isEmpty || id == favoritesId || !albums.exists(id) ? null : id;
+
+final galleryBrowseAlbumProvider = Provider<String?>(
+  (ref) => _scopeOf(
+    ref.watch(albumsProvider),
+    ref.watch(uiPrefsProvider).galleryBrowseAlbum,
+  ),
+);
 
 final gallerySaveTargetProvider = Provider<GallerySaveTarget>((ref) {
-  final id = ref.watch(uiPrefsProvider).gallerySaveAlbum;
-  return id.isEmpty || !ref.watch(albumsProvider).exists(id)
+  final id = _scopeOf(
+    ref.watch(albumsProvider),
+    ref.watch(uiPrefsProvider).gallerySaveAlbum,
+  );
+  return id == null
       ? const GallerySaveTarget.all()
       : GallerySaveTarget.album(id);
 });
@@ -161,11 +171,9 @@ class AlbumsNotifier extends Notifier<AlbumsData> {
     bool alsoSave = false,
     bool keepGeneration = false,
   }) {
+    if (id == favoritesId) throw StateError('「收藏」不能作为浏览相册');
     if (!state.exists(id)) throw StateError('相册已被删除');
-    final savedScope = ref.read(uiPrefsProvider).galleryBrowseAlbum;
-    final old = savedScope.isEmpty || !state.exists(savedScope)
-        ? null
-        : savedScope;
+    final old = _scopeOf(state, ref.read(uiPrefsProvider).galleryBrowseAlbum);
     final all = ref.read(galleryProvider);
     final oldImages = all.results.where((r) => state.contains(old, r.id));
     final selected = oldImages.any((r) => r.id == all.selectedId)
@@ -222,8 +230,7 @@ class AlbumsNotifier extends Notifier<AlbumsData> {
   ({String? id})? takeGridLanding() {
     final land = _gridLanding;
     _gridLanding = null;
-    final browsing = ref.read(uiPrefsProvider).galleryBrowseAlbum;
-    final scope = browsing.isEmpty || !state.exists(browsing) ? null : browsing;
+    final scope = _scopeOf(state, ref.read(uiPrefsProvider).galleryBrowseAlbum);
     return land != null && land.id == scope ? land : null;
   }
 

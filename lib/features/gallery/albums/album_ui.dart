@@ -74,6 +74,7 @@ Future<void> showAlbumBrowsePicker(BuildContext context) async {
     context,
     title: '选择相册',
     keyPrefix: 'browse-album-choice',
+    includeFavorites: false,
     checked: (id: container.read(galleryBrowseAlbumProvider)),
   );
   if (pick == null) return;

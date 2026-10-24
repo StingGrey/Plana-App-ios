@@ -335,7 +335,10 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
   bool get _inTrash => !_albumHome && _activeAlbumId == trashId;
 
   void _openAlbum(String? id) {
-    if (id != trashId && ref.read(galleryBrowseAlbumProvider) != id) {
+    // 回收站、收藏只在面板里看,胶片条不跟过去
+    if (id != trashId &&
+        id != favoritesId &&
+        ref.read(galleryBrowseAlbumProvider) != id) {
       ref.read(albumsProvider.notifier).browse(id);
     }
     _pendingAlbumId = id;
@@ -829,10 +832,16 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
                     _thumbMenu(r.id, from);
                   } else {
                     // 胶片条跟到面板停的这本:两边不一致时,点的这张可能
-                    // 不在胶片条里,画布上就显示不出来。
-                    if (ref.read(galleryBrowseAlbumProvider) !=
-                        _activeAlbumId) {
-                      ref.read(albumsProvider.notifier).browse(_activeAlbumId);
+                    // 不在胶片条里,画布上就显示不出来。在收藏里点的:胶片条
+                    // 里有这张就不动,没有就回到全部相册。
+                    final browsing = ref.read(galleryBrowseAlbumProvider);
+                    final scope = _activeAlbumId != favoritesId
+                        ? _activeAlbumId
+                        : ref.read(albumsProvider).contains(browsing, r.id)
+                        ? browsing
+                        : null;
+                    if (browsing != scope) {
+                      ref.read(albumsProvider.notifier).browse(scope);
                     }
                     ref.read(galleryProvider.notifier).select(r.id);
                     Navigator.of(context).pop();
