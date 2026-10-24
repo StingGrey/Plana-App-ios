@@ -8,6 +8,7 @@ import '../../../core/util/image_ops.dart';
 import '../../../core/util/image_pick.dart';
 import '../../inpaint/inpaint_overlay.dart';
 import '../../shell/shell_state.dart';
+import '../canvas_state.dart';
 import '../generate_state.dart';
 import '../models.dart';
 import 'common.dart';
@@ -17,11 +18,16 @@ import 'section_card.dart';
 /// 写入状态并展开图生图面板;分辨率有变时提示一声。
 /// 图生图卡「选择底图」与操作栏「底图」按钮共用。
 Future<void> pickImg2ImgImage(BuildContext context, WidgetRef ref) async {
+  final canvasId = ref.read(canvasWorkspaceProvider).activeId;
   final file = await pickImageFile(context);
   if (file == null || !context.mounted) return;
   final bytes = file.bytes;
   final (rw, rh) = await decodeImageSize(bytes); // 解码原始尺寸
-  if (!context.mounted) return;
+  // 选图到解码完之间切走了画布:这张就不设了
+  if (!context.mounted ||
+      ref.read(canvasWorkspaceProvider).activeId != canvasId) {
+    return;
+  }
   final res = img2imgResolution(rw, rh); // 64 对齐 / 像素封顶
   final before = ref.read(generateProvider).params;
   ref

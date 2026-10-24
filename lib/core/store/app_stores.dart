@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import '../../features/assistant/session_store.dart';
 import '../../features/gallery/gallery_store.dart';
 import '../../features/gallery/albums/album_store.dart';
+import '../../features/generate/canvas_history.dart';
 import '../../features/generate/workspace_store.dart';
 import '../../features/local_gallery/local_gallery_store.dart';
 import '../../features/stats/key_ledger.dart';
@@ -28,6 +29,7 @@ class AppStores {
     this.assistant,
     this.prefs,
     this.albums,
+    this.history,
   );
 
   final BlobStore blobs;
@@ -36,6 +38,11 @@ class AppStores {
   final LocalGalleryStore localGallery;
   final AlbumStore albums;
   final KeyLedgerStore ledger;
+
+  /// 画布历史,见 [CanvasHistoryStore]。
+  final CanvasHistoryStore history;
+
+  /// AI 助手的对话存档,见 [AssistantStore]。
   final AssistantStore assistant;
 
   /// 非机密设置(主题/生成参数/编辑器…),见 [PrefsStore]。
@@ -57,6 +64,7 @@ class AppStores {
       AssistantStore(blobs, root),
       PrefsStore.emptyForTest(root),
       AlbumStore(root),
+      CanvasHistoryStore(workspace, root),
     );
   }
 
@@ -108,6 +116,7 @@ class AppStores {
       assistant,
       prefs,
       albums,
+      CanvasHistoryStore(workspace, root),
     );
   }
 
@@ -123,16 +132,22 @@ class AppStores {
   /// 启动后台维护(避开首帧,延迟几秒):清选图器缓存垃圾 + 远端图缓存裁剪
   /// + blob GC。
   void postBootMaintenance() {
+    final bootedAt = DateTime.now();
     Future<void>(() async {
       await Future<void>.delayed(const Duration(seconds: 6));
       await sweepPickerCache();
       await RemoteImageStore.trim();
       await clearRetiredRoleLexicon();
       try {
+        final canvases = workspace.initialCanvases?.canvases ?? const [];
+        await history.removeOrphans({
+          for (final c in canvases) c.id,
+        }, bootedAt);
         final live = <String>{
           ...await workspace.liveRefs(),
           ...await gallery.liveRefs(),
           ...await assistant.liveRefs(),
+          ...await history.liveRefs(),
         };
         await blobs.gc(live);
       } catch (_) {}

@@ -551,7 +551,7 @@ class _RouteCard extends StatelessWidget {
                         : '尚未授权 Bot,当前无法生成')
                   : (mode == AuthMode.token
                         ? '使用你的 NovelAI 账户生成图片'
-                        : '使用 Bot 账户生成图片,需按月结算费用'),
+                        : '使用 Bot 账户生成图片,费用从钱包扣除'),
               style: context.texts.labelSmall!.copyWith(
                 color: missing ? scheme.error : scheme.outline,
               ),

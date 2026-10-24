@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/util/image_pick.dart';
+import '../canvas_state.dart';
 import '../generate_state.dart';
 import '../models.dart';
 import 'common.dart';
@@ -34,6 +35,7 @@ class _KreaStyleRefCardState extends ConsumerState<KreaStyleRefCard> {
   String? _selectedId;
 
   Future<void> _onAdd() async {
+    final canvasId = ref.read(canvasWorkspaceProvider).activeId;
     final files = await pickImageFiles(context);
     if (files.isEmpty || !mounted) return;
     final notifier = ref.read(generateProvider.notifier);
@@ -41,7 +43,10 @@ class _KreaStyleRefCardState extends ConsumerState<KreaStyleRefCard> {
     var dropped = 0;
     for (final f in files) {
       final hash = await compute(_sha256Hex, f.bytes); // 后台算内容哈希
-      if (!mounted) return;
+      // 选图到加进来之间切走了画布:没加的就不加了
+      if (!mounted || ref.read(canvasWorkspaceProvider).activeId != canvasId) {
+        return;
+      }
       final id = notifier.addKreaStyleRef(
         image: f.bytes,
         name: f.baseName,

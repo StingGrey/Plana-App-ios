@@ -168,7 +168,7 @@ class _PromptCardState extends ConsumerState<PromptCard> {
                                       style:
                                           mono(
                                             context,
-                                            size: 11,
+                                            size: 12,
                                             weight: FontWeight.w700,
                                           ).copyWith(
                                             color: over
@@ -180,7 +180,7 @@ class _PromptCardState extends ConsumerState<PromptCard> {
                                       ' / $limit',
                                       style: mono(
                                         context,
-                                        size: 11,
+                                        size: 12,
                                         weight: FontWeight.w500,
                                       ).copyWith(color: scheme.outline),
                                     ),
@@ -385,7 +385,7 @@ class _PromptCardState extends ConsumerState<PromptCard> {
                   '$negTokens',
                   style: mono(
                     context,
-                    size: 12,
+                    size: 13,
                     weight: FontWeight.w500,
                   ).copyWith(color: scheme.outline),
                 ),
@@ -739,6 +739,10 @@ class _SectionRows extends ConsumerWidget {
               tok,
               main: s.isMain ? state.prompt : s.positive,
             ),
+            negTokens: totalPromptTokens(
+              tok,
+              main: s.isMain ? state.negativePrompt : s.negative,
+            ),
             selecting: selecting,
             picked: picked.contains(s.id),
             onToggle: () => onToggle(s.id),
@@ -776,6 +780,7 @@ class _SectionRow extends ConsumerWidget {
     required this.fallbackName,
     required this.draft,
     required this.tokens,
+    required this.negTokens,
     this.selecting = false,
     this.picked = false,
     this.onToggle,
@@ -801,6 +806,7 @@ class _SectionRow extends ConsumerWidget {
   /// 这一格的编辑器草稿(折叠在预览里显示成名字)。
   final String draft;
   final int tokens;
+  final int negTokens;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -811,6 +817,11 @@ class _SectionRow extends ConsumerWidget {
     final on = s.enabled;
     // 与角色卡的开关 / 删除同一尺寸(窄屏同样收到 32)
     final btnSize = MediaQuery.sizeOf(context).width < 350 ? 32.0 : 36.0;
+    final countStyle = mono(
+      context,
+      size: 12,
+      weight: FontWeight.w500,
+    ).copyWith(color: scheme.outline, height: 1.25);
     return InkWell(
       onLongPress: selecting ? null : onHold,
       onTap: selecting
@@ -851,16 +862,19 @@ class _SectionRow extends ConsumerWidget {
               child: _Preview(draft: draft, enabled: on),
             ),
             const SizedBox(width: 8),
+            // 上正向、下负面
             SizedBox(
-              width: 26,
-              child: Text(
-                '$tokens',
-                textAlign: TextAlign.right,
-                style: mono(
-                  context,
-                  size: 11,
-                  weight: FontWeight.w500,
-                ).copyWith(color: scheme.outline),
+              width: 30,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text('$tokens', style: countStyle),
+                  Text(
+                    '$negTokens',
+                    style: countStyle.copyWith(color: scheme.error),
+                  ),
+                ],
               ),
             ),
             const SizedBox(width: 6),

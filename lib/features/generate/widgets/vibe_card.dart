@@ -11,6 +11,7 @@ import '../../../core/util/image_pick.dart';
 import '../../vibe_library/vibe_import.dart' show ingestVibeFiles;
 import '../../vibe_library/vibe_library.dart';
 import '../../vibe_library/vibe_library_page.dart';
+import '../canvas_state.dart';
 import '../generate_state.dart';
 import '../models.dart';
 import 'common.dart';
@@ -34,21 +35,26 @@ class _VibeCardState extends ConsumerState<VibeCard> {
   String? _selectedId;
 
   Future<void> _onAdd() async {
+    final canvasId = ref.read(canvasWorkspaceProvider).activeId;
     final picked = await pickImagesOrFiles(context);
     if (picked.isEmpty || !mounted) return;
     // 从系统 Files 选的:不限扩展名,vibe 文件也可能在里面
-    if (picked.files.isNotEmpty) return _addFiles(picked.files);
-    await _addImages(picked.images);
+    if (picked.files.isNotEmpty) return _addFiles(picked.files, canvasId);
+    await _addImages(picked.images, canvasId);
   }
 
-  Future<void> _addImages(List<PickedImage> files) async {
+  /// 选图到加进来之间切走了画布:没加的就不加了(图已进 Vibe 库)。
+  bool _left(String canvasId) =>
+      ref.read(canvasWorkspaceProvider).activeId != canvasId;
+
+  Future<void> _addImages(List<PickedImage> files, String canvasId) async {
     // 互斥态在加图前取一次:加 Vibe 会顺手停掉角色参考
     final hadCharRefs = ref.read(generateProvider).enabledCharRefs > 0;
     String? lastId;
     for (final f in files) {
       final bytes = f.bytes;
       final hash = await compute(_sha256Hex, bytes); // 后台算内容哈希
-      if (!mounted) return;
+      if (!mounted || _left(canvasId)) return;
       // 顺手入库(同图去重;重启后可从 Vibe 库找回,编码缓存互通不多扣点)
       String? sourceId;
       try {
@@ -59,7 +65,7 @@ class _VibeCardState extends ConsumerState<VibeCard> {
       } catch (_) {
         // 入库失败不影响本次使用
       }
-      if (!mounted) return;
+      if (!mounted || _left(canvasId)) return;
       final id = ref
           .read(generateProvider.notifier)
           .addVibe(
@@ -77,16 +83,16 @@ class _VibeCardState extends ConsumerState<VibeCard> {
 
   /// 从文件浏览器选来的:图片按参考图入库,vibe 文件按 vibe 解析(整包里的多条
   /// 一并加进来),都先落 Vibe 库再取用 —— 纯编码 vibe 没有图,只能这么走。
-  Future<void> _addFiles(List<PlatformFile> files) async {
+  Future<void> _addFiles(List<PlatformFile> files, String canvasId) async {
     final lib = ref.read(vibeLibraryProvider.notifier);
     final got = await ingestVibeFiles(lib, files);
-    if (!mounted) return;
+    if (!mounted || _left(canvasId)) return;
     final hadCharRefs = ref.read(generateProvider).enabledCharRefs > 0;
     var failed = got.failed;
     String? lastId;
     for (final e in got.entries) {
       final data = await lib.loadForGenerate(e);
-      if (!mounted) return;
+      if (!mounted || _left(canvasId)) return;
       if (data == null) {
         failed++; // 落库了但当前拿不出可生成内容(如无任何编码的纯编码条目)
         continue;

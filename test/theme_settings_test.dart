@@ -47,4 +47,17 @@ void main() {
     const on = ThemeSettings(compactCharCards: true);
     expect(ThemeSettings.fromJson(on.toJson()).compactCharCards, isTrue);
   });
+
+  test('选图器:没选过为 null,选过的两档都能回环', () {
+    expect(const ThemeSettings().systemPicker, isNull);
+    expect(ThemeSettings.fromJson({'mode': 'dark'}).systemPicker, isNull);
+    expect(
+      ThemeSettings.fromJson({'systemPicker': 'yes'}).systemPicker,
+      isNull,
+    );
+    for (final v in [true, false]) {
+      final s = ThemeSettings(systemPicker: v);
+      expect(ThemeSettings.fromJson(s.toJson()).systemPicker, v);
+    }
+  });
 }

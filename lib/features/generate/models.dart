@@ -280,11 +280,11 @@ class InpaintJob {
 
   /// 发送尺寸(宽, 高):遮罩与底图同尺寸,读遮罩的 PNG 头即得。重绘只能按这个
   /// 尺寸发 —— 声明的宽高和图对不上,服务端拒单,贴回也对不上框。读不出 null。
-  (int, int)? get sendSize => _pngSizeOf(mask);
+  (int, int)? get sendSize => pngSizeOf(mask);
 }
 
 /// 只读 PNG 头拿宽高(IHDR 在 offset 16 / 20),不解码整图;不是 PNG 给 null。
-(int, int)? _pngSizeOf(Uint8List b) {
+(int, int)? pngSizeOf(Uint8List b) {
   const sig = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
   if (b.length < 24) return null;
   for (var i = 0; i < sig.length; i++) {
@@ -426,6 +426,20 @@ const nai5Models = <String>[
 ];
 
 bool isNai5Model(String displayModel) => displayModel.startsWith('NAI 5.0');
+
+/// 界面上显示的模型名:NAI 去掉版本号的「.0」(`NAI 5.0 Full Medium` →
+/// `NAI 5 Full Medium`)。只管显示,存档与判定仍用全名。
+String modelName(String model) {
+  final parts = model.split(' ');
+  if (parts.length < 2 || parts.first != 'NAI') return model;
+  parts[1] = parts[1].replaceFirst(RegExp(r'\.0$'), '');
+  return parts.join(' ');
+}
+
+/// 顶栏模型入口的短名:再把 Medium 缩成 M(`NAI 5.0 Full Medium` →
+/// `NAI 5 Full M`),Full / Curated 不缩。
+String shortModelName(String model) =>
+    modelName(model).replaceFirst(RegExp(r' Medium$'), ' M');
 
 /// V5 Full 的 Medium 档:步数、采样器按官方固定,不发 CFG Rescale。
 bool isNai5MediumModel(String displayModel) =>
@@ -1271,13 +1285,13 @@ class GenerateState {
   final int anlas;
   final Set<Panel> openPanels;
 
-  /// 挂载的 LoRA(anima / krea 共用一份;NAI 模型生成时由模块剥离层清掉)。
+  /// 挂载的 LoRA(anima / krea 共用一份列表;NAI 模型生成时由模块剥离层清掉)。
   /// 两边的库互不通用,换底模时收进 [loraMem]、换上另一边上次挂的
   /// (见 [withLoraBaseOf])。
   final List<ActiveLora> loras;
 
-  /// 不在用的那个底模上次挂的 LoRA(`anima` / `krea` → 列表)。模型跟画布走之后,
-  /// 在 Anima 画布和 Krea 画布之间来回切,各自挂的不能被清掉。
+  /// 不在用的那个底模上次挂的 LoRA(`anima` / `krea` → 列表)。同一张画布
+  /// 进出 Krea 来回切,挂过的不能被清掉。
   final Map<String, List<ActiveLora>> loraMem;
 
   /// Krea 风格参考图(krea 专属;其它父类生成时由剥离层清掉)。

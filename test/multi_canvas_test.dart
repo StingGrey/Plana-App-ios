@@ -14,6 +14,7 @@ import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/core/theme/app_theme.dart';
 import 'package:plana_app/features/editor/editor_state.dart';
 import 'package:plana_app/features/gallery/albums/album_models.dart';
+import 'package:plana_app/features/generate/canvas_history.dart';
 import 'package:plana_app/features/generate/canvas_state.dart';
 import 'package:plana_app/features/generate/gen_jobs.dart';
 import 'package:plana_app/features/generate/gen_queue.dart';
@@ -32,6 +33,7 @@ import 'package:plana_app/features/inspiration/tag_editor_page.dart';
 import 'package:plana_app/features/inspiration/tag_library.dart';
 import 'package:plana_app/features/inspiration/tag_models.dart'
     show StyleRecipe, TagCategory, TagEntry;
+import 'package:plana_app/features/generate/widgets/canvas_history_sheet.dart';
 import 'package:plana_app/features/generate/widgets/top_bar.dart';
 
 class _TokenMode extends AuthModeNotifier {
@@ -78,6 +80,7 @@ class _Presets extends PromptPresetsNotifier {
 
 class _ControlledGeneration extends GenerationNotifier {
   final snapshots = <GenerateState?>[];
+  final origins = <CanvasOrigin?>[];
   final replies = <Completer<GenOutcome>>[];
   @override
   GenPool build() => const GenPool();
@@ -90,8 +93,10 @@ class _ControlledGeneration extends GenerationNotifier {
     FixedTagsState? fixedTags,
     bool stay = false,
     void Function(String)? onJob,
+    CanvasOrigin? origin,
   }) {
     snapshots.add(using);
+    origins.add(origin);
     final reply = Completer<GenOutcome>();
     replies.add(reply);
     return reply.future;
@@ -135,7 +140,7 @@ void main() {
     c.dispose();
   });
 
-  test('切换换掉提示词组和出图参数；参考图全局共用', () {
+  test('切换换掉整组内容：词、出图参数和参考图', () {
     gen.setPrompts(
       positive: 'rain',
       negative: 'lowres',
@@ -164,21 +169,62 @@ void main() {
     expect(c.read(generateProvider).prompt, 'rain');
     expect(c.read(generateProvider).negativePrompt, 'lowres');
     expect(c.read(generateProvider).characters.first.positive, 'blue hair');
-    // 尺寸跟画布走,A 还是自己的;参考图是全局的,在哪张加的都在
+    // 尺寸和参考图都跟画布走,A 还是自己的
     expect(c.read(generateProvider).params.width, 1024);
     expect(c.read(generateProvider).vibes.single.name, 'rain palette');
     canvases.select(b);
     expect(c.read(generateProvider).prompt, 'sunset');
     expect(c.read(generateProvider).characters.first.positive, 'red hair');
+    expect(c.read(generateProvider).vibes.single.name, 'rain palette');
+    gen.removeVibe(c.read(generateProvider).vibes.single.id);
+    gen.addCharRef(image: Uint8List.fromList([4, 5, 6]), name: 'b face');
+    canvases.select(a);
+    expect(c.read(generateProvider).vibes.single.name, 'rain palette');
+    expect(c.read(generateProvider).charRefs, isEmpty);
+    canvases.select(b);
+    expect(c.read(generateProvider).vibes, isEmpty);
+    expect(c.read(generateProvider).charRefs.single.name, 'b face');
+    gen.setImg2ImgImage(
+      image: Uint8List.fromList([7, 8, 9]),
+      width: 832,
+      height: 1216,
+    );
     canvases.create();
     expect(c.read(generateProvider).prompt, isEmpty);
     expect(c.read(generateProvider).negativePrompt, isEmpty);
     expect(c.read(generateProvider).characters, isEmpty);
     expect(c.read(generateProvider).params.useCoords, isFalse);
-    expect(c.read(generateProvider).vibes, hasLength(1));
+    expect(c.read(generateProvider).vibes, isEmpty);
+    expect(c.read(generateProvider).charRefs, isEmpty);
+    expect(c.read(generateProvider).img2img, isNull);
     expect(c.read(generateProvider).params.width, 832);
     canvases.select(a);
     expect(c.read(generateProvider).params.useCoords, isTrue);
+    expect(c.read(generateProvider).img2img, isNull);
+    canvases.select(b);
+    expect(c.read(generateProvider).img2img!.image, [7, 8, 9]);
+  });
+
+  test('新建空白画布沿用重绘放大、强度归一和风格参考强度,清空 LoRA;切画布各还各的', () {
+    gen.setModel('Anima Turbo');
+    gen.applyLoraSelection([const ActiveLora(name: 'x', displayName: 'X')]);
+    gen.updateHires(enabled: true, scale: 1.8);
+    gen.applyParams(
+      c.read(generateProvider).params.copyWith(normalizeVibe: false),
+    );
+    gen.setKreaStyleRefWeight(0.4);
+    final a = c.read(canvasWorkspaceProvider).activeId;
+    canvases.create();
+    final s = c.read(generateProvider);
+    expect(s.loras, isEmpty);
+    expect(s.params.hires.enabled, isTrue);
+    expect(s.params.hires.scale, 1.8);
+    expect(s.params.normalizeVibe, isFalse);
+    expect(s.kreaStyleRefWeight, 0.4);
+    gen.updateHires(enabled: false);
+    canvases.select(a);
+    expect(c.read(generateProvider).params.hires.enabled, isTrue);
+    expect(c.read(generateProvider).loras.single.name, 'x');
   });
 
   test('复制的名字只挂一个「· 副本」，并守住长度上限', () {
@@ -290,13 +336,16 @@ void main() {
     expect(params().animaSteps, 30);
   });
 
-  test('LoRA 按底模各记一份：Anima 画布和 Krea 画布来回切不丢', () {
+  test('LoRA 跟画布走,同一张画布进出 Krea 按底模各记一份', () {
     const x = ActiveLora(name: 'x', displayName: 'X');
     const y = ActiveLora(name: 'y', displayName: 'Y');
+    const z = ActiveLora(name: 'z', displayName: 'Z');
     gen.setModel('Anima Turbo');
     gen.applyLoraSelection([x]);
     final a = c.read(canvasWorkspaceProvider).activeId;
     final b = canvases.create();
+    expect(c.read(generateProvider).loras, isEmpty, reason: '空白画布不挂');
+    gen.applyLoraSelection([z]);
     gen.setModel('Krea 2 Turbo');
     expect(c.read(generateProvider).loras, isEmpty, reason: 'Krea 不挂 Anima 的');
     gen.applyLoraSelection([y]);
@@ -304,16 +353,16 @@ void main() {
     expect(c.read(generateProvider).loras.map((l) => l.name), ['x']);
     canvases.select(b);
     expect(c.read(generateProvider).loras.map((l) => l.name), ['y']);
-    // 手动切模型进出 Krea 也一样,不再清空
+    // 手动切模型进出 Krea 也一样,不清空
     gen.setModel('Anima Base');
-    expect(c.read(generateProvider).loras.map((l) => l.name), ['x']);
+    expect(c.read(generateProvider).loras.map((l) => l.name), ['z']);
     gen.setModel('Krea 2 Raw');
     expect(c.read(generateProvider).loras.map((l) => l.name), ['y']);
   });
 
-  // 重绘是全局一份,尺寸跟着画布走:切到尺寸不同的画布再生成,宽高要还是重绘
-  // 那块的,不然底图、遮罩和声明的尺寸对不上。
-  test('挂着重绘时按重绘那块的尺寸发,切到尺寸不同的画布也一样', () {
+  // 存入重绘后又改了尺寸:宽高要还是重绘那块的,不然底图、遮罩和声明的尺寸
+  // 对不上。重绘跟画布走,新画布没有。
+  test('挂着重绘时按重绘那块的尺寸发,存入后改了尺寸也一样', () {
     final png = Uint8List.fromList(
       img.encodePng(img.Image(width: 64, height: 128)),
     );
@@ -332,10 +381,14 @@ void main() {
       height: 128,
     );
     expect(sent(), (64, 128));
-    canvases.create();
     gen.setSize(832, 1216);
-    expect(c.read(generateProvider).inpaint, isNotNull);
     expect(sent(), (64, 128));
+    final a = c.read(canvasWorkspaceProvider).activeId;
+    canvases.create();
+    expect(c.read(generateProvider).inpaint, isNull);
+    expect(sent(), (832, 1216));
+    canvases.select(a);
+    expect(c.read(generateProvider).inpaint, isNotNull);
     gen.clearInpaint();
     expect(sent(), (832, 1216));
   });
@@ -358,6 +411,41 @@ void main() {
     expect(c.read(generateProvider).loras, isEmpty);
     gen.setModel('Anima Turbo');
     expect(c.read(generateProvider).loras.single.name, 'real');
+  });
+
+  test('下载途中切走了画布：每张画布里的占位条都转正,当前画布不动', () {
+    const pending = ActiveLora(
+      name: 'pending-2',
+      displayName: 'P',
+      weight: .6,
+      pending: LoraPending(versionId: 2),
+    );
+    gen.setModel('Anima Turbo');
+    gen.applyLoraSelection([pending]);
+    final a = c.read(canvasWorkspaceProvider).activeId;
+    final b = canvases.create(duplicate: true);
+    gen.setModel('Krea 2 Turbo'); // 复制出来的这张把占位条收进了 loraMem
+    canvases.create();
+    gen.setModel('Anima Turbo');
+    gen.applyLoraSelection([const ActiveLora(name: 'x', displayName: 'X')]);
+    final promoted = gen.promotePendingLora(
+      'pending-2',
+      const ActiveLora(name: 'real', displayName: 'Real'),
+    );
+    expect(promoted, isTrue);
+    expect(c.read(generateProvider).loras.single.name, 'x');
+    CanvasPrompts at(String id) =>
+        c.read(canvasWorkspaceProvider).find(id)!.prompts;
+    expect(at(a).loras.single.name, 'real');
+    expect(at(a).loras.single.weight, .6);
+    expect(at(b).loraMem['anima']!.single.name, 'real');
+    expect(
+      gen.promotePendingLora(
+        'pending-2',
+        const ActiveLora(name: 'real', displayName: 'Real'),
+      ),
+      isFalse,
+    );
   });
 
   test('收起来的 LoRA 随存档保存', () async {
@@ -547,7 +635,7 @@ void main() {
     expect(c.read(canvasWorkspaceProvider).canvases.map((d) => d.id), [a, b]);
   });
 
-  test('重启恢复全部画布的词、当前选择、预设，以及全局设置与图片', () async {
+  test('重启恢复全部画布的词、当前选择、预设、参考图，以及全局设置', () async {
     c.dispose();
     final root = Directory.systemTemp.createTempSync('plana_canvas_restore');
     bind(await AppStores.open(rootOverride: root));
@@ -574,12 +662,36 @@ void main() {
     expect(workspace.active.prompts.promptPresetId, 'none');
     expect(workspace.find(a)!.prompts.prompt, 'rain');
     expect(workspace.find(a)!.prompts.sampling!.steps, 20);
+    final atA = workspace.find(a)!.prompts.vibes.single;
+    expect(atA.name, 'A image');
+    expect(atA.image, Uint8List.fromList([1, 2, 3]));
     final initial = reloaded.workspace.initial!;
     expect(initial.prompt, 'sunset');
     expect(initial.params.steps, 40);
     expect(initial.params.width, 1024);
-    expect(initial.vibes.map((v) => v.name), ['A image', 'B image']);
-    expect(initial.vibes.first.image, Uint8List.fromList([1, 2, 3]));
+    expect(initial.vibes.map((v) => v.name), ['B image']);
+    expect(initial.vibes.single.image, Uint8List.fromList([4, 5, 6]));
+  });
+
+  test('几张画布用同一张图,载入后共用一份字节', () async {
+    c.dispose();
+    final root = Directory.systemTemp.createTempSync('plana_canvas_share');
+    bind(await AppStores.open(rootOverride: root));
+    await c.read(promptPresetsProvider.future);
+    gen.addVibe(image: Uint8List.fromList([1, 2, 3]), name: 'shared');
+    canvases.create(duplicate: true);
+    canvases.create(duplicate: true);
+    stores.flushNow();
+    await stores.workspace.idle;
+    expect(await stores.workspace.liveRefs(), hasLength(1));
+    final w = (await AppStores.open(rootOverride: root)).workspace;
+    final images = [
+      for (final d in w.initialCanvases!.canvases) d.prompts.vibes.single.image,
+    ];
+    expect(images, hasLength(3));
+    expect(identical(images[0], images[1]), isTrue);
+    expect(identical(images[1], images[2]), isTrue);
+    expect(identical(w.initial!.vibes.single.image, images[2]), isTrue);
   });
 
   test('拖动排序只动顺序：当前画布不变，重启后顺序还在', () async {
@@ -758,6 +870,82 @@ void main() {
     expect(s.sampling!.seed, '42');
   });
 
+  test('参考图收进画布之前的存档：每张画布都补成当时全局那份,LoRA 按各自底模', () async {
+    final root = Directory.systemTemp.createTempSync('plana_canvas_refs');
+    final blobs = (await AppStores.open(rootOverride: root)).blobs;
+    final full = await encodeGenerateState(
+      GenerateState.initial().copyWith(
+        vibes: [
+          VibeItem(id: 'id120', name: 'v', image: Uint8List.fromList([1, 2])),
+        ],
+        charRefs: [
+          CharRefItem(id: 'id121', name: 'r', image: Uint8List.fromList([3])),
+        ],
+        img2img: Img2ImgConfig(image: Uint8List.fromList([4])),
+        loras: const [ActiveLora(name: 'x', displayName: 'X')],
+        loraMem: const {
+          'krea': [ActiveLora(name: 'k', displayName: 'K')],
+        },
+        kreaStyleRefWeight: .3,
+        params: const GenParams().copyWith(
+          model: 'Anima Turbo',
+          normalizeVibe: false,
+          hires: const HiresConfig(enabled: true, scale: 1.7),
+        ),
+      ),
+      blobs,
+    );
+    final file = File('${root.path}/workspace/state.json');
+    await file.parent.create(recursive: true);
+    await file.writeAsString(
+      jsonEncode({
+        'v': 3,
+        'idSeq': 100,
+        'refs': full.refs.toList(),
+        'state': full.json,
+        'activeCanvasId': 'canvas1',
+        'nextCanvasId': 3,
+        'canvases': [
+          {
+            'id': 'canvas1',
+            'name': '默认画布',
+            'prompts': {
+              'prompt': 'a',
+              'useCoords': false,
+              'sampling': {'model': 'Anima Turbo'},
+            },
+          },
+          {
+            'id': 'canvas2',
+            'name': '画布 1',
+            'prompts': {
+              'prompt': 'b',
+              'useCoords': false,
+              'sampling': {'model': 'Krea 2 Turbo'},
+            },
+          },
+        ],
+      }),
+    );
+    final loaded = await AppStores.open(rootOverride: root);
+    final w = loaded.workspace.initialCanvases!;
+    final a = w.find('canvas1')!.prompts;
+    final b = w.find('canvas2')!.prompts;
+    for (final p in [a, b]) {
+      expect(p.vibes.single.image, [1, 2]);
+      expect(p.charRefs.single.name, 'r');
+      expect(p.img2img!.image, [4]);
+      expect(p.kreaStyleRefWeight, .3);
+      expect(p.normalizeVibe, isFalse);
+      expect(p.sampling!.hires.scale, 1.7);
+    }
+    expect(identical(a.vibes.single.image, b.vibes.single.image), isTrue);
+    expect(a.loras.single.name, 'x');
+    expect(b.loras.single.name, 'k');
+    expect(b.loraMem['anima']!.single.name, 'x');
+    expect(loaded.workspace.idSeq, 122);
+  });
+
   test('v1 单工作台无损迁移，恢复角色 id 发号器', () async {
     final root = Directory.systemTemp.createTempSync('plana_canvas_migrate');
     final legacyStores = await AppStores.open(rootOverride: root);
@@ -876,17 +1064,20 @@ void main() {
     gen.setPrompts(positive: 'rain');
     gen.applyParams(c.read(generateProvider).params.copyWith(steps: 20));
     gen.setSize(1024, 1024);
+    gen.addVibe(image: Uint8List.fromList([1, 2, 3]), name: 'rain vibe');
     gen.setLoop(LoopCount.x4);
     final running = c.read(loopStatusProvider.notifier).start();
     await dispatched(1);
     expect(generation.snapshots[0]!.prompt, 'rain');
     canvases.create();
     gen.setPrompts(positive: 'forest');
+    gen.addVibe(image: Uint8List.fromList([4, 5, 6]), name: 'forest vibe');
     gen.applyParams(c.read(generateProvider).params.copyWith(steps: 40));
     gen.setSize(640, 640);
     generation.replies[0].complete(GenOutcome.ok);
     await dispatched(2);
     expect(generation.snapshots[1]!.prompt, 'rain');
+    expect(generation.snapshots[1]!.vibes.single.name, 'rain vibe');
     expect(generation.snapshots[1]!.params.steps, 20);
     expect(generation.snapshots[1]!.params.width, 1024);
     canvases.updatePrompts(a, (p) => p.copyWith(prompt: 'rain, moon'));
@@ -900,6 +1091,161 @@ void main() {
     generation.replies[3].complete(GenOutcome.ok);
     await running;
     expect(c.read(generateProvider).prompt, 'forest');
+  });
+
+  test('画布历史:同样内容连着出图只算一条,图追加在前;每张画布最多 50 条', () async {
+    final history = stores.history;
+    final a = c.read(canvasWorkspaceProvider).activeId;
+    gen.setPrompts(positive: 'rain');
+    await history.record(a, CanvasPrompts.of(c.read(generateProvider)), ['g1']);
+    await history.record(a, CanvasPrompts.of(c.read(generateProvider)), [
+      'g2',
+      'g3',
+    ]);
+    var list = await history.load(a);
+    expect(list, hasLength(1));
+    expect(list.single.resultIds, ['g2', 'g3', 'g1']);
+    for (var i = 4; i <= 6; i++) {
+      await history.record(a, CanvasPrompts.of(c.read(generateProvider)), [
+        'g$i',
+      ]);
+    }
+    list = await history.load(a);
+    expect(list.single.resultIds, hasLength(CanvasHistoryStore.maxResults));
+    expect(list.single.resultIds.first, 'g6');
+    gen.setPrompts(positive: 'rain, moon');
+    await history.record(a, CanvasPrompts.of(c.read(generateProvider)), ['x']);
+    list = await history.load(a);
+    expect(list.map((e) => e.preview.prompt), ['rain, moon', 'rain']);
+    for (var i = 0; i < 60; i++) {
+      gen.setPrompts(positive: 'tag$i');
+      await history.record(a, CanvasPrompts.of(c.read(generateProvider)), [
+        'n$i',
+      ]);
+    }
+    list = await history.load(a);
+    expect(list, hasLength(CanvasHistoryStore.cap));
+    expect(list.first.preview.prompt, 'tag59');
+    // 别的画布各记各的
+    final b = canvases.create();
+    expect(await history.load(b), isEmpty);
+  });
+
+  test('画布历史随重启保留,引用的图计入 GC;删掉的画布启动时清掉', () async {
+    c.dispose();
+    final root = Directory.systemTemp.createTempSync('plana_canvas_history');
+    bind(await AppStores.open(rootOverride: root));
+    await c.read(promptPresetsProvider.future);
+    final a = c.read(canvasWorkspaceProvider).activeId;
+    gen.setPrompts(positive: 'rain');
+    gen.addVibe(image: Uint8List.fromList([9, 9, 9]), name: 'v');
+    await stores.history.record(
+      a,
+      CanvasPrompts.of(c.read(generateProvider)),
+      ['g1'],
+    );
+    final b = canvases.create();
+    await stores.history.record(
+      b,
+      CanvasPrompts.of(c.read(generateProvider)),
+      ['g2'],
+    );
+    gen.removeVibe(c.read(generateProvider).vibes.firstOrNull?.id ?? '');
+    canvases.select(a);
+    gen.removeVibe(c.read(generateProvider).vibes.single.id);
+    stores.flushNow();
+    await stores.workspace.idle;
+    expect(await stores.workspace.liveRefs(), isEmpty);
+    expect(await stores.history.liveRefs(), hasLength(1));
+    canvases.remove(b);
+    stores.flushNow();
+    await stores.workspace.idle;
+    final reloaded = await AppStores.open(rootOverride: root);
+    final entry = (await reloaded.history.load(a)).single;
+    expect(entry.preview.prompt, 'rain');
+    expect(entry.countOf('vibes'), 1);
+    final back = await reloaded.workspace.decodeCanvas(entry.json);
+    expect(back.vibes.single.image, [9, 9, 9]);
+    await reloaded.history.removeOrphans({
+      for (final d in reloaded.workspace.initialCanvases!.canvases) d.id,
+    }, DateTime.now().add(const Duration(seconds: 1)));
+    expect(await reloaded.history.load(a), hasLength(1));
+    expect(
+      File('${root.path}/workspace/history/$b.json').existsSync(),
+      isFalse,
+    );
+  });
+
+  test('恢复历史整组换回、可撤销;复制成新画布不动原画布', () async {
+    final a = c.read(canvasWorkspaceProvider).activeId;
+    gen.setPrompts(positive: 'rain');
+    gen.addVibe(image: Uint8List.fromList([1]), name: 'v');
+    final old = CanvasPrompts.of(c.read(generateProvider));
+    gen.setPrompts(positive: 'forest');
+    gen.removeVibe(c.read(generateProvider).vibes.single.id);
+    final before = canvases.replace(a, old)!;
+    expect(c.read(generateProvider).prompt, 'rain');
+    expect(c.read(generateProvider).vibes.single.name, 'v');
+    canvases.replace(a, before);
+    expect(c.read(generateProvider).prompt, 'forest');
+    expect(c.read(generateProvider).vibes, isEmpty);
+    final copy = canvases.createFrom(old, from: '默认画布');
+    expect(c.read(canvasWorkspaceProvider).activeId, copy);
+    expect(c.read(canvasWorkspaceProvider).active.name, '默认画布 · 副本');
+    expect(c.read(generateProvider).prompt, 'rain');
+    expect(c.read(canvasWorkspaceProvider).find(a)!.prompts.prompt, 'forest');
+  });
+
+  test('出图带上发起的画布:队列记入队时那张,循环记来源画布', () async {
+    gen.setPrompts(positive: 'rain');
+    final a = c.read(canvasWorkspaceProvider).activeId;
+    final queue = c.read(genQueueProvider.notifier);
+    queue.enqueue();
+    canvases.create();
+    gen.setPrompts(positive: 'forest');
+    final running = queue.maybeStart();
+    await dispatched(1);
+    expect(generation.origins.single!.canvasId, a);
+    expect(generation.origins.single!.content.prompt, 'rain');
+    generation.replies.single.complete(GenOutcome.ok);
+    await running;
+  });
+
+  test('历史一行的改动摘要和时间', () {
+    CanvasHistoryEntry entry(CanvasPrompts p, {int vibes = 0}) =>
+        CanvasHistoryEntry(
+          id: 'h',
+          at: 0,
+          json: {'vibes': List.filled(vibes, {})},
+          preview: p,
+          resultIds: const [],
+          refs: const [],
+        );
+    final base = CanvasPrompts.of(
+      GenerateState.initial().copyWith(prompt: 'a, b, c'),
+    );
+    final next = CanvasPrompts.of(
+      GenerateState.initial().copyWith(
+        prompt: 'a, b, d, e',
+        params: const GenParams().copyWith(steps: 23),
+      ),
+    );
+    expect(
+      historyChanges(entry(base), entry(next, vibes: 1)),
+      '+2 −1 · Vibe 0→1 · 28→23 步',
+    );
+    expect(historyChanges(entry(base), entry(base)), '参数有改动');
+    final now = DateTime(2026, 10, 24, 15);
+    int at(DateTime t) => t.millisecondsSinceEpoch;
+    expect(historyTimeLabel(at(DateTime(2026, 10, 24, 9, 5)), now: now), '09:05');
+    expect(
+      historyTimeLabel(at(DateTime(2026, 10, 23, 21, 30)), now: now),
+      '昨天 21:30',
+    );
+    expect(
+      historyTimeLabel(at(DateTime(2026, 10, 3, 8, 0)), now: now),
+      '10月3日 08:00',
+    );
   });
 
   Future<void> pumpHeader(WidgetTester tester, {double textScale = 1}) async {
@@ -1158,6 +1504,38 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('画布行点「历史」列出出图记录;没出过图写一句空状态', (tester) async {
+    final a = c.read(canvasWorkspaceProvider).activeId;
+    gen.setPrompts(positive: 'rain, moon');
+    await tester.runAsync(
+      () => stores.history.record(
+        a,
+        CanvasPrompts.of(c.read(generateProvider)),
+        ['g1', 'g2'],
+      ),
+    );
+    final b = canvases.create();
+    // 读盘在假时钟里不会自己走完,先读进缓存
+    await tester.runAsync(() => stores.history.load(a));
+    await tester.runAsync(() => stores.history.load(b));
+    await pumpHeader(tester);
+    await tester.tap(find.byTooltip('切换画布'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('历史').first);
+    await tester.pumpAndSettle();
+    expect(find.text('默认画布 · 历史'), findsOneWidget);
+    expect(find.textContaining('2 张'), findsOneWidget);
+    // 底下画布卡片一处,历史这一条一处
+    expect(find.text('rain, moon'), findsNWidgets(2));
+    expect(tester.takeException(), isNull);
+    Navigator.of(tester.element(find.text('默认画布 · 历史'))).pop();
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('历史').last);
+    await tester.pumpAndSettle();
+    expect(find.text('这张画布还没有出过图'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 1));
+  });
+
   testWidgets('面板标题带说明：点开讲清画布记录什么、哪些共用', (tester) async {
     await pumpHeader(tester);
     await tester.tap(find.byTooltip('切换画布'));
@@ -1253,22 +1631,68 @@ void main() {
     expect(find.text('NAI 4.5 Full'), findsOneWidget);
     await tester.tap(find.byTooltip('切换模型：NAI 4.5 Full'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('NAI 5.0 Curated'));
+    await tester.tap(find.text('NAI 5 Curated'));
     await tester.pumpAndSettle();
     expect(c.read(generateProvider).params.model, 'NAI 5.0 Curated');
-    expect(find.text('NAI 5.0 Curated'), findsOneWidget);
+    expect(find.text('NAI 5 Curated'), findsOneWidget);
     expect(find.text('1,234'), findsOneWidget);
-    expect(find.text('70%'), findsOneWidget);
+    // 额度画成点数底下的进度条,百分比只给读屏
+    expect(find.text('70%'), findsNothing);
+    expect(find.bySemanticsLabel(RegExp('1,234，70%')), findsOneWidget);
+    // 条画在读数框外,得落在这枚入口的可见范围里(被撑满行高就画出界、被裁掉)
+    final status = find.byTooltip('点数与额度');
+    final meter = find.descendant(
+      of: status,
+      matching: find.byWidgetPredicate(
+        (w) =>
+            w is CustomPaint &&
+            '${w.foregroundPainter.runtimeType}' == '_MeterPainter',
+      ),
+    );
+    expect(meter, findsOneWidget);
+    expect(
+      tester.getRect(meter).bottom + 6,
+      lessThanOrEqualTo(tester.getRect(status).bottom),
+    );
+    // 入口不裁切内容:条贴着左右边和下半截,按圆角一裁两头就成了斜边
+    expect(
+      find.descendant(
+        of: status,
+        matching: find.byWidgetPredicate(
+          (w) => w is Material && w.clipBehavior != Clip.none,
+        ),
+      ),
+      findsNothing,
+    );
     canvases.create();
     gen.setModel('NAI 4.0 Full');
     await tester.pumpAndSettle();
-    expect(find.text('NAI 4.0 Full'), findsOneWidget);
+    expect(find.text('NAI 4 Full'), findsOneWidget);
     canvases.select(a);
     await tester.pumpAndSettle();
-    expect(find.text('NAI 5.0 Curated'), findsOneWidget);
+    expect(find.text('NAI 5 Curated'), findsOneWidget);
     await tester.tap(find.byTooltip('点数与额度'));
     await tester.pumpAndSettle();
     expect(find.text('点数与额度'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('顶栏三段各占固定的格:画布名长短不推着模型和读数挪', (tester) async {
+    // 从一个字的画布名起步:默认画布那四个字在窄屏下本来就占满了格
+    final id = canvases.create();
+    canvases.rename(id, '雨');
+    gen.setModel('NAI 4.5 Full');
+    await pumpHeader(tester);
+    final model = find.byTooltip('切换模型：NAI 4.5 Full');
+    final status = find.byTooltip('点数与额度');
+    final modelX = tester.getCenter(model).dx;
+    final statusRect = tester.getRect(status);
+    canvases.rename(id, '雨夜街景与霓虹灯下的城市角色探索');
+    await tester.pumpAndSettle();
+    expect(find.text('雨夜街景与霓虹灯下的城市角色探索'), findsOneWidget);
+    expect(tester.getCenter(model).dx, modelX);
+    expect(tester.getRect(status), statusRect);
     expect(tester.takeException(), isNull);
     await tester.pump(const Duration(seconds: 1));
   });

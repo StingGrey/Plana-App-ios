@@ -2,6 +2,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/live_progress/live_progress.dart';
+import 'canvas_models.dart';
 import 'gen_modules.dart';
 import 'generate_state.dart';
 import '../fixed_tags/fixed_tags.dart';
@@ -18,6 +19,7 @@ class QueuedTask {
     required this.snapshot,
     this.fixedTags = const FixedTagsState(),
     this.galleryTarget = const GallerySaveTarget.all(),
+    this.origin,
   });
 
   final int id;
@@ -30,6 +32,9 @@ class QueuedTask {
 
   /// 入队那一刻的保存目标(哪本相册),同样随任务锁死。
   final GallerySaveTarget galleryTarget;
+
+  /// 入队时那张画布和它的内容,出图后记进它的历史。
+  final CanvasOrigin? origin;
 }
 
 /// Failure behavior after the safe, no-charge retry has been exhausted.
@@ -134,6 +139,7 @@ class GenQueueNotifier extends Notifier<GenQueueState> {
     return _enqueueSnapshot(
       snap,
       fixedTags: ref.read(fixedTagsProvider),
+      origin: ref.read(generationProvider.notifier).currentCanvasOrigin(),
     );
   }
 
@@ -141,6 +147,7 @@ class GenQueueNotifier extends Notifier<GenQueueState> {
     GenerateState snapshot, {
     bool front = false,
     FixedTagsState? fixedTags,
+    CanvasOrigin? origin,
   }) {
     if (_poolCount >= cap) return false;
     final task = QueuedTask(
@@ -148,6 +155,7 @@ class GenQueueNotifier extends Notifier<GenQueueState> {
       snapshot: snapshot,
       fixedTags: fixedTags ?? ref.read(fixedTagsProvider),
       galleryTarget: ref.read(gallerySaveTargetProvider),
+      origin: origin,
     );
     state = state.copyWith(
       items: front ? [task, ...state.items] : [...state.items, task],
@@ -217,6 +225,7 @@ class GenQueueNotifier extends Notifier<GenQueueState> {
       entry.task.snapshot,
       front: true,
       fixedTags: entry.task.fixedTags,
+      origin: entry.task.origin,
     );
     if (!added) {
       // A concurrent generation can occupy the last pool slot between the
@@ -257,6 +266,7 @@ class GenQueueNotifier extends Notifier<GenQueueState> {
           using: task.snapshot,
           fixedTags: task.fixedTags,
           galleryTarget: task.galleryTarget,
+          origin: task.origin,
         );
         // **只有「确定未扣点」才重试。** 流中断 / 超时 / 内容审核这类失败,NAI
         // 可能已经受理并扣了点,盲目重试就是第二次扣费,而且没有任何用户动作。
@@ -268,6 +278,7 @@ class GenQueueNotifier extends Notifier<GenQueueState> {
             using: task.snapshot,
             fixedTags: task.fixedTags,
             galleryTarget: task.galleryTarget,
+            origin: task.origin,
           );
         }
         if (outcome != GenOutcome.ok) {

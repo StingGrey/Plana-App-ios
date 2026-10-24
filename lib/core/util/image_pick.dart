@@ -4,8 +4,11 @@ import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../theme/theme_settings.dart';
 import '../ui/gallery_picker_page.dart';
+import 'harmony_compat.dart';
 
 /// 选中的图片:文件名 + 原始字节。
 class PickedImage {
@@ -20,8 +23,10 @@ class PickedImage {
 
 /// 选单张图片,取消返回 null。
 ///
-/// iOS:系统 Photos 选择器;Android:应用内图库选择器(直读媒体库,全部相册
-/// 可达,另可改走系统文件浏览器兜底);桌面端:原生文件对话框。
+/// iOS:系统 Photos 选择器;Android:默认应用内图库选择器(直读媒体库,全部相册
+/// 可达;系统照片选择器只放行固定分类且不看 app 权限),右上角可改走系统选择器
+/// 兜底;设置里选了系统、或在卓易通这类容器里,直接走系统选择器,见
+/// [_inAppGallery]。桌面端:原生文件对话框。
 Future<PickedImage?> pickImageFile(BuildContext context) async {
   final list = await _pick(context, multiple: false);
   return list.isEmpty ? null : list.first;
@@ -62,7 +67,8 @@ Future<PickedSources> pickImagesOrFiles(BuildContext context) async {
   // 两种导入能力。
   if (Platform.isIOS) return _pickIOSImagesOrFiles(context);
 
-  if (Platform.isAndroid) {
+  if (await _inAppGallery(context)) {
+    if (!context.mounted) return const PickedSources.none();
     final out = await _gallery(context, multiple: true);
     if (out == null) return const PickedSources.none();
     if (!out.useFileBrowser) {
@@ -89,7 +95,8 @@ Future<List<PickedImage>> _pick(
   // 包括 PNG 中的生成参数元数据。
   if (Platform.isIOS) return _pickSystemImages(multiple: multiple);
 
-  if (Platform.isAndroid) {
+  if (await _inAppGallery(context)) {
+    if (!context.mounted) return const [];
     final out = await _gallery(context, multiple: multiple);
     if (out == null) return const [];
     if (!out.useFileBrowser) return _readAssets(out);
@@ -166,6 +173,19 @@ Future<PickedSources> _pickIOSImagesOrFiles(BuildContext context) async {
     case null:
       return const PickedSources.none();
   }
+}
+
+/// 先进应用内图库吗:仅 Android;设置里选过就按设置,没选过默认进 ——
+/// 鸿蒙的安卓兼容容器(卓易通 / 出境易)里默认不进,直接落到图库右上角那个
+/// 入口(系统选择器 / 文件浏览器)。容器里的媒体库桥接在鸿蒙侧,应用内图库
+/// 逐张查库、查文件都要跨过去一趟,进页比普通机慢得多。
+Future<bool> _inAppGallery(BuildContext context) async {
+  if (!Platform.isAndroid) return false;
+  final system = ProviderScope.containerOf(
+    context,
+    listen: false,
+  ).read(themeSettingsProvider).systemPicker;
+  return !(system ?? await isHarmonyCompatContainer);
 }
 
 /// 应用内图库选择器,返回 null = 用户取消。

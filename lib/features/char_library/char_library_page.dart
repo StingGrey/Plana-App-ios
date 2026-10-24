@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/theme/app_theme.dart';
+import '../../core/ui/fast_scroll_handle.dart';
 import '../../core/ui/selection_bar.dart';
 import '../../core/util/image_pick.dart';
 import '../generate/generate_state.dart';
@@ -309,26 +310,28 @@ class _CharLibraryPageState extends ConsumerState<CharLibraryPage> {
         ),
       );
     }
-    return GridView.builder(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 2,
-        mainAxisSpacing: 10,
-        crossAxisSpacing: 10,
-        childAspectRatio: 0.82,
+    return FastScrollHandle(
+      child: GridView.builder(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 2,
+          mainAxisSpacing: 10,
+          crossAxisSpacing: 10,
+          childAspectRatio: 0.82,
+        ),
+        itemCount: list.length,
+        itemBuilder: (context, i) {
+          final e = list[i];
+          return _CharCard(
+            entry: e,
+            checked: _activeItemId(e) != null,
+            thumb: _lib.thumbOf(e),
+            onTap: () => _toggle(e),
+            onRename: () => _rename(e),
+            onDelete: () => _deleteOne(e),
+          );
+        },
       ),
-      itemCount: list.length,
-      itemBuilder: (context, i) {
-        final e = list[i];
-        return _CharCard(
-          entry: e,
-          checked: _activeItemId(e) != null,
-          thumb: _lib.thumbOf(e),
-          onTap: () => _toggle(e),
-          onRename: () => _rename(e),
-          onDelete: () => _deleteOne(e),
-        );
-      },
     );
   }
 

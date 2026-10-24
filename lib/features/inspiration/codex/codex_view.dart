@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/store/ui_prefs.dart';
+import '../../../core/ui/fast_scroll_handle.dart';
 import '../../../core/ui/pinch_columns.dart';
 import '../../../core/ui/scroll_memory.dart';
 import '../../generate/widgets/common.dart' show hintSnack;
@@ -442,49 +443,51 @@ class _CodexViewState extends ConsumerState<CodexView>
   /// 上面的筛选(上万条逐条比对)不跟着每帧重跑。
   Widget _grid(CodexMeta meta, CodexMedia media, List<CodexEntry> entries) =>
       pinchLayer(
-        child: pinchBuilder((_) {
-          // 例图按落定列数下的列宽解码(gridColumns 在换档过渡中是起点那一档)
-          final cols = gridColumns;
-          final decodeW =
-              (MediaQuery.sizeOf(context).width -
-                  _edge * 2 -
-                  _gap * (cols - 1)) /
-              cols;
-          return CustomScrollView(
-            key: ValueKey(meta.id), // 换法典即换一份列表,从那部的滚动账上落位
-            controller: _scroll,
-            physics: pinchPhysics(const AlwaysScrollableScrollPhysics()),
-            slivers: [
-              // 顶部不留边:筛选行自带下外边距,再留一道就叠出双倍空隙
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(_edge, 0, _edge, _gap),
-                sliver: SliverGrid(
-                  gridDelegate: zoomGridDelegate(
-                    (n) => _masonry.delegate(entries, n),
-                  ),
-                  delegate: SliverChildBuilderDelegate(
-                    (_, i) => CodexCard(
-                      codex: meta,
-                      entry: entries[i],
-                      media: media,
-                      decodeWidth: decodeW,
-                      // 详情页左右滑动就在当前筛选出的这一整批里翻
-                      onTap: () => showCodexDetailSheet(
-                        context,
-                        meta,
-                        media,
-                        entries: entries,
-                        index: i,
-                      ),
+        child: FastScrollHandle(
+          child: pinchBuilder((_) {
+            // 例图按落定列数下的列宽解码(gridColumns 在换档过渡中是起点那一档)
+            final cols = gridColumns;
+            final decodeW =
+                (MediaQuery.sizeOf(context).width -
+                    _edge * 2 -
+                    _gap * (cols - 1)) /
+                cols;
+            return CustomScrollView(
+              key: ValueKey(meta.id), // 换法典即换一份列表,从那部的滚动账上落位
+              controller: _scroll,
+              physics: pinchPhysics(const AlwaysScrollableScrollPhysics()),
+              slivers: [
+                // 顶部不留边:筛选行自带下外边距,再留一道就叠出双倍空隙
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(_edge, 0, _edge, _gap),
+                  sliver: SliverGrid(
+                    gridDelegate: zoomGridDelegate(
+                      (n) => _masonry.delegate(entries, n),
                     ),
-                    childCount: entries.length,
+                    delegate: SliverChildBuilderDelegate(
+                      (_, i) => CodexCard(
+                        codex: meta,
+                        entry: entries[i],
+                        media: media,
+                        decodeWidth: decodeW,
+                        // 详情页左右滑动就在当前筛选出的这一整批里翻
+                        onTap: () => showCodexDetailSheet(
+                          context,
+                          meta,
+                          media,
+                          entries: entries,
+                          index: i,
+                        ),
+                      ),
+                      childCount: entries.length,
+                    ),
                   ),
                 ),
-              ),
-              const SliverToBoxAdapter(child: SizedBox(height: 20)),
-            ],
-          );
-        }),
+                const SliverToBoxAdapter(child: SizedBox(height: 20)),
+              ],
+            );
+          }),
+        ),
       );
 
   Widget _error(String text, VoidCallback onRetry) {

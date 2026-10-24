@@ -4,10 +4,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/util/haptics.dart';
 import '../canvas_state.dart';
-import '../models.dart' show CharacterPrompt, GenParams;
+import '../models.dart' show CharacterPrompt, GenParams, modelName;
 import '../prompt_sections.dart' show joinSections;
 import '../style_recipes.dart' show recipeDetail, recipeOf;
 import 'bottom_action_bar.dart';
+import 'canvas_history_sheet.dart';
 import 'common.dart';
 
 /// 只显示当前画布，与模型选择共用顶栏。点名称展开全部画布。
@@ -235,6 +236,7 @@ class _CanvasManagerState extends ConsumerState<_CanvasManager> {
           Navigator.pop(context);
         },
         // 默认画布名字固定、删不掉:不给改名键,删除位换成图钉
+        onHistory: () => showCanvasHistory(context, canvas),
         onRename: pinned ? null : () => _renameCanvas(context, ref, canvas),
         onDelete: pinned ? null : () => _delete(canvas),
       ),
@@ -343,6 +345,7 @@ class _CanvasTile extends StatelessWidget {
     required this.canvas,
     required this.active,
     required this.onTap,
+    required this.onHistory,
     this.onRename,
     this.onDelete,
   });
@@ -350,6 +353,7 @@ class _CanvasTile extends StatelessWidget {
   final CanvasDraft canvas;
   final bool active;
   final VoidCallback onTap;
+  final VoidCallback onHistory;
 
   /// 默认画布为 null：名字固定，不显示改名键。
   final VoidCallback? onRename;
@@ -409,6 +413,16 @@ class _CanvasTile extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(width: 4),
+                    IconButton(
+                      tooltip: '历史',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: onHistory,
+                      icon: Icon(
+                        Icons.history,
+                        size: 19,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
                     if (onRename != null)
                       IconButton(
                         tooltip: '重命名',
@@ -497,7 +511,7 @@ TextStyle _previewStyle(BuildContext context) =>
 /// 模型与参数那一行：「NAI 4.5 Full · 28 步 · CFG 5 · Euler Ancestral · karras」，
 /// 只报当前模型那一套，写法与画风推荐参数一致。
 String _samplingLine(CanvasSampling s) =>
-    '${s.model} · ${recipeDetail(recipeOf(s.writeInto(const GenParams())))}';
+    '${modelName(s.model)} · ${recipeDetail(recipeOf(s.writeInto(const GenParams())))}';
 
 /// 预览行：图标落在单选圆点那一列，正文与画布名左对齐。
 ///

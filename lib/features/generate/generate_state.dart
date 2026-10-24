@@ -3,8 +3,9 @@ import 'dart:typed_data';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/store/app_stores.dart';
-import '../editor/editor_models.dart' show draftOf, outputOf;
-import '../inspiration/tag_models.dart' show TagEntry, tagCategoryDef;
+import '../editor/editor_models.dart' show draftOf, outputOf, pickEditorText;
+import '../inspiration/tag_models.dart'
+    show TagEntry, appendTagNegatives, tagCategoryDef;
 import '../vibe_library/naiv4vibe_codec.dart' show kModelToEncodingKey;
 import 'agent_chars.dart';
 import 'canvas_state.dart';
@@ -40,14 +41,14 @@ class GenerateNotifier extends Notifier<GenerateState> {
     return ws.initial ?? GenerateState.initial();
   }
 
-  /// 换上另一张画布的那组提示词;模型、参数、参考图等全局设置原样不动。
+  /// 换上另一张画布的那组内容;张数、循环档、面板开合等全局设置原样不动。
   void applyCanvas(CanvasPrompts prompts) {
     if (CanvasPrompts.of(state).sameAs(prompts)) return;
     state = prompts.applyTo(state);
   }
 
-  /// 把全局设置整份换回 [s],当前画布的词不动(撤销一次整体写入时用,
-  /// 词由 [CanvasWorkspaceNotifier.undoWrite] 另行还给原画布)。
+  /// 把全局设置整份换回 [s],当前画布的内容不动(撤销一次整体写入时用,
+  /// 画布内容由 [CanvasWorkspaceNotifier.undoWrite] 另行还给原画布)。
   void restoreGlobals(GenerateState s) =>
       state = CanvasPrompts.of(state).applyTo(s);
 
@@ -586,8 +587,8 @@ class GenerateNotifier extends Notifier<GenerateState> {
   /// 这两种情况下他手上的配置里都没有这一条,下载完再塞回去就是个幽灵改动:
   /// 明明点了移除,过几分钟它自己又回来了。装好的本体在库里,要用去挂载即可。
   ///
-  /// 下载途中切去了另一个底模的模型 / 画布,占位条就收在 [GenerateState.loraMem]
-  /// 里,在那儿转正,切回来时已经是装好的样子。
+  /// 占位条在哪张画布、挂着还是收在 [GenerateState.loraMem] 里都找得到,
+  /// 每一处都转正:下载途中切了画布或底模,切回来时已经是装好的样子。
   bool promotePendingLora(String placeholder, ActiveLora real) {
     List<ActiveLora>? promote(List<ActiveLora> list) {
       final idx = list.indexWhere((l) => l.name == placeholder);
@@ -630,22 +631,10 @@ class GenerateNotifier extends Notifier<GenerateState> {
     });
   }
 
-  /// 先在挂着的列表里改,找不到再去收起来的那几份([GenerateState.loraMem])里改。
+  /// 在每张画布挂着的和收起来的那几份([GenerateState.loraMem])里都改一遍。
   /// [change] 返回 null = 这份里没有要改的。
-  bool _updateLoraLists(List<ActiveLora>? Function(List<ActiveLora>) change) {
-    final active = change(state.loras);
-    if (active != null) {
-      state = state.copyWith(loras: active);
-      return true;
-    }
-    for (final e in state.loraMem.entries) {
-      final stashed = change(e.value);
-      if (stashed == null) continue;
-      state = state.copyWith(loraMem: {...state.loraMem, e.key: stashed});
-      return true;
-    }
-    return false;
-  }
+  bool _updateLoraLists(List<ActiveLora>? Function(List<ActiveLora>) change) =>
+      ref.read(canvasWorkspaceProvider.notifier).changeLoras(change);
 
   void removeLora(String name) {
     final victim = [
@@ -838,13 +827,36 @@ class GenerateNotifier extends Notifier<GenerateState> {
 
   /// 灵感库条目各自成一格,不折叠(见 [withEntrySections])。格子名是分类名
   /// (画风 / 角色 / 场景…),给了 [name] 就用它(法典词条叫「法典」)。
-  void addEntrySections(Iterable<TagEntry> entries, {String? name}) =>
-      state = state.copyWith(
-        sections: withEntrySections(_rows, state.prompt, [
-          for (final e in entries)
-            e.copyWith(name: name ?? tagCategoryDef(e.category).label),
-        ], newId: _newId),
-      );
+  ///
+  /// 正向已全在提示词里没另建格子的、同名同词的格子只是重新打开的,条目负面里
+  /// 整张卡还没有的词接到主体负面。
+  void addEntrySections(Iterable<TagEntry> entries, {String? name}) {
+    final named = [
+      for (final e in entries)
+        e.copyWith(name: name ?? tagCategoryDef(e.category).label),
+    ];
+    final sections = withEntrySections(
+      _rows,
+      state.prompt,
+      named,
+      newId: _newId,
+    );
+    final negDraft = pickEditorText(
+      state.negativePromptRaw,
+      state.negativePrompt,
+    ).trim();
+    final nextDraft = appendTagNegatives(
+      negDraft,
+      named,
+      present: joinSections(sections, state.negativePrompt, positive: false),
+    );
+    final neg = nextDraft == negDraft ? null : outputOf(nextDraft);
+    state = state.copyWith(
+      sections: sections,
+      negativePrompt: neg,
+      negativePromptRaw: neg == null ? null : draftOf(nextDraft, neg),
+    );
+  }
 
   /// 编辑器多选「提取为新分区」:这段草稿(权重、禁用、折叠照旧)成一格,
   /// 接在最后,返回新建的这一格(编辑器撤销时按它拿掉)。[positive] 为 false

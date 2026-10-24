@@ -9,6 +9,7 @@ import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
 import '../../core/store/ui_prefs.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/ui/fast_scroll_handle.dart';
 import '../../core/ui/pinch_columns.dart';
 import '../../core/ui/responsive_grid.dart';
 import '../../core/ui/scroll_memory.dart';
@@ -1212,11 +1213,14 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   }
 
   /// 画风分类包一层右缘字母导航。**只在按编号排时**有:换成时间/作者以后
-  /// 列表不再是字母序,字母条跳过去就是错位。
+  /// 列表不再是字母序,字母条跳过去就是错位。没有字母条的列表挂快速滚动把手
+  /// (公共画风除外)。
   Widget _railWrap(List<_Group> groups, ScrollController ctrl, Widget child) {
     final total = groups.fold(0, (n, g) => n + g.items.length);
     if (!_def.alphabetRail || _sortMode != TagSort.number || total < 12) {
-      return child;
+      final publicArtist =
+          _cat == TagCategory.artist && identical(ctrl, _pubScroll);
+      return publicArtist ? child : FastScrollHandle(child: child);
     }
     // 用 Set 去重:'#' 桶(数字开头排最前、CJK 排最后)可能不相邻,
     // 只留首次出现,跳转恒到首个。

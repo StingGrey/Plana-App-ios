@@ -1,8 +1,11 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/theme_settings.dart';
+import '../../core/util/harmony_compat.dart';
 import 'widgets/settings_ui.dart';
 
 class AppearancePage extends ConsumerWidget {
@@ -103,6 +106,42 @@ class AppearancePage extends ConsumerWidget {
               ),
             ],
           ),
+          if (Platform.isAndroid) ...[
+            const SizedBox(height: 16),
+            const SettingsLabel('图库选择器'),
+            SettingsCard(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+                  child: SizedBox(
+                    width: double.infinity,
+                    // 没选过时按机型默认显示(容器里默认系统),检测返回前不选中
+                    child: FutureBuilder<bool>(
+                      future: isHarmonyCompatContainer,
+                      builder: (context, snap) {
+                        final system = ts.systemPicker ?? snap.data;
+                        return SegmentedButton<bool>(
+                          segments: const [
+                            ButtonSegment(value: false, label: Text('应用内')),
+                            ButtonSegment(value: true, label: Text('系统')),
+                          ],
+                          selected: {?system},
+                          emptySelectionAllowed: true,
+                          onSelectionChanged: (s) {
+                            if (s.isEmpty) return;
+                            notifier.patch(
+                              (x) => x.copyWith(systemPicker: s.first),
+                            );
+                          },
+                          showSelectedIcon: false,
+                        );
+                      },
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );

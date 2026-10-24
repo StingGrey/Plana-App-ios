@@ -11,6 +11,7 @@ import '../../core/net/anlas_provider.dart';
 import '../../core/net/backend_client.dart';
 import '../../core/net/remote_image.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/ui/fast_scroll_handle.dart';
 import '../../core/ui/scroll_memory.dart';
 import '../../core/ui/selection_bar.dart';
 import '../../core/util/image_pick.dart';
@@ -45,8 +46,8 @@ const _kIconEdge = 6.0;
 const _publishEncodeModels = [
   ('nai-diffusion-4-5-full', 'NAI 4.5 Full'),
   ('nai-diffusion-4-5-curated', 'NAI 4.5 Curated'),
-  ('nai-diffusion-4-full', 'NAI 4.0 Full'),
-  ('nai-diffusion-4-curated-preview', 'NAI 4.0 Curated'),
+  ('nai-diffusion-4-full', 'NAI 4 Full'),
+  ('nai-diffusion-4-curated-preview', 'NAI 4 Curated'),
 ];
 
 String _encModelLabel(String modelId) {
@@ -1238,32 +1239,34 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
     }
     // 发布到公共库是纯后端功能:只看有没有 Bot 会话,与生成走哪条路无关。
     final canPublish = ref.watch(botSessionProvider).value != null;
-    return GridView.builder(
-      controller: _localScroll,
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 96),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 2,
-        mainAxisSpacing: 10,
-        crossAxisSpacing: 10,
-        childAspectRatio: 0.82,
+    return FastScrollHandle(
+      child: GridView.builder(
+        controller: _localScroll,
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 96),
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 2,
+          mainAxisSpacing: 10,
+          crossAxisSpacing: 10,
+          childAspectRatio: 0.82,
+        ),
+        itemCount: list.length,
+        itemBuilder: (context, i) {
+          final e = list[i];
+          return _VibeCard(
+            entry: e,
+            checked: _activeItemId(e) != null,
+            compatible: _compatible(e),
+            encodedModels: _encModelsOf(e),
+            thumb: _lib.thumbOf(e),
+            onTap: () => _toggle(e), // 点卡 = 加入/移出生成
+            onDelete: () => _deleteOne(e),
+            onDetail: () => _openDetail(e),
+            onExport: () => _exportOne(e),
+            onEditTags: () => _editTags(e),
+            onPublish: canPublish ? () => _publishToPublic(e) : null,
+          );
+        },
       ),
-      itemCount: list.length,
-      itemBuilder: (context, i) {
-        final e = list[i];
-        return _VibeCard(
-          entry: e,
-          checked: _activeItemId(e) != null,
-          compatible: _compatible(e),
-          encodedModels: _encModelsOf(e),
-          thumb: _lib.thumbOf(e),
-          onTap: () => _toggle(e), // 点卡 = 加入/移出生成
-          onDelete: () => _deleteOne(e),
-          onDetail: () => _openDetail(e),
-          onExport: () => _exportOne(e),
-          onEditTags: () => _editTags(e),
-          onPublish: canPublish ? () => _publishToPublic(e) : null,
-        );
-      },
     );
   }
 
@@ -1346,49 +1349,54 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
                     ),
                   ],
                 )
-              : GridView.builder(
-                  controller: _publicScroll,
-                  // 顶距 8:另外 8 由本页外层那圈 Padding 出,两段合起来仍是
-                  // 一档间距,只是外面那半留在了滚动区之外(滚动时不跟着走)。
-                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 96),
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 2,
-                    mainAxisSpacing: 10,
-                    crossAxisSpacing: 10,
-                    childAspectRatio: 0.82,
+              : FastScrollHandle(
+                  child: GridView.builder(
+                    controller: _publicScroll,
+                    // 顶距 8:另外 8 由本页外层那圈 Padding 出,两段合起来仍是
+                    // 一档间距,只是外面那半留在了滚动区之外(滚动时不跟着走)。
+                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 96),
+                    gridDelegate:
+                        const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 2,
+                          mainAxisSpacing: 10,
+                          crossAxisSpacing: 10,
+                          childAspectRatio: 0.82,
+                        ),
+                    itemCount: list.length,
+                    itemBuilder: (context, i) {
+                      final m = list[i];
+                      final entry = _lib.entryByOriginFilename(m.filename);
+                      return _PublicVibeCard(
+                        meta: m,
+                        checked: _publicMulti
+                            ? _publicSel.contains(m.filename)
+                            : _publicChecked(m),
+                        collected: entry != null,
+                        collecting: _collecting.contains(m.filename),
+                        compatible: _publicCompatible(m),
+                        // 多选:点=选/取消;非多选:点=标记待下载(确认后才下)
+                        onTap: () {
+                          if (_publicMulti) {
+                            _togglePublicSel(m.filename);
+                          } else {
+                            _togglePublicSelect(m);
+                          }
+                        },
+                        // 长按:进入/切换多选
+                        onLongPress: () {
+                          if (_publicMulti) {
+                            _togglePublicSel(m.filename);
+                          } else {
+                            _enterPublicMulti(m.filename);
+                          }
+                        },
+                        // 收藏按钮(名称行右侧);多选模式隐藏
+                        onCollect: _publicMulti
+                            ? null
+                            : () => _collectPublic(m),
+                      );
+                    },
                   ),
-                  itemCount: list.length,
-                  itemBuilder: (context, i) {
-                    final m = list[i];
-                    final entry = _lib.entryByOriginFilename(m.filename);
-                    return _PublicVibeCard(
-                      meta: m,
-                      checked: _publicMulti
-                          ? _publicSel.contains(m.filename)
-                          : _publicChecked(m),
-                      collected: entry != null,
-                      collecting: _collecting.contains(m.filename),
-                      compatible: _publicCompatible(m),
-                      // 多选:点=选/取消;非多选:点=标记待下载(确认后才下)
-                      onTap: () {
-                        if (_publicMulti) {
-                          _togglePublicSel(m.filename);
-                        } else {
-                          _togglePublicSelect(m);
-                        }
-                      },
-                      // 长按:进入/切换多选
-                      onLongPress: () {
-                        if (_publicMulti) {
-                          _togglePublicSel(m.filename);
-                        } else {
-                          _enterPublicMulti(m.filename);
-                        }
-                      },
-                      // 收藏按钮(名称行右侧);多选模式隐藏
-                      onCollect: _publicMulti ? null : () => _collectPublic(m),
-                    );
-                  },
                 ),
         );
       },

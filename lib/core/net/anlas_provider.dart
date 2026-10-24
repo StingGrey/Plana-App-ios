@@ -140,6 +140,21 @@ class NaiQuotaNotifier extends AsyncNotifier<NaiQuota?> {
     if (next != null) state = AsyncData(next); // 拉失败保留旧值
   }
 
+  /// 拨中转开关,成功后只改本地那两项(回执就是开关的最新状态)。失败抛出。
+  Future<void> setRelay(bool enabled) async {
+    final session = await ref.read(botSessionProvider.future);
+    if (session == null) throw StateError('未授权');
+    final r = await ref
+        .read(backendClientProvider)
+        .setMyRelay(session.sessionId, enabled);
+    final q = state.value;
+    if (q != null) {
+      state = AsyncData(
+        q.copyWith(relayEnabled: r.enabled, relayAvailable: r.available),
+      );
+    }
+  }
+
   /// 拿不到就 null:老服务端根本没有这个端点(404),那时整块不显示,
   /// 而不是弹一个用户什么也做不了的错。
   Future<NaiQuota?> _fetch(String sessionId) async {

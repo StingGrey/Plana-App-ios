@@ -19,7 +19,9 @@ import 'package:share_plus/share_plus.dart';
 import '../../../core/store/app_stores.dart';
 import '../../../core/store/ui_prefs.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../../core/ui/fast_scroll_handle.dart';
 import '../../../core/util/document_save.dart';
+import '../../generate/models.dart' show modelName;
 import '../../generate/widgets/common.dart'
     show ExpandBody, hintSnack, sharedAxisRoute;
 import '../../import/import_panel.dart';
@@ -687,7 +689,7 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
       current: _modelFilter,
       options: [
         ('全部', null, null),
-        for (final m in models) (m, m, counts[m]),
+        for (final m in models) (modelName(m), m, counts[m]),
         if ((counts[''] ?? 0) > 0) ('未知', '', counts['']),
       ],
       onPick: (v) => setState(() => _modelFilter = v),
@@ -1930,9 +1932,7 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
         actionLabel: change.count == 0 ? null : '撤销',
         onAction: change.count == 0
             ? null
-            : () => unawaited(
-                albums.undo(change).catchError((Object _) {}),
-              ),
+            : () => unawaited(albums.undo(change).catchError((Object _) {})),
       );
     } catch (e) {
       if (mounted) albumError(context, e);
@@ -2281,7 +2281,7 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
                                 ? '模型'
                                 : (_modelFilter!.isEmpty
                                       ? '未知'
-                                      : _modelFilter!),
+                                      : modelName(_modelFilter!)),
                             active: _modelFilter != null,
                             onTap: () => _pickModelFilter(results, search.byId),
                           ),
@@ -2358,59 +2358,78 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
                                 ),
                               )
                             : _openLayer(
-                                CustomScrollView(
-                                  key: PageStorageKey<String>(
-                                    _albumHome
-                                        ? 'gallery-albums'
-                                        : 'gallery-photos-${_activeAlbumId ?? 'all'}',
+                                FastScrollHandle(
+                                  // 不在多选时内容底下垫着手势条,滑轨一并让开
+                                  padding: EdgeInsets.only(
+                                    top: 8,
+                                    bottom:
+                                        8 +
+                                        (_selecting
+                                            ? 0
+                                            : MediaQuery.paddingOf(
+                                                context,
+                                              ).bottom),
                                   ),
-                                  controller: _albumHome ? _albumCtrl : _ctrl,
-                                  // 内容少时按内容收缩,面板才能跟着矮下去。收缩包裹
-                                  // 每滚一帧都要连外层一起重排,所以只在格子少时开;
-                                  // 过了这个数,最多列(5)下也早已超出封顶高,
-                                  // 普通视口撑满即可。
-                                  shrinkWrap:
-                                      (_albumHome
-                                          ? albums.length
-                                          : open?.items.length ??
-                                                (_groupBy.stacked
-                                                    ? groups.length
-                                                    : filtered.length)) <=
-                                      60,
-                                  // 双指按住、以及换档过渡跑完之前都不滚 ——
-                                  // 见 [_FrozenScrollPhysics]
-                                  physics: _pinching || _morph.isAnimating
-                                      ? const _FrozenScrollPhysics()
-                                      : null,
-                                  slivers: [
-                                    // 相册首页 / 点开的单堆 / 堆的封面墙 / 分段列表。
-                                    if (_albumHome)
-                                      _stackSliver(scheme, albums)
-                                    else if (open != null)
-                                      _gridSliver(open.items, state.selectedId)
-                                    else if (_groupBy.stacked)
-                                      _stackSliver(scheme, groups)
-                                    else
-                                      for (final g in groups) ...[
-                                        SliverToBoxAdapter(
-                                          child: _groupHeader(scheme, g),
-                                        ),
-                                        _gridSliver(g.items, state.selectedId),
-                                      ],
-                                    // 面板贴着屏幕底:不在多选时最后一行要让开手势条
-                                    // (多选时操作栏自己有 SafeArea)
-                                    SliverToBoxAdapter(
-                                      child: SizedBox(
-                                        height:
-                                            10 +
-                                            (_selecting
-                                                ? 0
-                                                : MediaQuery.paddingOf(
-                                                    context,
-                                                  ).bottom),
-                                      ),
+                                  child: CustomScrollView(
+                                    key: PageStorageKey<String>(
+                                      _albumHome
+                                          ? 'gallery-albums'
+                                          : 'gallery-photos-${_activeAlbumId ?? 'all'}',
                                     ),
-                                  ],
+                                    controller: _albumHome ? _albumCtrl : _ctrl,
+                                    // 内容少时按内容收缩,面板才能跟着矮下去。收缩包裹
+                                    // 每滚一帧都要连外层一起重排,所以只在格子少时开;
+                                    // 过了这个数,最多列(5)下也早已超出封顶高,
+                                    // 普通视口撑满即可。
+                                    shrinkWrap:
+                                        (_albumHome
+                                            ? albums.length
+                                            : open?.items.length ??
+                                                  (_groupBy.stacked
+                                                      ? groups.length
+                                                      : filtered.length)) <=
+                                        60,
+                                    // 双指按住、以及换档过渡跑完之前都不滚 ——
+                                    // 见 [_FrozenScrollPhysics]
+                                    physics: _pinching || _morph.isAnimating
+                                        ? const _FrozenScrollPhysics()
+                                        : null,
+                                    slivers: [
+                                      // 相册首页 / 点开的单堆 / 堆的封面墙 / 分段列表。
+                                      if (_albumHome)
+                                        _stackSliver(scheme, albums)
+                                      else if (open != null)
+                                        _gridSliver(
+                                          open.items,
+                                          state.selectedId,
+                                        )
+                                      else if (_groupBy.stacked)
+                                        _stackSliver(scheme, groups)
+                                      else
+                                        for (final g in groups) ...[
+                                          SliverToBoxAdapter(
+                                            child: _groupHeader(scheme, g),
+                                          ),
+                                          _gridSliver(
+                                            g.items,
+                                            state.selectedId,
+                                          ),
+                                        ],
+                                      // 面板贴着屏幕底:不在多选时最后一行要让开手势条
+                                      // (多选时操作栏自己有 SafeArea)
+                                      SliverToBoxAdapter(
+                                        child: SizedBox(
+                                          height:
+                                              10 +
+                                              (_selecting
+                                                  ? 0
+                                                  : MediaQuery.paddingOf(
+                                                      context,
+                                                    ).bottom),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               ),
                       ),

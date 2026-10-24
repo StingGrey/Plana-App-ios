@@ -637,10 +637,11 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
     final snapshot = result.hasInput ? await _inputOf(ref) : null;
     if (!context.mounted) return;
     final curModel = ref.read(generateProvider).params.model;
-    // 换了模型的快照要按新模型的能力面重新裁一遍(V5 没有 Vibe / 角色参考)
+    // 换了模型的快照要按新模型的能力面重新裁一遍(V5 没有 Vibe / 角色参考);
+    // 重绘图的快照去掉重绘任务,底图用这张成图
     final redrawInput = snapshot == null
         ? null
-        : retargetModel(snapshot, curModel);
+        : retargetModel(snapshot, curModel).copyWith(inpaint: null);
     final scales = redrawInput == null || isModalModel(curModel)
         ? const <EnhanceScale>[]
         : enhanceScaleOptions(w, h, curModel);
@@ -808,8 +809,8 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
     hintSnack(
       context,
       isMax
-          ? '开始 Max 重绘 ≈${target.w}×${target.h} · ${input.params.model}'
-          : '开始 ${scale.label} 重绘 ${t.w}×${t.h} · ${input.params.model}',
+          ? '开始 Max 重绘 ≈${target.w}×${target.h} · ${modelName(input.params.model)}'
+          : '开始 ${scale.label} 重绘 ${t.w}×${t.h} · ${modelName(input.params.model)}',
       icon: Icons.auto_fix_high,
     );
   }
@@ -869,8 +870,7 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
     }
   }
 
-  /// 点按保存:按默认保存设置处理后存相册(gal;Android 10+ 免权限走 MediaStore),
-  /// 并保留生成时间。
+  /// 点按保存:按默认保存设置处理后存相册(gal;Android 10+ 免权限走 MediaStore)。
   Future<void> _download(BuildContext context, WidgetRef ref) async {
     final bytes = await _bytesOf(ref);
     if (!context.mounted || bytes == null) return;
@@ -1310,7 +1310,7 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
     final model = widget.redrawInput?.params.model;
     if (model == null) return null;
     if (!isNai5Model(model)) {
-      return 'Max 档只有 V5 有;当前模型是 $model,重绘也按它跑';
+      return 'Max 档只有 V5 有;当前模型是 ${modelName(model)},重绘也按它跑';
     }
     // 官方阈值:源图像素要小于 0.8×上限才提供 Max
     return 'Max 档要求源图小于 2,516,582 像素,'

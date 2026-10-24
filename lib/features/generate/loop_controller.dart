@@ -77,8 +77,8 @@ class LoopNotifier extends Notifier<LoopStatus> {
     // 才发现第一张就挂了),而且会把 20 条的池子上限一次撑满。
     Future<void> worker() async {
       while (ok && !state.stopping && (total == 0 || dispatched < total)) {
-        // 每张重读:词和出图参数(模型、尺寸、种子、采样)取来源画布那组(切去
-        // 别的画布改的不串进来),参考图是全局的,中途改了下一张就跟着改。
+        // 每张重读来源画布那组内容(切去别的画布改的不串进来);张数等全局
+        // 设置取当前的。
         prompts =
             ref.read(canvasWorkspaceProvider).find(canvasId)?.prompts ??
             prompts;
@@ -88,12 +88,13 @@ class LoopNotifier extends Notifier<LoopStatus> {
         );
         dispatched++;
         // 非 ok 一律停(含用户取消):挂机连续失败无意义,也不该替用户决定重试
-        if (await gen.generate(
-              using: snapshot,
-              galleryTarget: galleryTarget,
-              fixedTags: fixedTags,
-            ) !=
-            GenOutcome.ok) {
+        final outcome = await gen.generate(
+          using: snapshot,
+          galleryTarget: galleryTarget,
+          fixedTags: fixedTags,
+          origin: (canvasId: canvasId, content: prompts),
+        );
+        if (outcome != GenOutcome.ok) {
           ok = false;
           break;
         }

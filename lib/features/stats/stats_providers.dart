@@ -34,7 +34,7 @@ final userStatsAllProvider = FutureProvider.autoDispose<UsageStats?>(
 );
 
 /// 个人逐日序列。today 档后端给的是逐小时点(date 形如 `HH:mm`),
-/// 主页趋势图与账单每日流水共用。
+/// 主页趋势图用。
 final userDailyProvider = FutureProvider.autoDispose
     .family<List<DailyStat>?, String>(
       (ref, range) =>
@@ -60,38 +60,39 @@ final platformHourlyProvider = FutureProvider.autoDispose
           _withSession(ref, (c, sid) => c.platformHourly(sid, arg.$1, arg.$2)),
     );
 
-/// 某一天的服务端消耗明细(逐笔 + 构成)。参数为该天 00:00。
-/// 优先按 bot_user_id 精确到当天;没有归属 id 时退回按范围取(仅今日可用)。
+/// 某一天的钱包流水(扣款与入账,新→旧)。参数为该天 00:00。
+///
+/// 当天的合计要拿全量算,所以按页拉齐再交出去。一张中转图就是一笔,平常一页
+/// 就够;拉满 [_kDayLedgerPages] 页还没到底就停,`nextCursor` 原样留着,
+/// 页面据此注明只列了一部分。
 final dayDetailsProvider = FutureProvider.autoDispose
-    .family<UsageDetails?, DateTime>((ref, day) async {
-      final session = await ref.watch(botSessionProvider.future);
-      if (session == null) return null;
-      final c = ref.watch(backendClientProvider);
-      final uid = session.botUserId;
-      try {
-        if (uid != null && uid.isNotEmpty) {
-          return await c.usageDetails(
-            sessionId: session.sessionId,
-            from: day,
-            to: day.add(const Duration(days: 1)),
+    .family<WalletLedger?, DateTime>(
+      (ref, day) => _withSession(ref, (c, sid) async {
+        final until = day.add(const Duration(days: 1));
+        final items = <WalletEntry>[];
+        String? cursor;
+        for (var i = 0; i < _kDayLedgerPages; i++) {
+          final page = await c.walletLedger(
+            sid,
+            limit: 100,
+            cursor: cursor,
+            since: day,
+            until: until,
           );
+          items.addAll(page.items);
+          // 空页还带游标不该出现;真遇上就当到底,别对着空页一直翻
+          cursor = page.items.isEmpty ? null : page.nextCursor;
+          if (cursor == null) break;
         }
-        final now = DateTime.now();
-        if (day.year != now.year ||
-            day.month != now.month ||
-            day.day != now.day) {
-          return null; // 无归属 id 时只有「今日」可退回范围端点
-        }
-        return UsageDetails(
-          records: await c.pointRecords(session.sessionId, 'today'),
-        );
-      } catch (_) {
-        return null;
-      }
-    });
+        return WalletLedger(items: items, nextCursor: cursor);
+      }),
+    );
 
-/// 某一天的逐笔生成明细(服务端 `/api/user/stats/calls`)。
-/// 后端未部署该接口时返回 null,页面退回「只有当日次数」的说明。
+/// 某一天的流水最多翻几页(每页 100 笔)。
+const _kDayLedgerPages = 20;
+
+/// 某一天的逐笔生成明细(服务端 `/api/user/stats/calls`,最多 1000 条)。
+/// 拉不到时返回 null,页面合计显示「—」、逐笔那里说暂时查不到。
 final dayCallsProvider = FutureProvider.autoDispose
     .family<List<CallRecord>?, DateTime>(
       (ref, day) => _withSession(
@@ -104,20 +105,10 @@ final dayCallsProvider = FutureProvider.autoDispose
       ),
     );
 
-/// 本期费用预估。
-final billingEstimateProvider = FutureProvider.autoDispose<BillingReport?>(
-  (ref) => _withSession(ref, (c, sid) => c.billingEstimate(sid)),
-);
-
-/// 上期结算。
-final billingSettlementProvider = FutureProvider.autoDispose<BillingReport?>(
-  (ref) => _withSession(ref, (c, sid) => c.billingSettlement(sid)),
-);
-
-/// 算力账单(租卡 + 视频)。与 NAI 那本**不是一本账**:那本是按月阶梯分摊的
-/// 订阅费,这本是按次实付,两个数不能相加。
-final gpuBillsProvider = FutureProvider.autoDispose<GpuBills?>(
-  (ref) => _withSession(ref, (c, sid) => c.rentalBills(sid)),
+/// 我的钱包(余额 + 在跑的租卡)。统计页的入口副行和钱包页顶部共用。
+/// 最近几笔不要(limit=0):钱包页的列表走流水翻页,不靠这里。
+final walletSummaryProvider = FutureProvider.autoDispose<WalletSummary?>(
+  (ref) => _withSession(ref, (c, sid) => c.wallet(sid, limit: 0)),
 );
 
 /// 共享号池的 NAI 官方额度(全平台水位)。**公开端点,不要会话** —— 所以不走
@@ -130,9 +121,32 @@ final poolUsageProvider = FutureProvider.autoDispose<NaiUsage?>((ref) async {
   }
 });
 
-/// 金额:整数照 [fmtInt],带角分的保留两位。
-String fmtFee(double v) =>
-    v == v.roundToDouble() ? fmtInt(v) : v.toStringAsFixed(2);
+/// 钱包金额(分 → 文案),和服务端同一种写法:扣款 `-¥0.03`、入账 `+¥20.00`。
+/// [sign] = false 时正数不带 +(余额、合计用),负数照样带 -。
+String fmtFen(int fen, {bool sign = true}) {
+  final head = fen < 0 ? '-' : (sign && fen > 0 ? '+' : '');
+  return '$head¥${(fen.abs() / 100).toStringAsFixed(2)}';
+}
+
+/// 各项占总和的整数百分比,合计恰为 100(最大余数法,与 web `sharePercents` 一致)。
+/// 总和不大于 0 时全为 0。
+List<int> sharePercents(List<int> amounts) {
+  final total = amounts.fold(0, (s, a) => s + a);
+  if (total <= 0) return [for (final _ in amounts) 0];
+  final raw = [for (final a in amounts) a * 100 / total];
+  final out = [for (final r in raw) r.floor()];
+  // 余数一样时靠前的先补
+  final order = List.generate(amounts.length, (i) => i)
+    ..sort((a, b) {
+      final c = (raw[b] - out[b]).compareTo(raw[a] - out[a]);
+      return c != 0 ? c : a - b;
+    });
+  final missing = 100 - out.fold(0, (s, p) => s + p);
+  for (var k = 0; k < missing; k++) {
+    out[order[k]]++;
+  }
+  return out;
+}
 
 /// 千分位(App 无 intl 依赖,手搓)。
 String fmtInt(num v) {
