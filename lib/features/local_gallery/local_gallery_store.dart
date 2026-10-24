@@ -686,14 +686,22 @@ class LocalGalleryStore {
     }
   }
 
+  /// GalleryStore never reuses an id or rewrites its pixels, so a history hash
+  /// stays valid once computed. Without this cache every import re-read the
+  /// whole history; cloud sync imports in bulk and would go quadratic.
+  final Map<String, String> _historyHashes = {};
+
   Future<ResultImage?> _historyForHash(String hash) async {
     final source = historyStore;
     if (source == null || hash.isEmpty) return null;
     for (final result in source.initialResults) {
-      final bytes = await source.readImage(result.id);
-      if (bytes != null && sha256.convert(bytes).toString() == hash) {
-        return result;
+      var known = _historyHashes[result.id];
+      if (known == null) {
+        final bytes = await source.readImage(result.id);
+        if (bytes == null) continue;
+        known = _historyHashes[result.id] = sha256.convert(bytes).toString();
       }
+      if (known == hash) return result;
     }
     return null;
   }

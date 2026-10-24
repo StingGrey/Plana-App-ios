@@ -17,6 +17,27 @@
 
 生成时请保持 App 在前台。Android 原有前台服务与通知逻辑不受影响。
 
+## iCloud 同步
+
+「我的 → iCloud 同步」里选一个 iCloud Drive 文件夹后，生成历史与外部导入的原图会以
+`Plana_<生成时刻>_<哈希>.png` 写进去（PNG 元数据原样保留）；另一台设备选同一个文件夹，
+就会把对方的图拉进本地图库。出新图、回到前台时自动同步，也可以只做单向备份。
+
+走「用户选的文件夹」而不是 CloudKit：重签用的描述文件不带 iCloud 容器，带 iCloud
+entitlement 的包装上去起不来；文件夹授权不需要任何 entitlement，免费 Apple ID 重签也能用。
+原生部分在 `tool/ios/SceneDelegate.swift` 的 `CloudFolderBridge`（书签 + NSFileCoordinator 读写）。
+
+删除不双向同步：在哪台设备删都只删本机，文件夹里的图请到「文件」App 里删。
+
+**重签时包名必须和描述文件的 App ID 一致。** 用显式 App ID 的描述文件（例如
+`XXXXXXXXXX.app.example.name`）重签时，要把包名改成 `app.example.name`；只换证书、
+保留 `com.sora214.plana.app` 的话，App 能装能用，但系统文件夹选择器点「打开」毫无反应，
+面板也不关 —— iPadOS 在 App 进程里解析选中的文件夹时被拒（日志：`Could not resolve
+bookmark … NSCocoaErrorDomain 257`、`Tried to call delegate -documentBrowser:didPickDocumentURLs:
+with an empty array of items`），根本不会回调 App。通配 App ID（`XXXXXXXXXX.*`）的描述文件
+签名时 App ID 跟着包名走，按理不会碰到（未实测）。
+改包名等于装一个新 App，旧包里的图库与设置不会自动带过去。
+
 ## 一键生成 iOS 工程
 
 要求：
@@ -92,6 +113,7 @@ shasum -a 256 build/ios/Plana-App-unsigned.ipa > build/ios/Plana-App-unsigned.sh
 - 直连生成、Bot 生成、取消、队列及有限循环；
 - 锁屏或切换 App 后回到前台的错误提示是否清楚；
 - 局域网自建后端；若使用明文 HTTP，优先改成 HTTPS。
+- iCloud 同步：选 iCloud Drive 文件夹、重启后仍记得文件夹、两台设备互相拉到对方的图。
 
 ## 后台生成的第二阶段方案
 

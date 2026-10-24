@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/platform/platform_support.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/ui/scroll_memory.dart';
 import '../generate/preset_manage_page.dart';
@@ -9,6 +10,9 @@ import '../local_gallery/local_gallery_page.dart';
 import '../precise_ref/precise_ref_library_page.dart';
 import '../fixed_tags/fixed_tags_page.dart';
 import '../char_library/char_library_page.dart';
+import '../cloud_sync/cloud_sync_page.dart';
+import '../cloud_sync/cloud_sync_progress.dart';
+import '../cloud_sync/cloud_sync_state.dart';
 import '../vibe_library/vibe_library_page.dart';
 import '../generate/widgets/common.dart' show sharedAxisRoute;
 import '../migrate/web_backup_page.dart';
@@ -165,6 +169,10 @@ class ProfilePage extends ConsumerWidget {
                   onTap: () => push(const AppearancePage()),
                 ),
                 const SizedBox(height: 10),
+                if (isIOSPlatform) ...[
+                  _CloudSyncEntry(onTap: () => push(const CloudSyncPage())),
+                  const SizedBox(height: 10),
+                ],
                 _EntryCard(
                   icon: Icons.storage,
                   title: '存储管理',
@@ -181,18 +189,44 @@ class ProfilePage extends ConsumerWidget {
 }
 
 /// 大入口卡(主页卡片同款容器):图标 + 主标题,标题下一行描述。
+/// iCloud 同步入口:同步进行时副标题换成进度,底下多一根细进度条。
+class _CloudSyncEntry extends ConsumerWidget {
+  const _CloudSyncEntry({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(cloudSyncProvider);
+    return _EntryCard(
+      icon: Icons.cloud_sync_outlined,
+      title: 'iCloud 同步',
+      subtitle: cloudSyncProgressText(s) ?? '作品备份到 iCloud Drive · 多设备互通',
+      busy: s.running,
+      progress: cloudSyncProgressValue(s),
+      onTap: onTap,
+    );
+  }
+}
+
 class _EntryCard extends StatelessWidget {
   const _EntryCard({
     required this.icon,
     required this.title,
     required this.subtitle,
     required this.onTap,
+    this.busy = false,
+    this.progress,
   });
 
   final IconData icon;
   final String title;
   final String subtitle;
   final VoidCallback onTap;
+
+  /// 在副标题下画一根细进度条;[progress] 为 null 时是不定进度。
+  final bool busy;
+  final double? progress;
 
   @override
   Widget build(BuildContext context) {
@@ -228,6 +262,14 @@ class _EntryCard extends StatelessWidget {
                         color: scheme.onSurfaceVariant,
                       ),
                     ),
+                    if (busy) ...[
+                      const SizedBox(height: 6),
+                      LinearProgressIndicator(
+                        value: progress,
+                        minHeight: 3,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ],
                   ],
                 ),
               ),

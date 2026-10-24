@@ -6,6 +6,7 @@ import 'core/auth/auth_mode.dart';
 import 'core/auth/credential_store.dart';
 import 'core/auth/secure_storage.dart';
 import 'core/platform/drop_import.dart';
+import 'core/platform/platform_support.dart';
 import 'core/store/app_stores.dart';
 import 'core/store/gen_settings.dart';
 import 'core/theme/app_theme.dart';
@@ -20,6 +21,7 @@ import 'features/onboarding/welcome_page.dart';
 import 'features/profile/account_page.dart';
 import 'features/shell/app_shell.dart';
 import 'features/editor/data/local_tag_db.dart';
+import 'features/cloud_sync/cloud_sync_state.dart';
 
 final _inputFocusGuard = InputFocusGuard();
 
@@ -78,6 +80,8 @@ class _PlanaAppState extends ConsumerState<PlanaApp> {
     super.initState();
     _dropBridge = DropImportBridge();
     _dropBridge.attach(_openDroppedImage, onStateChanged: _setDropState);
+    // 自动同步要常驻:出新图、回前台都由它自己盯着,不等用户打开同步页。
+    if (isIOSPlatform) ref.read(cloudSyncProvider);
   }
 
   @override

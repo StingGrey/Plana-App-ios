@@ -12,6 +12,7 @@ import '../../core/store/app_stores.dart';
 import '../../core/store/prefs_store.dart';
 import '../../core/theme/app_theme.dart';
 import '../assistant/assistant_page.dart';
+import '../cloud_sync/cloud_sync_progress.dart' show CloudSyncTabIcon;
 import '../gallery/gallery_page.dart';
 import '../gallery/gallery_state.dart';
 import '../gallery/albums/album_models.dart';
@@ -264,8 +265,8 @@ class _AppShellState extends ConsumerState<AppShell> {
                     label: Text('灵感'),
                   ),
                   NavigationRailDestination(
-                    icon: Icon(Icons.person_outline),
-                    selectedIcon: Icon(Icons.person),
+                    icon: CloudSyncTabIcon(child: Icon(Icons.person_outline)),
+                    selectedIcon: CloudSyncTabIcon(child: Icon(Icons.person)),
                     label: Text('我的'),
                   ),
                 ],
@@ -312,8 +313,8 @@ class _AppShellState extends ConsumerState<AppShell> {
             label: '灵感',
           ),
           NavigationDestination(
-            icon: Icon(Icons.person_outline),
-            selectedIcon: Icon(Icons.person),
+            icon: CloudSyncTabIcon(child: Icon(Icons.person_outline)),
+            selectedIcon: CloudSyncTabIcon(child: Icon(Icons.person)),
             label: '我的',
           ),
         ],
