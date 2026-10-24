@@ -156,7 +156,7 @@ class _FixedTagTile extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               ReorderableDragStartListener(index: index, child: const Icon(Icons.drag_handle)),
-              Switch(value: entry.enabled, onChanged: (_) => onToggle),
+              Switch(value: entry.enabled, onChanged: (_) => onToggle()),
             ],
           ),
           title: Text(
