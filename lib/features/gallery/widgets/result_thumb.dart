@@ -1,12 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/theme/app_theme.dart' show Motion;
 import '../../generate/widgets/common.dart' show StripeThumb;
 import '../gallery_state.dart' show galleryThumbProvider;
 import '../models.dart';
 
 /// 缩略图:内存有字节直接用;没有(重启水合/RAM 减负)按 id 懒读盘上
-/// 缩略图,读到前垫斜纹占位。胶片条与网格共用,尺寸由外部给定。
+/// 缩略图,读到并解码出来之前垫斜纹占位。胶片条与网格共用,尺寸由外部给定。
 class ResultThumb extends ConsumerWidget {
   const ResultThumb({
     super.key,
@@ -34,6 +35,27 @@ class ResultThumb extends ConsumerWidget {
           height: height,
           fit: BoxFit.cover,
           gaplessPlayback: true,
+          // 解码出第一帧前仍垫着斜纹,出来后交叉淡入;缓存里现成的直接画
+          frameBuilder: (context, child, frame, sync) => sync
+              ? child
+              : Stack(
+                  children: [
+                    AnimatedOpacity(
+                      opacity: frame == null ? 1 : 0,
+                      duration: Motion.fast,
+                      child: StripeThumb(
+                        width: width,
+                        height: height,
+                        radius: radius,
+                      ),
+                    ),
+                    AnimatedOpacity(
+                      opacity: frame == null ? 0 : 1,
+                      duration: Motion.fast,
+                      child: child,
+                    ),
+                  ],
+                ),
         ),
       );
     }

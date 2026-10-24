@@ -6,6 +6,7 @@ import 'package:flutter/gestures.dart' show DragStartBehavior, HitTestResult;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart'
     show
+        RenderAnimatedSize,
         RenderMetaData,
         SliverConstraints,
         SliverGridGeometry,
@@ -188,11 +189,27 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
   // 也不会把旧页的滚动位置短暂画在新页上。
   late final AnimationController _open = AnimationController(
     vsync: this,
-    duration: Motion.medium,
+    duration: _kOpenDuration,
   );
 
+  /// 淡出 60 + 淡入 120。面板高度要变时,两段中间再插一段升降
+  /// ([_kResizeDuration]),期间面板是空的。
+  static const _kOpenDuration = Duration(milliseconds: 180);
+
   /// 淡出占整段的比例;之后是淡入。
-  static const _kFadeOut = .3;
+  static const _kFadeOut = 1 / 3;
+
+  /// 面板高度动画。
+  static const _kResizeDuration = Duration(milliseconds: 120);
+
+  /// 过场停在换内容那一刻,等面板升降到位。
+  bool _held = false;
+
+  /// 每次过场加一;停住期间又开了新过场,旧的那次到位就不再续跑。
+  int _holdGen = 0;
+
+  /// 面板那层 AnimatedSize:换内容后看它在不在升降。
+  final _panelKey = GlobalKey();
 
   String? _pendingOpen;
   bool _openApplied = true;
@@ -309,26 +326,53 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
   /// 每帧的透明度 / 缩放由 [_openLayer] 自己跟,这里只管换内容那一下 ——
   /// 不整页 setState,否则过场每一帧都要把筛选、分组、相册归属重算一遍。
   void _onOpenTick() {
-    if (!_openApplied && _open.value >= _kFadeOut) {
-      _openApplied = true;
-      _applyOpen();
-    }
+    if (_openApplied || _open.value < _kFadeOut) return;
+    _openApplied = true;
+    _applyOpen();
+    // 先停在换内容这一刻,淡入从 0 起;面板要升降的话等它到位再淡入,
+    // 新内容不和升降中的面板同时出现。
+    _open.value = _kFadeOut;
+    _held = true;
+    final gen = _holdGen;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final panel = _panelKey.currentContext?.findRenderObject();
+      if (panel is RenderAnimatedSize && panel.isAnimating) {
+        // 正常由 AnimatedSize 的 onEnd 接着淡入;它中途改成直接跳到新尺寸时
+        // 不报结束,超时兜底
+        Future<void>.delayed(_kResizeDuration * 1.5, () => _resumeOpen(gen));
+      } else {
+        _resumeOpen(gen);
+      }
+    });
   }
 
-  /// 点开某一堆 / 回封面墙。内容不当场换,交给 [_onOpenTick] 在过场中点换。
+  /// 面板到位:接着淡入。[gen] 不是当前这次过场就不管。
+  void _resumeOpen([int? gen]) {
+    if (!mounted || !_held || (gen != null && gen != _holdGen)) return;
+    _held = false;
+    _open.forward();
+  }
+
+  /// 开一次过场,内容不当场换,交给 [_onOpenTick] 在过场中点换。
+  void _startOpen() {
+    _holdGen++;
+    _held = false;
+    _openApplied = false;
+    _open.forward(from: 0);
+  }
+
+  /// 点开某一堆 / 回封面墙。
   void _setOpen(String? key) {
     if (key == _openKey) return;
     _pendingOpen = key;
-    _openApplied = false;
-    _open.forward(from: 0);
+    _startOpen();
   }
 
   void _setAlbumHome(bool home) {
     if (home == _albumHome) return;
     if (home) _searchFocus.unfocus();
     _pendingAlbumHome = home;
-    _openApplied = false;
-    _open.forward(from: 0);
+    _startOpen();
   }
 
   /// 正看着回收站。
@@ -514,7 +558,8 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
         _openKey != null ||
         _query.isNotEmpty ||
         _modelFilter != null ||
-        _open.isAnimating) {
+        _open.isAnimating ||
+        _held) {
       return;
     }
     if (!_ctrl.hasClients || _ctrl.positions.length != 1) return;
@@ -1365,7 +1410,7 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
     animation: _open,
     child: child,
     builder: (_, child) {
-      final on = _open.isAnimating;
+      final on = _open.isAnimating || _held;
       final v = _open.value;
       final fading = v < _kFadeOut;
       final t = fading ? 1 - v / _kFadeOut : (v - _kFadeOut) / (1 - _kFadeOut);
@@ -2283,11 +2328,12 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
       // 内容一变(进出相册、筛选、捏合换列)面板随之长高 / 缩矮;顶边对齐,
       // 长高时标题先就位,底下那截跟着动画展开。
       //
-      // 用 fast(200):换内容发生在过场 30% 处(约 90ms),从那里起跑 200 正好
-      // 和淡入同时收尾;用 medium 的话内容都显示完了底边还在慢慢往下拉。
+      // 进出相册时面板先升降到位,新内容再淡入(见 [_onOpenTick])。
       child: AnimatedSize(
-        duration: Motion.fast,
+        key: _panelKey,
+        duration: _kResizeDuration,
         curve: Motion.emphasized,
+        onEnd: _resumeOpen,
         alignment: Alignment.topCenter,
         child: ConstrainedBox(
           constraints: BoxConstraints(maxHeight: h),
