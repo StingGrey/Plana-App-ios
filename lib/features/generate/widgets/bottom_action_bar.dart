@@ -11,7 +11,13 @@ import '../generate_state.dart';
 import '../generation_controller.dart';
 import '../loop_controller.dart';
 import '../models.dart'
-    show GenParams, isNai5MediumModel, kBatchMax, stepsRangeOf;
+    show
+        GenParams,
+        isNai5MediumModel,
+        kBatchMax,
+        kNai5MediumSteps,
+        modelName,
+        stepsRangeOf;
 import '../vibe_encoder.dart';
 import '../../import/import_panel.dart';
 import 'advanced_sheet.dart';
@@ -154,11 +160,8 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
                   value: '${p.width}×${p.height}',
                   onTap: () => showResolutionSheet(context),
                 ),
-                // Medium 档步数固定,不给调
-                if (!isNai5MediumModel(sent.params.model)) ...[
-                  if (!batchable) const SizedBox(width: 8),
-                  const _StepsChip(),
-                ],
+                if (!batchable) const SizedBox(width: 8),
+                const _StepsChip(),
                 // 张数只有 anima / krea 有(NAI 那条路一单一张)。**不给它常驻
                 // 一个位置**:NAI 下摆个恒为 1、点了还得解释「这个模型不支持」
                 // 的读数,只是白占那条本来就挤的行。
@@ -592,16 +595,25 @@ class _StepsChip extends ConsumerWidget {
     final committed = ref.watch(
       generateProvider.select((s) => s.params.activeSteps),
     );
+    // Medium 档步数固定:读数压灰(同张数锁定),点一下说原因
+    final model = ref.watch(generateProvider.select((s) => s.params.model));
+    final locked = isNai5MediumModel(model);
     final pill = ref.watch(floatingPillProvider);
     final open = pill.isOpen(FloatingPill.steps);
     return _ReadoutChip(
       caption: '步数',
       value: '${(open ? pill.draft?.round() : null) ?? committed}',
+      valueMuted: locked,
       active: open,
       // 拖动时逐帧换数,再叠淡入淡出只会糊成一团
       animateValue: !open,
-      onTap: () =>
-          ref.read(floatingPillProvider.notifier).toggle(FloatingPill.steps),
+      onTap: () {
+        if (locked) {
+          hintSnack(context, '${modelName(model)} 步数固定为 $kNai5MediumSteps');
+          return;
+        }
+        ref.read(floatingPillProvider.notifier).toggle(FloatingPill.steps);
+      },
     );
   }
 }
