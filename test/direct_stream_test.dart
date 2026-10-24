@@ -25,8 +25,7 @@ CustomEndpoint _ep(AgentApiFormat f) => CustomEndpoint(
 );
 
 /// 一段 SSE 响应体。
-String _sse(List<String> frames) =>
-    frames.map((f) => 'data: $f\n\n').join();
+String _sse(List<String> frames) => frames.map((f) => 'data: $f\n\n').join();
 
 MockClient _streamingClient(
   String body, {
@@ -242,9 +241,7 @@ void main() {
     test('Gemini:换成 streamGenerateContent 并带 alt=sse', () async {
       late Uri uri;
       final c = _streamingClient(
-        _sse([
-          '{"candidates":[{"content":{"parts":[{"text":"好的"}]}}]}',
-        ]),
+        _sse(['{"candidates":[{"content":{"parts":[{"text":"好的"}]}}]}']),
         onRequest: (req, _) => uri = req.url,
       );
       final r = await _run(c, _ep(AgentApiFormat.google));
@@ -252,6 +249,24 @@ void main() {
       expect(uri.path, '/v1/models/m1:streamGenerateContent');
       expect(uri.queryParameters['alt'], 'sse');
       expect(r.raw, '好的');
+    });
+
+    test('自定义请求头随请求发出,同名覆盖默认头', () async {
+      late Map<String, String> sent;
+      final c = _streamingClient(
+        _sse(['{"choices":[{"delta":{"content":"好的"}}]}']),
+        onRequest: (req, _) => sent = req.headers,
+      );
+      await _run(
+        c,
+        _ep(
+          AgentApiFormat.openai,
+        ).copyWith(headers: {'X-Title': 'Plana', 'authorization': 'Token t'}),
+      );
+
+      expect(sent['X-Title'], 'Plana');
+      expect(sent['Authorization'], 'Token t');
+      expect(sent['Content-Type'], 'application/json');
     });
 
     test('中转不认流式:整段收完照样出结果', () async {

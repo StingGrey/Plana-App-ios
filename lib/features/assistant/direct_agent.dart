@@ -725,11 +725,13 @@ Stream<AgentDelta> directModelStream(
     stream: stream,
   );
   final req = http.Request('POST', uri)
-    ..headers.addAll({
-      'Content-Type': 'application/json',
-      'Accept': 'text/event-stream',
-      ...headers,
-    })
+    ..headers.addAll(
+      e.withHeaders({
+        'Content-Type': 'application/json',
+        'Accept': 'text/event-stream',
+        ...headers,
+      }),
+    )
     ..bodyBytes = utf8.encode(jsonEncode(body));
 
   final http.StreamedResponse resp;
