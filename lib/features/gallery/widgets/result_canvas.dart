@@ -509,10 +509,11 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
     final snapshot = result.hasInput ? await _inputOf(ref) : null;
     if (!context.mounted) return;
     final curModel = ref.read(generateProvider).params.model;
-    // 换了模型的快照要按新模型的能力面重新裁一遍(V5 没有 Vibe / 角色参考)
+    // 换了模型的快照要按新模型的能力面重新裁一遍(V5 没有 Vibe / 角色参考);
+    // 重绘图的快照去掉重绘任务,底图用这张成图
     final redrawInput = snapshot == null
         ? null
-        : retargetModel(snapshot, curModel);
+        : retargetModel(snapshot, curModel).copyWith(inpaint: null);
     final scales = redrawInput == null || isModalModel(curModel)
         ? const <EnhanceScale>[]
         : enhanceScaleOptions(w, h, curModel);
