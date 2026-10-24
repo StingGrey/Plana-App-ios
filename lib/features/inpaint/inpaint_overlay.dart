@@ -157,6 +157,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   CensorStyle _censorStyle = CensorStyle.mosaic;
   int _censorBlock = 4;
   int _censorColor = kCensorColorDefault; // 纯色档的填充色
+  Set<CensorClass> _censorParts = {...CensorClass.values}; // 自动识别涂哪些部位
 
   /// 整图马赛克底片:画布按遮罩格从这上面取样 = 所见即所得。
   ///
@@ -235,6 +236,10 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
         ? CensorStyle.solid
         : CensorStyle.mosaic;
     _censorColor = p.censorColor;
+    _censorParts = {
+      for (final c in CensorClass.values)
+        if (p.censorParts.contains(c.name)) c,
+    };
     // 模式要等图解出来才敢定(扩图要求 64 对齐、打码要按图算块大小),
     // 见 _decode 末尾的 _restoreMode。
     _decode();
@@ -255,6 +260,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
           },
           censorStyle: _censorStyle == CensorStyle.solid ? 'solid' : 'mosaic',
           censorColor: _censorColor,
+          censorParts: {for (final c in _censorParts) c.name},
         ),
       );
 
@@ -985,29 +991,53 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     final grid = _grid;
     final img = _img;
     if (grid == null || img == null || _detecting) return;
+    if (_censorParts.isEmpty) {
+      hintSnack(context, '先勾选要识别的部位', icon: Icons.checklist);
+      return;
+    }
+    // 按点下去这一刻的勾选算:识别途中再改勾选,不该改写这一趟的结果
+    final parts = {..._censorParts};
     setState(() => _detecting = true);
     try {
       // 直接喂**已经原生解码好**的这张位图,别再让检测层去解一遍 PNG:
       // 那是纯 Dart 解码,一张 1216×832 就要几百毫秒。
       final bd = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
       if (bd == null || !mounted) return;
-      final boxes = await detectCensorBoxes(
+      final found = await detectCensorBoxes(
         bd.buffer.asUint8List(),
         img.width,
         img.height,
       );
       if (!mounted) return;
-      if (boxes.isEmpty) {
+      if (found.isEmpty) {
         hintSnack(context, '没检测到需要打码的区域', icon: Icons.search_off);
+        return;
+      }
+      // 模型照旧三类全检,勾选只在这里筛。NMS 本来就逐类各做各的,事后筛
+      // 和事前筛结果一样,检测层不必为此多开一个参数。
+      final boxes = [
+        for (final b in found)
+          if (parts.contains(b.cls)) b,
+      ];
+      final skipped = found.length - boxes.length;
+      if (boxes.isEmpty) {
+        hintSnack(
+          context,
+          '检测到 ${found.length} 处,都不在勾选的部位里',
+          icon: Icons.search_off,
+        );
         return;
       }
       _pushUndo(); // 预填当成一次可撤销的编辑
       final n = paintBoxes(grid, boxes);
       _maskTouched();
       setState(() => _rev++);
+      // 跳过的要明说:否则看着像漏检,用户会去手涂本来就不想遮的地方
       hintSnack(
         context,
-        '检测到 ${boxes.length} 处,已预填',
+        skipped == 0
+            ? '检测到 ${boxes.length} 处,已预填'
+            : '已预填 ${boxes.length} 处,跳过 $skipped 处未勾选部位',
         icon: Icons.auto_fix_high,
       );
       if (n == 0) return;
@@ -1089,6 +1119,39 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
         _slider = null;
       }
     });
+  }
+
+  void _toggleCensorPart(CensorClass c) {
+    Haptics.selection();
+    setState(() {
+      if (!_censorParts.remove(c)) _censorParts.add(c);
+    });
+  }
+
+  /// 自动识别的部位开关。
+  ///
+  /// **只管识别那一下**:手涂不受它约束,识别完再改勾选也不会回头增删遮罩 ——
+  /// 已经涂上的要去掉,走撤销或橡皮。
+  Widget _buildCensorParts() {
+    final scheme = context.scheme;
+    return Row(
+      children: [
+        Text(
+          '识别部位',
+          style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+        ),
+        for (final c in CensorClass.values) ...[
+          const SizedBox(width: 8),
+          Expanded(
+            child: _PartToggle(
+              label: c.label,
+              on: _censorParts.contains(c),
+              onTap: () => _toggleCensorPart(c),
+            ),
+          ),
+        ],
+      ],
+    );
   }
 
   /// 改块大小。拖滑杆期间防抖,不每帧跑整图。
@@ -1598,6 +1661,11 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
                 ),
               ],
             ),
+            // 紧贴在「自动识别」那颗 CTA 上方:它只管那一下
+            if (_censorMode) ...[
+              const SizedBox(height: 8),
+              _buildCensorParts(),
+            ],
             const SizedBox(height: 10),
             Row(
               children: [
@@ -2654,6 +2722,59 @@ class _ParamChip extends StatelessWidget {
                 ),
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 打码面板的部位开关。开关只换颜色和勾,不换尺寸 —— 三颗等宽排一行,
+/// 谁一变宽就把邻居挤得一跳。
+class _PartToggle extends StatelessWidget {
+  const _PartToggle({
+    required this.label,
+    required this.on,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool on;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    final fg = on ? scheme.onPrimaryContainer : scheme.onSurfaceVariant;
+    return Semantics(
+      toggled: on,
+      child: Material(
+        color: on ? scheme.primaryContainer : scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(13),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: SizedBox(
+            height: 34,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  on ? Icons.check_box : Icons.check_box_outline_blank,
+                  size: 15,
+                  color: fg,
+                ),
+                const SizedBox(width: 5),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: on ? FontWeight.w700 : FontWeight.w500,
+                    color: fg,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),

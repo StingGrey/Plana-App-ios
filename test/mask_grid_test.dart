@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:plana_app/features/inpaint/censor_detect.dart';
 import 'package:plana_app/features/inpaint/inpaint_ops.dart';
 
 /// 重绘蒙版按图记忆的编解码。
@@ -101,6 +102,7 @@ void _prefsTests() {
         mode: 'censor',
         censorStyle: 'solid',
         censorColor: 0xFFFFFFFF,
+        censorParts: {'penis', 'pussy'},
       );
       final back = InpaintPrefs.fromJson(p.toJson());
       expect(back.brush, 88);
@@ -109,6 +111,7 @@ void _prefsTests() {
       expect(back.mode, 'censor');
       expect(back.censorStyle, 'solid');
       expect(back.censorColor, 0xFFFFFFFF);
+      expect(back.censorParts, {'penis', 'pussy'});
     });
 
     test('旧版本存的 JSON(没有新字段)读回来是默认值', () {
@@ -120,6 +123,29 @@ void _prefsTests() {
       expect(old.mode, 'paint');
       expect(old.censorStyle, 'mosaic');
       expect(old.censorColor, 0xFF000000);
+      expect(old.censorParts, kCensorPartsAll, reason: '老用户升级上来部位全开');
+    });
+
+    test('部位全关也照原样记住,不偷偷回落全开', () {
+      const p = InpaintPrefs(censorParts: {});
+      expect(InpaintPrefs.fromJson(p.toJson()).censorParts, isEmpty);
+    });
+
+    test('认不出的部位名丢掉,类型不对按缺省全开', () {
+      expect(
+        InpaintPrefs.fromJson({
+          'censorParts': ['penis', 'wat', 3, null],
+        }).censorParts,
+        {'penis'},
+      );
+      expect(
+        InpaintPrefs.fromJson({'censorParts': 'penis'}).censorParts,
+        kCensorPartsAll,
+      );
+    });
+
+    test('偏好里手抄的部位名与 CensorClass 一致 —— 枚举改名会让存档静默失效', () {
+      expect({for (final c in CensorClass.values) c.name}, kCensorPartsAll);
     });
 
     test('认不出的模式一律回落 paint —— 枚举改名/降级装回来都不能崩', () {

@@ -480,7 +480,7 @@ Future<Uint8List> pasteBack({
 /// 重绘编辑器的工具偏好。
 ///
 /// 只记**「我习惯怎么用」**,不记**「这一张要怎么处理」**。所以:
-///  * 记:笔刷、强度、偏位、上次停在哪一档、打码的样式与颜色;
+///  * 记:笔刷、强度、偏位、上次停在哪一档、打码的样式与颜色、自动识别的部位;
 ///  * 不记:画笔/橡皮(上次停在橡皮的话,下次进来空遮罩选着橡皮,什么也擦不了)、
 ///    局部框(那是这一张发多大范围)、马赛克块大小(**故意**每次按图长边重算,
 ///    记住会让不同尺寸的图强度乱跳)。
@@ -492,6 +492,7 @@ class InpaintPrefs {
     this.mode = 'paint',
     this.censorStyle = 'mosaic',
     this.censorColor = 0xFF000000,
+    this.censorParts = kCensorPartsAll,
   });
 
   final double brush;
@@ -512,6 +513,12 @@ class InpaintPrefs {
   /// 打码的纯色填充色(0xAARRGGBB)。
   final int censorColor;
 
+  /// 自动识别要涂的部位,存 `CensorClass` 的名字(理由同上),见 [kCensorPartsAll]。
+  ///
+  /// **空集是合法值** —— 用户就是全关了,照原样记住。只有缺这个键(老版本存的)
+  /// 才回落全开;认不出的名字丢掉。
+  final Set<String> censorParts;
+
   Map<String, dynamic> toJson() => {
     'brush': brush,
     'strength': strength,
@@ -519,6 +526,7 @@ class InpaintPrefs {
     'mode': mode,
     'censorStyle': censorStyle,
     'censorColor': censorColor,
+    'censorParts': censorParts.toList(),
   };
 
   factory InpaintPrefs.fromJson(Map<String, dynamic> j) => InpaintPrefs(
@@ -532,8 +540,21 @@ class InpaintPrefs {
     },
     censorStyle: j['censorStyle'] == 'solid' ? 'solid' : 'mosaic',
     censorColor: (j['censorColor'] as num?)?.toInt() ?? 0xFF000000,
+    censorParts: switch (j['censorParts']) {
+      final List<dynamic> l => {
+        for (final v in l)
+          if (v is String && kCensorPartsAll.contains(v)) v,
+      },
+      _ => kCensorPartsAll,
+    },
   );
 }
+
+/// 自动打码能认的全部部位,即 `CensorClass` 各值的 `name`。
+///
+/// 这里手抄一份而不是引那个枚举:偏好层不该为了一个默认值去依赖检测层。
+/// 两边对不上有测试拦着(见 mask_grid_test)。
+const Set<String> kCensorPartsAll = {'nippleF', 'penis', 'pussy'};
 
 const _inpaintPrefsKey = 'inpaint_prefs';
 

@@ -16,6 +16,15 @@ import 'inpaint_ops.dart' show IntRect, MaskGrid;
 /// 模型类别。顺序与 `labels.json` 一致,别调换。
 enum CensorClass { nippleF, penis, pussy }
 
+extension CensorClassX on CensorClass {
+  /// 面板上的部位开关名。`nippleF` 只认女性乳头,男性的模型没学过,不是漏写。
+  String get label => switch (this) {
+    CensorClass.nippleF => '乳头',
+    CensorClass.penis => '阴茎',
+    CensorClass.pussy => '阴部',
+  };
+}
+
 /// 模型输入边长。8400 个锚点正是 80²+40²+20²,和这个尺寸绑死 ——
 /// 换尺寸就得跟着换锚点数,所以这里写成常量而不是参数。
 const int kDetInputSize = 640;
