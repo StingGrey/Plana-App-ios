@@ -29,6 +29,7 @@ class GalleryStackCard extends StatelessWidget {
     this.onLongPress,
     this.stacked = true,
     this.cover,
+    this.emptyIcon = Icons.photo_library_outlined,
   });
 
   final GalleryGroup group;
@@ -51,6 +52,9 @@ class GalleryStackCard extends StatelessWidget {
 
   /// 相册卡长按设过的封面;null 用堆里第一张(最新那张)。
   final ResultImage? cover;
+
+  /// 没有图时封面上画的图标。
+  final IconData emptyIcon;
 
   /// 封面墙所在面板的最低高度:两行半封面卡。相册、图片没几张时面板按内容缩,
   /// 但缩到这里为止。几何与相册首页、选相册面板的网格一致(两侧 12、列距 6、
@@ -134,7 +138,7 @@ class GalleryStackCard extends StatelessWidget {
                                       borderRadius: BorderRadius.circular(10),
                                     ),
                                     child: Icon(
-                                      Icons.photo_library_outlined,
+                                      emptyIcon,
                                       size: 36,
                                       color: scheme.onSurfaceVariant,
                                     ),

@@ -8,6 +8,7 @@ import 'package:plana_app/core/theme/app_theme.dart';
 import 'package:plana_app/features/gallery/albums/album_models.dart';
 import 'package:plana_app/core/store/ui_prefs.dart';
 import 'package:plana_app/features/gallery/albums/album_state.dart';
+import 'package:plana_app/features/gallery/albums/album_ui.dart';
 import 'package:plana_app/features/gallery/gallery_page.dart';
 import 'package:plana_app/features/gallery/gallery_state.dart';
 import 'package:plana_app/features/gallery/models.dart';
@@ -180,7 +181,8 @@ void main() {
           .first,
     );
     await longPress('旅行');
-    // 封面抬起成方框、留在按住的这张卡上,菜单左缘与它对齐。
+    // 封面抬起成方框、留在按住的这张卡上,菜单左缘与它对齐(靠右那列的卡
+    // 菜单放不下,贴着屏幕右边距)。
     final frame = tester.getRect(find.byKey(const ValueKey('lift-frame')));
     expect(frame.width, moreOrLessEquals(frame.height));
     expect(frame.width, lessThanOrEqualTo(card.width * 1.4));
@@ -193,7 +195,7 @@ void main() {
                 .first,
           )
           .left,
-      moreOrLessEquals(frame.left),
+      moreOrLessEquals(frame.left.clamp(16.0, 390 - 200 - 16.0).toDouble()),
     );
     expect(find.text('设为保存相册'), findsOneWidget);
     expect(find.text('重命名'), findsOneWidget);
@@ -328,8 +330,12 @@ void main() {
     // 在旅行里:可以移回全部相册(即移出旅行),旅行自己不在列表里。
     expect(find.text('移动到'), findsOneWidget);
     // 和相册首页同一种封面卡。
-    expect(find.byType(GalleryStackCard), findsNWidgets(2));
+    expect(find.byType(GalleryStackCard), findsNWidgets(3));
     expect(find.byKey(const ValueKey('move-album-choice-all')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('move-album-choice-$favoritesId')),
+      findsOneWidget,
+    );
     expect(find.byKey(ValueKey('move-album-choice-$albumId')), findsNothing);
     await tester.tap(find.byKey(ValueKey('move-album-choice-$other')));
     await settle(() => container.read(albumsProvider).contains(other, 'gen1'));
@@ -371,7 +377,7 @@ void main() {
     await tester.tap(find.text('选择相册'));
     await tester.pumpAndSettle();
     // 和「保存到」同一个点选面板,当前这本描边;不是打开网格面板。
-    expect(find.byType(GalleryStackCard), findsNWidgets(3));
+    expect(find.byType(GalleryStackCard), findsNWidgets(4));
     expect(find.text('新建'), findsOneWidget);
     await tester.tap(find.byKey(ValueKey('browse-album-choice-$albumId')));
     await tester.pumpAndSettle();
@@ -742,6 +748,143 @@ void main() {
     await settle(() => container.read(albumsProvider).cover(albumId) == null);
     await backHome();
     expect(coverOf('旅行'), 'gen1');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('长按图片收藏，固定的「收藏」相册里可以取消', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      app(
+        Builder(
+          builder: (context) => TextButton(
+            onPressed: () => showGalleryGrid(context),
+            child: const Text('历史'),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('历史'));
+    await tester.pumpAndSettle();
+    Finder card(String album) => find.ancestor(
+      of: find.text(album),
+      matching: find.byType(GalleryStackCard),
+    );
+    // 「收藏」紧跟在「全部相册」后面,空的时候也在。
+    expect(
+      tester
+          .widgetList<GalleryStackCard>(find.byType(GalleryStackCard))
+          .map((c) => c.group.label),
+      ['全部相册', '收藏', '旅行'],
+    );
+    expect(
+      find.descendant(of: card('收藏'), matching: find.text('0 张')),
+      findsOneWidget,
+    );
+    // 固定相册没有长按菜单。
+    expect(tester.widget<GalleryStackCard>(card('收藏')).onLongPress, isNull);
+
+    Future<void> longPressImage(String id) async {
+      await tester.longPress(
+        find.byWidgetPredicate((w) => w is MetaData && w.metaData == id),
+      );
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> settle(bool Function() done) async {
+      for (var i = 0; i < 50 && !done(); i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        );
+        await tester.pump();
+      }
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> backHome() async {
+      await tester.pump(const Duration(seconds: 4));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('回到相册'));
+      await tester.pumpAndSettle();
+    }
+
+    await tester.tap(find.text('全部相册'));
+    await tester.pumpAndSettle();
+    await longPressImage('gen2');
+    expect(find.text('取消收藏'), findsNothing);
+    await tester.tap(find.text('收藏'));
+    await settle(() => container.read(albumsProvider).isFavorite('gen2'));
+    expect(find.text('已收藏'), findsOneWidget);
+    await backHome();
+    expect(
+      find.descendant(of: card('收藏'), matching: find.text('1 张')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('收藏'));
+    await tester.pumpAndSettle();
+    await longPressImage('gen2');
+    await tester.tap(find.text('取消收藏'));
+    await settle(() => !container.read(albumsProvider).isFavorite('gen2'));
+    expect(find.text('已取消收藏'), findsOneWidget);
+    expect(find.text('这个相册还没有图片'), findsOneWidget);
+    // 撤销:图回到收藏里。
+    await tester.tap(find.text('撤销'));
+    await settle(() => container.read(albumsProvider).isFavorite('gen2'));
+    expect(
+      find.byWidgetPredicate((w) => w is MetaData && w.metaData == 'gen2'),
+      findsOneWidget,
+    );
+    await backHome();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('「收藏」不出现在「保存到」里，多选时不能勾', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      app(
+        Builder(
+          builder: (context) => Column(
+            children: [
+              TextButton(
+                onPressed: () => showGalleryGrid(context),
+                child: const Text('历史'),
+              ),
+              TextButton(
+                onPressed: () => showGallerySaveAlbumPicker(context),
+                child: const Text('保存目标'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('保存目标'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('save-album-choice-all')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('save-album-choice-$favoritesId')),
+      findsNothing,
+    );
+    await tester.tapAt(const Offset(195, 20));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('历史'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('多选'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('收藏'));
+    await tester.pumpAndSettle();
+    expect(find.text('已选 0 个相册'), findsOneWidget);
+    await tester.tap(find.text('全选'));
+    await tester.pumpAndSettle();
+    expect(find.text('已选 1 个相册'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

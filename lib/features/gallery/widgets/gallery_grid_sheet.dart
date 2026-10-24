@@ -25,6 +25,7 @@ import '../../generate/models.dart' show modelName;
 import '../../generate/widgets/common.dart'
     show ExpandBody, hintSnack, sharedAxisRoute;
 import '../../import/import_panel.dart';
+import '../albums/album_models.dart';
 import '../albums/album_state.dart';
 import '../albums/album_ui.dart';
 import '../gallery_date_filter.dart';
@@ -845,21 +846,29 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
             final cover = _albumHome
                 ? albumCoverOf(albumData, albumId, g.items)
                 : null;
+            // 「全部相册」「收藏」是固定的两本:不能多选,也没有改名 / 删除
+            final fixed =
+                _albumHome && (albumId == null || albumId == favoritesId);
             return GalleryStackCard(
               group: g,
               cover: cover,
-              // 相册多选勾的是整本;「全部相册」不能选,不画勾选圈
-              selecting: _selecting && !(_albumHome && albumId == null),
+              emptyIcon: _albumHome && albumId == favoritesId
+                  ? Icons.favorite_border
+                  : Icons.photo_library_outlined,
+              // 相册多选勾的是整本;固定的两本不能选,不画勾选圈
+              selecting: _selecting && !fixed,
               picked: _albumHome
                   ? _pickedAlbums.contains(albumId)
                   : _selecting && allOn,
               isSaveAlbum: _albumHome && saveAlbum == albumId,
               stacked: !_albumHome,
-              // 「全部相册」只有「设为保存相册」一项,已经是保存相册时就没有菜单
+              // 「全部相册」只有「设为保存相册」一项,已经是保存相册时就没有菜单;
+              // 「收藏」一项都没有
               onLongPress:
                   _albumHome &&
                       !_selecting &&
                       !_pinching &&
+                      albumId != favoritesId &&
                       (albumId != null || saveAlbum != null)
                   ? (from) => _albumLongPress(
                       albumId,
@@ -870,7 +879,9 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
                   : null,
               onTap: () => setState(() {
                 if (_selecting && _albumHome) {
-                  if (albumId != null && !_pickedAlbums.remove(albumId)) {
+                  if (albumId != null &&
+                      albumId != favoritesId &&
+                      !_pickedAlbums.remove(albumId)) {
                     _pickedAlbums.add(albumId);
                   }
                 } else if (_selecting) {
@@ -1711,8 +1722,8 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
     // 缩略图报的是屏幕坐标,路由画在 overlay 里 —— 有嵌套导航时两者不重合
     final box = nav.overlay?.context.findRenderObject() as RenderBox?;
     final at = box == null ? from : box.globalToLocal(from.topLeft) & from.size;
-    final isCover =
-        ref.read(albumsProvider).cover(_activeAlbumId)?.sourceImageId == id;
+    final albums = ref.read(albumsProvider);
+    final isCover = albums.cover(_activeAlbumId)?.sourceImageId == id;
     final picked = await nav.push(
       _ThumbMenuRoute(
         from: at,
@@ -1720,6 +1731,9 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
         warm: warm,
         actions: [
           ..._ThumbMenuRoute.imageActions,
+          albums.isFavorite(id)
+              ? (icon: Icons.favorite, label: '取消收藏', value: 'favorite')
+              : (icon: Icons.favorite_border, label: '收藏', value: 'favorite'),
           isCover
               ? (
                   icon: Icons.hide_image_outlined,
@@ -1738,6 +1752,8 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
         await _downloadPicked(only: {id});
       case 'share':
         await _sharePicked(only: {id});
+      case 'favorite':
+        await toggleFavorite(context, id);
       case 'cover':
         await _setCover(id);
       case 'uncover':
@@ -1987,6 +2003,11 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
         : groupByDay(filtered, now);
     final albums = <GalleryGroup>[
       (key: _allAlbumKey, label: '全部相册', items: results),
+      (
+        key: favoritesId,
+        label: favoritesName,
+        items: results.where((r) => albumData.isFavorite(r.id)).toList(),
+      ),
       for (final album in albumData.albums)
         (
           key: album.id,

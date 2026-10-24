@@ -46,7 +46,7 @@ const _kGalleryHints = <({String key, String text, IconData icon})>[
   ),
   (
     key: 'hint_strip_swipe',
-    text: '底部胶片条里的图,向上滑可以分享或删除',
+    text: '底部胶片条里的图,向上滑可以分享、收藏或删除',
     icon: Icons.swipe_up_outlined,
   ),
 ];
@@ -437,6 +437,8 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
                 ref.read(galleryProvider.notifier).select(id);
               },
               onShare: _shareOne,
+              onFavorite: (id) => toggleFavorite(context, id),
+              isFavorite: (id) => ref.read(albumsProvider).isFavorite(id),
               onDelete: (id) =>
                   ref.read(galleryProvider.notifier).deleteResults([id]),
               jobs: pool.newestFirst,

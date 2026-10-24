@@ -98,6 +98,7 @@ class AlbumsNotifier extends Notifier<AlbumsData> {
       throw StateError('请输入 1–40 个字符的相册名称');
     }
     if (name == allPhotosName ||
+        name == favoritesName ||
         state.albums.any((a) => a.id != except && a.name == name)) {
       throw StateError('这个相册名称已存在');
     }
@@ -124,6 +125,7 @@ class AlbumsNotifier extends Notifier<AlbumsData> {
   }
 
   Future<void> rename(String id, String name) async {
+    if (id == favoritesId) throw StateError('「收藏」不能改名');
     name = name.trim();
     _validateName(name, except: id);
     await _edit((d) {
@@ -140,6 +142,7 @@ class AlbumsNotifier extends Notifier<AlbumsData> {
   }
 
   Future<void> delete(String id) async {
+    if (id == favoritesId) throw StateError('「收藏」不能删除');
     await _edit((d) => d.deleteAlbum(id));
     if (!ref.mounted) return;
     final prefs = ref.read(uiPrefsProvider);
@@ -193,6 +196,7 @@ class AlbumsNotifier extends Notifier<AlbumsData> {
   }
 
   void setSave(String? id) {
+    if (id == favoritesId) throw StateError('「收藏」不能设为保存相册');
     if (!state.exists(id)) throw StateError('相册已被删除');
     browse(id, alsoSave: true, keepGeneration: true);
   }
@@ -235,6 +239,11 @@ class AlbumsNotifier extends Notifier<AlbumsData> {
       return next;
     });
     return change;
+  }
+
+  Future<void> setFavorite(String imageId, bool on) async {
+    if (!_live.contains(imageId)) throw StateError('图片已被删除');
+    await _edit((d) => d.favorite({imageId}, on));
   }
 
   Future<void> undo(AlbumChange change) => _edit((d) => change.undo(d, _live));

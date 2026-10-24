@@ -35,10 +35,11 @@ const _thumbSlotH = _thumbH + (_thumbPad + _thumbBorder) * 2;
 const _moreSize = 44.0; // 圆钮直径
 const _moreRight = 12.0; // 距右边缘
 
-// 上滑后浮出的落点:两条横带浮在胶片条正上方(overlay 层,不占布局,不推画布),
-// 自下而上是「分享」「删除」。
+// 上滑后浮出的落点:三条横带浮在胶片条正上方(overlay 层,不占布局,不推画布),
+// 自下而上是「分享」「收藏」「删除」。
 const _bandH = 54.0;
 const _bandSpacing = 10.0; // 两条之间的缝,松在缝里 = 取消
+const _bandCount = 3;
 
 /// 下面那条(分享)与胶片条的间距 —— 同时也是**这个手势唯一的保险**。
 ///
@@ -47,10 +48,10 @@ const _bandSpacing = 10.0; // 两条之间的缝,松在缝里 = 取消
 /// 约 `10(条内衬) + 38(缩略图半高) + 64 ≈ 110` 才碰到分享,是一个明确的
 /// 「往上甩一下」,横滑翻图或点选时的竖向抖动够不着。
 ///
-/// 删除排在**更远**那条(再过一条带加一道缝,约 175):松手早了落在分享上,
-/// 顶多弹一下系统分享面板,关掉就是;反过来排的话,想分享却松早了就是一次
-/// 不可撤销的删除。拖过分享继续往上就到删除,不用绕 —— 带是通宽的,
-/// 而拖起来的那张本来就只能上下走(见 [_FilmThumb] 的 axis)。
+/// 删除排在**最远**那条(再过两条带加两道缝,约 240):松手早了落在分享或
+/// 收藏上,顶多弹一下系统分享面板、或者收藏一下再撤销;反过来排的话,想分享
+/// 却松早了就是一次不可撤销的删除。拖过分享继续往上就到收藏、删除,不用绕 ——
+/// 带是通宽的,而拖起来的那张本来就只能上下走(见 [_FilmThumb] 的 axis)。
 const _bandGap = 64.0;
 
 /// 极端长宽比的兜底:太窄点不着,太宽一张就把条占满。
@@ -68,8 +69,8 @@ double _thumbSlotW(double aspect) =>
 /// 跟随它,点历史缩略图切走看历史 —— 对齐 web 桌面端的占位卡交互。
 /// 取消不在卡上:卡这么小,取消挨着「切换跟随」这个主手势太容易点错,
 /// 它长在画布那条进度胶囊上(见 ProgressPill,web 也是放在状态条上)。
-/// 历史图**上滑**即拿起,条上方浮出两条落点(下分享、上删除),拖上去松手即
-/// 分享 / 删;拖回来或松在别处什么都不发生 —— 所以删除不再另弹确认。
+/// 历史图**上滑**即拿起,条上方浮出三条落点(自下而上分享、收藏、删除),拖上去
+/// 松手即分享 / 收藏 / 删;拖回来或松在别处什么都不发生 —— 所以删除不再另弹确认。
 /// 竖向手势与横向滚动各认各的轴(见 [_FilmThumb] 的 affinity),不用自己
 /// 进竞技场调解。
 /// 选中项变化(含画布横滑切图、从展开页跳选)时自动滚动,把选中项摆到视野中央;
@@ -81,6 +82,8 @@ class FilmStrip extends StatefulWidget {
     required this.selectedId,
     required this.onSelect,
     required this.onShare,
+    required this.onFavorite,
+    required this.isFavorite,
     required this.onDelete,
     this.jobs = const [],
     this.selectedJobId,
@@ -93,6 +96,12 @@ class FilmStrip extends StatefulWidget {
 
   /// 拖进分享区后分享这一张(按保存设置处理、拉系统面板都在调用方)。
   final ValueChanged<String> onShare;
+
+  /// 拖进收藏区后收藏 / 取消收藏这一张。
+  final ValueChanged<String> onFavorite;
+
+  /// 这一张眼下收藏了没有:拿起时据此决定收藏那条写「收藏」还是「取消收藏」。
+  final bool Function(String id) isFavorite;
 
   /// 拖进删除区后删这一张(状态与盘上文件由调用方处理)。
   final ValueChanged<String> onDelete;
@@ -409,7 +418,7 @@ class _FilmStripState extends State<FilmStrip>
     super.dispose();
   }
 
-  // ---- 拖拽落点:分享 / 删除两条带走 overlay ----
+  // ---- 拖拽落点:分享 / 收藏 / 删除三条带走 overlay ----
   //
   // 不能把它们塞进胶片条自己的 Stack 里:一来会把画布顶上去(拖到一半整屏
   // 跳一下),二来 Stack 越界的子节点根本收不到命中测试,而 DragTarget
@@ -421,21 +430,27 @@ class _FilmStripState extends State<FilmStrip>
 
   OverlayEntry? _bands;
 
-  void _showBands() {
+  void _showBands(String id) {
     if (_bands != null) return;
     final box = context.findRenderObject() as RenderBox?;
     final overlay = Overlay.of(context);
     final ob = overlay.context.findRenderObject() as RenderBox?;
     if (box == null || !box.hasSize || ob == null) return;
     final top = box.localToGlobal(Offset.zero, ancestor: ob).dy;
-    const h = _bandH * 2 + _bandSpacing;
+    const h = _bandH * _bandCount + _bandSpacing * (_bandCount - 1);
+    final favorite = widget.isFavorite(id);
     _bands = OverlayEntry(
       builder: (_) => Positioned(
         left: _stripPadH,
         right: _stripPadH,
         top: top - h - _bandGap,
         height: h,
-        child: _DropBands(onShare: _dropShare, onDelete: _dropDelete),
+        child: _DropBands(
+          favorite: favorite,
+          onShare: _dropShare,
+          onFavorite: _dropFavorite,
+          onDelete: _dropDelete,
+        ),
       ),
     );
     overlay.insert(_bands!);
@@ -449,6 +464,11 @@ class _FilmStripState extends State<FilmStrip>
   void _dropShare(String id) {
     Haptics.medium();
     widget.onShare(id);
+  }
+
+  void _dropFavorite(String id) {
+    Haptics.medium();
+    widget.onFavorite(id);
   }
 
   void _dropDelete(String id) {
@@ -531,7 +551,7 @@ class _FilmStripState extends State<FilmStrip>
                                 result.id == widget.selectedId &&
                                 widget.selectedJobId == null,
                             onTap: () => widget.onSelect(result.id),
-                            onDragStart: _showBands,
+                            onDragStart: () => _showBands(result.id),
                             onDragEnd: _hideBands,
                           );
                     // 进出时按比例裁宽、淡入淡出。结构不随状态变,影子与原条目
@@ -886,13 +906,21 @@ class _FilmThumb extends StatelessWidget {
   );
 }
 
-/// 上滑后浮出的落点:上删除、下分享(为什么这么排见 [_bandGap]),只在拖拽期间
-/// 存在。悬停到哪条,哪条就亮起并把文案换成「松手 ×」—— 删除那下不可撤销,
-/// 得先让人看见自己正停在哪儿。
+/// 上滑后浮出的落点:上删除、中收藏、下分享(为什么这么排见 [_bandGap]),只在
+/// 拖拽期间存在。悬停到哪条,哪条就亮起并把文案换成「松手 ×」—— 删除那下不可
+/// 撤销,得先让人看见自己正停在哪儿。
 class _DropBands extends StatefulWidget {
-  const _DropBands({required this.onShare, required this.onDelete});
+  const _DropBands({
+    required this.favorite,
+    required this.onShare,
+    required this.onFavorite,
+    required this.onDelete,
+  });
 
+  /// 拿起的这张已经收藏了:收藏那条改成「取消收藏」。
+  final bool favorite;
   final ValueChanged<String> onShare;
+  final ValueChanged<String> onFavorite;
   final ValueChanged<String> onDelete;
 
   @override
@@ -933,6 +961,17 @@ class _DropBandsState extends State<_DropBands>
               activeLabel: '松手删除',
               destructive: true,
               onAccept: widget.onDelete,
+            ),
+            const SizedBox(height: _bandSpacing),
+            _DropBand(
+              icon: widget.favorite ? Icons.favorite : Icons.favorite_border,
+              activeIcon: widget.favorite
+                  ? Icons.favorite_border
+                  : Icons.favorite,
+              label: widget.favorite ? '拖到这里取消收藏' : '拖到这里收藏',
+              activeLabel: widget.favorite ? '松手取消收藏' : '松手收藏',
+              destructive: false,
+              onAccept: widget.onFavorite,
             ),
             const SizedBox(height: _bandSpacing),
             _DropBand(

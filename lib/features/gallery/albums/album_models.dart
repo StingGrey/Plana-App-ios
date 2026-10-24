@@ -1,6 +1,11 @@
 import 'package:flutter/foundation.dart' show setEquals;
 
 const allPhotosName = '全部相册';
+
+/// 固定的「收藏」相册:和用户相册一样记在 memberships 里,但不在 [AlbumsData.albums]
+/// 列表中,不能改名、删除,也不能设为保存相册。
+const favoritesId = 'favorites';
+const favoritesName = '收藏';
 bool validGalleryId(String id) => RegExp(r'^[a-zA-Z0-9_-]+$').hasMatch(id);
 
 /// null 是明确的“仅全部作品”；参数本身为 null 才表示读取当前设置。
@@ -62,6 +67,7 @@ class AlbumsData {
     Iterable<GalleryAlbum> albums = const [],
     Map<String, Set<String>> memberships = const {},
     this.allPhotosCover,
+    this.favoritesCover,
   }) : albums = List.unmodifiable(albums),
        memberships = Map.unmodifiable({
          for (final e in memberships.entries)
@@ -70,32 +76,46 @@ class AlbumsData {
   final List<GalleryAlbum> albums;
   final Map<String, Set<String>> memberships;
   final AlbumCover? allPhotosCover;
+  final AlbumCover? favoritesCover;
   GalleryAlbum? album(String? id) =>
       albums.where((a) => a.id == id).firstOrNull;
-  bool exists(String? id) => id == null || album(id) != null;
-  String name(String? id) => album(id)?.name ?? allPhotosName;
+  bool exists(String? id) =>
+      id == null || id == favoritesId || album(id) != null;
+  String name(String? id) =>
+      id == favoritesId ? favoritesName : album(id)?.name ?? allPhotosName;
   bool contains(String? albumId, String imageId) =>
       albumId == null ||
       (exists(albumId) && (memberships[imageId]?.contains(albumId) ?? false));
+  bool isFavorite(String imageId) => contains(favoritesId, imageId);
   Set<String> ofImage(String imageId) => memberships[imageId] ?? const {};
-  AlbumCover? cover(String? id) =>
-      id == null ? allPhotosCover : album(id)?.cover;
+  AlbumCover? cover(String? id) => id == null
+      ? allPhotosCover
+      : id == favoritesId
+      ? favoritesCover
+      : album(id)?.cover;
 
   AlbumsData copyWith({
     Iterable<GalleryAlbum>? albums,
     Map<String, Set<String>>? memberships,
     AlbumCover? allPhotosCover,
     bool clearAllCover = false,
+    AlbumCover? favoritesCover,
+    bool clearFavoritesCover = false,
   }) => AlbumsData(
     albums: albums ?? this.albums,
     memberships: memberships ?? this.memberships,
     allPhotosCover: clearAllCover
         ? null
         : allPhotosCover ?? this.allPhotosCover,
+    favoritesCover: clearFavoritesCover
+        ? null
+        : favoritesCover ?? this.favoritesCover,
   );
 
   AlbumsData withCover(String? id, AlbumCover? cover) => id == null
       ? copyWith(allPhotosCover: cover, clearAllCover: cover == null)
+      : id == favoritesId
+      ? copyWith(favoritesCover: cover, clearFavoritesCover: cover == null)
       : copyWith(
           albums: [
             for (final a in albums)
@@ -118,6 +138,7 @@ class AlbumsData {
           removed(a.cover) ? a.copyWith(clearCover: true) : a,
       ],
       clearAllCover: removed(allPhotosCover),
+      clearFavoritesCover: removed(favoritesCover),
     );
   }
 
@@ -129,6 +150,11 @@ class AlbumsData {
           e.key: e.value.where((v) => v != id).toSet(),
     },
   );
+
+  /// 收藏 / 取消收藏。
+  AlbumsData favorite(Set<String> imageIds, bool on) => on
+      ? organize(imageIds, {favoritesId})
+      : organize(imageIds, const {}, sources: {favoritesId});
 
   /// sources=null 表示添加；移动仅处理属于明确来源的图片。
   AlbumsData organize(
@@ -167,6 +193,7 @@ class AlbumsData {
       for (final e in memberships.entries) e.key: e.value.toList(),
     },
     'allPhotosCover': allPhotosCover?.toJson(),
+    'favoritesCover': favoritesCover?.toJson(),
   };
 
   factory AlbumsData.fromJson(Object? raw) {
@@ -177,7 +204,7 @@ class AlbumsData {
       throw const FormatException('图库数据格式无效');
     }
     final albums = <GalleryAlbum>[];
-    final ids = <String>{};
+    final ids = <String>{favoritesId};
     for (final a in raw['albums'] as List) {
       if (a is! Map ||
           a['id'] is! String ||
@@ -201,6 +228,7 @@ class AlbumsData {
     return AlbumsData(
       albums: albums,
       allPhotosCover: AlbumCover.parse(raw['allPhotosCover']),
+      favoritesCover: AlbumCover.parse(raw['favoritesCover']),
       memberships: {
         for (final e in (raw['memberships'] as Map).entries)
           if (e.key is String && e.value is List)

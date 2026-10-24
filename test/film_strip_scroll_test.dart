@@ -46,6 +46,8 @@ void main() {
             selectedId: 'gen0',
             onSelect: (_) {},
             onShare: (_) {},
+            onFavorite: (_) {},
+            isFavorite: (_) => false,
             onDelete: (_) {},
             jobs: jobs,
             selectedJobId: selectedJobId,
@@ -158,6 +160,8 @@ void main() {
                   selectedId: 'gen0',
                   onSelect: (_) {},
                   onShare: (_) {},
+                  onFavorite: (_) {},
+                  isFavorite: (_) => false,
                   onDelete: (id) => setState(
                     () => results = [
                       for (final r in results)
@@ -193,6 +197,72 @@ void main() {
     await expectGlide(tester, 'gen2', from: x2, to: x2 - _slot);
 
     await tester.pump(const Duration(seconds: 4)); // 等「已删除」提示收走
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('拖到收藏那条松手收藏;已收藏的写「取消收藏」', (tester) async {
+    phone(tester);
+    final favorites = <String>{'gen2'};
+    final toggled = <String>[];
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(
+          home: Scaffold(
+            body: Align(
+              alignment: Alignment.bottomCenter,
+              child: FilmStrip(
+                results: all,
+                selectedId: 'gen0',
+                onSelect: (_) {},
+                onShare: (_) {},
+                onFavorite: toggled.add,
+                isFavorite: favorites.contains,
+                onDelete: (_) {},
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    Future<void> dragTo(String id, String band, String active) async {
+      final start = tester.getCenter(
+        find.byWidgetPredicate((w) => w is ResultThumb && w.result.id == id),
+      );
+      final g = await tester.startGesture(start);
+      await g.moveBy(const Offset(0, -30));
+      // 落点滑入:动画从下一帧才起跑,滑到位之前命中区和画面对不上
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      final y = tester.getCenter(find.text(band)).dy;
+      await g.moveTo(Offset(start.dx, y));
+      await tester.pump();
+      expect(find.text(active), findsOneWidget);
+      await g.up();
+      await tester.pumpAndSettle();
+    }
+
+    await dragTo('gen1', '拖到这里收藏', '松手收藏');
+    await dragTo('gen2', '拖到这里取消收藏', '松手取消收藏');
+    expect(toggled, ['gen1', 'gen2']);
+    // 三条自下而上:分享、收藏、删除
+    final g = await tester.startGesture(
+      tester.getCenter(
+        find.byWidgetPredicate(
+          (w) => w is ResultThumb && w.result.id == 'gen1',
+        ),
+      ),
+    );
+    await g.moveBy(const Offset(0, -30));
+    await tester.pump(const Duration(milliseconds: 400));
+    final share = tester.getCenter(find.text('拖到这里分享')).dy;
+    final fav = tester.getCenter(find.text('拖到这里收藏')).dy;
+    final del = tester.getCenter(find.text('拖到这里删除')).dy;
+    expect(share, greaterThan(fav));
+    expect(fav, greaterThan(del));
+    await g.moveBy(const Offset(0, 30));
+    await g.up();
     await tester.pumpAndSettle();
   });
 
