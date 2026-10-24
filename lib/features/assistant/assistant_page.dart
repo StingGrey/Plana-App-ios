@@ -66,7 +66,8 @@ class AssistantPage extends ConsumerStatefulWidget {
   ConsumerState<AssistantPage> createState() => _AssistantPageState();
 }
 
-class _AssistantPageState extends ConsumerState<AssistantPage> {
+class _AssistantPageState extends ConsumerState<AssistantPage>
+    with AutomaticKeepAliveClientMixin {
   final _input = TextEditingController();
   final _inputFocus = FocusNode();
   final _scroll = ScrollController();
@@ -87,6 +88,10 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
     _scroll.dispose();
     super.dispose();
   }
+
+  /// 切 tab 时保住输入框、待发的图和对话滚动位置。
+  @override
+  bool get wantKeepAlive => true;
 
   /// 回到底部。列表是**倒着**的(见 [_list]),所以底 = offset 0,一个常数 ——
   /// 不必去问 `maxScrollExtent`(懒加载列表那个值是估的,本来就够不着真底)。
@@ -144,6 +149,7 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final scheme = context.scheme;
     final st = ref.watch(assistantProvider);
     // 没有 Bot 授权也能用,但只能走免费模型或自定义接口:两样都没有就先挡住
