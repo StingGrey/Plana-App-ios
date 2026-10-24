@@ -2,6 +2,7 @@ import '../../core/util/log.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import '../../core/store/atomic_file.dart';
@@ -12,7 +13,7 @@ import '../generate/state_codec.dart';
 import 'models.dart';
 
 /// 图库持久化(`<support>/gallery/`):每张结果 `images/<id>.png` 原图 +
-/// `thumbs/<id>.png` 缩略图 + `inputs/<id>.json` 参数快照(参考图外置
+/// `thumbs/<id>.jpg` 缩略图(带透明的是 .png)+ `inputs/<id>.json` 参数快照(参考图外置
 /// blob 仓),旁挂 index.json(顺序/选中/发号器)。启动只读索引,像素
 /// 按需懒读——重启不丢图,也不把整库塞回内存。
 class GalleryStore {
@@ -28,7 +29,8 @@ class GalleryStore {
   File get _indexFile => File('${_root.path}/index.json');
 
   File _imageFile(String id) => File('${_imagesDir.path}/$id.png');
-  File _thumbFile(String id) => File('${_thumbsDir.path}/$id.png');
+  File _thumbPng(String id) => File('${_thumbsDir.path}/$id.png');
+  File _thumbJpg(String id) => File('${_thumbsDir.path}/$id.jpg');
   File _inputFile(String id) => File('${_inputsDir.path}/$id.json');
 
   /// 重绘产物要继承的源图 id:发起重绘时置,落新图时**消费一次**后清空。
@@ -225,10 +227,7 @@ class GalleryStore {
       // 「重新生成」读不出参数(见 atomic_file.dart)
       await writeBytesAtomic(_imageFile(r.id), bytes);
       try {
-        await writeBytesAtomic(
-          _thumbFile(r.id),
-          await coverResizePng(bytes, 256, 256, keepAlpha: true),
-        );
+        await _writeThumb(r.id, await makeThumb(bytes));
       } catch (_) {} // 缩略图失败不阻断,读取端退回原图
       if (input != null) {
         final enc = await encodeGenerateState(input, _blobs);
@@ -302,7 +301,12 @@ class GalleryStore {
     if (ids.isEmpty) return;
     _enqueue(() async {
       for (final id in ids) {
-        for (final f in [_imageFile(id), _thumbFile(id), _inputFile(id)]) {
+        for (final f in [
+          _imageFile(id),
+          _thumbJpg(id),
+          _thumbPng(id),
+          _inputFile(id),
+        ]) {
           try {
             if (await f.exists()) await f.delete();
           } catch (_) {}
@@ -346,13 +350,62 @@ class GalleryStore {
     }
   }
 
-  /// 缩略图;缺失(旧数据/生成失败)退回原图。
+  /// 缩略图;缺失(旧数据/生成失败)退回原图。旧版小缩略图从原图重做。
   Future<Uint8List?> readThumb(String id) async {
     try {
-      final f = _thumbFile(id);
-      if (await f.exists()) return await f.readAsBytes();
+      final jpg = _thumbJpg(id);
+      if (await jpg.exists()) return await jpg.readAsBytes();
+      final png = _thumbPng(id);
+      if (await png.exists()) {
+        final bytes = await png.readAsBytes();
+        if (!await _isOutdated(id, bytes)) return bytes;
+        return await _refitThumb(id) ?? bytes;
+      }
     } catch (_) {}
     return readImage(id);
+  }
+
+  /// 旧版缩略图:短边 256(方形居中裁或等比),原图比它大就该重做。
+  Future<bool> _isOutdated(String id, Uint8List png) async {
+    if (png.length < 24) return false;
+    final bd = ByteData.sublistView(png);
+    final tw = bd.getUint32(16), th = bd.getUint32(20);
+    if (math.min(tw, th) >= kThumbShortSide) return false;
+    final (w, h) = await _pngSize(_imageFile(id));
+    if (w <= 0 || h <= 0) return false;
+    return math.min(w, h) > math.min(tw, th) || (tw == th && w != h);
+  }
+
+  /// 不透明的存 .jpg,带透明的存 .png;另一种格式的旧文件一并删掉。
+  Future<void> _writeThumb(String id, ({Uint8List bytes, bool jpeg}) t) async {
+    final keep = t.jpeg ? _thumbJpg(id) : _thumbPng(id);
+    final drop = t.jpeg ? _thumbPng(id) : _thumbJpg(id);
+    await writeBytesAtomic(keep, t.bytes);
+    try {
+      if (await drop.exists()) await drop.delete();
+    } catch (_) {}
+  }
+
+  /// 重做分三路排队:老图库一屏几十张同时解原图,内存会一下子顶上去。
+  final _refitLanes = List<Future<void>>.filled(3, Future.value());
+  var _refitNext = 0;
+
+  Future<Uint8List?> _refitThumb(String id) {
+    final lane = _refitNext++ % _refitLanes.length;
+    final work = _refitLanes[lane].then((_) async {
+      final src = await readImage(id);
+      if (src == null) return null;
+      final thumb = await makeThumb(src);
+      unawaited(
+        _enqueue(() async {
+          // 排队期间图被删了就不写,免得留下孤儿缩略图
+          if (await _imageFile(id).exists()) await _writeThumb(id, thumb);
+        }),
+      );
+      return thumb.bytes;
+    });
+    _refitLanes[lane] = work.then<void>((_) {}, onError: (Object _) {});
+    return work;
   }
 
   // ---- 检索索引(search.json;可重建,容错语义与 index.json 不同) ----

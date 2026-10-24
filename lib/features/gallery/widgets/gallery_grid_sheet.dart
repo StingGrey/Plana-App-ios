@@ -39,6 +39,7 @@ import '../save_settings.dart';
 import '../share_pipeline.dart';
 import 'album_name_sheet.dart';
 import 'gallery_date_sheet.dart';
+import 'justified_grid.dart';
 import 'result_badge_chip.dart';
 import 'result_thumb.dart';
 import 'stack_card.dart';
@@ -761,17 +762,14 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
   /// 长按菜单、拖选的 MetaData 反查)必须逐条一致,写两遍迟早走岔。
   ///
   /// 缩略图本体还各带 5(描边 2.5 + 让位 2.5)的内缩,所以图与图之间实际留白 =
-  /// 这里的 spacing + 10。收到 6 之后是 16,省下的宽度全给图。
+  /// 这里的 gap + 10。等高行排布,见 [JustifiedGridLayout]。
   Widget _gridSliver(List<ResultImage> items, String? selectedId) =>
       SliverPadding(
         padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
         sliver: SliverGrid(
           gridDelegate: _zoomDelegate(
-            (cols) => SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: cols,
-              mainAxisSpacing: 6,
-              crossAxisSpacing: 6,
-            ),
+            (cols) =>
+                JustifiedGridDelegate(items, cols: cols, gap: 6, inset: 10),
           ),
           delegate: SliverChildBuilderDelegate((_, i) {
             final r = items[i];
@@ -2761,7 +2759,7 @@ class _GridThumb extends StatelessWidget {
                 ResultThumb(
                   result: result,
                   width: c.maxWidth,
-                  height: c.maxWidth,
+                  height: c.maxHeight,
                   radius: 10,
                 ),
                 // 多选模式左上角换勾选圆标(角标让位)
@@ -2940,8 +2938,7 @@ class _LiftedThumb extends ConsumerWidget {
     final top0 = media.padding.top + _margin;
     final bot0 = size.height - media.padding.bottom - _margin;
 
-    // 抬起后按图的**真实长宽比**摊开 —— 网格里是方裁的,这一下顺带把裁掉的
-    // 部分还回来。
+    // 抬起后按图的**真实长宽比**摊开。
     //
     // 预算给的是**面积**,不是宽度。原先一律取屏宽六成,横图等于被砍了两刀:
     // 宽度先削到六成,高度再按长宽比除一次,最后只有同尺寸竖图的四成大 ——
