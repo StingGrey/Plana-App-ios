@@ -46,11 +46,35 @@ import 'direct_agent.dart';
 import 'preset_rules.dart';
 import 'session_store.dart';
 
+/// 正在跑时发的那几句:排着,上一轮跑完依次发出去。不落盘。
+///
+/// 发出去时那条用户消息沿用这里的 [id],对话里的气泡原地转正。
+class QueuedAsk {
+  const QueuedAsk({
+    required this.id,
+    required this.text,
+    required this.at,
+    this.image,
+    this.withCanvas = false,
+  });
+
+  final String id;
+  final String text;
+
+  /// 排进来的时刻(UNIX 毫秒)。
+  final int at;
+  final Uint8List? image;
+
+  /// 这一句要不要引用创作页。读的是发出去那一刻的画布。
+  final bool withCanvas;
+}
+
 class AssistantState {
   const AssistantState({
     this.msgs = const [],
     this.sessions = const [],
     this.running = false,
+    this.queue = const [],
     this.liveTools = const [],
     this.stage = '',
     this.liveText = '',
@@ -74,6 +98,10 @@ class AssistantState {
   final List<ArchivedSession> sessions;
 
   final bool running;
+
+  /// 排着等发的几句(先进先出)。停下或出错后不自动接着发,等用户再按一次发送。
+  /// 队首那句在用户消息真追进 [msgs] 的同一刻才出队。
+  final List<QueuedAsk> queue;
 
   /// 正在跑的那一轮已经查了哪些资料。跑完并进 [AssistantMsg.tools],这里清空。
   final List<ToolTrace> liveTools;
@@ -104,6 +132,7 @@ class AssistantState {
     List<AssistantMsg>? msgs,
     List<ArchivedSession>? sessions,
     bool? running,
+    List<QueuedAsk>? queue,
     List<ToolTrace>? liveTools,
     String? stage,
     String? liveText,
@@ -115,6 +144,7 @@ class AssistantState {
     msgs: msgs ?? this.msgs,
     sessions: sessions ?? this.sessions,
     running: running ?? this.running,
+    queue: queue ?? this.queue,
     liveTools: liveTools ?? this.liveTools,
     stage: stage ?? this.stage,
     liveText: liveText ?? this.liveText,
@@ -216,6 +246,11 @@ class AssistantNotifier extends Notifier<AssistantState> {
   /// 发号作废:取消 / 又发了一次时,回来的旧事件对不上号,整轮丢弃。
   int _seq = 0;
 
+  /// [send] 已经进门、还没把 running 立起来(前面在等授权、存图)。
+  bool _starting = false;
+
+  bool get _busy => state.running || _starting;
+
   int _idSeq = 0;
 
   AssistantStore get _store => ref.read(appStoresProvider).assistant;
@@ -260,6 +295,57 @@ class AssistantNotifier extends Notifier<AssistantState> {
   void _set(AssistantState next, {bool persist = true}) {
     state = next;
     if (persist) _store.schedule(next.msgs, next.sessions);
+  }
+
+  // ---- 排队 ----
+
+  /// 发一句。正在跑或前面还排着别的,就排到队尾,按顺序一句句发。
+  Future<void> submit(
+    String text, {
+    Uint8List? image,
+    bool withCanvas = false,
+  }) {
+    if (text.trim().isEmpty && image == null) return Future.value();
+    _set(
+      state.copyWith(
+        queue: [
+          ...state.queue,
+          QueuedAsk(
+            id: _newId(),
+            text: text,
+            at: _now,
+            image: image,
+            withCanvas: withCanvas,
+          ),
+        ],
+      ),
+      persist: false,
+    );
+    return _drain();
+  }
+
+  /// 停下 / 出错之后接着发排着的。
+  Future<void> resumeQueue() => _drain();
+
+  void unqueue(String id) => _set(
+    state.copyWith(
+      queue: [
+        for (final q in state.queue)
+          if (q.id != id) q,
+      ],
+    ),
+    persist: false,
+  );
+
+  Future<void> _drain() {
+    if (_busy || state.queue.isEmpty) return Future.value();
+    final next = state.queue.first;
+    return send(
+      next.text,
+      image: next.image,
+      withCanvas: next.withCanvas,
+      queuedId: next.id,
+    );
   }
 
   // ---- 发一轮 ----
@@ -422,15 +508,37 @@ class AssistantNotifier extends Notifier<AssistantState> {
   ///
   /// 模式用输入框上方现在选着的([AssistantState.mode]),重新生成也是 —— 按钮上写着
   /// 什么就按什么发。「纯文本格式」看助手设置里现在的开关。
+  ///
+  /// [queuedId] = 发的是队里那一句:用户消息用它当 id,并在同一刻出队。发之前就被拦下
+  /// (没授权、模型不支持)的话它留在队里。
   Future<void> send(
     String text, {
     Uint8List? image,
     bool withCanvas = false,
+    String? queuedId,
   }) async {
-    if (state.running) return;
+    if (_busy) return;
     final trimmed = text.trim();
     if (trimmed.isEmpty && image == null) return;
+    _starting = true;
+    try {
+      await _send(
+        trimmed,
+        image: image,
+        withCanvas: withCanvas,
+        queuedId: queuedId,
+      );
+    } finally {
+      _starting = false;
+    }
+  }
 
+  Future<void> _send(
+    String trimmed, {
+    Uint8List? image,
+    required bool withCanvas,
+    String? queuedId,
+  }) async {
     // 界面已经挡了(见 _ModelGate),这儿再挡一道:自动生成、重试这些不经过界面。
     final model = ref.read(generateProvider).params.model;
     if (!assistantSupportsModel(model)) {
@@ -481,7 +589,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
         msgs: [
           ...state.msgs,
           AssistantMsg(
-            id: _newId(),
+            id: queuedId ?? _newId(),
             role: MsgRole.user,
             text: trimmed,
             at: _now,
@@ -489,6 +597,10 @@ class AssistantNotifier extends Notifier<AssistantState> {
             withCanvas: canvas,
             mode: picked,
           ),
+        ],
+        queue: [
+          for (final q in state.queue)
+            if (q.id != queuedId) q,
         ],
         running: true,
         liveTools: const [],
@@ -859,6 +971,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
     );
     // 纯文本那种只给复制:不自动导入、不自动出图
     if (draw != null && !noDraw) _autoAfterDraw(id, sourceCanvasId);
+    unawaited(_drain());
   }
 
   /// 「总是读写创作页」/「出词后自动生成」这两个开关的落点。
@@ -1113,7 +1226,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
 
   /// 从某一句提问重新来:丢掉它和之后的对话,把原话再发一次。
   Future<void> retryFrom(String userMsgId) async {
-    if (state.running) return;
+    if (_busy) return;
     final i = state.msgs.indexWhere(
       (m) => m.id == userMsgId && m.role == MsgRole.user,
     );
@@ -1159,7 +1272,13 @@ class AssistantNotifier extends Notifier<AssistantState> {
     final cur = state.msgs;
     if (!cur.any((m) => m.role == MsgRole.user)) {
       if (cur.isNotEmpty || state.mode != AssistantMode.normal) {
-        _set(state.copyWith(msgs: const [], mode: AssistantMode.normal));
+        _set(
+          state.copyWith(
+            msgs: const [],
+            mode: AssistantMode.normal,
+            queue: const [],
+          ),
+        );
       }
       return false;
     }
@@ -1168,6 +1287,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
       state.copyWith(
         msgs: const [],
         mode: AssistantMode.normal,
+        queue: const [],
         sessions: [
           s,
           ...state.sessions,
@@ -1194,6 +1314,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
         msgs: target.msgs,
         sessions: rest,
         mode: conversationMode(target.msgs),
+        queue: const [],
       ),
     );
   }

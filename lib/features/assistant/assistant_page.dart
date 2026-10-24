@@ -102,21 +102,28 @@ class _AssistantPageState extends ConsumerState<AssistantPage>
 
   /// [canvas] 给开场白用:那几句自带「要不要引用创作页」的答案,不必先让用户
   /// 去按一下按钮。其余情况一律看用户勾没勾。
+  ///
+  /// 正在跑时发的排进队里;输入框空着按发送 = 接着发排着的(停下 / 出错之后)。
   Future<void> _send({String? preset, bool? canvas}) async {
+    final n = ref.read(assistantProvider.notifier);
     final text = preset ?? _input.text;
-    if (text.trim().isEmpty && _pending == null) return;
+    if (text.trim().isEmpty && _pending == null) {
+      _toBottom();
+      await n.resumeQueue();
+      return;
+    }
     final img = _pending;
     final withCanvas = canvas ?? _withCanvas;
+    final queued = ref.read(assistantProvider).running;
     _input.clear();
     setState(() {
       _pending = null;
       _withCanvas = false; // 一次性:发完就回到关
     });
-    FocusScope.of(context).unfocus();
+    // 排队时留着键盘,接着写下一句
+    if (!queued) FocusScope.of(context).unfocus();
     _toBottom();
-    await ref
-        .read(assistantProvider.notifier)
-        .send(text, image: img?.bytes, withCanvas: withCanvas);
+    await n.submit(text, image: img?.bytes, withCanvas: withCanvas);
     _toBottom();
   }
 
@@ -172,7 +179,7 @@ class _AssistantPageState extends ConsumerState<AssistantPage>
                 ? const _ModelGate(key: ValueKey('model-gate'))
                 : !usable
                 ? const _Gate(key: ValueKey('gate'))
-                : st.isEmpty && !st.running
+                : st.isEmpty && !st.running && st.queue.isEmpty
                 ? KeyedSubtree(
                     key: const ValueKey('empty'),
                     child: _empty(scheme),
@@ -336,6 +343,9 @@ class _AssistantPageState extends ConsumerState<AssistantPage>
       }
     }
     final running = st.running;
+    final queue = st.queue;
+    final nq = queue.length;
+    final live = running ? 1 : 0;
     final now = DateTime.now().millisecondsSinceEpoch;
     final fontSize =
         ref.watch(assistantSettingsProvider.select((s) => s.value?.fontSize)) ??
@@ -344,18 +354,42 @@ class _AssistantPageState extends ConsumerState<AssistantPage>
       controller: _scroll,
       reverse: true,
       padding: const EdgeInsets.fromLTRB(14, 4, 14, 8),
-      itemCount: st.msgs.length + (running ? 1 : 0),
+      itemCount: nq + live + st.msgs.length,
       // 按 key 找回每条的位置。新消息插在最下面(下标 0),不给 key 的话旧元素会按下标
       // 错配到新消息上 —— 状态串门,进场动画也分不清谁是新来的。
       findChildIndexCallback: (key) {
         if (key is! ValueKey<String>) return null;
-        if (key.value == _kLiveKey) return running ? 0 : null;
+        if (key.value == _kLiveKey) return running ? nq : null;
+        final qi = queue.indexWhere((q) => q.id == key.value);
+        if (qi >= 0) return nq - 1 - qi;
         final at = st.msgs.indexWhere((m) => m.id == key.value);
-        return at < 0 ? null : st.msgs.length - 1 - at + (running ? 1 : 0);
+        return at < 0 ? null : st.msgs.length - 1 - at + nq + live;
       },
       itemBuilder: (context, i) {
-        // 倒序:i=0 是最下面那条。跑起来时正在跑的那一轮占着最下面。
-        if (running && i == 0) {
+        // 倒序:i=0 是最下面那条。排着的几句在最下面,队首挨着正在跑的那一轮;
+        // 发出去时那条消息沿用队里的 id,气泡原地转正
+        if (i < nq) {
+          final q = queue[nq - 1 - i];
+          return _Enter(
+            key: ValueKey(q.id),
+            animate: now - q.at < 1500,
+            grow: true,
+            child: _MsgTile(
+              msg: AssistantMsg(
+                id: q.id,
+                role: MsgRole.user,
+                text: q.text.trim(),
+                at: q.at,
+                withCanvas: q.withCanvas,
+              ),
+              queued: true,
+              queuedImage: q.image,
+              fontSize: fontSize,
+              onLongPress: () => _queuedMenu(q),
+            ),
+          );
+        }
+        if (running && i == nq) {
           return _Enter(
             key: const ValueKey(_kLiveKey),
             animate: true,
@@ -363,7 +397,7 @@ class _AssistantPageState extends ConsumerState<AssistantPage>
             child: _LiveTurn(state: st, fontSize: fontSize),
           );
         }
-        final at = st.msgs.length - 1 - (running ? i - 1 : i);
+        final at = st.msgs.length - 1 - (i - nq - live);
         final m = st.msgs[at];
         // 报错上直接给「重试」:只给最后一条、而且紧跟在提问后面的那种。
         // 发之前就被拦下的(比如没选模型接口)前面不是提问,重试只会把上一轮的话再发一遍。
@@ -413,6 +447,8 @@ class _AssistantPageState extends ConsumerState<AssistantPage>
     Haptics.medium();
     final n = ref.read(assistantProvider.notifier);
     final isUser = m.role == MsgRole.user;
+    // 跑着的时候不能截断对话:回复会接在截断后的位置上
+    final idle = !ref.read(assistantProvider).running;
     final action = await showModalBottomSheet<String>(
       context: context,
       builder: (context) => SafeArea(
@@ -424,17 +460,18 @@ class _AssistantPageState extends ConsumerState<AssistantPage>
               title: const Text('复制内容'),
               onTap: () => Navigator.pop(context, 'copy'),
             ),
-            if (isUser)
+            if (isUser && idle)
               ListTile(
                 leading: const Icon(Icons.edit_outlined),
                 title: const Text('编辑该消息'),
                 onTap: () => Navigator.pop(context, 'edit'),
               ),
-            ListTile(
-              leading: const Icon(Icons.refresh),
-              title: Text(isUser ? '从这里重新生成' : '重新生成'),
-              onTap: () => Navigator.pop(context, 'retry'),
-            ),
+            if (idle)
+              ListTile(
+                leading: const Icon(Icons.refresh),
+                title: Text(isUser ? '从这里重新生成' : '重新生成'),
+                onTap: () => Navigator.pop(context, 'retry'),
+              ),
           ],
         ),
       ),
@@ -469,6 +506,63 @@ class _AssistantPageState extends ConsumerState<AssistantPage>
     }
   }
 
+  /// 排着的那句长按:复制 / 拿回输入框改 / 取消发送。
+  Future<void> _queuedMenu(QueuedAsk q) async {
+    Haptics.medium();
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.copy_outlined),
+              title: const Text('复制内容'),
+              onTap: () => Navigator.pop(context, 'copy'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.edit_outlined),
+              title: const Text('编辑该消息'),
+              onTap: () => Navigator.pop(context, 'edit'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.close),
+              title: const Text('取消发送'),
+              onTap: () => Navigator.pop(context, 'cancel'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (action != 'edit') dropFocusSoon();
+    if (action == null || !mounted) return;
+    final n = ref.read(assistantProvider.notifier);
+    // 菜单开着的时候可能已经轮到它发出去了
+    final still = ref.read(assistantProvider).queue.any((e) => e.id == q.id);
+    switch (action) {
+      case 'copy':
+        await copyText(context, q.text);
+      case 'cancel' when still:
+        n.unqueue(q.id);
+      case 'edit' when still:
+        n.unqueue(q.id);
+        // 输入框里正写着的接在后面,不覆盖
+        final draft = _input.text;
+        final t = draft.trim().isEmpty ? q.text : '${q.text}\n$draft';
+        _input.text = t;
+        _input.selection = TextSelection.collapsed(offset: t.length);
+        setState(() {
+          if (_pending == null && q.image != null) {
+            _pending = PickedImage('image', q.image!);
+          }
+          if (q.withCanvas) _withCanvas = true;
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _inputFocus.requestFocus();
+        });
+    }
+  }
+
   /// 从某一句提问重来。和 [_send] 一样先回到底部:重来的那一轮出在最下面,
   /// 而长按菜单多半是停在上面某条消息上点的。
   Future<void> _retryFrom(String askId) async {
@@ -495,7 +589,7 @@ class _AssistantPageState extends ConsumerState<AssistantPage>
   /// 单独占一行而不是塞进输入框左边那排图标里:芯片带文字,开没开一眼能读出来;
   /// 图标只能靠颜色表示状态,而这排里的东西按错了是要花钱或者改画布的。
   /// 横向可滚,以后再加选项直接往后排,不会把输入框挤窄。
-  Widget _optionRow(bool running, bool hasCanvas) {
+  Widget _optionRow(bool hasCanvas) {
     // 能开哪几个模式跟着这个模型在用的预设走。还没取到时先不拦 —— 发的时候会再核一遍
     final family = rulesFamilyOf(
       agentImageModel(
@@ -537,36 +631,34 @@ class _AssistantPageState extends ConsumerState<AssistantPage>
               // 两态都不报「23 个 tag · 2 个角色」—— 那串数字读一遍才知道说的是
               // 什么,而这枚芯片要回答的只有「这条带不带」;想确认内容切过去看。
               label: Text(_withCanvas ? '创作页' : '引用创作页'),
-              onDeleted: _withCanvas && !running
+              onDeleted: _withCanvas
                   ? () => setState(() => _withCanvas = false)
                   : null,
               // 画布空着时**不置灰**:灰按钮按下去没反应,用户只会以为坏了。
               // 照常可点,点了说一句为什么。
-              onPressed: running
-                  ? null
-                  : () {
-                      if (_withCanvas) {
-                        setState(() => _withCanvas = false);
-                        return;
-                      }
-                      if (!hasCanvas) {
-                        hintSnack(
-                          context,
-                          '创作页还没写提示词,没东西可引用',
-                          icon: Icons.draw_outlined,
-                        );
-                        return;
-                      }
-                      setState(() => _withCanvas = true);
-                    },
+              onPressed: () {
+                if (_withCanvas) {
+                  setState(() => _withCanvas = false);
+                  return;
+                }
+                if (!hasCanvas) {
+                  hintSnack(
+                    context,
+                    '创作页还没写提示词,没东西可引用',
+                    icon: Icons.draw_outlined,
+                  );
+                  return;
+                }
+                setState(() => _withCanvas = true);
+              },
             ),
             const SizedBox(width: 8),
-            _modeChip(running, family, shown: shown, usable: usable),
+            _modeChip(family, shown: shown, usable: usable),
             // 思考等级只对自定义接口有意义:后端渠道的推理档位由服务端按渠道
             // 定死,app 没有可下发的字段。摆一颗按了不生效的芯片比不摆更糟。
             if (ref.watch(assistantEndpointProvider) != null) ...[
               const SizedBox(width: 8),
-              _thinkChip(running),
+              _thinkChip(),
             ],
           ],
         ),
@@ -583,7 +675,6 @@ class _AssistantPageState extends ConsumerState<AssistantPage>
   /// 预设没写的模式照常列在弹层里,选了说一句为什么,和画布空着时的「引用创作页」
   /// 一个道理。
   Widget _modeChip(
-    bool running,
     RulesFamily family, {
     required AssistantMode shown,
     required bool Function(AssistantMode) usable,
@@ -602,7 +693,7 @@ class _AssistantPageState extends ConsumerState<AssistantPage>
       ),
       // 开着就只写模式名;关着写「模式」,「模式 无」读着别扭
       label: Text(on ? assistantModeLabel(shown) : '模式'),
-      onSelected: running ? null : (_) => _pickMode(family, shown, usable),
+      onSelected: (_) => _pickMode(family, shown, usable),
     );
   }
 
@@ -636,7 +727,7 @@ class _AssistantPageState extends ConsumerState<AssistantPage>
 
   /// 思考等级。点开是一张带滑杆的弹层([showThinkSheet])—— 六档是一条有序的轴,
   /// 循环点击要按五下才回得来,菜单又会让它看起来像六个并列选项。
-  Widget _thinkChip(bool running) {
+  Widget _thinkChip() {
     final level =
         ref.watch(assistantSettingsProvider).value?.thinkLevel ??
         ThinkLevel.auto;
@@ -651,14 +742,14 @@ class _AssistantPageState extends ConsumerState<AssistantPage>
         size: 16,
       ),
       label: Text('思考 ${thinkLevelLabel(level)}'),
-      onSelected: running ? null : (_) => showThinkSheet(context),
+      onSelected: (_) => showThinkSheet(context),
     );
   }
 
   Widget _inputBar(ColorScheme scheme, AssistantState st) {
     final running = st.running;
-    final canSend =
-        !running && (_input.text.trim().isNotEmpty || _pending != null);
+    final hasDraft = _input.text.trim().isNotEmpty || _pending != null;
+    final canSend = hasDraft || (!running && st.queue.isNotEmpty);
     final g = ref.watch(generateProvider);
     final hasCanvas = canvasHasContent(g);
     // 画布清空了(比如去创作页按了重置)就把勾一起撤掉,不留一个带不出东西的勾。
@@ -682,13 +773,13 @@ class _AssistantPageState extends ConsumerState<AssistantPage>
                 onRemove: () => setState(() => _pending = null),
               ),
             ),
-          _optionRow(running, hasCanvas),
+          _optionRow(hasCanvas),
           Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               IconButton(
                 tooltip: '带一张图',
-                onPressed: running ? null : _pick,
+                onPressed: _pick,
                 icon: Icon(
                   Icons.image_outlined,
                   color: _pending != null ? scheme.primary : null,
@@ -699,18 +790,15 @@ class _AssistantPageState extends ConsumerState<AssistantPage>
                 child: TextField(
                   controller: _input,
                   focusNode: _inputFocus,
-                  enabled: !running,
                   minLines: 1,
                   maxLines: 5,
                   textInputAction: TextInputAction.newline,
                   onChanged: (_) => setState(() {}),
                   decoration: InputDecoration(
                     isDense: true,
-                    hintText: running ? '正在想…' : '想画什么、想改哪里…',
+                    hintText: '想画什么、想改哪里…',
                     filled: true,
-                    fillColor: running
-                        ? scheme.surfaceContainer
-                        : scheme.surfaceContainerLowest,
+                    fillColor: scheme.surfaceContainerLowest,
                     contentPadding: const EdgeInsets.symmetric(
                       horizontal: 16,
                       vertical: 12,
@@ -723,12 +811,11 @@ class _AssistantPageState extends ConsumerState<AssistantPage>
                 ),
               ),
               const SizedBox(width: 8),
-              // 跑起来之后发送键换成停止 —— 不排队第二句:一轮 20~40 秒,
-              // 攒着发只会让人搞不清哪句对应哪个结果。
+              // 跑着的时候:输入框空着是停止,写了东西是发送(排进队里)
               SizedBox(
                 width: 44,
                 height: 44,
-                child: running
+                child: running && !hasDraft
                     ? IconButton.filledTonal(
                         tooltip: '停止',
                         onPressed: ref.read(assistantProvider.notifier).stop,
@@ -902,9 +989,17 @@ class _MsgTile extends ConsumerWidget {
     this.live = false,
     this.onRetry,
     this.handoffSecs,
+    this.queued = false,
+    this.queuedImage,
   });
 
   final AssistantMsg msg;
+
+  /// 还排在队里、没发出去的一句:气泡压淡,底下标「排队中」。
+  final bool queued;
+
+  /// 排着那句带的图。还没存进 blob,直接拿字节画。
+  final Uint8List? queuedImage;
 
   /// 上一份提议 —— 结果条拿它当差异基线。
   final DrawProposal? prev;
@@ -943,7 +1038,22 @@ class _MsgTile extends ConsumerWidget {
   ) => Column(
     crossAxisAlignment: CrossAxisAlignment.end,
     children: [
-      if (msg.imageHash != null)
+      if (queuedImage case final bytes?)
+        _fade(
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: Image.memory(
+                bytes,
+                width: 96,
+                height: 96,
+                fit: BoxFit.cover,
+              ),
+            ),
+          ),
+        )
+      else if (msg.imageHash != null)
         Padding(
           padding: const EdgeInsets.only(bottom: 6),
           child: FutureBuilder(
@@ -963,27 +1073,29 @@ class _MsgTile extends ConsumerWidget {
         ),
       GestureDetector(
         onLongPress: onLongPress,
-        child: ConstrainedBox(
-          constraints: BoxConstraints(
-            maxWidth: MediaQuery.sizeOf(context).width * .8,
-          ),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            decoration: BoxDecoration(
-              color: scheme.secondaryContainer,
-              borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(16),
-                topRight: Radius.circular(16),
-                bottomLeft: Radius.circular(16),
-                bottomRight: Radius.circular(4),
-              ),
+        child: _fade(
+          ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: MediaQuery.sizeOf(context).width * .8,
             ),
-            child: Text(
-              msg.text,
-              style: context.texts.bodyMedium!.copyWith(
-                color: scheme.onSecondaryContainer,
-                fontSize: fontSize,
-                height: 1.5,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: scheme.secondaryContainer,
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(16),
+                  topRight: Radius.circular(16),
+                  bottomLeft: Radius.circular(16),
+                  bottomRight: Radius.circular(4),
+                ),
+              ),
+              child: Text(
+                msg.text,
+                style: context.texts.bodyMedium!.copyWith(
+                  color: scheme.onSecondaryContainer,
+                  fontSize: fontSize,
+                  height: 1.5,
+                ),
               ),
             ),
           ),
@@ -991,25 +1103,39 @@ class _MsgTile extends ConsumerWidget {
       ),
       // 这一轮 AI 看没看见画布,事后光读回复分不出来 —— 留个记号,
       // 「它怎么没按我的词改」才有答案。
-      if (msg.withCanvas)
+      if (queued || msg.withCanvas)
         Padding(
           padding: const EdgeInsets.only(top: 4, right: 2),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.draw_outlined, size: 12, color: scheme.outline),
-              const SizedBox(width: 4),
-              Text(
-                '引用了创作页',
-                style: context.texts.labelSmall!.copyWith(
-                  color: scheme.outline,
-                ),
-              ),
+              if (queued) ..._mark(context, Icons.schedule, '排队中'),
+              if (queued && msg.withCanvas) const SizedBox(width: 10),
+              if (msg.withCanvas)
+                ..._mark(context, Icons.draw_outlined, '引用了创作页'),
             ],
           ),
         ),
     ],
   );
+
+  /// 排着的那句压淡;发出去时原地淡回来。
+  Widget _fade(Widget child) => AnimatedOpacity(
+    opacity: queued ? .55 : 1,
+    duration: Motion.medium,
+    curve: Motion.standard,
+    child: child,
+  );
+
+  /// 用户气泡底下那行小记号里的一项。
+  List<Widget> _mark(BuildContext context, IconData icon, String label) {
+    final color = context.scheme.outline;
+    return [
+      Icon(icon, size: 12, color: color),
+      const SizedBox(width: 4),
+      Text(label, style: context.texts.labelSmall!.copyWith(color: color)),
+    ];
+  }
 
   /// AI 那一轮。给了画面的,回复和结果合成一个气泡,底部压一条 [ResultStrip] ——
   /// 每一份都长这样,不给最后一份单独摊一张卡:新一轮一来它就得收起来,同一个东西
