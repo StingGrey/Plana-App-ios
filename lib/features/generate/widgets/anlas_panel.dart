@@ -27,7 +27,11 @@ import 'top_bar_status.dart';
 ///
 /// 与算力来源同一路数:顶栏只报一眼能读完的那一段,详情全在弹层里。
 class AnlasChip extends ConsumerWidget {
-  const AnlasChip({super.key});
+  const AnlasChip({super.key, this.budget});
+
+  /// 顶栏给这枚读数留的宽度:「点数 │ 百分比」放得下就这么写,放不下额度
+  /// 改画成点数底下的进度条。null = 不限,总是写百分比。
+  final double? budget;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -69,19 +73,35 @@ class AnlasChip extends ConsumerWidget {
       _ => null,
     };
 
+    // 「点数 │ 百分比」超出 [budget] 就把额度画成点数底下的进度条
+    // (百分比只给读屏),省出来的地方留给画布名和模型名
+    final style = mono(context, size: 15, weight: FontWeight.w700);
+    final percent =
+        meter != null &&
+        (budget == null ||
+            18 +
+                    4 +
+                    topBarTextWidth(context, fmtInt(sub?.anlas ?? 0), style) +
+                    13 +
+                    topBarTextWidth(context, meter.label, style) <=
+                budget!);
+    final bar = meter != null && !percent;
+
     return TopBarStatus(
       tooltip: '点数与额度',
       // 顶栏只报**合计**:常驻在那儿,一眼要的是「还剩多少」。
       // 「订阅额+已购额」的拆分留给弹层里的 Anlas 那行 —— 想分清
       // 哪截月底会重置的人,本来就会点进去看。
       value: sub == null ? null : fmtInt(sub.anlas),
-      valueSample: _kAnlasSample,
+      // 带百分比时按内容宽,不定宽
+      valueSample: percent ? null : _kAnlasSample,
       // 还没数时数值位是一枚刷新图标:首次加载、换接入方式 / 主账号、
       // 弹层里点刷新,正在拉的时候它就转。
       loading: anlas.isLoading,
-      detail: null,
+      detail: percent ? meter.label : null,
+      detailColor: percent ? meter.color : null,
       icon: Icons.toll,
-      meter: meter,
+      meter: bar ? meter : null,
       valueColor: scheme.primary,
       onTap: () => showAnlasSheet(context),
     );
