@@ -9,9 +9,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/net/remote_image.dart';
+import '../../../core/store/ui_prefs.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/ui/responsive_grid.dart';
 import '../../editor/editor_models.dart' show draftOf, outputOf, pickEditorText;
+import '../../generate/canvas_state.dart';
 import '../../generate/generate_state.dart';
 import '../../generate/models.dart'
     show GenProvider, GenerateState, providerOfModel;
@@ -767,19 +769,26 @@ class _DetailSheetState extends ConsumerState<_DetailSheet>
 
   Widget _addButton(CodexEntry e) => FilledButton.icon(
     onPressed: () {
+      // 「清除并添加」(见 UiPrefs.inspirationReplace):先清空正向和分区再加
+      final undo = ref.read(uiPrefsProvider).inspirationReplace
+          ? ref.read(canvasWorkspaceProvider.notifier).clearPositiveWithUndo()
+          : null;
       final r = codexAddToPrompt(ref, e);
+      final verb = undo == null ? '已加入提示词' : '已替换提示词';
+      final shell = ref.read(shellIndexProvider.notifier);
       Navigator.pop(context);
       hintSnack(
         context,
         // 拆出了角色就说清楚 —— 不然用户只看到主提示词短了一截,
         // 不知道内容跑去了角色卡里
         r.dropped > 0
-            ? '已加入提示词 · ${r.added} 个角色(另 ${r.dropped} 个超出上限)'
-            : (r.added > 0 ? '已加入提示词 · ${r.added} 个角色' : '已加入提示词'),
+            ? '$verb · ${r.added} 个角色(另 ${r.dropped} 个超出上限)'
+            : (r.added > 0 ? '$verb · ${r.added} 个角色' : verb),
         icon: Icons.check_circle_outline,
-        actionLabel: '去创作',
-        onAction: () =>
-            ref.read(shellIndexProvider.notifier).select(kTabCreate),
+        // 清掉了原来的词就给撤销(清空是破坏性的,同卡头「清空」);
+        // 追加时照旧给「去创作」
+        actionLabel: undo == null ? '去创作' : '撤销',
+        onAction: undo ?? () => shell.select(kTabCreate),
       );
     },
     style: _labeledStyle,

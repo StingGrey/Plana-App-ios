@@ -446,6 +446,26 @@ String _rejoinTextBlock(String merged, String rest) {
   );
 }
 
+/// 创作页 NSFW 开关拼进去的那个 tag。
+const kNsfwTag = 'nsfw';
+
+/// 提示词里是不是已经有一个独立的 `nsfw`(按逗号切开比,大小写不敏感)。
+bool hasNsfwTag(String prompt) =>
+    prompt.split(RegExp(r'[，,]')).any((t) => t.trim().toLowerCase() == kNsfwTag);
+
+/// NSFW 开关:把 `nsfw` 拼到主提示词最前。预设随后照常叠上去(见
+/// [applyPromptPreset]),前缀档就落成 `预设, nsfw, 主提示词`;后缀档 / 无预设
+/// 时是 `nsfw, 主提示词…`。
+///
+/// 主提示词或预设里已经有独立的 nsfw 就不再拼 —— 读图导入的那串本来就带着,
+/// 再拼一个是白占 token。
+String withNsfwTag(String prompt, {required bool on, PromptPreset? preset}) {
+  if (!on || hasNsfwTag(prompt) || hasNsfwTag(preset?.positive ?? '')) {
+    return prompt;
+  }
+  return joinPromptParts(kNsfwTag, prompt);
+}
+
 /// 内置档是否带正面质量词(= `qualityToggle` 的取值)。
 /// 自定义预设不在这张表里,恒 false —— 拿得到预设对象的调用方应直接看
 /// `preset.positive.isNotEmpty`,这个函数只是给拿不到对象的地方兜底。

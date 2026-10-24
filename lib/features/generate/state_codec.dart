@@ -85,6 +85,8 @@ Future<EncodedState> encodeGenerateState(
     'prompt': s.prompt,
     'negativePrompt': s.negativePrompt,
     'promptPresetId': s.promptPresetId,
+    // NSFW 开关:关着就不写,老存档 / 没开过的用户档案一个字节都不变
+    if (s.nsfw) 'nsfw': true,
     // 编辑器原文草稿:与定稿无差别时为空,空就不写(绝大多数存档不带这两键)
     if (s.promptRaw.isNotEmpty) 'promptRaw': s.promptRaw,
     if (s.negativePromptRaw.isNotEmpty)
@@ -550,6 +552,7 @@ Future<GenerateState> decodeGenerateState(
     promptPresetId: j['promptPresetId'] is String
         ? j['promptPresetId'] as String
         : presetFallback ?? kDefaultPromptPresetId,
+    nsfw: j['nsfw'] == true,
     prompt: j['prompt'] is String ? j['prompt'] as String : '',
     negativePrompt: j['negativePrompt'] is String
         ? j['negativePrompt'] as String

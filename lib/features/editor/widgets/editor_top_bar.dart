@@ -56,6 +56,7 @@ class EditorTopBar extends ConsumerWidget {
                 prompt: s.prompt,
                 negative: s.negativePrompt,
                 sections: s.sections,
+                nsfw: s.nsfw,
               ),
             ),
           );
@@ -76,6 +77,12 @@ class EditorTopBar extends ConsumerWidget {
             // 与生成页同一口径:模块不可见(anima 等)时角色整组不计
             for (final c in ref.watch(countedCharactersProvider))
               st.activePositive ? c.positive : c.negative,
+            // NSFW 开关拼的 tag(正面那侧;已经写了 nsfw 的不重复算,同出图)
+            if (st.activePositive &&
+                gen.nsfw &&
+                !hasNsfwTag(preset?.positive ?? '') &&
+                !hasNsfwTag(st.activeOutput))
+              kNsfwTag,
           ];
     // activeOutput 而非 outputOf(activeText):正文里折叠只是占位符 `#名字`,
     // 直接算会把整段折叠体漏掉——读数得按占位符展开后的真实定稿来。

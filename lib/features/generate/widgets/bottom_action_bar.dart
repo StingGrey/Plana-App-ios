@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/net/anlas_provider.dart';
+import '../../../core/store/ui_prefs.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/ui/param_input.dart';
 import '../../../core/util/haptics.dart';
@@ -103,6 +104,11 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
     final gen = ref.watch(genStatusProvider);
     final pool = ref.watch(generationProvider);
     final loop = ref.watch(loopStatusProvider);
+    final bar = ref.watch(
+      uiPrefsProvider.select(
+        (p) => (import: p.barImport, loop: p.barLoop, queue: p.barQueue),
+      ),
+    );
 
     final isOpus = ref.watch(anlasProvider).asData?.value?.isOpus ?? false;
     // V5 额度见底后免费尺寸转扣 Anlas,那时「免费」得变回真实点数(见 provider)
@@ -176,102 +182,103 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
             const SizedBox(height: 8),
             Row(
               children: [
+                // 「生成」左边那三颗各自可藏(生成设置里开关,见 UiPrefs.barImport)。
+                // NSFW 是开关不是动作,不给藏 —— 藏起来还开着,就成了看不见的状态。
+                //
                 // 导入图片:选相册图 → 解析元数据/用作参考的全屏导入面板
-                Tooltip(
-                  message: '导入图片',
-                  child: AnimatedContainer(
-                    duration: Motion.fast,
-                    width: 52,
-                    height: 52,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(
-                        color: scheme.outline.withValues(alpha: .9),
-                        width: 1.5,
-                      ),
-                    ),
-                    child: Material(
-                      color: Colors.transparent,
-                      borderRadius: BorderRadius.circular(15),
-                      clipBehavior: Clip.antiAlias,
-                      child: InkWell(
-                        onTap: () => openImportPanel(context),
-                        child: Center(
-                          child: Icon(
-                            Icons.input,
-                            size: 22,
-                            color: scheme.primary,
-                          ),
-                        ),
-                      ),
-                    ),
+                if (bar.import) ...[
+                  _SideButton(
+                    tooltip: '导入图片',
+                    onTap: () => openImportPanel(context),
+                    child: Icon(Icons.input, size: 22, color: scheme.primary),
                   ),
-                ),
-                const SizedBox(width: 9),
+                  const SizedBox(width: 9),
+                ],
                 // 循环伴钮:进循环面板(选张数并开始);运行中高亮,面板里可停
-                Tooltip(
-                  message: '循环生成',
-                  child: AnimatedContainer(
-                    duration: Motion.fast,
-                    width: 52,
-                    height: 52,
-                    decoration: BoxDecoration(
+                if (bar.loop)
+                  _SideButton(
+                    tooltip: '循环生成',
+                    active: loop.active,
+                    onTap: () => showLoopSheet(context),
+                    child: Icon(
+                      Icons.autorenew,
+                      size: 22,
                       color: loop.active
-                          ? scheme.primaryContainer
-                          : Colors.transparent,
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(
-                        color: loop.active
-                            ? scheme.primary
-                            : scheme.outline.withValues(alpha: .9),
-                        width: 1.5,
-                      ),
-                    ),
-                    child: Material(
-                      color: Colors.transparent,
-                      borderRadius: BorderRadius.circular(15),
-                      clipBehavior: Clip.antiAlias,
-                      child: InkWell(
-                        onTap: () => showLoopSheet(context),
-                        child: Center(
-                          child: Icon(
-                            Icons.autorenew,
-                            size: 22,
-                            color: loop.active
-                                ? scheme.onPrimaryContainer
-                                : scheme.primary,
-                          ),
-                        ),
-                      ),
+                          ? scheme.onPrimaryContainer
+                          : scheme.primary,
                     ),
                   ),
-                ),
+                // 队列那颗没有描边,自带的留白就是间距;它藏了才补上
+                if (bar.loop && !bar.queue) const SizedBox(width: 9),
                 // 队列按钮:点按把当前参数快照加入队列,长按打开管理页。
                 // 生成中的任务与排队快照是两套状态,这里不复用循环按钮,避免用户
                 // 误把「之后继续出图」和「保存一份任务」混为一件事。
-                Tooltip(
-                  message: '加入生成队列',
-                  child: SizedBox(
-                    width: 52,
-                    height: 52,
-                    child: Material(
-                      color: Colors.transparent,
-                      borderRadius: BorderRadius.circular(16),
-                      child: InkWell(
+                if (bar.queue) ...[
+                  Tooltip(
+                    message: '加入生成队列',
+                    child: SizedBox(
+                      width: 52,
+                      height: 52,
+                      child: Material(
+                        color: Colors.transparent,
                         borderRadius: BorderRadius.circular(16),
-                        onTap: () {
-                          final ok = ref.read(genQueueProvider.notifier).enqueue();
-                          if (!ok) {
-                            hintSnack(context, '队列最多保留 ${GenQueueNotifier.cap} 项', icon: Icons.block_outlined);
-                            return;
-                          }
-                          hintSnack(context, '已加入生成队列', icon: Icons.playlist_add_check);
-                        },
-                        onLongPress: () => Navigator.of(context).push(
-                          sharedAxisRoute(const QueueManagementPage()),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(16),
+                          onTap: () {
+                            final ok = ref
+                                .read(genQueueProvider.notifier)
+                                .enqueue();
+                            if (!ok) {
+                              hintSnack(
+                                context,
+                                '队列最多保留 ${GenQueueNotifier.cap} 项',
+                                icon: Icons.block_outlined,
+                              );
+                              return;
+                            }
+                            hintSnack(
+                              context,
+                              '已加入生成队列',
+                              icon: Icons.playlist_add_check,
+                            );
+                          },
+                          onLongPress: () => Navigator.of(
+                            context,
+                          ).push(sharedAxisRoute(const QueueManagementPage())),
+                          child: Center(
+                            child: Icon(
+                              Icons.queue_play_next_outlined,
+                              size: 22,
+                              color: scheme.primary,
+                            ),
+                          ),
                         ),
-                        child: Center(
-                          child: Icon(Icons.queue_play_next_outlined, size: 22, color: scheme.primary),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 9),
+                ],
+                // NSFW:开着时出图在预设前缀与主提示词之间夹一个 nsfw(见 withNsfwTag)
+                _SideButton(
+                  tooltip: state.nsfw ? 'NSFW 已开:预设后自动加 nsfw' : 'NSFW 已关',
+                  active: state.nsfw,
+                  onTap: () {
+                    Haptics.selection();
+                    ref.read(generateProvider.notifier).setNsfw(!state.nsfw);
+                  },
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    // 大字号下宁可缩小也不换行
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
+                        'NSFW',
+                        maxLines: 1,
+                        style: context.texts.labelMedium!.copyWith(
+                          fontWeight: FontWeight.w800,
+                          color: state.nsfw
+                              ? scheme.onPrimaryContainer
+                              : scheme.primary,
                         ),
                       ),
                     ),
@@ -310,6 +317,54 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
   }
 }
 
+/// 「生成」左边的方形描边按钮(导入 / 循环 / NSFW)。[active] 时铺主色容器底、
+/// 描边换主色 —— 循环跑着、NSFW 开着都是这一种「亮着」。
+class _SideButton extends StatelessWidget {
+  const _SideButton({
+    required this.tooltip,
+    required this.onTap,
+    required this.child,
+    this.active = false,
+  });
+
+  final String tooltip;
+  final VoidCallback onTap;
+  final Widget child;
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return Tooltip(
+      message: tooltip,
+      child: AnimatedContainer(
+        duration: Motion.fast,
+        width: 52,
+        height: 52,
+        decoration: BoxDecoration(
+          color: active ? scheme.primaryContainer : Colors.transparent,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: active
+                ? scheme.primary
+                : scheme.outline.withValues(alpha: .9),
+            width: 1.5,
+          ),
+        ),
+        child: Material(
+          color: Colors.transparent,
+          borderRadius: BorderRadius.circular(15),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: onTap,
+            child: Center(child: child),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// 生成/排队前置检查:缺当前模型编码的纯编码 Vibe 无从现场编码,
 /// 只会被静默跳过——直接停用并提示,别让人误以为它生效了。
 void _hintDisabledVibes(BuildContext context, WidgetRef ref) {
@@ -329,6 +384,13 @@ void _hintDisabledVibes(BuildContext context, WidgetRef ref) {
 ///
 /// 做成一颗按钮而不是两颗并排:并排那版把主按钮挤窄了一截,而且「生成」和
 /// 「停止」是同一件事的两面,分开两个方块反而要多想一下哪个是哪个。
+/// 「生成」两个字要按钮至少这么宽才写:图标 20 + 间隔 + 两个字 + 胶囊大约就是
+/// 这个数,再窄写出来也得跟着整行缩到看不清。
+const _kLabelMinW = 96.0;
+
+/// 有任务在跑时,停止区最多让到左边还剩这么宽 —— 够摆一个缩小的图标和胶囊。
+const _kMinTapW = 36.0;
+
 class _GenerateButton extends StatelessWidget {
   const _GenerateButton({
     required this.cost,
@@ -363,125 +425,141 @@ class _GenerateButton extends StatelessWidget {
         // stretch:两段都要撑满 52 的高度。默认的 center 会让 InkWell 只拿到
         // 内容那点自然高度(≈28),按钮看着一大颗、实际只有中间一条窄带能点 ——
         // 表现就是「只有文字上点得动」。实测反馈。
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Expanded(
-              child: InkWell(
-                onTap: onGenerate,
-                // 费用数字变长(编码费叠加后可到三位数)时这一行会顶破按钮 ——
-                // 实测快速改 IE 会看到溢出围栏。两段文本都收进 Flexible +
-                // 省略号,宁可挤扁不越界。
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    // 池子里已经有任务 → 换成加号:这一下是「再加一条」,
-                    // 不是「开始生成」,图标得说清楚。
-                    Icon(
-                      busy ? Icons.add_rounded : Icons.auto_awesome,
-                      size: busy ? 22 : 20,
-                      color: scheme.onPrimary,
-                    ),
-                    const SizedBox(width: 8),
-                    Flexible(
-                      child: Text(
-                        '生成',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: context.texts.titleMedium!.copyWith(
-                          fontWeight: FontWeight.w700,
-                          color: scheme.onPrimary,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Flexible(
-                      // 宽度滑过去而不是跳。胶囊自己按「两位数」定了最小宽,
-                      // 免费与一位数都在这个宽度里,平时根本不动;三位数以上
-                      // 才撑开,那一下由这层补成一段过渡 —— 不然「生成」两个字
-                      // 会跟着横向弹一格。
-                      child: AnimatedSize(
-                        duration: Motion.fast,
-                        curve: Motion.standard,
-                        child: AnimatedSwitcher(
-                          duration: Motion.fast,
-                          child: CostPill(key: ValueKey(cost), cost: cost),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            if (busy) ...[
-              // 竖细线:两段是两个可点区域,没有分界的话点哪儿全靠猜。
-              // 包一层 Center —— 外层是 stretch,不包的话这道线会被撑到通高。
-              Center(
-                child: Container(
-                  width: 1,
-                  height: 30,
-                  color: scheme.onPrimary.withValues(alpha: .28),
-                ),
-              ),
-              Tooltip(
-                message: runningCount > 1
-                    ? '取消当前跟随的这条($runningCount 条在跑)'
-                    : '取消生成',
+        // 按钮能拿到多宽看左边亮着几颗侧边按钮:四颗全开、320 宽时只剩 57。
+        // 停止区先让出位置,给左边留下 [_kMinTapW] 那一截还能点。
+        child: LayoutBuilder(
+          builder: (context, c) => Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
                 child: InkWell(
-                  onTap: onStop,
-                  child: SizedBox(
-                    width: 58,
-                    child: Stack(
-                      alignment: Alignment.center,
-                      children: [
-                        SizedBox(
-                          width: 34,
-                          height: 34,
-                          child: CircularProgressIndicator(
-                            value: progress,
-                            strokeWidth: 2.5,
-                            backgroundColor: scheme.onPrimary.withValues(
-                              alpha: .28,
-                            ),
-                            valueColor: AlwaysStoppedAnimation(
-                              scheme.onPrimary,
-                            ),
+                  onTap: onGenerate,
+                  // 窄到放不下「图标 + 生成 + 胶囊」时先收掉「生成」两个字(只剩
+                  // 省略号的话不如不写),再窄就整行等比缩小 —— 胶囊按两位数占了
+                  // 最小宽,压不扁,原先的 Flexible 一挤它就从里面溢出。费用变成
+                  // 三位数撑宽时同样是缩小,不再截成省略号。
+                  child: LayoutBuilder(
+                    builder: (context, inner) => FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // 池子里已经有任务 → 换成加号:这一下是「再加一条」,
+                          // 不是「开始生成」,图标得说清楚。
+                          Icon(
+                            busy ? Icons.add_rounded : Icons.auto_awesome,
+                            size: busy ? 22 : 20,
+                            color: scheme.onPrimary,
                           ),
-                        ),
-                        Icon(stopIcon, size: 18, color: scheme.onPrimary),
-                        if (runningCount > 1)
-                          Positioned(
-                            right: 6,
-                            top: 8,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 4,
-                                vertical: 1,
-                              ),
-                              decoration: BoxDecoration(
+                          if (inner.maxWidth >= _kLabelMinW) ...[
+                            const SizedBox(width: 8),
+                            Text(
+                              '生成',
+                              maxLines: 1,
+                              style: context.texts.titleMedium!.copyWith(
+                                fontWeight: FontWeight.w700,
                                 color: scheme.onPrimary,
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: Text(
-                                '$runningCount',
-                                style: TextStyle(
-                                  fontSize: 9,
-                                  fontWeight: FontWeight.w800,
-                                  color: scheme.primary,
-                                  fontFeatures: const [
-                                    FontFeature.tabularFigures(),
-                                  ],
-                                ),
                               ),
                             ),
+                          ],
+                          const SizedBox(width: 8),
+                          // 宽度滑过去而不是跳。胶囊自己按「两位数」定了最小宽,
+                          // 免费与一位数都在这个宽度里,平时根本不动;三位数以上
+                          // 才撑开,那一下由这层补成一段过渡 —— 不然「生成」两个字
+                          // 会跟着横向弹一格。
+                          AnimatedSize(
+                            duration: Motion.fast,
+                            curve: Motion.standard,
+                            child: AnimatedSwitcher(
+                              duration: Motion.fast,
+                              child: CostPill(key: ValueKey(cost), cost: cost),
+                            ),
                           ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
                 ),
               ),
+              if (busy) ...[
+                // 竖细线:两段是两个可点区域,没有分界的话点哪儿全靠猜。
+                // 包一层 Center —— 外层是 stretch,不包的话这道线会被撑到通高。
+                Center(
+                  child: Container(
+                    width: 1,
+                    height: 30,
+                    color: scheme.onPrimary.withValues(alpha: .28),
+                  ),
+                ),
+                Tooltip(
+                  message: runningCount > 1
+                      ? '取消当前跟随的这条($runningCount 条在跑)'
+                      : '取消生成',
+                  child: InkWell(
+                    onTap: onStop,
+                    // 平时 58 宽;按钮本身太窄时收窄,环和图标跟着等比缩小,
+                    // 不会被挤成椭圆
+                    child: SizedBox(
+                      width: (c.maxWidth - 1 - _kMinTapW).clamp(0.0, 58.0),
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: SizedBox(
+                          width: 58,
+                          height: 52,
+                          child: Stack(
+                            alignment: Alignment.center,
+                            children: [
+                              SizedBox(
+                                width: 34,
+                                height: 34,
+                                child: CircularProgressIndicator(
+                                  value: progress,
+                                  strokeWidth: 2.5,
+                                  backgroundColor: scheme.onPrimary.withValues(
+                                    alpha: .28,
+                                  ),
+                                  valueColor: AlwaysStoppedAnimation(
+                                    scheme.onPrimary,
+                                  ),
+                                ),
+                              ),
+                              Icon(stopIcon, size: 18, color: scheme.onPrimary),
+                              if (runningCount > 1)
+                                Positioned(
+                                  right: 6,
+                                  top: 8,
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 4,
+                                      vertical: 1,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: scheme.onPrimary,
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Text(
+                                      '$runningCount',
+                                      style: TextStyle(
+                                        fontSize: 9,
+                                        fontWeight: FontWeight.w800,
+                                        color: scheme.primary,
+                                        fontFeatures: const [
+                                          FontFeature.tabularFigures(),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );

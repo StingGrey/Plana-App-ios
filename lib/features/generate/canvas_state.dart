@@ -117,6 +117,16 @@ class CanvasWorkspaceNotifier extends Notifier<CanvasWorkspace> {
     return hit;
   }
 
+  /// 灵感页「清除并添加」(见 UiPrefs.inspirationReplace):先清空正向提示词和
+  /// 分区(同卡头「清空」),返回撤销 —— 清空**连同随后写进去的内容**一起撤,
+  /// 整份放回清空前那一刻(见 [undoWrite])。
+  void Function() clearPositiveWithUndo() {
+    final before = ref.read(generateProvider);
+    final canvasId = state.activeId;
+    ref.read(generateProvider.notifier).clearPositive();
+    return () => undoWrite(before, canvasId);
+  }
+
   void _prepareSwitch() {
     // 只刷挂起的编辑;已退出的旧编辑会话不能再次盖掉外部导入内容。
     ref.read(editorProvider.notifier).flushPendingWriteBack();

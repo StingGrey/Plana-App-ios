@@ -1,16 +1,19 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/gestures.dart' show kLongPressTimeout;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plana_app/core/auth/auth_mode.dart';
 import 'package:plana_app/core/net/anlas_provider.dart';
 import 'package:plana_app/core/net/nai_client.dart';
 import 'package:plana_app/core/store/app_stores.dart';
+import 'package:plana_app/core/store/ui_prefs.dart';
 import 'package:plana_app/core/theme/app_theme.dart';
 import 'package:plana_app/features/editor/editor_state.dart';
 import 'package:plana_app/features/gallery/albums/album_models.dart';
@@ -28,6 +31,8 @@ import 'package:plana_app/features/generate/loop_controller.dart';
 import 'package:plana_app/features/generate/models.dart';
 import 'package:plana_app/features/generate/prompt_presets.dart';
 import 'package:plana_app/features/generate/state_codec.dart';
+import 'package:plana_app/features/generate/widgets/bottom_action_bar.dart';
+import 'package:plana_app/features/generate/widgets/prompt_card.dart';
 import 'package:plana_app/features/generate/style_recipes.dart';
 import 'package:plana_app/features/inspiration/tag_editor_page.dart';
 import 'package:plana_app/features/inspiration/tag_library.dart';
@@ -84,6 +89,20 @@ class _ControlledGeneration extends GenerationNotifier {
   final replies = <Completer<GenOutcome>>[];
   @override
   GenPool build() => const GenPool();
+
+  /// 吸底栏测试用:摆一条在跑的任务,生成按钮就会长出停止区。
+  void showBusy() => state = const GenPool(
+    jobs: [
+      GenJob(
+        id: 'job0',
+        kind: GenJobKind.normal,
+        stage: GenJobStage.waiting,
+        width: 832,
+        height: 1216,
+        seq: 0,
+      ),
+    ],
+  );
   @override
   Future<int> concurrency() async => 1;
   @override
@@ -258,6 +277,42 @@ void main() {
     expect(c.read(generateProvider).prompt, 'forest, lake');
     canvases.select(a);
     expect(c.read(generateProvider).prompt, 'rain, moon');
+  });
+
+  test('NSFW 开关全局一份:切画布不翻,存档往返不丢', () async {
+    gen.setNsfw(true);
+    final a = c.read(canvasWorkspaceProvider).activeId;
+    canvases.create();
+    expect(c.read(generateProvider).nsfw, isTrue);
+    gen.setNsfw(false);
+    canvases.select(a);
+    expect(c.read(generateProvider).nsfw, isFalse);
+
+    gen.setNsfw(true);
+    final enc = await encodeGenerateState(c.read(generateProvider), stores.blobs);
+    expect(enc.json['nsfw'], isTrue);
+    final back = await decodeGenerateState(
+      jsonDecode(jsonEncode(enc.json)) as Map<String, dynamic>,
+      stores.blobs,
+    );
+    expect(back.nsfw, isTrue);
+    // 关着不写键,老存档读出来是关
+    gen.setNsfw(false);
+    final off = await encodeGenerateState(c.read(generateProvider), stores.blobs);
+    expect(off.json.containsKey('nsfw'), isFalse);
+  });
+
+  test('灵感「清除并添加」:清空正向和分区,撤销连同写进去的一起放回', () {
+    gen.setPrompts(positive: 'rain', negative: 'bad');
+    gen.addSection();
+    final undo = canvases.clearPositiveWithUndo();
+    expect(c.read(generateProvider).prompt, '');
+    expect(c.read(generateProvider).sections, isEmpty);
+    expect(c.read(generateProvider).negativePrompt, 'bad');
+    gen.setPrompts(positive: 'codex entry');
+    undo();
+    expect(c.read(generateProvider).prompt, 'rain');
+    expect(c.read(generateProvider).sections, isNotEmpty);
   });
 
   test('撤销导入：全局设置整份放回，词还给导入时那张画布', () {
@@ -1278,6 +1333,139 @@ void main() {
     );
     await tester.pumpAndSettle();
   }
+
+  testWidgets('提示词卡头四颗按钮按开关显隐,清空和收起箭头不受影响', (tester) async {
+    widgetCase = true;
+    gen.setPrompts(positive: 'rain');
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: c,
+        child: MaterialApp(
+          theme: AppTheme.light(),
+          home: const Scaffold(
+            body: SingleChildScrollView(child: PromptCard()),
+          ),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 500));
+    const tips = ['灵感库', '固定词库', '下划线替换为空格', '添加分区'];
+    for (final t in tips) {
+      expect(find.byTooltip(t), findsOneWidget, reason: t);
+    }
+    c.read(uiPrefsProvider.notifier).patch(
+      (p) => p.copyWith(
+        cardLibrary: false,
+        cardFixedTags: false,
+        cardUnderscore: false,
+        cardAddSection: false,
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 500));
+    for (final t in tips) {
+      expect(find.byTooltip(t), findsNothing, reason: t);
+    }
+    expect(find.byTooltip('清空正向提示词'), findsOneWidget);
+    expect(find.byTooltip('收起正面提示词'), findsOneWidget);
+    c.read(uiPrefsProvider.notifier).patch(
+      (p) => p.copyWith(cardFixedTags: true),
+    );
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.byTooltip('固定词库'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 5));
+  });
+
+  // 360 而不是 320:测试字体每个字都按 1em 宽,320 下上面那行读数(尺寸 / 步数 /
+  // 高级)自己就放不下 —— 那是测试字体的事,真机字体窄得多。360 下读数行刚好
+  // 放得下,生成按钮又被四颗侧边按钮挤到只剩 97,正好压到要缩的那一档。
+  testWidgets('360px 吸底栏:四颗侧边按钮全开、跑着任务、大字体都不溢出;左边三颗可藏', (
+    tester,
+  ) async {
+    widgetCase = true;
+    tester.view.physicalSize = const Size(360, 740);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    Future<void> pump(double scale) async {
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: c,
+          child: MaterialApp(
+            theme: AppTheme.light(),
+            builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(
+                context,
+              ).copyWith(textScaler: TextScaler.linear(scale)),
+              child: child!,
+            ),
+            home: const Scaffold(
+              body: Column(children: [Spacer(), BottomActionBar()]),
+            ),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 500));
+    }
+
+    // 只量第二行(侧边按钮 + 生成)里横向排的每一层:大字号下读数行在测试字体
+    // 里自己就会挤爆,不归这条管,所以不拿 takeException 一把判。
+    double actionRowOverflow() {
+      var worst = 0.0;
+      void walk(RenderObject r) {
+        if (r is RenderFlex && r.direction == Axis.horizontal) {
+          var sum = 0.0;
+          r.visitChildren((ch) => sum += (ch as RenderBox).size.width);
+          worst = math.max(worst, sum - r.size.width);
+        }
+        r.visitChildren(walk);
+      }
+
+      walk(
+        tester.renderObject(
+          find.ancestor(of: find.text('NSFW'), matching: find.byType(Row)).first,
+        ),
+      );
+      return worst;
+    }
+
+    for (final busy in [false, true]) {
+      if (busy) generation.showBusy();
+      for (final scale in [1.0, 1.3]) {
+        await pump(scale);
+        tester.takeException();
+        expect(
+          actionRowOverflow(),
+          lessThan(.5),
+          reason: 'busy=$busy textScale=$scale',
+        );
+      }
+    }
+    expect(find.byTooltip('导入图片'), findsOneWidget);
+    expect(find.byTooltip('循环生成'), findsOneWidget);
+    expect(find.byTooltip('加入生成队列'), findsOneWidget);
+    // 跑着任务、停止区再分走一截:「生成」两个字让位,不缩成省略号
+    expect(find.text('生成'), findsNothing);
+
+    await tester.tap(find.text('NSFW'));
+    await tester.pump();
+    expect(c.read(generateProvider).nsfw, isTrue);
+
+    c.read(uiPrefsProvider.notifier).patch(
+      (p) => p.copyWith(barImport: false, barLoop: false, barQueue: false),
+    );
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.byTooltip('导入图片'), findsNothing);
+    expect(find.byTooltip('循环生成'), findsNothing);
+    expect(find.byTooltip('加入生成队列'), findsNothing);
+    expect(find.text('NSFW'), findsOneWidget, reason: 'NSFW 是开关,不给藏');
+    // 腾出地方来,「生成」两个字回来了
+    expect(find.text('生成'), findsOneWidget);
+    expect(actionRowOverflow(), lessThan(.5));
+    // 停止区那圈不定进度一直在转:拆掉整棵树,让它的计时器跟着走
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 5));
+  });
 
   testWidgets('320px 融合顶栏可以展开、新建、切换、改名和删除撤销', (tester) async {
     await pumpHeader(tester);

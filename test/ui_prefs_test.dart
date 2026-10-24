@@ -50,4 +50,59 @@ void main() {
     expect(UiPrefs.fromJson({'inspirationColumns': 7}).inspirationColumns, {});
     expect(UiPrefs.fromJson(const {}).inspirationColumns, {});
   });
+
+  test('吸底栏按钮显隐与灵感「清除并添加」:往返一致,缺键 / 坏值回默认', () {
+    const p = UiPrefs(
+      barImport: false,
+      barLoop: true,
+      barQueue: false,
+      inspirationReplace: true,
+    );
+    final back = UiPrefs.fromJson(
+      jsonDecode(jsonEncode(p.toJson())) as Map<String, dynamic>,
+    );
+    expect(back.barImport, isFalse);
+    expect(back.barLoop, isTrue);
+    expect(back.barQueue, isFalse);
+    expect(back.inspirationReplace, isTrue);
+
+    // 默认:三颗全显示、追加
+    const d = UiPrefs();
+    final empty = UiPrefs.fromJson(const {});
+    for (final x in [d, empty]) {
+      expect([x.barImport, x.barLoop, x.barQueue], [true, true, true]);
+      expect(x.inspirationReplace, isFalse);
+    }
+    final bad = UiPrefs.fromJson({
+      'barImport': 'x',
+      'barQueue': 0,
+      'inspirationReplace': 'yes',
+      'galleryColumns': 4,
+    });
+    expect(bad.barImport, isTrue);
+    expect(bad.barQueue, isTrue);
+    expect(bad.inspirationReplace, isFalse);
+    expect(bad.galleryColumns, 4, reason: '一项是垃圾值不该连累其余项');
+  });
+
+  test('提示词卡头四颗按钮的显隐:往返一致,缺键 / 坏值回默认(全显示)', () {
+    const p = UiPrefs(
+      cardLibrary: false,
+      cardFixedTags: true,
+      cardUnderscore: false,
+      cardAddSection: false,
+    );
+    final back = UiPrefs.fromJson(
+      jsonDecode(jsonEncode(p.toJson())) as Map<String, dynamic>,
+    );
+    expect(
+      [back.cardLibrary, back.cardFixedTags, back.cardUnderscore, back.cardAddSection],
+      [false, true, false, false],
+    );
+    final empty = UiPrefs.fromJson({'cardLibrary': 'x', 'cardAddSection': 1});
+    expect(
+      [empty.cardLibrary, empty.cardFixedTags, empty.cardUnderscore, empty.cardAddSection],
+      [true, true, true, true],
+    );
+  });
 }

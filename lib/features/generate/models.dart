@@ -1244,6 +1244,7 @@ class GenerateState {
     this.kreaStyleRefWeight = 1.0,
     this.inpaint,
     this.promptPresetId = kDefaultPromptPresetId,
+    this.nsfw = false,
   });
 
   factory GenerateState.initial() => const GenerateState(
@@ -1264,6 +1265,13 @@ class GenerateState {
   /// 当前画布用的提示词预设。每张画布各存一份,换预设只改这一张;记的档
   /// 后来被删了,用的时候按「无」算(见 [selectedPromptPresetId])。
   final String promptPresetId;
+
+  /// 创作页的 NSFW 开关:开着时出图在预设前缀与主提示词之间夹一个 `nsfw`
+  /// (见 [withNsfwTag])。和预设一样只在拼请求时加,[prompt] 里不写这个词。
+  ///
+  /// 全局一份、不跟画布走:它是「我现在在出哪类图」的模式,切画布不该悄悄
+  /// 翻过去。随快照走,所以图库「重新生成」与队列都按当时的开关复现。
+  final bool nsfw;
 
   /// 编辑器原文草稿(含禁用/折叠等仅编辑期语法),空 = 与定稿无差别。
   /// [prompt] 恒为定稿:发给 NAI 的、算 token 的、拼预设的都只看它,
@@ -1355,6 +1363,7 @@ class GenerateState {
     double? kreaStyleRefWeight,
     Object? inpaint = _unset,
     String? promptPresetId,
+    bool? nsfw,
   }) {
     return GenerateState(
       prompt: prompt ?? this.prompt,
@@ -1375,6 +1384,7 @@ class GenerateState {
       kreaStyleRefWeight: kreaStyleRefWeight ?? this.kreaStyleRefWeight,
       inpaint: inpaint == _unset ? this.inpaint : inpaint as InpaintJob?,
       promptPresetId: promptPresetId ?? this.promptPresetId,
+      nsfw: nsfw ?? this.nsfw,
     );
   }
 }

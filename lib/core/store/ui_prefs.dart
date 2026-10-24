@@ -28,6 +28,14 @@ class UiPrefs {
     this.gallerySaveAlbum = '',
     this.galleryColumns = 3,
     this.inspirationColumns = const {},
+    this.barImport = true,
+    this.barLoop = true,
+    this.barQueue = true,
+    this.cardLibrary = true,
+    this.cardFixedTags = true,
+    this.cardUnderscore = true,
+    this.cardAddSection = true,
+    this.inspirationReplace = false,
   });
 
   /// 统计页的时间范围(`today` / `week` / `month`)。**统计页与平台页共用一个**
@@ -64,6 +72,27 @@ class UiPrefs {
   /// 列数在各类下的疏密差得很远。各类的上下界跟卡片形状走,由灵感页夹。
   final Map<String, int> inspirationColumns;
 
+  /// 创作页吸底栏「生成」左边那三颗按钮(导入图片 / 循环生成 / 加入队列)
+  /// 各自显不显示。藏掉不用的,生成按钮就宽一些。
+  ///
+  /// 放这儿而不是生成设置:吸底栏是启动第一屏,得同步取值(见类注释),
+  /// 不然藏掉的按钮会在启动时先闪出来一帧。
+  final bool barImport;
+  final bool barLoop;
+  final bool barQueue;
+
+  /// 提示词卡头那排圆按钮(灵感库 / 固定词库 / 下划线换空格 / 添加分区)各自
+  /// 显不显示。卡头本来就挤,窄屏上标题和 token 读数会被压没,藏掉不用的就宽了。
+  /// 「清空」随内容出现、收起箭头是卡片本身的开合,这两样不归这里管。
+  final bool cardLibrary;
+  final bool cardFixedTags;
+  final bool cardUnderscore;
+  final bool cardAddSection;
+
+  /// 灵感页把条目写进主提示词时**先清空再加**(false = 追加在后面,原来的行为)。
+  /// 清的范围同提示词卡头「清空」:主体正向 + 分区;负面照旧追加。
+  final bool inspirationReplace;
+
   UiPrefs copyWith({
     String? statsRange,
     int? toolsTab,
@@ -75,6 +104,14 @@ class UiPrefs {
     String? gallerySaveAlbum,
     int? galleryColumns,
     Map<String, int>? inspirationColumns,
+    bool? barImport,
+    bool? barLoop,
+    bool? barQueue,
+    bool? cardLibrary,
+    bool? cardFixedTags,
+    bool? cardUnderscore,
+    bool? cardAddSection,
+    bool? inspirationReplace,
   }) => UiPrefs(
     statsRange: statsRange ?? this.statsRange,
     toolsTab: toolsTab ?? this.toolsTab,
@@ -90,6 +127,14 @@ class UiPrefs {
     gallerySaveAlbum: gallerySaveAlbum ?? this.gallerySaveAlbum,
     galleryColumns: galleryColumns ?? this.galleryColumns,
     inspirationColumns: inspirationColumns ?? this.inspirationColumns,
+    barImport: barImport ?? this.barImport,
+    barLoop: barLoop ?? this.barLoop,
+    barQueue: barQueue ?? this.barQueue,
+    cardLibrary: cardLibrary ?? this.cardLibrary,
+    cardFixedTags: cardFixedTags ?? this.cardFixedTags,
+    cardUnderscore: cardUnderscore ?? this.cardUnderscore,
+    cardAddSection: cardAddSection ?? this.cardAddSection,
+    inspirationReplace: inspirationReplace ?? this.inspirationReplace,
   );
 
   Map<String, dynamic> toJson() => {
@@ -103,6 +148,14 @@ class UiPrefs {
     'gallerySaveAlbum': gallerySaveAlbum,
     'galleryColumns': galleryColumns,
     'inspirationColumns': inspirationColumns,
+    'barImport': barImport,
+    'barLoop': barLoop,
+    'barQueue': barQueue,
+    'cardLibrary': cardLibrary,
+    'cardFixedTags': cardFixedTags,
+    'cardUnderscore': cardUnderscore,
+    'cardAddSection': cardAddSection,
+    'inspirationReplace': inspirationReplace,
   };
 
   /// 每一项各自兜底:某一项是垃圾值不该连累其余项(整份丢掉的话,用户会看到
@@ -151,6 +204,20 @@ class UiPrefs {
           if (e.key is String && e.value is num)
             e.key as String: (e.value as num).toInt(),
     },
+    barImport: j['barImport'] is bool ? j['barImport'] as bool : true,
+    barLoop: j['barLoop'] is bool ? j['barLoop'] as bool : true,
+    barQueue: j['barQueue'] is bool ? j['barQueue'] as bool : true,
+    cardLibrary: j['cardLibrary'] is bool ? j['cardLibrary'] as bool : true,
+    cardFixedTags: j['cardFixedTags'] is bool
+        ? j['cardFixedTags'] as bool
+        : true,
+    cardUnderscore: j['cardUnderscore'] is bool
+        ? j['cardUnderscore'] as bool
+        : true,
+    cardAddSection: j['cardAddSection'] is bool
+        ? j['cardAddSection'] as bool
+        : true,
+    inspirationReplace: j['inspirationReplace'] == true,
   );
 }
 

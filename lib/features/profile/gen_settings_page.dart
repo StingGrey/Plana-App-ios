@@ -111,6 +111,59 @@ class GenSettingsPage extends ConsumerWidget {
           const SizedBox(height: 16),
           const _ModulesSection(),
           const SizedBox(height: 16),
+          const SettingsLabel('提示词卡按钮'),
+          _ButtonsCard([
+            (
+              icon: Icons.grid_view,
+              title: '灵感库',
+              get: (p) => p.cardLibrary,
+              set: (p, v) => p.copyWith(cardLibrary: v),
+            ),
+            (
+              icon: Icons.push_pin_outlined,
+              title: '固定词库',
+              get: (p) => p.cardFixedTags,
+              set: (p, v) => p.copyWith(cardFixedTags: v),
+            ),
+            (
+              icon: Icons.space_bar_outlined,
+              title: '下划线替换为空格',
+              get: (p) => p.cardUnderscore,
+              set: (p, v) => p.copyWith(cardUnderscore: v),
+            ),
+            (
+              icon: Icons.add,
+              title: '添加分区',
+              get: (p) => p.cardAddSection,
+              set: (p, v) => p.copyWith(cardAddSection: v),
+            ),
+          ]),
+          const SizedBox(height: 16),
+          const SettingsLabel('创作页吸底栏'),
+          _ButtonsCard([
+            (
+              icon: Icons.input,
+              title: '导入图片',
+              get: (p) => p.barImport,
+              set: (p, v) => p.copyWith(barImport: v),
+            ),
+            (
+              icon: Icons.autorenew,
+              title: '循环生成',
+              get: (p) => p.barLoop,
+              set: (p, v) => p.copyWith(barLoop: v),
+            ),
+            (
+              icon: Icons.queue_play_next_outlined,
+              title: '加入生成队列',
+              get: (p) => p.barQueue,
+              set: (p, v) => p.copyWith(barQueue: v),
+            ),
+          ]),
+          const SizedBox(height: 16),
+          const SettingsLabel('灵感'),
+          const _InspirationCard(),
+          const SizedBox(height: 16),
           const SettingsLabel('图库默认保存'),
           const _SaveDefaultsCard(),
         ],
@@ -293,6 +346,72 @@ class _ModuleRow extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// 创作页上一排按钮的显隐开关(提示词卡头、吸底栏)。图标与按钮本身一致,一眼对上。
+typedef _ButtonToggle = ({
+  IconData icon,
+  String title,
+  bool Function(UiPrefs) get,
+  UiPrefs Function(UiPrefs, bool) set,
+});
+
+class _ButtonsCard extends ConsumerWidget {
+  const _ButtonsCard(this.items);
+
+  final List<_ButtonToggle> items;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final p = ref.watch(uiPrefsProvider);
+    return SettingsCard(
+      children: [
+        for (final it in items)
+          SwitchListTile(
+            value: it.get(p),
+            onChanged: (v) => ref
+                .read(uiPrefsProvider.notifier)
+                .patch((x) => it.set(x, v)),
+            secondary: Icon(it.icon, size: 20),
+            title: Text(
+              it.title,
+              style: context.texts.bodyMedium!.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            contentPadding: const EdgeInsets.fromLTRB(16, 2, 10, 2),
+          ),
+      ],
+    );
+  }
+}
+
+/// 灵感页写进主提示词的方式:追加(默认)/ 清除并添加。
+class _InspirationCard extends ConsumerWidget {
+  const _InspirationCard();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final on = ref.watch(uiPrefsProvider.select((p) => p.inspirationReplace));
+    return SettingsCard(
+      children: [
+        SwitchListTile(
+          value: on,
+          onChanged: (v) => ref
+              .read(uiPrefsProvider.notifier)
+              .patch((x) => x.copyWith(inspirationReplace: v)),
+          title: Text(
+            '清除并添加',
+            style: context.texts.bodyMedium!.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          subtitle: const Text('加入主提示词前先清空正向提示词和分区;关掉则追加在后面'),
+          contentPadding: const EdgeInsets.fromLTRB(16, 2, 10, 2),
+        ),
+      ],
     );
   }
 }

@@ -413,12 +413,6 @@ class GenerationNotifier extends Notifier<GenPool> {
     PromptPresetsState ps, {
     FixedTagsState? fixedTags,
   }) {
-    // 固定词库先拼(它是「每次都带上的片段」),预设再按自己的前后缀规则叠上去。
-    final FixedTagsState fixed = fixedTags ?? ref.read(fixedTagsProvider);
-    final prepared = s.copyWith(
-      prompt: fixed.apply(s.prompt, FixedTagSide.positive),
-      negativePrompt: fixed.apply(s.negativePrompt, FixedTagSide.negative),
-    );
     final id = remapPromptPresetId(
       selectedPromptPresetId(s, ps),
       ps.presets,
@@ -426,6 +420,17 @@ class GenerationNotifier extends Notifier<GenPool> {
     );
     final p = ps.presets.where((e) => e.id == id).firstOrNull;
     final qt = p != null && p.positive.isNotEmpty;
+    // 固定词库先拼(它是「每次都带上的片段」),预设再按自己的前后缀规则叠上去。
+    // NSFW 开关的 tag 包在固定词库外头,预设前缀叠上来时正好夹在两者之间。
+    final FixedTagsState fixed = fixedTags ?? ref.read(fixedTagsProvider);
+    final prepared = s.copyWith(
+      prompt: withNsfwTag(
+        fixed.apply(s.prompt, FixedTagSide.positive),
+        on: s.nsfw,
+        preset: p,
+      ),
+      negativePrompt: fixed.apply(s.negativePrompt, FixedTagSide.negative),
+    );
     if (p == null || (p.positive.isEmpty && p.negative.isEmpty)) {
       return (state: prepared, presetId: id, qualityToggle: qt);
     }

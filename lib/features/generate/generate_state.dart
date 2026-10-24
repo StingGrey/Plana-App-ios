@@ -54,6 +54,8 @@ class GenerateNotifier extends Notifier<GenerateState> {
 
   void setPromptPreset(String id) => state = state.copyWith(promptPresetId: id);
 
+  void setNsfw(bool on) => state = state.copyWith(nsfw: on);
+
   String _newId() => 'id${_idSeq++}';
 
   // ---- 面板开合 ----

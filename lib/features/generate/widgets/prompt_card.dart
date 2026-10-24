@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/store/ui_prefs.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../fixed_tags/fixed_tags.dart';
 import '../../fixed_tags/fixed_tags_page.dart';
@@ -86,9 +87,14 @@ class _PromptCardState extends ConsumerState<PromptCard> {
     final preset = ref.watch(activePromptPresetProvider);
     final chars = ref.watch(countedCharactersProvider);
     final fixed = ref.watch(fixedTagsProvider);
-    final promptForCount = fixed.apply(
-      mainEnabled(sections) ? state.prompt : '',
-      FixedTagSide.positive,
+    // NSFW 开关拼的那个 tag 也实际发出去,一起算(同 _applyPreset 的拼法)
+    final promptForCount = withNsfwTag(
+      fixed.apply(
+        mainEnabled(sections) ? state.prompt : '',
+        FixedTagSide.positive,
+      ),
+      on: state.nsfw,
+      preset: preset,
     );
     final negativeForCount = fixed.apply(
       state.negativePrompt,
@@ -119,6 +125,17 @@ class _PromptCardState extends ConsumerState<PromptCard> {
     final barColor = over ? scheme.error : scheme.primary;
     // 窄屏只收紧公共圆形按钮尺寸,与角色卡头同一口径。
     final actionSize = MediaQuery.sizeOf(context).width < 350 ? 32.0 : 36.0;
+    // 卡头四颗圆按钮各自可藏(生成设置里开关,见 UiPrefs.cardLibrary)
+    final btn = ref.watch(
+      uiPrefsProvider.select(
+        (p) => (
+          library: p.cardLibrary,
+          fixed: p.cardFixedTags,
+          underscore: p.cardUnderscore,
+          section: p.cardAddSection,
+        ),
+      ),
+    );
 
     return Material(
       color: scheme.surfaceContainerLow,
@@ -205,70 +222,78 @@ class _PromptCardState extends ConsumerState<PromptCard> {
                         const SizedBox(width: 6),
                       ],
                       // 与角色卡头「角色库」同一枚图标、同一个位置
-                      RoundIconBtn(
-                        Icons.grid_view,
-                        size: actionSize,
-                        tooltip: '灵感库',
-                        color: scheme.onSurfaceVariant,
-                        onTap: () => _importFromLibrary(context, ref),
-                      ),
-                      const SizedBox(width: 6),
+                      if (btn.library) ...[
+                        RoundIconBtn(
+                          Icons.grid_view,
+                          size: actionSize,
+                          tooltip: '灵感库',
+                          color: scheme.onSurfaceVariant,
+                          onTap: () => _importFromLibrary(context, ref),
+                        ),
+                        const SizedBox(width: 6),
+                      ],
                       // 与「灵感库」并列的固定词库入口(本地功能)
-                      RoundIconBtn(
-                        Icons.push_pin_outlined,
-                        size: actionSize,
-                        tooltip: '固定词库',
-                        color: scheme.onSurfaceVariant,
-                        onTap: () =>
-                            Navigator.of(context)
-                                .push(sharedAxisRoute(const FixedTagsPage())),
-                      ),
-                      const SizedBox(width: 6),
-                      RoundIconBtn(
-                        Icons.space_bar_outlined,
-                        size: actionSize,
-                        tooltip: '下划线替换为空格',
-                        color: scheme.onSurfaceVariant,
-                        onTap: () {
-                          final oldPositive = state.prompt;
-                          final oldNegative = state.negativePrompt;
-                          final positive = replacePromptUnderscores(
-                            oldPositive,
-                          );
-                          final negative = replacePromptUnderscores(
-                            oldNegative,
-                          );
-                          if (positive == oldPositive &&
-                              negative == oldNegative) {
-                            return;
-                          }
-                          final count =
-                              '_'.allMatches(oldPositive).length +
-                              '_'.allMatches(oldNegative).length;
-                          notifier.setPrompts(
-                            positive: positive,
-                            negative: negative,
-                          );
-                          hintSnack(
-                            context,
-                            '已将 $count 个下划线替换为空格',
-                            icon: Icons.space_bar_outlined,
-                            actionLabel: '撤销',
-                            onAction: () => notifier.setPrompts(
-                              positive: oldPositive,
-                              negative: oldNegative,
-                            ),
-                          );
-                        },
-                      ),
-                      const SizedBox(width: 6),
-                      RoundIconBtn(
-                        Icons.add,
-                        size: actionSize,
-                        tooltip: '添加分区',
-                        onTap: notifier.addSection,
-                      ),
-                      const SizedBox(width: 6),
+                      if (btn.fixed) ...[
+                        RoundIconBtn(
+                          Icons.push_pin_outlined,
+                          size: actionSize,
+                          tooltip: '固定词库',
+                          color: scheme.onSurfaceVariant,
+                          onTap: () =>
+                              Navigator.of(context)
+                                  .push(sharedAxisRoute(const FixedTagsPage())),
+                        ),
+                        const SizedBox(width: 6),
+                      ],
+                      if (btn.underscore) ...[
+                        RoundIconBtn(
+                          Icons.space_bar_outlined,
+                          size: actionSize,
+                          tooltip: '下划线替换为空格',
+                          color: scheme.onSurfaceVariant,
+                          onTap: () {
+                            final oldPositive = state.prompt;
+                            final oldNegative = state.negativePrompt;
+                            final positive = replacePromptUnderscores(
+                              oldPositive,
+                            );
+                            final negative = replacePromptUnderscores(
+                              oldNegative,
+                            );
+                            if (positive == oldPositive &&
+                                negative == oldNegative) {
+                              return;
+                            }
+                            final count =
+                                '_'.allMatches(oldPositive).length +
+                                '_'.allMatches(oldNegative).length;
+                            notifier.setPrompts(
+                              positive: positive,
+                              negative: negative,
+                            );
+                            hintSnack(
+                              context,
+                              '已将 $count 个下划线替换为空格',
+                              icon: Icons.space_bar_outlined,
+                              actionLabel: '撤销',
+                              onAction: () => notifier.setPrompts(
+                                positive: oldPositive,
+                                negative: oldNegative,
+                              ),
+                            );
+                          },
+                        ),
+                        const SizedBox(width: 6),
+                      ],
+                      if (btn.section) ...[
+                        RoundIconBtn(
+                          Icons.add,
+                          size: actionSize,
+                          tooltip: '添加分区',
+                          onTap: notifier.addSection,
+                        ),
+                        const SizedBox(width: 6),
+                      ],
                       Tooltip(
                         message: _positiveExpanded ? '收起正面提示词' : '展开正面提示词',
                         child: InkResponse(

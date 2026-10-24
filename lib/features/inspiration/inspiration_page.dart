@@ -339,7 +339,11 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     ];
   }
 
-  Future<void> _afterConfirm(List<TagEntry> used, String message) async {
+  Future<void> _afterConfirm(
+    List<TagEntry> used,
+    String message, {
+    void Function()? onUndo,
+  }) async {
     // 写进的是此刻的当前画布,提示条里的「套用」也按它回写
     final canvasId = ref.read(canvasWorkspaceProvider).activeId;
     await ref.read(tagLibraryProvider.notifier).markUsed(_cat, [
@@ -359,7 +363,13 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     }
     setState(() => _sel.clear());
     if (!mounted) return;
-    hintSnack(context, message, icon: Icons.check_circle_outline);
+    hintSnack(
+      context,
+      message,
+      icon: Icons.check_circle_outline,
+      actionLabel: onUndo == null ? null : '撤销',
+      onAction: onUndo,
+    );
     ref.read(shellIndexProvider.notifier).select(kTabCreate);
     // 画风带推荐参数、且对得上当前模型的,弹窗问套不套
     if (_cat == TagCategory.artist) {
@@ -396,13 +406,20 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
 
   /// 角色「主提示词」/ 画风/场景/其他「确认选择」:正负向拼进主提示词。
   /// 主提示词分过区时,每个条目自成一格、不折叠(同提示词卡头的「灵感库」)。
+  ///
+  /// 「清除并添加」开着时先清空正向和分区(负面照旧追加),再走同一条链路;
+  /// 提示条带撤销,整份放回清空前。
   Future<void> _confirmToPrompt(TagLibraryState lib) async {
     final entries = _resolveSelected(lib);
     if (entries.isEmpty) return;
+    final undo = ref.read(uiPrefsProvider).inspirationReplace
+        ? ref.read(canvasWorkspaceProvider.notifier).clearPositiveWithUndo()
+        : null;
+    final message = undo == null ? '已加入提示词' : '已替换提示词';
     final gen = ref.read(generateProvider);
     if (gen.sections.isNotEmpty) {
       ref.read(generateProvider.notifier).addEntrySections(entries);
-      await _afterConfirm(entries, '已加入提示词');
+      await _afterConfirm(entries, message, onUndo: undo);
       return;
     }
     // 追加到编辑器原文草稿(带回既有的禁用/折叠),每个条目自成一个折叠组;
@@ -420,7 +437,7 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
           negative: appendTagNegatives(gen.negativePrompt, entries),
           positiveRaw: draftOf(draft, positive),
         );
-    await _afterConfirm(entries, '已加入提示词');
+    await _afterConfirm(entries, message, onUndo: undo);
   }
 
   // ---- build ----
