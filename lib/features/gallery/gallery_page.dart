@@ -11,6 +11,7 @@ import '../../core/theme/app_theme.dart';
 import '../generate/generation_controller.dart';
 import '../generate/widgets/common.dart' show hintSnack;
 import '../inpaint/inpaint_overlay.dart';
+import '../shell/shell_state.dart';
 import 'gallery_state.dart';
 import 'models.dart';
 import 'save_settings.dart';
@@ -20,7 +21,7 @@ import 'widgets/result_canvas.dart';
 
 /// 图库页:上方结果画布(大图 + 操作轨 + seed)、下方历史胶片条。
 /// 生成链路产出的结果落在这里查看与二次操作。
-/// 重绘会话期间 keep-alive:切去其他 tab 再回来,编辑面板(遮罩等)原样保留。
+/// keep-alive:切去其他 tab 再回来,胶片条滚动位置、重绘编辑面板(遮罩等)原样保留。
 ///
 /// 画布是一条真正的 PageView(一页一张,与胶片条同序:0=最新在左,左滑看更旧),
 /// 图跟手走、松手吸附 —— 以前那套「raw pointer 认快滑 + 自己放一段推移动画」的
@@ -53,7 +54,6 @@ const _kGalleryHints = <({String key, String text, IconData icon})>[
 
 class _GalleryPageState extends ConsumerState<GalleryPage>
     with AutomaticKeepAliveClientMixin {
-  bool _keep = false;
   bool _hintChecked = false;
 
   /// 最近一次成功显示的原图字节。切到尚未读盘的老图时先继续画它,
@@ -100,7 +100,7 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
   }
 
   @override
-  bool get wantKeepAlive => _keep;
+  bool get wantKeepAlive => true;
 
   /// 跳页只能在帧后做(build 里动 controller 会打断本帧布局)。空窗这一两帧
   /// 由 build 里的「顶图层」盖着,看不出断层。
@@ -215,14 +215,9 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
     final inpaint = ref.watch(inpaintSessionProvider);
     final selected = state.selected;
 
-    // 重绘会话开/关时更新 keep-alive(仅编辑期间常驻,平时随 PageView 回收)
-    final keep = inpaint != null;
-    if (keep != _keep) {
-      _keep = keep;
-      updateKeepAlive();
-    }
-
-    _maybeHint(!state.isEmpty);
+    // 页面常驻,停在别的 tab 时也会重建:只在图库在前台时提引导
+    final front = ref.watch(shellIndexProvider.select((i) => i == kTabGallery));
+    _maybeHint(front && !state.isEmpty);
 
     if (!gen.busy && state.isEmpty && inpaint == null && pool.jobs.isEmpty) {
       return const _EmptyGallery();
