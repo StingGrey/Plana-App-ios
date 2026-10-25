@@ -34,6 +34,8 @@ import '../generate/generation_controller.dart'
     show GenOutcome, generationProvider;
 import '../generate/models.dart'
     show GenerateState, isAnimaModel, isKreaModel, isNai5Model;
+import '../generate/prompt_sections.dart'
+    show SectionImport, importPromptsInto, joinSections;
 import '../inspiration/tag_library.dart';
 import '../inspiration/tag_models.dart';
 import 'agent_model.dart';
@@ -180,8 +182,10 @@ bool assistantSupportsModel(String displayModel) =>
 
 /// 一份提议**拿去生成**时发出的状态。纯函数,不碰任何 provider。
 ///
-/// **沿用创作页的只有参数和 Vibe。** 正向、负向、角色分区一律只认 AI 这份,
-/// 没给就是空;模型、尺寸、采样、种子照创作页现在的来。
+/// **沿用创作页的只有参数、Vibe 和主提示词分区。** 正向、负向按 [mode] 写进
+/// 主提示词(与导入同一个 [importPromptsInto],「直接生成」和「导入后再生成」
+/// 出同一张图);角色分区一律只认 AI 这份,没给就是空;模型、尺寸、采样、
+/// 种子照创作页现在的来。
 ///
 /// 四个图像模块里只留 Vibe:它管的是画风氛围,套在谁的提示词上都成立。
 /// 角色参考、图生图、重绘不留 —— 这三样是**冲着某张具体的图、某个具体的角色**
@@ -196,7 +200,8 @@ bool assistantSupportsModel(String displayModel) =>
 /// AI 没摆位时那几个默认空格就会被当成用户指定的站位发出去。
 GenerateState proposalSendState(
   GenerateState canvas,
-  DrawProposal r, {
+  DrawProposal r,
+  SectionImport mode, {
   required String Function() newId,
 }) {
   final built = buildAgentCharacters(
@@ -212,11 +217,13 @@ GenerateState proposalSendState(
     model: canvas.params.model,
     newId: newId,
   );
-  return canvas.copyWith(
-    prompt: r.positive,
-    negativePrompt: r.negative,
-    promptRaw: '',
-    negativePromptRaw: '',
+  return importPromptsInto(
+    canvas,
+    r.positive,
+    r.negative,
+    mode,
+    newId: newId,
+  ).copyWith(
     characters: built.chars,
     charRefs: const [],
     img2img: null,
@@ -229,9 +236,15 @@ GenerateState proposalSendState(
 ///
 /// 角色要连正向词一起看:一个刚加出来、名字都还没填的空角色带过去等于噪音。
 bool canvasHasContent(GenerateState g) =>
-    g.prompt.trim().isNotEmpty ||
-    g.negativePrompt.trim().isNotEmpty ||
+    canvasPositive(g).trim().isNotEmpty ||
+    canvasNegative(g).trim().isNotEmpty ||
     g.characters.any((c) => c.enabled && c.positive.trim().isNotEmpty);
+
+/// 引用创作页时发给 AI 的正负向:主体和启用的分区拼好的整串,与出图时一致。
+String canvasPositive(GenerateState g) =>
+    joinSections(g.sections, g.prompt, positive: true);
+String canvasNegative(GenerateState g) =>
+    joinSections(g.sections, g.negativePrompt, positive: false);
 
 final assistantProvider = NotifierProvider<AssistantNotifier, AssistantState>(
   AssistantNotifier.new,
@@ -472,13 +485,14 @@ class AssistantNotifier extends Notifier<AssistantState> {
   /// 直连没有那条通路,所以在这儿照同一个形状拼一份 —— 字段名必须一致
   /// (positive / negative / characters + position),内置预设里讲的就是这几个名字。
   String _canvasBlock(GenerateState g) {
+    final pos = canvasPositive(g), neg = canvasNegative(g);
     final lines = <String>[
       '请在下面这份提示词的基础上改:没让你动的部分原样留着;characters 连 '
           'position 一起带回来,不带会把我摆好的构图打乱。除非我明说要全新主题 / '
           '重做,否则都按这份改。',
       '[当前画面提示词]',
-      'positive: ${g.prompt.trim().isEmpty ? "(空)" : g.prompt}',
-      'negative: ${g.negativePrompt.trim().isEmpty ? "(空)" : g.negativePrompt}',
+      'positive: ${pos.trim().isEmpty ? "(空)" : pos}',
+      'negative: ${neg.trim().isEmpty ? "(空)" : neg}',
     ];
     final chars = _charsForAgent(g);
     if (chars.isNotEmpty) {
@@ -723,8 +737,8 @@ class AssistantNotifier extends Notifier<AssistantState> {
             imageB64: b64,
             history: history,
             historyTurns: assistantSettingsOf(ref).historyTurns,
-            currentPositive: canvas ? g.prompt : '',
-            currentNegative: canvas ? g.negativePrompt : '',
+            currentPositive: canvas ? canvasPositive(g) : '',
+            currentNegative: canvas ? canvasNegative(g) : '',
             currentCharacters: canvas ? _charsForAgent(g) : const [],
             webArtists: lib.artists,
             webOcs: lib.ocs,
@@ -1063,6 +1077,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
     return PromptSnapshot(
       positive: g.prompt,
       negative: g.negativePrompt,
+      sections: List.of(g.sections),
       characters: List.of(g.characters),
       useCoords: g.params.useCoords,
     );
@@ -1078,6 +1093,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
     return PromptSnapshot(
       positive: p.prompt,
       negative: p.negativePrompt,
+      sections: List.of(p.sections),
       characters: List.of(p.characters),
       useCoords: p.useCoords,
     );
@@ -1097,6 +1113,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
     final sent = proposalSendState(
       ref.read(generateProvider),
       r,
+      assistantSettingsOf(ref).importTo,
       newId: () => 'preview${seq++}',
     );
     final mods =
@@ -1123,11 +1140,16 @@ class AssistantNotifier extends Notifier<AssistantState> {
     // **整份替换,不留画布上的旧值**:AI 没给负向就是空负向,没给角色分区就是
     // 没有分区。「空值不覆盖」那条撤了 —— 它等于导入时悄悄读了一次画布,把你的
     // 旧词和 AI 的新词拼成一份谁都没写过的提示词。导入本身就是手动的那次交集,
-    // 误导入了按撤销,before 快照里提示词、角色、坐标开关一样不少。
+    // 误导入了按撤销,before 快照里提示词、分区、角色、坐标开关一样不少。
+    // 主提示词分区按设置处置(见 [SectionImport])。
     //
     // Vibe、角色参考、图生图这些 AI 不产出的东西**不动** —— 导入写的是 AI 那份
     // 提示词,不是清空你的工作区。和直接生成是同一条线(见 [proposalSendState])。
-    gen.setPrompts(positive: r.positive, negative: r.negative);
+    gen.importPrompts(
+      r.positive,
+      r.negative,
+      assistantSettingsOf(ref).importTo,
+    );
     final placed = gen.applyAgentCharacters([
       for (final c in r.characters)
         (
@@ -1160,7 +1182,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
 
   /// 撤销一条 AI 消息的写回:把 [AssistantChange.before] 整份恢复回去。
   ///
-  /// 回滚的是**整份快照**(正负向 + 角色 + 站位开关),不是逐条 —— AI 那一轮是
+  /// 回滚的是**整份快照**(正负向 + 分区 + 角色 + 站位开关),不是逐条 —— AI 那一轮是
   /// 整体重写的,逐条回滚拼不出原状。尺寸/采样/Vibe 一概不碰:撤销只该回滚 AI
   /// 干过的事。
   ///
@@ -1179,6 +1201,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
     if (target == null || target == w.activeId) {
       final gen = ref.read(generateProvider.notifier);
       gen.setPrompts(positive: c.before.positive, negative: c.before.negative);
+      if (c.before.sections != null) gen.replaceSections(c.before.sections!);
       gen.replaceCharacters(c.before.characters);
       gen.setUseCoords(c.before.useCoords);
     } else if (w.find(target) != null) {
@@ -1195,6 +1218,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
               negativePromptRaw: b.negative == p.negativePrompt
                   ? p.negativePromptRaw
                   : '',
+              sections: b.sections == null ? null : List.of(b.sections!),
               characters: List.of(b.characters),
               useCoords: b.useCoords,
             ),

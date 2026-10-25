@@ -7,7 +7,8 @@ library;
 import 'dart:convert';
 
 import '../../core/net/backend_client.dart' show AgentCharacter;
-import '../generate/models.dart' show CharacterPrompt, CharTab;
+import '../generate/models.dart' show CharacterPrompt, CharTab, PromptSection;
+import '../generate/state_codec.dart' show decodeSections, encodeSections;
 import 'assistant_mode.dart';
 import 'prompt_diff.dart';
 
@@ -114,24 +115,31 @@ String toolHeadline(List<ToolTrace> tools) {
 
 /// AI 助手会写到创作页的那几样东西的快照。
 ///
-/// **只装助手自己会动的字段** —— 正向、负向、角色、站位开关。尺寸/采样/Vibe/LoRA
-/// 一概不碰也不存:撤销只该回滚 AI 干过的事,把用户这期间调的步数一起吞掉是越权。
+/// **只装助手自己会动的字段** —— 正向、负向、主提示词分区、角色、站位开关。
+/// 尺寸/采样/Vibe/LoRA 一概不碰也不存:撤销只该回滚 AI 干过的事,把用户这期间
+/// 调的步数一起吞掉是越权。
 class PromptSnapshot {
   const PromptSnapshot({
     this.positive = '',
     this.negative = '',
+    this.sections,
     this.characters = const [],
     this.useCoords = false,
   });
 
   final String positive;
   final String negative;
+
+  /// null = 有分区之前的老记录,撤销时分区不动、比对时不看。
+  final List<PromptSection>? sections;
+
   final List<CharacterPrompt> characters;
   final bool useCoords;
 
   Map<String, dynamic> toJson() => {
     'positive': positive,
     'negative': negative,
+    if (sections != null) 'sections': encodeSections(sections!),
     'useCoords': useCoords,
     'characters': [
       for (final c in characters)
@@ -150,6 +158,7 @@ class PromptSnapshot {
   factory PromptSnapshot.fromJson(Map<String, dynamic> j) => PromptSnapshot(
     positive: j['positive']?.toString() ?? '',
     negative: j['negative']?.toString() ?? '',
+    sections: j.containsKey('sections') ? decodeSections(j['sections']) : null,
     useCoords: j['useCoords'] == true,
     characters: [
       for (final e in (j['characters'] as List? ?? const []))
@@ -167,11 +176,24 @@ class PromptSnapshot {
     ],
   );
 
-  /// 与另一份快照的正负向、角色串、站位是否一字不差。
+  /// 与另一份快照的正负向、分区、角色串、站位是否一字不差。
   /// 用来判断「用户在 AI 写回之后有没有自己又改过」—— 撤销前要问这一句。
   bool sameAs(PromptSnapshot o) {
     if (positive != o.positive || negative != o.negative) return false;
     if (useCoords != o.useCoords) return false;
+    final a = sections, b = o.sections;
+    if (a != null && b != null) {
+      if (a.length != b.length) return false;
+      for (var i = 0; i < a.length; i++) {
+        if (a[i].id != b[i].id ||
+            a[i].name != b[i].name ||
+            a[i].positive != b[i].positive ||
+            a[i].negative != b[i].negative ||
+            a[i].enabled != b[i].enabled) {
+          return false;
+        }
+      }
+    }
     if (characters.length != o.characters.length) return false;
     for (var i = 0; i < characters.length; i++) {
       final a = characters[i];
