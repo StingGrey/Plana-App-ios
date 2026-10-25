@@ -300,7 +300,10 @@ class _PickSheetState extends ConsumerState<_PickSheet> {
       labels: [for (final k in keys) label(k)],
       index: _indexIn(keys),
       position: _pagePos,
-      leftPad: _pad + 2,
+      // 同灵感页顶栏的胶囊 + 白底滑块
+      capsule: true,
+      leftPad: _pad,
+      rightPad: _pad,
       onTap: (i) =>
           pc.animateToPage(i, duration: Motion.medium, curve: Motion.standard),
     );

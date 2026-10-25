@@ -18,6 +18,7 @@ class CategoryTabs extends StatefulWidget {
     this.onManage,
     this.leftPad = 14,
     this.capsule = false,
+    this.rightPad = 4,
   });
 
   final List<String> labels;
@@ -33,6 +34,9 @@ class CategoryTabs extends StatefulWidget {
 
   /// 整条(含行末的类别管理)包进一颗浅底胶囊。
   final bool capsule;
+
+  /// 胶囊右边离外面的距离(后面还跟着按钮时留一点缝,贴边时与左边对称)。
+  final double rightPad;
 
   @override
   State<CategoryTabs> createState() => _CategoryTabsState();
@@ -247,7 +251,7 @@ class _CategoryTabsState extends State<CategoryTabs> {
     return SizedBox(
       height: 48,
       child: Padding(
-        padding: EdgeInsets.fromLTRB(widget.leftPad, 4, 4, 4),
+        padding: EdgeInsets.fromLTRB(widget.leftPad, 4, widget.rightPad, 4),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(20),
           child: ColoredBox(color: scheme.surfaceContainerHigh, child: row),
