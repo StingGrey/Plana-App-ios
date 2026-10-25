@@ -4,7 +4,7 @@ import '../../../core/theme/app_theme.dart';
 import '../artist_models.dart';
 import '../tag_models.dart';
 
-/// 灵感页搜索框右侧那个漏斗的弹层:作者 + 适用模型两个筛选维度,外加排序。
+/// 灵感页搜索框右侧那个漏斗的弹层:作者 / 适用模型 / 来源三个筛选维度,外加排序。
 ///
 /// 两者正交(「小明发的 + 标了 NAI 5 的」),所以合成一张表而不是各开一个入口。
 /// 表内**左右切维、不上下堆**:两维各自都是一列长名单,叠起来第二节永远被顶在
@@ -57,8 +57,19 @@ List<TagAuthor> collectTagAuthors(
   return out;
 }
 
-/// 一次筛选的两个维度(null = 该维度不筛)与排序档。
-typedef TagFilters = ({String? author, String? model, TagSort sort});
+/// 一次筛选的作者 / 适用模型 / 来源(null = 该维度不筛)与排序档。
+typedef TagFilters = ({
+  String? author,
+  String? model,
+  String? source,
+  TagSort sort,
+});
+
+/// 来源筛选:自建(含我发布的)/ 从公共库收藏来的。
+const kTagSourceOwn = 'own';
+const kTagSourceFav = 'fav';
+
+String tagSourceLabel(String s) => s == kTagSourceFav ? '收藏' : '自建';
 
 /// 返回新的筛选值;点外面关掉返回 null(= 什么都不改)。
 Future<TagFilters?> showTagFilterSheet(
@@ -66,6 +77,7 @@ Future<TagFilters?> showTagFilterSheet(
   required List<TagAuthor> authors,
   required TagFilters current,
   required bool hasModels,
+  required bool hasSource,
   required List<TagSort> sorts,
   required TagSort defaultSort,
 }) => showModalBottomSheet<TagFilters>(
@@ -76,6 +88,7 @@ Future<TagFilters?> showTagFilterSheet(
     authors: authors,
     current: current,
     hasModels: hasModels,
+    hasSource: hasSource,
     sorts: sorts,
     defaultSort: defaultSort,
   ),
@@ -86,6 +99,7 @@ class _FilterSheet extends StatefulWidget {
     required this.authors,
     required this.current,
     required this.hasModels,
+    required this.hasSource,
     required this.sorts,
     required this.defaultSort,
   });
@@ -93,6 +107,9 @@ class _FilterSheet extends StatefulWidget {
   final List<TagAuthor> authors;
   final TagFilters current;
   final bool hasModels;
+
+  /// 来源一维只在「我的」里有(公共库没有收藏副本这回事)。
+  final bool hasSource;
   final List<TagSort> sorts;
   final TagSort defaultSort;
 
@@ -104,11 +121,13 @@ class _FilterSheetState extends State<_FilterSheet> {
   final _input = TextEditingController();
   String _q = '';
 
-  /// 当前在看哪一维:0=作者,1=适用模型,2=排序。开局落在已经改过的那一维。
+  /// 当前在看哪一维:0=作者,1=适用模型,2=排序,3=来源。开局落在已经改过的那一维。
   late int _dim = widget.current.author != null
       ? 0
       : widget.current.model != null
       ? 1
+      : widget.current.source != null
+      ? 3
       : widget.current.sort != widget.defaultSort
       ? 2
       : 0;
@@ -132,7 +151,7 @@ class _FilterSheetState extends State<_FilterSheet> {
   /// (常见情形是只筛一个,别为了少见的组合让每次都多一次点)。
   ///
   /// 参数三态:不传 = 这一维不动;[_Clear] = 清掉;字符串 = 换成它。
-  void _apply({Object? author, Object? model, TagSort? sort}) {
+  void _apply({Object? author, Object? model, Object? source, TagSort? sort}) {
     String? pick(Object? v, String? cur) => switch (v) {
       null => cur,
       _Clear() => null,
@@ -141,6 +160,7 @@ class _FilterSheetState extends State<_FilterSheet> {
     Navigator.pop(context, (
       author: pick(author, widget.current.author),
       model: pick(model, widget.current.model),
+      source: pick(source, widget.current.source),
       sort: sort ?? widget.current.sort,
     ));
   }
@@ -151,7 +171,10 @@ class _FilterSheetState extends State<_FilterSheet> {
     final texts = context.texts;
     final sorted = widget.current.sort != widget.defaultSort;
     final dirty =
-        widget.current.author != null || widget.current.model != null || sorted;
+        widget.current.author != null ||
+        widget.current.model != null ||
+        widget.current.source != null ||
+        sorted;
     final byAuthor = _dim == 0;
     return Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
@@ -181,6 +204,7 @@ class _FilterSheetState extends State<_FilterSheet> {
                       ? () => Navigator.pop(context, (
                           author: null,
                           model: null,
+                          source: null,
                           sort: widget.defaultSort,
                         ))
                       : null,
@@ -199,6 +223,10 @@ class _FilterSheetState extends State<_FilterSheet> {
                 if (widget.hasModels) ...[
                   const SizedBox(width: 8),
                   _dimTab(context, 1, '适用模型', widget.current.model != null),
+                ],
+                if (widget.hasSource) ...[
+                  const SizedBox(width: 8),
+                  _dimTab(context, 3, '来源', widget.current.source != null),
                 ],
                 const SizedBox(width: 8),
                 _dimTab(context, 2, '排序', sorted),
@@ -241,6 +269,7 @@ class _FilterSheetState extends State<_FilterSheet> {
                 children: switch (_dim) {
                   0 => _authorRows(context),
                   1 => _modelRows(context),
+                  3 => _sourceRows(context),
                   _ => _sortRows(context),
                 },
               ),
@@ -338,6 +367,20 @@ class _FilterSheetState extends State<_FilterSheet> {
         label: e.$2,
         selected: widget.current.model == e.$1,
         onTap: () => _apply(model: e.$1 ?? const _Clear()),
+      ),
+  ];
+
+  List<Widget> _sourceRows(BuildContext context) => [
+    for (final e in <(String?, String)>[
+      (null, '全部'),
+      (kTagSourceOwn, '自建'),
+      (kTagSourceFav, '收藏'),
+    ])
+      _row(
+        context,
+        label: e.$2,
+        selected: widget.current.source == e.$1,
+        onTap: () => _apply(source: e.$1 ?? const _Clear()),
       ),
   ];
 

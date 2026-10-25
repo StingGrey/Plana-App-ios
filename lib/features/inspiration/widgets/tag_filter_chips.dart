@@ -2,7 +2,11 @@ import 'package:flutter/material.dart';
 
 import '../../../core/theme/app_theme.dart';
 
-/// 「我的」库的全部 / 收藏 / 用户标签筛选行，灵感页与角色选择器共用。
+/// 「我的」库的用户标签筛选行,灵感页与灵感库面板共用。
+///
+/// 轻量文字标签:没选中只有灰字,选中是浅主色底 + 主色字;不选 = 全部,
+/// 再点选中的那个就取消。行末跟一个「管理」(标签池),随行一起滚,右缘渐隐。
+/// 没有标签时整行不出。
 class TagFilterChips extends StatelessWidget {
   const TagFilterChips({
     super.key,
@@ -13,8 +17,6 @@ class TagFilterChips extends StatelessWidget {
     this.edge = 14,
   });
 
-  static const favorites = ' fav';
-
   final List<String> tags;
   final String? filter;
   final ValueChanged<String?> onChanged;
@@ -23,81 +25,74 @@ class TagFilterChips extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (tags.isEmpty) return const SizedBox.shrink();
     final scheme = context.scheme;
-    Widget chip(
-      String label,
-      bool selected,
-      VoidCallback onTap, {
+    Widget chip({
+      required String label,
+      required bool selected,
+      required VoidCallback onTap,
       IconData? icon,
-    }) => Padding(
-      padding: const EdgeInsets.only(right: 8),
-      child: ChoiceChip(
-        label: icon == null
-            ? Text(label)
-            : Row(
+    }) {
+      final fg = selected ? scheme.primary : scheme.onSurfaceVariant;
+      return Padding(
+        padding: const EdgeInsets.only(right: 4),
+        child: Material(
+          color: selected ? scheme.primaryContainer : Colors.transparent,
+          borderRadius: BorderRadius.circular(16),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(
-                    icon,
-                    size: 15,
-                    color: selected
-                        ? scheme.onPrimary
-                        : scheme.onSurfaceVariant,
+                  if (icon != null) ...[
+                    Icon(icon, size: 15, color: fg),
+                    const SizedBox(width: 3),
+                  ],
+                  Text(
+                    label,
+                    style: context.texts.labelLarge!.copyWith(
+                      fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
+                      color: fg,
+                    ),
                   ),
-                  const SizedBox(width: 3),
-                  Text(label),
                 ],
               ),
-        selected: selected,
-        onSelected: (_) => onTap(),
-        visualDensity: VisualDensity.compact,
-        shape: const StadiumBorder(),
-        labelStyle: context.texts.labelMedium!.copyWith(
-          fontWeight: FontWeight.w600,
-          color: selected ? scheme.onPrimary : scheme.onSurfaceVariant,
+            ),
+          ),
         ),
-        selectedColor: scheme.primary,
-        backgroundColor: scheme.surfaceContainerHigh,
-        side: BorderSide.none,
-        showCheckmark: false,
-      ),
-    );
+      );
+    }
+
     return SizedBox(
-      height: 48,
-      child: Row(
-        children: [
-          Expanded(
-            child: ListView(
-              scrollDirection: Axis.horizontal,
-              padding: EdgeInsets.fromLTRB(edge, 4, 4, 4),
-              children: [
-                chip('全部', filter == null, () => onChanged(null)),
-                chip(
-                  '收藏',
-                  filter == favorites,
-                  () => onChanged(favorites),
-                  icon: Icons.star_rounded,
-                ),
-                for (final tag in tags)
-                  chip(
-                    tag,
-                    filter == tag,
-                    () => onChanged(filter == tag ? null : tag),
-                  ),
-              ],
+      height: 40,
+      // 右缘渐隐:标签多了被截在边上时不是一刀切
+      child: ShaderMask(
+        blendMode: BlendMode.dstIn,
+        shaderCallback: (rect) => LinearGradient(
+          colors: const [Colors.black, Colors.black, Colors.transparent],
+          stops: [0, 1 - 24 / rect.width.clamp(48, double.infinity), 1],
+        ).createShader(rect),
+        child: ListView(
+          scrollDirection: Axis.horizontal,
+          padding: EdgeInsets.fromLTRB(edge - 10, 4, edge + 12, 4),
+          children: [
+            for (final tag in tags)
+              chip(
+                label: '#$tag',
+                selected: filter == tag,
+                onTap: () => onChanged(filter == tag ? null : tag),
+              ),
+            chip(
+              label: '管理',
+              icon: Icons.tune,
+              selected: false,
+              onTap: onManageTags,
             ),
-          ),
-          IconButton(
-            tooltip: '标签池管理',
-            icon: Icon(
-              Icons.settings_outlined,
-              size: 20,
-              color: scheme.onSurfaceVariant,
-            ),
-            onPressed: onManageTags,
-          ),
-          SizedBox(width: edge - 8),
-        ],
+          ],
+        ),
       ),
     );
   }

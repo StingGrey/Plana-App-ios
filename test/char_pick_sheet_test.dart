@@ -174,12 +174,12 @@ void main() {
     });
   }
 
-  testWidgets('用户标签包含标签池和在用标签，可与搜索叠加并筛收藏', (tester) async {
+  testWidgets('用户标签包含标签池和在用标签，可与搜索叠加，再点取消', (tester) async {
     await _open(tester);
     expect(_card('pub_owned'), findsOneWidget);
     final filters = tester.widget<TagFilterChips>(find.byType(TagFilterChips));
     expect(filters.tags, containsAll(['常用', '空标签', '银发']));
-    await tester.tap(find.widgetWithText(ChoiceChip, '常用'));
+    await tester.tap(find.text('#常用'));
     await tester.pumpAndSettle();
     expect(_card('mine'), findsOneWidget);
     expect(_card('favorite'), findsNothing);
@@ -190,11 +190,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(_card('mine'), findsOneWidget);
     await tester.enterText(find.byType(TextField), '');
-    await tester.tap(find.widgetWithText(ChoiceChip, '收藏'));
-    await tester.pumpAndSettle();
-    expect(_card('favorite'), findsOneWidget);
-    expect(_card('mine'), findsNothing);
-    await tester.tap(find.widgetWithText(ChoiceChip, '全部'));
+    // 再点选中的标签 = 取消,回到全部
+    await tester.tap(find.text('#常用'));
     await tester.pumpAndSettle();
     expect(_card('mine'), findsOneWidget);
     expect(_card('favorite'), findsOneWidget);
@@ -202,7 +199,7 @@ void main() {
 
   testWidgets('标签被移除后回到全部，不留下无效筛选', (tester) async {
     final harness = await _open(tester);
-    await tester.tap(find.widgetWithText(ChoiceChip, '常用'));
+    await tester.tap(find.text('#常用'));
     await tester.pumpAndSettle();
     harness.library.removeFilterTag();
     await tester.pumpAndSettle();

@@ -662,9 +662,11 @@ class _CategoryPageState extends ConsumerState<_CategoryPage>
 
   String _search = '';
 
-  /// 筛选:null=全部;[_kFavFilter]=收藏;其余为标签名。
+  /// 标签筛选:null=全部;其余为标签名。
   String? _filter;
-  static const _kFavFilter = TagFilterChips.favorites;
+
+  /// 来源筛选(漏斗里):null=全部;[kTagSourceOwn] / [kTagSourceFav]。只管「我的」。
+  String? _source;
 
   /// 画风的「适用模型」筛选:null=全部;[kGenericModelFilter]=只看通用;
   /// 其余是 [ArtistModelGroup] 的 name。与 [_filter] 是两个正交的维度,
@@ -791,7 +793,7 @@ class _CategoryPageState extends ConsumerState<_CategoryPage>
   /// 不让列表空掉却没有任何选中态。
   String? _validFilter(TagLibraryState lib) {
     final f = _filter;
-    if (f == null || f == _kFavFilter) return f;
+    if (f == null) return null;
     return lib.knownTags(_cat).contains(f) ? f : null;
   }
 
@@ -811,13 +813,15 @@ class _CategoryPageState extends ConsumerState<_CategoryPage>
       for (final e in _mineAll(lib))
         if (_matches(e, q)) e,
     ];
-    final filter = _validFilter(lib);
-    if (filter == _kFavFilter) {
+    if (_source != null) {
+      final fav = _source == kTagSourceFav;
       list = [
         for (final e in list)
-          if (e.origin == TagOrigin.favorited) e,
+          if ((e.origin == TagOrigin.favorited) == fav) e,
       ];
-    } else if (filter != null) {
+    }
+    final filter = _validFilter(lib);
+    if (filter != null) {
       list = [
         for (final e in list)
           if (e.tags.contains(filter)) e,
@@ -954,8 +958,12 @@ class _CategoryPageState extends ConsumerState<_CategoryPage>
   /// 作者的显示名:查得到昵称就显示昵称,查不到就是那串 QQ 号。
   String _authorLabel(String id) => _authorNames[id] ?? id;
 
-  /// 漏斗里的两维有没有在筛(空列表的说法要跟着变:是"没匹配上"而不是"库是空的")。
-  bool get _narrowed => _authorFilter != null || _modelFilter != null;
+  /// 漏斗里有没有在筛(空列表的说法要跟着变:是"没匹配上"而不是"库是空的")。
+  /// 来源只管「我的」,公共库那边不算。
+  bool get _narrowed =>
+      _authorFilter != null ||
+      _modelFilter != null ||
+      (_source != null && _tabIndex == 0);
 
   /// 药丸上的字;null = 没在筛、也是默认排序。几维都改着就并排写 ——
   /// 「有没有在筛、筛的哪一档」得一眼看见,否则会出现"我的串怎么少了"。
@@ -963,6 +971,7 @@ class _CategoryPageState extends ConsumerState<_CategoryPage>
     final parts = [
       if (_authorFilter != null) _authorLabel(_authorFilter!),
       ?_modelFilterLabel,
+      if (_source != null && _tabIndex == 0) tagSourceLabel(_source!),
       if (_sortMode != defaultTagSort(_cat)) _sortMode.label,
     ];
     return parts.isEmpty ? null : parts.join(' · ');
@@ -1014,6 +1023,7 @@ class _CategoryPageState extends ConsumerState<_CategoryPage>
               onTap: () => setState(() {
                 _authorFilter = null;
                 _modelFilter = null;
+                _source = null;
                 _sortOverride = null;
               }),
               child: Padding(
@@ -1042,9 +1052,15 @@ class _CategoryPageState extends ConsumerState<_CategoryPage>
     final picked = await showTagFilterSheet(
       context,
       authors: collectTagAuthors(scope, _authorNames),
-      current: (author: _authorFilter, model: _modelFilter, sort: _sortMode),
+      current: (
+        author: _authorFilter,
+        model: _modelFilter,
+        source: _tabIndex == 0 ? _source : null,
+        sort: _sortMode,
+      ),
       // 适用模型只有画风有;角色那张表就少这一节。
       hasModels: _cat == TagCategory.artist,
+      hasSource: _tabIndex == 0,
       sorts: tagSortOptions(_cat),
       defaultSort: defaultTagSort(_cat),
     );
@@ -1052,6 +1068,7 @@ class _CategoryPageState extends ConsumerState<_CategoryPage>
     setState(() {
       _authorFilter = picked.author;
       _modelFilter = picked.model;
+      if (_tabIndex == 0) _source = picked.source;
       _sortOverride = picked.sort;
     });
   }
@@ -1247,32 +1264,37 @@ class _CategoryPageState extends ConsumerState<_CategoryPage>
     final color = muted ? scheme.onSurfaceVariant : scheme.primary;
     return SizedBox(
       height: 32,
-      child: Row(
-        children: [
-          Icon(icon, size: 15, color: color),
-          const SizedBox(width: 6),
-          // 作者栏的标题是 `昵称(QQ 号)`,可以很长:截断,别把分隔线顶出行外
-          Flexible(
-            child: Text(
-              label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: context.texts.labelLarge!.copyWith(
-                fontWeight: FontWeight.w700,
-                color: color,
+      child: LayoutBuilder(
+        builder: (context, c) => Row(
+          children: [
+            Icon(icon, size: 15, color: color),
+            const SizedBox(width: 6),
+            // 作者栏的标题是 `昵称(QQ 号)`,可以很长:最多占七成,截断。
+            // 不用 Flexible:它和后面 Expanded 的分隔线按 1:1 分余量,
+            // 标题用不完的那一半就空着,线只画到一半
+            ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: c.maxWidth * .7),
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: context.texts.labelLarge!.copyWith(
+                  fontWeight: FontWeight.w700,
+                  color: color,
+                ),
               ),
             ),
-          ),
-          const SizedBox(width: 6),
-          Text(
-            '$count',
-            style: context.texts.labelMedium!.copyWith(
-              color: scheme.onSurfaceVariant,
+            const SizedBox(width: 6),
+            Text(
+              '$count',
+              style: context.texts.labelMedium!.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
             ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(child: Divider(color: scheme.outlineVariant, height: 1)),
-        ],
+            const SizedBox(width: 10),
+            Expanded(child: Divider(color: scheme.outlineVariant, height: 1)),
+          ],
+        ),
       ),
     );
   }
