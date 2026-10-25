@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -8,13 +9,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
 import '../../core/net/remote_image.dart';
+import '../../core/store/ui_prefs.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/util/image_pick.dart';
 import '../gallery/gallery_state.dart';
 import '../generate/generate_state.dart';
 import '../generate/style_recipes.dart';
 import '../generate/widgets/common.dart'
-    show ExpandBody, confirmDialog, hintSnack;
+    show ExpandBody, confirmDialog, hintSnack, sharedAxisRoute;
 import 'artist_models.dart';
 import 'public_tags.dart';
 import 'tag_library.dart';
@@ -22,8 +24,14 @@ import 'tag_models.dart';
 import 'tag_preview_gen.dart';
 import 'widgets/tag_sheets.dart' show pickTagSheet;
 
-/// 新建时预填的名字和正负向(创作页「存到灵感库」带进来的)。
-typedef TagDraft = ({String name, String positive, String negative});
+/// 新建时预填的名字、正负向与标签(创作页「存到灵感库」带进来的,或新建页换类别时
+/// 带到新类别的)。
+typedef TagDraft = ({
+  String name,
+  String positive,
+  String negative,
+  List<String> tags,
+});
 
 /// 条目编辑器(创建/编辑统一,4 分类字段差异由配置驱动),字段全部平铺:
 /// 头部(返回/标题/已发布)→ 本体卡(预览图 + 名称/别名/标签 + 上传/图库/生成)
@@ -31,13 +39,26 @@ typedef TagDraft = ({String name, String positive, String negative});
 /// 必填未齐时主按钮视觉禁用但可点(点了把缺的字段描红);
 /// 收藏副本(favorited)内容只读、仅标签可改。
 class TagEditorPage extends ConsumerStatefulWidget {
-  const TagEditorPage({super.key, required this.cat, this.edit, this.draft});
+  const TagEditorPage({
+    super.key,
+    required this.cat,
+    this.edit,
+    this.draft,
+    this.categories,
+    this.lastPageKey,
+  });
 
   final TagCategory cat;
   final TagEntry? edit;
 
   /// 新建时预填;[edit] 不为 null 时不看它。
   final TagDraft? draft;
+
+  /// 新建时可换成哪些类别(标题可点);null = 不能换。编辑时不看它。
+  final List<TagCategory>? categories;
+
+  /// 存成功后把类别记进偏好的哪一格(下次同一入口默认落这一类);null = 不记。
+  final String? lastPageKey;
 
   @override
   ConsumerState<TagEditorPage> createState() => _TagEditorPageState();
@@ -73,7 +94,7 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
     text: _edit?.negative ?? widget.draft?.negative ?? '',
   );
   late final List<String> _aliases = [...?_edit?.aliases];
-  late final Set<String> _tags = {...?_edit?.tags};
+  late final Set<String> _tags = {...?(_edit?.tags ?? widget.draft?.tags)};
 
   /// 适用模型(仅画风)。空 = 通用 —— 这是默认档,不是"没填完"。
   late final Set<String> _models = {...?_edit?.models};
@@ -220,10 +241,49 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
     if (_guardValidation()) return;
     await _run(() async {
       await ref.read(tagLibraryProvider.notifier).upsert(await _buildEntry());
+      _rememberCategory();
       if (!mounted) return;
       Navigator.pop(context);
       hintSnack(context, '已保存', icon: Icons.check_circle_outline);
     });
+  }
+
+  void _rememberCategory() {
+    final key = widget.lastPageKey;
+    if (key == null || _isEdit) return;
+    ref.read(uiPrefsProvider.notifier).setLastPage(key, _def.webId);
+  }
+
+  bool get _switchable => !_isEdit && (widget.categories?.length ?? 0) > 1;
+
+  /// 新建时换类别:选好后换成那一类的新建页,名字、提示词、标签带过去
+  /// (预览图形状各类不同,不带)。
+  Future<void> _switchCategory() async {
+    final cats = widget.categories!;
+    final picked = await showModalBottomSheet<TagCategory>(
+      context: context,
+      useSafeArea: true,
+      isScrollControlled: true,
+      builder: (sheet) => _CategoryPickSheet(cats: cats, current: widget.cat),
+    );
+    if (picked == null || picked == widget.cat || !mounted) return;
+    unawaited(
+      Navigator.of(context).pushReplacement(
+        sharedAxisRoute(
+          TagEditorPage(
+            cat: picked,
+            draft: (
+              name: _name.text.trim(),
+              positive: _positive.text,
+              negative: _negative.text,
+              tags: _tags.toList(),
+            ),
+            categories: cats,
+            lastPageKey: widget.lastPageKey,
+          ),
+        ),
+      ),
+    );
   }
 
   /// favorited:内容锁定,仅保存标签改动。
@@ -343,6 +403,7 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
             ),
           );
       ref.invalidate(publicTagsProvider(widget.cat));
+      _rememberCategory();
       if (!mounted) return;
       Navigator.pop(context);
       hintSnack(context, '已发布到公共库', icon: Icons.public);
@@ -886,10 +947,29 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
             onPressed: () => Navigator.pop(context),
           ),
           const SizedBox(width: 2),
-          Text(
-            _isEdit ? '编辑${_def.label}' : '新建${_def.label}',
-            style: context.texts.titleMedium!.copyWith(
-              fontWeight: FontWeight.w800,
+          // 新建时能换类别的话,标题就是选类别的入口
+          InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: _switchable ? _switchCategory : null,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    _isEdit ? '编辑${_def.label}' : '新建${_def.label}',
+                    style: context.texts.titleMedium!.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  if (_switchable)
+                    Icon(
+                      Icons.keyboard_arrow_down,
+                      size: 20,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                ],
+              ),
             ),
           ),
           if (isCreated) ...[
@@ -1986,6 +2066,63 @@ class _HistoryThumb extends ConsumerWidget {
         child: thumb == null
             ? const SizedBox.expand()
             : Image.memory(thumb, fit: BoxFit.cover, gaplessPlayback: true),
+      ),
+    );
+  }
+}
+
+/// 新建页换类别的面板:每类一行(图标 + 名字),当前那类打勾。
+class _CategoryPickSheet extends StatelessWidget {
+  const _CategoryPickSheet({required this.cats, required this.current});
+
+  final List<TagCategory> cats;
+  final TagCategory current;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return SafeArea(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * .82,
+        ),
+        child: ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.fromLTRB(0, 14, 0, 10),
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 0, 18, 6),
+              child: Text(
+                '存到',
+                style: context.texts.titleMedium!.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            for (final c in cats)
+              ListTile(
+                leading: Icon(
+                  tagCategoryDef(c).icon,
+                  color: c == current
+                      ? scheme.primary
+                      : scheme.onSurfaceVariant,
+                ),
+                title: Text(
+                  tagCategoryDef(c).label,
+                  style: TextStyle(
+                    fontWeight: c == current
+                        ? FontWeight.w700
+                        : FontWeight.w500,
+                    color: c == current ? scheme.primary : null,
+                  ),
+                ),
+                trailing: c == current
+                    ? Icon(Icons.check, color: scheme.primary)
+                    : null,
+                onTap: () => Navigator.pop(context, c),
+              ),
+          ],
+        ),
       ),
     );
   }

@@ -420,8 +420,21 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     );
   }
 
-  void _openNew(TagCategory c) =>
-      Navigator.of(context).push(sharedAxisRoute(TagEditorPage(cat: c)));
+  /// 新建:标题可点换成页签上的任一类(建错类别时就地改)。
+  void _openNew(TagCategory c) {
+    final lib = ref.read(tagLibraryProvider).value ?? const TagLibraryState();
+    Navigator.of(context).push(
+      sharedAxisRoute(
+        TagEditorPage(
+          cat: c,
+          categories: [
+            for (final k in lib.visibleTabKeys)
+              if (k != kCodexTabKey) ?tagCategoryByWebId(k),
+          ],
+        ),
+      ),
+    );
+  }
 
   Future<void> _collect(TagEntry e) async {
     final ok = await ref.read(tagLibraryProvider.notifier).collect(e);
