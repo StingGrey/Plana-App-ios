@@ -326,9 +326,9 @@ class _PoolSheetState extends ConsumerState<_PoolSheet> {
                               width: 30,
                               height: 40,
                               child: Icon(
-                                Icons.reorder,
+                                Icons.drag_indicator,
                                 size: 20,
-                                color: scheme.outline,
+                                color: scheme.onSurfaceVariant,
                               ),
                             ),
                           ),
