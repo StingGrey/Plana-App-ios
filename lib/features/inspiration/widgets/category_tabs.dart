@@ -7,7 +7,7 @@ import '../../../core/theme/app_theme.dart';
 /// 灵感页顶栏的分类页签:一条连续的横滚标签,选中项放大加深、下面一道与字同宽的主色线。
 /// [position] 是正文翻页的位置(可在两页之间),短线和字跟着它过渡,标签条跟着滚,
 /// 让当前项保持在中间。行末固定一颗「类别管理」(三横),标签条渐隐进它;
-/// [capsule] 时两者一起包进一颗浅底胶囊。
+/// [capsule] 时两者一起包进一颗浅底胶囊,选中项改成白底滑块(不画下划线)。
 class CategoryTabs extends StatefulWidget {
   const CategoryTabs({
     super.key,
@@ -128,6 +128,13 @@ class _CategoryTabsState extends State<CategoryTabs> {
     return (_widths[i] + (_widths[j] - _widths[i]) * (c - i)) * (1 + _grow);
   }
 
+  /// 胶囊里滑块的宽度:字宽加两侧留白,两页之间渐变。
+  double _pillWidthAt(double p) {
+    final c = p.clamp(0.0, _widths.length - 1.0);
+    final i = c.floor(), j = c.ceil();
+    return _widths[i] + (_widths[j] - _widths[i]) * (c - i) + _padH * 2;
+  }
+
   void _centerOn(double p) {
     final x = _centerAt(p);
     if (x == null || !_scroll.hasClients) return;
@@ -172,6 +179,27 @@ class _CategoryTabsState extends State<CategoryTabs> {
               child: Stack(
                 key: _stripKey,
                 children: [
+                  // 胶囊里:选中项垫一块白底滑块(圆角、底色、阴影都同「我的 / 公共」分段),跟着翻页滑
+                  if (x != null && widget.capsule)
+                    Positioned(
+                      left: x - _pillWidthAt(pos) / 2,
+                      top: 3,
+                      bottom: 3,
+                      child: Container(
+                        width: _pillWidthAt(pos),
+                        decoration: BoxDecoration(
+                          color: scheme.surface,
+                          borderRadius: BorderRadius.circular(9),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: .06),
+                              blurRadius: 4,
+                              offset: const Offset(0, 1),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
@@ -179,7 +207,7 @@ class _CategoryTabsState extends State<CategoryTabs> {
                         _tab(context, i, pos, scheme),
                     ],
                   ),
-                  if (x != null)
+                  if (x != null && !widget.capsule)
                     Positioned(
                       left: x - _widthAt(pos) / 2,
                       bottom: 4,
@@ -220,7 +248,7 @@ class _CategoryTabsState extends State<CategoryTabs> {
       child: Padding(
         padding: EdgeInsets.fromLTRB(widget.leftPad, 2, 4, 2),
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(22),
+          borderRadius: BorderRadius.circular(12),
           child: ColoredBox(color: scheme.surfaceContainerHigh, child: row),
         ),
       ),
@@ -234,11 +262,12 @@ class _CategoryTabsState extends State<CategoryTabs> {
       behavior: HitTestBehavior.opaque,
       onTap: () => widget.onTap(i),
       child: Padding(
-        padding: EdgeInsets.fromLTRB(_padH, 0, _padH, widget.capsule ? 10 : 12),
+        padding: EdgeInsets.fromLTRB(_padH, 0, _padH, widget.capsule ? 0 : 12),
         child: Align(
-          alignment: Alignment.bottomCenter,
+          // 胶囊里字居中、不放大,选中靠滑块和主色字;外面照旧底对齐 + 放大
+          alignment: widget.capsule ? Alignment.center : Alignment.bottomCenter,
           child: Transform.scale(
-            scale: 1 + _grow * t,
+            scale: widget.capsule ? 1 : 1 + _grow * t,
             alignment: Alignment.bottomCenter,
             child: Text(
               widget.labels[i],
@@ -248,7 +277,11 @@ class _CategoryTabsState extends State<CategoryTabs> {
                 height: 1.2,
                 // 字重也不变:换字重会改宽度,短线就对不准了
                 fontWeight: FontWeight.w700,
-                color: Color.lerp(scheme.onSurfaceVariant, scheme.onSurface, t),
+                color: Color.lerp(
+                  scheme.onSurfaceVariant,
+                  widget.capsule ? scheme.primary : scheme.onSurface,
+                  t,
+                ),
               ),
             ),
           ),
