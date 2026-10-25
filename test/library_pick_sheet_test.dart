@@ -207,4 +207,16 @@ void main() {
     expect(_tagCard('rain'), findsOneWidget);
     expect(_tagCard('a12'), findsNothing);
   });
+
+  testWidgets('再打开时落在上次停的那一页', (tester) async {
+    await _open(tester);
+    await _switchTo(tester, '场景');
+    expect(_tagCard('rain'), findsOneWidget);
+    // 点空白关掉面板,再开
+    await tester.tapAt(const Offset(10, 10));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('打开'));
+    await tester.pumpAndSettle();
+    expect(_tagCard('rain'), findsOneWidget);
+  });
 }

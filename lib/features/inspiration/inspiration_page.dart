@@ -85,6 +85,21 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   /// 批量操作进行中(禁重入)。
   bool _busy = false;
 
+  /// 上次停在哪一页记在偏好里的键。
+  static const _kLastPage = 'inspiration';
+
+  @override
+  void initState() {
+    super.initState();
+    // 回到上次停的那一页
+    final last = ref.read(uiPrefsProvider).lastPages[_kLastPage];
+    if (last == kCodexTabKey) {
+      _codex = true;
+    } else if (last != null) {
+      _cat = tagCategoryByWebId(last) ?? TagCategory.character;
+    }
+  }
+
   @override
   void dispose() {
     _pc?.dispose();
@@ -319,6 +334,12 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     if (i < 0 || i >= keys.length) return;
     final k = keys[i];
     if (k == _current) return;
+    ref
+        .read(uiPrefsProvider.notifier)
+        .setLastPage(
+          _kLastPage,
+          k is TagCategory ? tagCategoryDef(k).webId : kCodexTabKey,
+        );
     setState(() {
       if (k is TagCategory) {
         _cat = k;

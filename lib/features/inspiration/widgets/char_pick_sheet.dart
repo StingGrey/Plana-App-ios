@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/auth/bot_session_store.dart';
+import '../../../core/store/ui_prefs.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/ui/selection_bar.dart';
 import '../../generate/widgets/common.dart' show hintSnack;
@@ -37,16 +38,16 @@ List<TagCategory> panelTagCats(TagLibraryState lib) => [
     if (k != kCodexTabKey && k != 'other') ?tagCategoryByWebId(k),
 ];
 
-/// 面板的页:[panelTagCats] 加法典收藏,法典按它在灵感页页签里的位置。
-List<String> _panelKeys(TagLibraryState lib) => [
+/// 面板的页:[panelTagCats],[codex] 时再加法典收藏(按它在灵感页页签里的位置)。
+List<String> _panelKeys(TagLibraryState lib, {required bool codex}) => [
   for (final k in lib.visibleTabKeys)
-    if (k != 'other' && (k == kCodexTabKey || tagCategoryByWebId(k) != null)) k,
+    if (k != 'other' &&
+        (k == kCodexTabKey ? codex : tagCategoryByWebId(k) != null))
+      k,
 ];
 
-/// 从灵感角色库选角色 —— 角色卡的头像、角色卡头的「角色库」共用。
-/// 形态照相册「移动到」那张面板:标题 + 封面卡网格,卡片就是灵感页那种竖版封面卡。
-///
-/// 仅展示「我的」角色，带用户标签筛选。
+/// 从灵感库选角色 —— 角色卡的头像、角色卡头的「角色库」共用。版式同灵感库面板
+/// (页签 + 每类一页),页同面板但不列法典收藏,默认落在角色页;只列「我的」。
 /// [max] 为 1:点一张即选定并关闭,卡上不画选择圈(给单张角色卡换人)。
 /// 大于 1:点卡勾选,底栏「加入角色」确认,最多 [max] 个。取消返回 null。
 Future<List<PickedChar>?> showCharPickSheet(
@@ -87,8 +88,18 @@ class _PickSheet extends ConsumerStatefulWidget {
 class _PickSheetState extends ConsumerState<_PickSheet> {
   static const _pad = 12.0, _gap = 8.0;
 
-  /// 灵感库面板上次停在哪一页(webId / [kCodexTabKey];进程内记着,下次打开接着看)。
-  static String _lastKey = 'artist-style';
+  /// 上次停在哪一页记在偏好里:灵感库面板与选角色各记各的。
+  String get _prefKey => widget.library ? 'libraryPick' : 'charPick';
+
+  /// 打开时落在哪一页(webId / [kCodexTabKey]):上次停的那页,没有就是
+  /// 灵感库面板落画风、选角色落角色。
+  late final String _startKey =
+      ref.read(uiPrefsProvider).lastPages[_prefKey] ??
+      (widget.library ? 'artist-style' : 'character');
+
+  /// 面板的页;选角色不列法典收藏(那边只认标签库条目)。
+  List<String> _keys(TagLibraryState lib) =>
+      _panelKeys(lib, codex: widget.library);
 
   /// 面板每类一页,左右滑切换;顶栏页签跟着翻页位置走。
   PageController? _pc;
@@ -223,20 +234,9 @@ class _PickSheetState extends ConsumerState<_PickSheet> {
         ),
         child: Column(
           children: [
-            if (widget.library) ...[
-              _tabs(lib),
-              const SizedBox(height: 6),
-              Expanded(child: _pages(lib)),
-            ] else ...[
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 4, 20, 10),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text('选择角色', style: context.texts.titleLarge),
-                ),
-              ),
-              Expanded(child: _page(_keyOf(TagCategory.character), lib)),
-            ],
+            _tabs(lib),
+            const SizedBox(height: 6),
+            Expanded(child: _pages(lib)),
             if (_multi)
               SelectionBar(
                 visible: _count > 0,
@@ -262,7 +262,7 @@ class _PickSheetState extends ConsumerState<_PickSheet> {
   }
 
   int _indexIn(List<String> keys) {
-    final i = keys.indexOf(_lastKey);
+    final i = keys.indexOf(_startKey);
     return i < 0 ? 0 : i;
   }
 
@@ -281,7 +281,7 @@ class _PickSheetState extends ConsumerState<_PickSheet> {
 
   /// 页签:同灵感页顶栏那条;某类勾了几个跟在名字后面。
   Widget _tabs(TagLibraryState lib) {
-    final keys = _panelKeys(lib);
+    final keys = _keys(lib);
     final pc = _controller(keys);
     int pickedIn(String k) => k == kCodexTabKey
         ? _picks.values.where((p) => p.codex != null).length
@@ -307,11 +307,12 @@ class _PickSheetState extends ConsumerState<_PickSheet> {
   }
 
   Widget _pages(TagLibraryState lib) {
-    final keys = _panelKeys(lib);
+    final keys = _keys(lib);
     return PageView.builder(
       controller: _controller(keys),
       itemCount: keys.length,
-      onPageChanged: (i) => _lastKey = keys[i],
+      onPageChanged: (i) =>
+          ref.read(uiPrefsProvider.notifier).setLastPage(_prefKey, keys[i]),
       itemBuilder: (context, i) => _page(keys[i], lib),
     );
   }

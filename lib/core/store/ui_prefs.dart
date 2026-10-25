@@ -28,6 +28,7 @@ class UiPrefs {
     this.gallerySaveAlbum = '',
     this.galleryColumns = 3,
     this.inspirationColumns = const {},
+    this.lastPages = const {},
   });
 
   /// 统计页的时间范围(`today` / `week` / `month`)。**统计页与平台页共用一个**
@@ -64,6 +65,10 @@ class UiPrefs {
   /// 列数在各类下的疏密差得很远。各类的上下界跟卡片形状走,由灵感页夹。
   final Map<String, int> inspirationColumns;
 
+  /// 分页面板上次停在哪一页:键是哪个面板(灵感页 / 灵感库面板 / 选角色),
+  /// 值是那一页的键(分类 webId,法典是 `codex`)。
+  final Map<String, String> lastPages;
+
   UiPrefs copyWith({
     String? statsRange,
     int? toolsTab,
@@ -75,6 +80,7 @@ class UiPrefs {
     String? gallerySaveAlbum,
     int? galleryColumns,
     Map<String, int>? inspirationColumns,
+    Map<String, String>? lastPages,
   }) => UiPrefs(
     statsRange: statsRange ?? this.statsRange,
     toolsTab: toolsTab ?? this.toolsTab,
@@ -90,6 +96,7 @@ class UiPrefs {
     gallerySaveAlbum: gallerySaveAlbum ?? this.gallerySaveAlbum,
     galleryColumns: galleryColumns ?? this.galleryColumns,
     inspirationColumns: inspirationColumns ?? this.inspirationColumns,
+    lastPages: lastPages ?? this.lastPages,
   );
 
   Map<String, dynamic> toJson() => {
@@ -103,6 +110,7 @@ class UiPrefs {
     'gallerySaveAlbum': gallerySaveAlbum,
     'galleryColumns': galleryColumns,
     'inspirationColumns': inspirationColumns,
+    'lastPages': lastPages,
   };
 
   /// 每一项各自兜底:某一项是垃圾值不该连累其余项(整份丢掉的话,用户会看到
@@ -151,6 +159,12 @@ class UiPrefs {
           if (e.key is String && e.value is num)
             e.key as String: (e.value as num).toInt(),
     },
+    lastPages: {
+      if (j['lastPages'] case final Map m)
+        for (final e in m.entries)
+          if (e.key is String && e.value is String)
+            e.key as String: e.value as String,
+    },
   );
 }
 
@@ -186,5 +200,11 @@ class UiPrefsNotifier extends Notifier<UiPrefs> {
           .read(prefsStoreProvider)
           .write(key: _key, value: jsonEncode(next.toJson()));
     } catch (_) {} // 写失败只影响下次恢复
+  }
+
+  /// 记下分页面板 [panel] 停在了哪一页。
+  void setLastPage(String panel, String page) {
+    if (state.lastPages[panel] == page) return;
+    patch((p) => p.copyWith(lastPages: {...p.lastPages, panel: page}));
   }
 }
