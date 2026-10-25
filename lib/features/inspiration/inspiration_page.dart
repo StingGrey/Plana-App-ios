@@ -254,54 +254,56 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     }
     final pc = _pc!;
     // 页签增删、换序后,页码对不上当前分类了:原地跳回去
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !pc.hasClients) return;
-      final page = pc.page;
-      if (page != null &&
-          page == page.roundToDouble() &&
-          page.round() != index) {
-        pc.jumpToPage(index);
-      }
-    });
+    final sig = keys.map((k) => k is TagCategory ? k.name : _kCodexSel).join();
+    if (_keysSig != null && _keysSig != sig) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && pc.hasClients) pc.jumpToPage(index);
+      });
+    }
+    _keysSig = sig;
 
     return Scaffold(
       body: Column(
         children: [
           _topBar(scheme, keys, index),
           Expanded(
-            child: PageView.custom(
-              controller: pc,
-              // 吸附自己做:抬手后接着手上的速度走,不被默认弹簧拽着加速
-              pageSnapping: false,
-              physics: const SmoothPagePhysics(),
-              onPageChanged: (i) => setState(() {
-                final k = keys[i];
-                if (k is TagCategory) {
-                  _cat = k;
-                  _codex = false;
-                } else {
-                  _codex = true;
+            child: NotificationListener<ScrollEndNotification>(
+              onNotification: (n) {
+                if (n.depth == 0 && n.metrics.axis == Axis.horizontal) {
+                  _settle(keys);
                 }
-              }),
-              childrenDelegate: SliverChildBuilderDelegate(
-                (context, i) {
-                  final k = keys[i];
-                  return k is TagCategory
-                      ? _CategoryPage(key: ValueKey(k.name), cat: k, host: this)
-                      : const _KeepAlive(
-                          key: ValueKey(_kCodexSel),
-                          // 只读浏览器,自带选法典、搜索与筛选,无选择栏
-                          child: CodexView(),
-                        );
-                },
-                childCount: keys.length,
-                findChildIndexCallback: (key) {
-                  final v = (key as ValueKey<String>).value;
-                  final i = keys.indexWhere(
-                    (k) => (k is TagCategory ? k.name : _kCodexSel) == v,
-                  );
-                  return i < 0 ? null : i;
-                },
+                return false;
+              },
+              child: PageView.custom(
+                controller: pc,
+                // 吸附自己做:抬手后接着手上的速度走,不被默认弹簧拽着加速
+                pageSnapping: false,
+                physics: const SmoothPagePhysics(),
+                // 当前分类等翻页停稳才换(见 _settle):翻到一半就整页重建会卡一帧
+                childrenDelegate: SliverChildBuilderDelegate(
+                  (context, i) {
+                    final k = keys[i];
+                    return k is TagCategory
+                        ? _CategoryPage(
+                            key: ValueKey(k.name),
+                            cat: k,
+                            host: this,
+                          )
+                        : const _KeepAlive(
+                            key: ValueKey(_kCodexSel),
+                            // 只读浏览器,自带选法典、搜索与筛选,无选择栏
+                            child: CodexView(),
+                          );
+                  },
+                  childCount: keys.length,
+                  findChildIndexCallback: (key) {
+                    final v = (key as ValueKey<String>).value;
+                    final i = keys.indexWhere(
+                      (k) => (k is TagCategory ? k.name : _kCodexSel) == v,
+                    );
+                    return i < 0 ? null : i;
+                  },
+                ),
               ),
             ),
           ),
@@ -309,6 +311,26 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
       ),
       bottomNavigationBar: _codex ? null : _selectionBar(scheme, lib),
     );
+  }
+
+  /// 上一次页签的排列(变了就把页码对回当前分类)。
+  String? _keysSig;
+
+  void _settle(List<Object> keys) {
+    final page = _pc?.page;
+    if (page == null) return;
+    final i = page.round();
+    if (i < 0 || i >= keys.length) return;
+    final k = keys[i];
+    if (k == _current) return;
+    setState(() {
+      if (k is TagCategory) {
+        _cat = k;
+        _codex = false;
+      } else {
+        _codex = true;
+      }
+    });
   }
 
   void _onPageScroll() {

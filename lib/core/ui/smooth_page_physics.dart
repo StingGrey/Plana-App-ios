@@ -63,9 +63,9 @@ class _EaseToSimulation extends Simulation {
     final d = (to - from).abs();
     final toward = (to - from).sign;
     final speed = velocity * toward; // 朝目标方向的分量
-    _duration = speed > 1
-        ? (2 * d / speed).clamp(.16, .38)
-        : .3; // 慢放手或反方向:给一个固定节奏
+    // 照初速匀减速走完要多久;手慢的时候按 400 px/s 估,免得拖得太久。
+    // 夹在 0.2~0.5 秒:太短像被拽,太长像卡住
+    _duration = (2 * d / (speed > 400 ? speed : 400)).clamp(.2, .5);
     // 冲过头的条件:朝目标初速 × 时长 > 3 × 距离;反方向时 > 距离就会先往回甩一大截
     final cap = (speed >= 0 ? 3 : 1) * d / _duration;
     _v0 = toward * speed.clamp(-cap, cap);

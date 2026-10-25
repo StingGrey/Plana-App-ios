@@ -46,14 +46,11 @@ class _CategoryTabsState extends State<CategoryTabs> {
   /// 各页签中心在标签条里的横坐标(量出来的);没量到之前不画短线。
   List<double> _centers = const [];
 
-  /// 正在翻页时按翻页位置画;停下来以后以 [CategoryTabs.index] 为准
-  /// (页签增删、换序时页码会先对不上一帧)。
+  /// 按翻页位置画;还没有位置时按 [CategoryTabs.index]。
   double get _pos {
     final p = widget.position?.value;
-    if (p == null || (p - widget.index).abs() > 1) {
-      return widget.index.toDouble();
-    }
-    return p;
+    if (p == null || widget.labels.isEmpty) return widget.index.toDouble();
+    return p.clamp(0.0, widget.labels.length - 1.0);
   }
 
   @override
