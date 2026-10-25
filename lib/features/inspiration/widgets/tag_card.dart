@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../../../core/net/remote_image.dart';
+import '../../../core/ui/lift_menu.dart' show globalRectOf;
 import '../../../core/theme/app_theme.dart';
 import '../../../core/ui/fade_in_once.dart';
 import '../artist_models.dart';
@@ -81,8 +82,8 @@ class TagCardPreview extends StatelessWidget {
 }
 
 /// 网格卡:预览图(无图=名称定色相的斜纹占位)+ 底部名称条 + 来源角标;
-/// 左上选择圈,右上 ⋮(我的)/ ❤ 收藏(公共)。点卡选择,长按看详情。
-/// 角上的按钮给了回调才画(选角色面板两样都不给)。
+/// 左上选择圈,右上 ❤ 收藏(公共,给了回调才画)。点卡选择;长按给了 [onLift]
+/// 就交出卡片在屏幕上的矩形(抬起菜单从这里长出来),否则走 [onLongPress]。
 class TagCard extends StatelessWidget {
   const TagCard({
     super.key,
@@ -92,9 +93,9 @@ class TagCard extends StatelessWidget {
     required this.isPublic,
     this.collected = false,
     required this.onTap,
-    required this.onLongPress,
+    this.onLongPress,
+    this.onLift,
     this.onCollect,
-    this.onMenu,
     this.decodeWidth,
     this.showCheck = true,
     this.mosaic = false,
@@ -108,9 +109,9 @@ class TagCard extends StatelessWidget {
   final bool isPublic;
   final bool collected;
   final VoidCallback onTap;
-  final VoidCallback onLongPress;
+  final VoidCallback? onLongPress;
+  final ValueChanged<Rect>? onLift;
   final VoidCallback? onCollect;
-  final ValueChanged<String>? onMenu;
 
   /// 左上的选择圈。点一下就选定的场合(给单张角色卡换人)不画。
   final bool showCheck;
@@ -150,7 +151,11 @@ class TagCard extends StatelessWidget {
         color: scheme.surfaceContainer,
         child: InkWell(
           onTap: onTap,
-          onLongPress: onLongPress,
+          onLongPress: onLift == null
+              ? onLongPress
+              : () {
+                  if (globalRectOf(context) case final r?) onLift!(r);
+                },
           child: Stack(
             fit: StackFit.expand,
             children: [
@@ -296,8 +301,7 @@ class TagCard extends StatelessWidget {
                         : null,
                   ),
                 ),
-              // 公共卡:右上角收藏钮(40px 圆钮 + 半透明底,已收藏=实心红心);
-              // 我的卡:右上角 ⋮ 菜单。
+              // 公共卡:右上角收藏钮(40px 圆钮 + 半透明底,已收藏=实心红心)
               if (isPublic && onCollect != null)
                 Positioned(
                   right: inset,
@@ -322,71 +326,10 @@ class TagCard extends StatelessWidget {
                     ),
                   ),
                 ),
-              if (!isPublic && onMenu != null)
-                Positioned(
-                  right: inset,
-                  top: inset,
-                  child: Material(
-                    color: Colors.black.withValues(alpha: .42),
-                    shape: const CircleBorder(),
-                    clipBehavior: Clip.antiAlias,
-                    child: SizedBox(
-                      width: btn,
-                      height: btn,
-                      child: PopupMenuButton<String>(
-                        onSelected: onMenu,
-                        padding: EdgeInsets.zero,
-                        icon: Icon(
-                          Icons.more_vert,
-                          size: compact ? 17 : 20,
-                          color: Colors.white,
-                        ),
-                        itemBuilder: (_) => [
-                          const PopupMenuItem(
-                            value: 'edit',
-                            child: _MenuRow(Icons.edit_outlined, '编辑'),
-                          ),
-                          const PopupMenuItem(
-                            value: 'copy',
-                            child: _MenuRow(Icons.copy, '复制提示词'),
-                          ),
-                          const PopupMenuItem(
-                            value: 'delete',
-                            child: _MenuRow(
-                              Icons.delete_outline,
-                              '删除',
-                              danger: true,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
             ],
           ),
         ),
       ),
-    );
-  }
-}
-
-class _MenuRow extends StatelessWidget {
-  const _MenuRow(this.icon, this.label, {this.danger = false});
-
-  final IconData icon;
-  final String label;
-  final bool danger;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = danger ? context.scheme.error : context.scheme.onSurfaceVariant;
-    return Row(
-      children: [
-        Icon(icon, size: 18, color: c),
-        const SizedBox(width: 10),
-        Text(label, style: TextStyle(color: danger ? c : null)),
-      ],
     );
   }
 }
