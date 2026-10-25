@@ -662,11 +662,9 @@ class _CategoryPageState extends ConsumerState<_CategoryPage>
 
   String _search = '';
 
-  /// 标签筛选:null=全部;其余为标签名。
+  /// 筛选:null=全部;[_kFavFilter]=收藏;其余为标签名。
   String? _filter;
-
-  /// 来源筛选(漏斗里):null=全部;[kTagSourceOwn] / [kTagSourceFav]。只管「我的」。
-  String? _source;
+  static const _kFavFilter = TagFilterChips.favorites;
 
   /// 画风的「适用模型」筛选:null=全部;[kGenericModelFilter]=只看通用;
   /// 其余是 [ArtistModelGroup] 的 name。与 [_filter] 是两个正交的维度,
@@ -793,7 +791,7 @@ class _CategoryPageState extends ConsumerState<_CategoryPage>
   /// 不让列表空掉却没有任何选中态。
   String? _validFilter(TagLibraryState lib) {
     final f = _filter;
-    if (f == null) return null;
+    if (f == null || f == _kFavFilter) return f;
     return lib.knownTags(_cat).contains(f) ? f : null;
   }
 
@@ -813,15 +811,13 @@ class _CategoryPageState extends ConsumerState<_CategoryPage>
       for (final e in _mineAll(lib))
         if (_matches(e, q)) e,
     ];
-    if (_source != null) {
-      final fav = _source == kTagSourceFav;
+    final filter = _validFilter(lib);
+    if (filter == _kFavFilter) {
       list = [
         for (final e in list)
-          if ((e.origin == TagOrigin.favorited) == fav) e,
+          if (e.origin == TagOrigin.favorited) e,
       ];
-    }
-    final filter = _validFilter(lib);
-    if (filter != null) {
+    } else if (filter != null) {
       list = [
         for (final e in list)
           if (e.tags.contains(filter)) e,
@@ -958,12 +954,8 @@ class _CategoryPageState extends ConsumerState<_CategoryPage>
   /// 作者的显示名:查得到昵称就显示昵称,查不到就是那串 QQ 号。
   String _authorLabel(String id) => _authorNames[id] ?? id;
 
-  /// 漏斗里有没有在筛(空列表的说法要跟着变:是"没匹配上"而不是"库是空的")。
-  /// 来源只管「我的」,公共库那边不算。
-  bool get _narrowed =>
-      _authorFilter != null ||
-      _modelFilter != null ||
-      (_source != null && _tabIndex == 0);
+  /// 漏斗里的两维有没有在筛(空列表的说法要跟着变:是"没匹配上"而不是"库是空的")。
+  bool get _narrowed => _authorFilter != null || _modelFilter != null;
 
   /// 药丸上的字;null = 没在筛、也是默认排序。几维都改着就并排写 ——
   /// 「有没有在筛、筛的哪一档」得一眼看见,否则会出现"我的串怎么少了"。
@@ -971,7 +963,6 @@ class _CategoryPageState extends ConsumerState<_CategoryPage>
     final parts = [
       if (_authorFilter != null) _authorLabel(_authorFilter!),
       ?_modelFilterLabel,
-      if (_source != null && _tabIndex == 0) tagSourceLabel(_source!),
       if (_sortMode != defaultTagSort(_cat)) _sortMode.label,
     ];
     return parts.isEmpty ? null : parts.join(' · ');
@@ -1023,7 +1014,6 @@ class _CategoryPageState extends ConsumerState<_CategoryPage>
               onTap: () => setState(() {
                 _authorFilter = null;
                 _modelFilter = null;
-                _source = null;
                 _sortOverride = null;
               }),
               child: Padding(
@@ -1052,15 +1042,9 @@ class _CategoryPageState extends ConsumerState<_CategoryPage>
     final picked = await showTagFilterSheet(
       context,
       authors: collectTagAuthors(scope, _authorNames),
-      current: (
-        author: _authorFilter,
-        model: _modelFilter,
-        source: _tabIndex == 0 ? _source : null,
-        sort: _sortMode,
-      ),
+      current: (author: _authorFilter, model: _modelFilter, sort: _sortMode),
       // 适用模型只有画风有;角色那张表就少这一节。
       hasModels: _cat == TagCategory.artist,
-      hasSource: _tabIndex == 0,
       sorts: tagSortOptions(_cat),
       defaultSort: defaultTagSort(_cat),
     );
@@ -1068,7 +1052,6 @@ class _CategoryPageState extends ConsumerState<_CategoryPage>
     setState(() {
       _authorFilter = picked.author;
       _modelFilter = picked.model;
-      if (_tabIndex == 0) _source = picked.source;
       _sortOverride = picked.sort;
     });
   }

@@ -185,7 +185,7 @@ class _PickSheetState extends ConsumerState<_PickSheet> {
 
   String? _validFilter(TagCategory cat, TagLibraryState lib) {
     final filter = _filters[_keyOf(cat)];
-    if (filter == null) return null;
+    if (filter == null || filter == TagFilterChips.favorites) return filter;
     return lib.knownTags(cat).contains(filter) ? filter : null;
   }
 
@@ -204,7 +204,12 @@ class _PickSheetState extends ConsumerState<_PickSheet> {
         ref.watch(botSessionProvider).value?.botUserId,
         pub,
       ))
-        if (_matches(e, q) && (filter == null || e.tags.contains(filter))) e,
+        if (_matches(e, q) &&
+            (filter == null ||
+                (filter == TagFilterChips.favorites
+                    ? e.origin == TagOrigin.favorited
+                    : e.tags.contains(filter))))
+          e,
     ];
     int fav(TagEntry e) => e.origin == TagOrigin.favorited ? 1 : 0;
     list.sort((a, b) {

@@ -2,11 +2,10 @@ import 'package:flutter/material.dart';
 
 import '../../../core/theme/app_theme.dart';
 
-/// 「我的」库的用户标签筛选行,灵感页与灵感库面板共用。
+/// 「我的」库的全部 / 收藏 / 用户标签筛选行,灵感页与灵感库面板共用。
 ///
-/// 轻量文字标签:没选中只有灰字,选中是浅主色底 + 主色字;不选 = 全部,
-/// 再点选中的那个就取消。行末跟一个「管理」(标签池),随行一起滚,右缘渐隐。
-/// 没有标签时整行不出。
+/// 方角浅底小块:未选浅灰底,选中浅主色底 + 主色字;用户标签前加 #。
+/// 标签横滑、右缘渐隐,行尾固定一颗齿轮(标签池管理)。
 class TagFilterChips extends StatelessWidget {
   const TagFilterChips({
     super.key,
@@ -17,6 +16,8 @@ class TagFilterChips extends StatelessWidget {
     this.edge = 14,
   });
 
+  static const favorites = ' fav';
+
   final List<String> tags;
   final String? filter;
   final ValueChanged<String?> onChanged;
@@ -25,20 +26,21 @@ class TagFilterChips extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (tags.isEmpty) return const SizedBox.shrink();
     final scheme = context.scheme;
-    Widget chip({
-      required String label,
-      required bool selected,
-      required VoidCallback onTap,
+    Widget chip(
+      String label,
+      bool selected,
+      VoidCallback onTap, {
       IconData? icon,
     }) {
       final fg = selected ? scheme.primary : scheme.onSurfaceVariant;
       return Padding(
-        padding: const EdgeInsets.only(right: 4),
+        padding: const EdgeInsets.only(right: 6),
         child: Material(
-          color: selected ? scheme.primaryContainer : Colors.transparent,
-          borderRadius: BorderRadius.circular(16),
+          color: selected
+              ? scheme.primaryContainer
+              : scheme.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(8),
           clipBehavior: Clip.antiAlias,
           child: InkWell(
             onTap: onTap,
@@ -68,31 +70,48 @@ class TagFilterChips extends StatelessWidget {
 
     return SizedBox(
       height: 40,
-      // 右缘渐隐:标签多了被截在边上时不是一刀切
-      child: ShaderMask(
-        blendMode: BlendMode.dstIn,
-        shaderCallback: (rect) => LinearGradient(
-          colors: const [Colors.black, Colors.black, Colors.transparent],
-          stops: [0, 1 - 24 / rect.width.clamp(48, double.infinity), 1],
-        ).createShader(rect),
-        child: ListView(
-          scrollDirection: Axis.horizontal,
-          padding: EdgeInsets.fromLTRB(edge - 10, 4, edge + 12, 4),
-          children: [
-            for (final tag in tags)
-              chip(
-                label: '#$tag',
-                selected: filter == tag,
-                onTap: () => onChanged(filter == tag ? null : tag),
+      child: Row(
+        children: [
+          Expanded(
+            // 右缘渐隐:标签多了被截在边上时不是一刀切
+            child: ShaderMask(
+              blendMode: BlendMode.dstIn,
+              shaderCallback: (rect) => LinearGradient(
+                colors: const [Colors.black, Colors.black, Colors.transparent],
+                stops: [0, 1 - 20 / rect.width.clamp(40, double.infinity), 1],
+              ).createShader(rect),
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                padding: EdgeInsets.fromLTRB(edge, 5, 16, 5),
+                children: [
+                  chip('全部', filter == null, () => onChanged(null)),
+                  chip(
+                    '收藏',
+                    filter == favorites,
+                    () => onChanged(favorites),
+                    icon: Icons.star_rounded,
+                  ),
+                  for (final tag in tags)
+                    chip(
+                      '#$tag',
+                      filter == tag,
+                      () => onChanged(filter == tag ? null : tag),
+                    ),
+                ],
               ),
-            chip(
-              label: '管理',
-              icon: Icons.tune,
-              selected: false,
-              onTap: onManageTags,
             ),
-          ],
-        ),
+          ),
+          IconButton(
+            tooltip: '标签池管理',
+            icon: Icon(
+              Icons.settings_outlined,
+              size: 20,
+              color: scheme.onSurfaceVariant,
+            ),
+            onPressed: onManageTags,
+          ),
+          SizedBox(width: edge - 8),
+        ],
       ),
     );
   }
