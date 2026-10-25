@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import '../../../core/theme/app_theme.dart';
 
 /// 灵感页顶栏的分类页签:大字横排、可横滑,选中项加粗放大并带一道主色短线;
-/// 行末一颗「类别管理」。换选中项时自动滚到可见。
+/// 行末固定一颗「类别管理」。换选中项时自动滚到可见。
 class CategoryTabs extends StatefulWidget {
   const CategoryTabs({
     super.key,
@@ -64,26 +64,33 @@ class _CategoryTabsState extends State<CategoryTabs> {
     }
     return SizedBox(
       height: 48,
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        padding: EdgeInsets.only(left: widget.leftPad - 9),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            for (var i = 0; i < widget.labels.length; i++)
-              _tab(context, i, scheme),
-            if (widget.onManage != null)
-              IconButton(
-                tooltip: '类别管理',
-                onPressed: widget.onManage,
-                icon: Icon(
-                  Icons.dashboard_customize_outlined,
-                  size: 20,
-                  color: scheme.onSurfaceVariant,
-                ),
+      child: Row(
+        children: [
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              padding: EdgeInsets.only(left: widget.leftPad - 9),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (var i = 0; i < widget.labels.length; i++)
+                    _tab(context, i, scheme),
+                ],
               ),
-          ],
-        ),
+            ),
+          ),
+          // 固定在页签外面,页签再多也不会被挤到滚动区后头
+          if (widget.onManage != null)
+            IconButton(
+              tooltip: '类别管理',
+              onPressed: widget.onManage,
+              icon: Icon(
+                Icons.dashboard_customize_outlined,
+                size: 20,
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+        ],
       ),
     );
   }

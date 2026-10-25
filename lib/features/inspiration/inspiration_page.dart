@@ -31,6 +31,7 @@ import 'tag_models.dart';
 import 'widgets/category_sheets.dart';
 import 'widgets/category_tabs.dart';
 import 'widgets/scope_seg_tabs.dart';
+import 'widgets/swipe_switch.dart';
 import 'widgets/tag_card.dart';
 import 'widgets/tag_filter_chips.dart';
 import 'widgets/tag_filter_sheet.dart';
@@ -434,6 +435,9 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     final def = _def;
     _authorNames = ref.watch(tagAuthorNamesProvider).value ?? const {};
 
+    final keys = _tabKeys(lib);
+    final tab = keys.indexOf(_codex ? _kCodexSel : _cat);
+
     // 标签库与法典两套正文都挂着、只显示其一:来回切换时两边的滚动位置、
     // 搜索框、分段都原样还在(原来是整块拆掉重建,切回来就回到顶上)。
     return Scaffold(
@@ -441,13 +445,19 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
         children: [
           _topBar(scheme, lib),
           Expanded(
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                _shown(!_codex, _tagBody(scheme, lib, def)),
-                // 法典模式:只读浏览器,自带选法典、搜索与筛选,无选择栏
-                if (_codexBuilt) _shown(_codex, const CodexView()),
-              ],
+            // 正文左右滑切到相邻页签
+            child: SwipeSwitch(
+              canPrev: tab > 0,
+              canNext: tab >= 0 && tab < keys.length - 1,
+              onStep: (d) => _onPickCat(keys[tab + d]),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  _shown(!_codex, _tagBody(scheme, lib, def)),
+                  // 法典模式:只读浏览器,自带选法典、搜索与筛选,无选择栏
+                  if (_codexBuilt) _shown(_codex, const CodexView()),
+                ],
+              ),
             ),
           ),
         ],
@@ -473,27 +483,37 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
           child: Row(
             children: [
               Expanded(
-                child: TextField(
-                  key: ValueKey('tag-search-${def.webId}'),
-                  onChanged: (v) => setState(() => _search = v),
-                  decoration: InputDecoration(
-                    isDense: true,
-                    hintText: def.searchHint,
-                    prefixIcon: const Icon(Icons.search, size: 20),
-                    filled: true,
-                    fillColor: scheme.surfaceContainerHigh,
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide.none,
-                    ),
-                    contentPadding: const EdgeInsets.symmetric(vertical: 8),
-                    // 「作者 / 适用模型 / 排序」挂在搜索框里:它们和下面的标签筛选是
-                    // 正交维度,塞进同一条 chip 行会让人以为是同一组单选。
-                    // 只给有公共库的两类(角色/画风)—— 场景/其他的条目全是自己的。
-                    suffixIcon: def.hasPublic ? _filterButton(scheme) : null,
-                    suffixIconConstraints: const BoxConstraints(
-                      minWidth: 0,
-                      maxWidth: 130,
+                child: SizedBox(
+                  // 与右边的分段同高
+                  height: 40,
+                  child: TextField(
+                    key: ValueKey('tag-search-${def.webId}'),
+                    onChanged: (v) => setState(() => _search = v),
+                    textAlignVertical: TextAlignVertical.center,
+                    decoration: InputDecoration(
+                      isDense: true,
+                      hintText: def.searchHint,
+                      prefixIcon: const Icon(Icons.search, size: 20),
+                      prefixIconConstraints: const BoxConstraints(
+                        minWidth: 40,
+                        minHeight: 40,
+                      ),
+                      filled: true,
+                      fillColor: scheme.surfaceContainerHigh,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide.none,
+                      ),
+                      contentPadding: EdgeInsets.zero,
+                      // 「作者 / 适用模型 / 排序」挂在搜索框里:它们和下面的标签筛选是
+                      // 正交维度,塞进同一条 chip 行会让人以为是同一组单选。
+                      // 只给有公共库的两类(角色/画风)—— 场景/其他的条目全是自己的。
+                      suffixIcon: def.hasPublic ? _filterButton(scheme) : null,
+                      suffixIconConstraints: const BoxConstraints(
+                        minWidth: 0,
+                        maxWidth: 130,
+                        maxHeight: 40,
+                      ),
                     ),
                   ),
                 ),
@@ -505,10 +525,6 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
                   child: ScopeSegTabs(
                     controller: _tab,
                     mineCount: _mineAll(lib).length,
-                    publicCount: ref
-                        .watch(publicTagsProvider(_cat))
-                        .value
-                        ?.length,
                     compact: true,
                   ),
                 ),

@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import '../../../core/theme/app_theme.dart';
 
 /// 「我的 / 公共库」分段:滑动指示器 + 渐变标签(随 [controller] 的动画走),
-/// 整段任意位置可点。[compact] 是搜索框旁的窄版:不带图标,字更短。
+/// 整段任意位置可点。[compact] 是搜索框旁的窄版:不带图标、不写条数。
 class ScopeSegTabs extends StatelessWidget {
   const ScopeSegTabs({
     super.key,
@@ -69,7 +69,7 @@ class ScopeSegTabs extends StatelessWidget {
                                 context,
                                 0,
                                 Icons.bookmark_outline,
-                                compact ? '我的 $mineCount' : '我的 · $mineCount',
+                                compact ? '我的' : '我的 · $mineCount',
                                 t,
                               ),
                               _label(context, 1, Icons.public, switch ((

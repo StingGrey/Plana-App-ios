@@ -258,20 +258,29 @@ class _CodexViewState extends ConsumerState<CodexView>
           ),
           const SizedBox(width: 8),
           Expanded(
-            child: TextField(
-              controller: _searchCtrl,
-              onChanged: _onSearch,
-              decoration: InputDecoration(
-                isDense: true,
-                hintText: '搜索标题 / 提示词…',
-                prefixIcon: const Icon(Icons.search, size: 20),
-                filled: true,
-                fillColor: scheme.surfaceContainerHigh,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none,
+            child: SizedBox(
+              // 与左边的选法典按钮同高
+              height: 40,
+              child: TextField(
+                controller: _searchCtrl,
+                onChanged: _onSearch,
+                textAlignVertical: TextAlignVertical.center,
+                decoration: InputDecoration(
+                  isDense: true,
+                  hintText: '搜索标题 / 提示词…',
+                  prefixIcon: const Icon(Icons.search, size: 20),
+                  prefixIconConstraints: const BoxConstraints(
+                    minWidth: 40,
+                    minHeight: 40,
+                  ),
+                  filled: true,
+                  fillColor: scheme.surfaceContainerHigh,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                  contentPadding: EdgeInsets.zero,
                 ),
-                contentPadding: const EdgeInsets.symmetric(vertical: 8),
               ),
             ),
           ),
