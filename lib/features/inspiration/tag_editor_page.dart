@@ -11,6 +11,7 @@ import '../../core/net/backend_client.dart';
 import '../../core/net/remote_image.dart';
 import '../../core/store/ui_prefs.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/util/nai_tokenizer.dart';
 import '../../core/util/image_pick.dart';
 import '../gallery/gallery_state.dart';
 import '../generate/generate_state.dart';
@@ -148,8 +149,10 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
     super.dispose();
   }
 
-  int _tokens(String s) =>
-      s.split(RegExp(r'[，,]')).where((e) => e.trim().isNotEmpty).length;
+  /// NAI 口径的 token 数(同创作页角色卡的读数);空着算 0。
+  int _tokens(String s) => s.trim().isEmpty
+      ? 0
+      : totalPromptTokens(ref.watch(naiTokenizerProvider).value, main: s);
 
   // ---- 构建与保存 ----
 
@@ -1043,7 +1046,7 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
         color: scheme.surfaceContainerHigh,
         borderRadius: BorderRadius.circular(7),
       ),
-      child: Text('$n 词', style: mono(context, size: 10.5)),
+      child: Text('$n tokens', style: mono(context, size: 10.5)),
     );
   }
 
