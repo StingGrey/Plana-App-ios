@@ -36,6 +36,7 @@ import '../generate/models.dart'
     show GenerateState, isAnimaModel, isKreaModel, isNai5Model;
 import '../generate/prompt_sections.dart'
     show SectionImport, importPromptsInto, joinSections;
+import '../inspiration/public_tags.dart' show publicTagsProvider;
 import '../inspiration/tag_library.dart';
 import '../inspiration/tag_models.dart';
 import 'agent_model.dart';
@@ -230,6 +231,21 @@ GenerateState proposalSendState(
     inpaint: null,
     params: canvas.params.copyWith(useCoords: built.placed),
   );
+}
+
+/// 提议里用到的库内画师串,把它们的负面补进负向(去重,同灵感页加画风)。
+///
+/// 画师串是占位符换回来的,内容逐字不动,按整串出现在正向(含角色正向)里认。
+String withArtistNegatives(DrawProposal r, Iterable<TagEntry> artists) {
+  final texts = [r.positive, for (final c in r.characters) c.positive];
+  final used = [
+    for (final e in artists)
+      if (e.negative.trim().isNotEmpty &&
+          e.positive.trim().isNotEmpty &&
+          texts.any((t) => t.contains(e.positive.trim())))
+        e,
+  ];
+  return used.isEmpty ? r.negative : appendTagNegatives(r.negative, used);
 }
 
 /// 创作页有没有可带给 AI 的东西。全空时「引用创作页」那颗按钮没意义,置灰。
@@ -645,6 +661,14 @@ class AssistantNotifier extends Notifier<AssistantState> {
       assistantSettingsOf(ref).libraryScope,
       botAuthorized: sid.isNotEmpty,
     );
+    // 公共库画师串的负面收尾时要用(见 [_libArtists]),先取着,不等它
+    if (scope == LibraryScope.all) {
+      unawaited(
+        ref
+            .read(publicTagsProvider(TagCategory.artist).future)
+            .then((_) {}, onError: (_) {}),
+      );
+    }
     final lib = scope == LibraryScope.none
         ? (
             artists: const <Map<String, dynamic>>[],
@@ -802,7 +826,15 @@ class AssistantNotifier extends Notifier<AssistantState> {
             );
             _set(state.copyWith(liveTools: List.of(tools)), persist: false);
           case AgentDone(:final result):
-            _finish(result, tools, canvas, picked, noDraw, sourceCanvasId);
+            _finish(
+              result,
+              tools,
+              canvas,
+              picked,
+              noDraw,
+              sourceCanvasId,
+              scope,
+            );
         }
       },
       onError: (Object e) {
@@ -919,6 +951,14 @@ class AssistantNotifier extends Notifier<AssistantState> {
     );
   }
 
+  /// 补负面用的画师串条目:本地库,选了「+ 公共库」再并上已经取到的公共库。
+  List<TagEntry> _libArtists(LibraryScope scope) => [
+    for (final e in ref.read(tagLibraryProvider).value?.entries ?? const [])
+      if (e.category == TagCategory.artist) e,
+    if (scope == LibraryScope.all)
+      ...?ref.read(publicTagsProvider(TagCategory.artist)).value,
+  ];
+
   void _finish(
     AgentResult r,
     List<ToolTrace> tools,
@@ -926,6 +966,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
     AssistantMode mode,
     bool noDraw,
     String sourceCanvasId,
+    LibraryScope scope,
   ) {
     _finishTrace(null);
     // **不写创作页**。AI 的产出先当成一份「提议」挂在这条消息上,用户在结果卡上
@@ -938,7 +979,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
     // 包成 `<<artist:名字:内容>>` 给 web 渲染芯片。app 不渲染芯片,不剥就把尖括号
     // 原样写进用户的提示词了。分角色那几段同理 —— 包装函数只碰全局正向,
     // 但这儿一并过一道,将来它扩到角色也不用再想起这件事。
-    final draw = r.hasDraw
+    final stripped = r.hasDraw
         ? DrawProposal(
             positive: stripArtistMarkers(r.positive),
             negative: r.negative,
@@ -953,6 +994,13 @@ class AssistantNotifier extends Notifier<AssistantState> {
             ],
           )
         : null;
+    final draw = stripped == null || scope == LibraryScope.none
+        ? stripped
+        : DrawProposal(
+            positive: stripped.positive,
+            negative: withArtistNegatives(stripped, _libArtists(scope)),
+            characters: stripped.characters,
+          );
     final text = r.replyText.trim().isNotEmpty
         ? r.replyText.trim()
         : (draw != null ? '改好了喵~' : '这轮没什么可说的喵…');

@@ -33,6 +33,7 @@ import 'package:plana_app/features/generate/generate_state.dart';
 import 'package:plana_app/features/inspiration/codex/codex_char_split.dart';
 import 'package:plana_app/features/generate/models.dart';
 import 'package:plana_app/features/generate/prompt_sections.dart';
+import 'package:plana_app/features/inspiration/tag_models.dart';
 
 Directory _tempRoot() {
   final root = Directory.systemTemp.createTempSync('plana_assistant');
@@ -612,6 +613,47 @@ void main() {
       expect(back.sections!.map((x) => x.id), ['main', 's1', 's2']);
       expect(back.sameAs(snap), isTrue);
       expect(PromptSnapshot.fromJson(const {'positive': 'a'}).sections, isNull);
+    });
+  });
+
+  group('库内画师串的负面跟着进提议', () {
+    const a1 = TagEntry(
+      id: 'a1',
+      category: TagCategory.artist,
+      name: 'A1',
+      positive: 'artist:foo, 1.2::artist:bar::',
+      negative: 'lowres, bad hands, sketch',
+    );
+    const a2 = TagEntry(
+      id: 'a2',
+      category: TagCategory.artist,
+      name: 'A2',
+      positive: 'artist:baz',
+      negative: 'monochrome',
+    );
+
+    test('用到的画师串补负面,已有的词不重复', () {
+      const r = DrawProposal(
+        positive: 'artist:foo, 1.2::artist:bar::, 1girl',
+        negative: 'lowres, blurry',
+      );
+      expect(
+        withArtistNegatives(r, const [a1, a2]),
+        'lowres, blurry, bad hands, sketch',
+      );
+    });
+
+    test('写在角色正向里的也算', () {
+      const r = DrawProposal(
+        positive: '1girl',
+        characters: [AgentCharacter(name: 'x', positive: 'artist:baz, smile')],
+      );
+      expect(withArtistNegatives(r, const [a1, a2]), 'monochrome');
+    });
+
+    test('没用到、只用了一半都不补', () {
+      const r = DrawProposal(positive: 'artist:foo, 1girl', negative: 'n');
+      expect(withArtistNegatives(r, const [a1]), 'n');
     });
   });
 
