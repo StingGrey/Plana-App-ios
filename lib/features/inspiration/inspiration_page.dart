@@ -13,7 +13,6 @@ import '../../core/ui/lift_menu.dart';
 import '../../core/ui/pinch_columns.dart';
 import '../../core/ui/scroll_memory.dart';
 import '../../core/ui/selection_bar.dart';
-import '../../core/ui/smooth_page_physics.dart';
 import '../editor/editor_models.dart' show draftOf, outputOf, pickEditorText;
 import '../generate/canvas_state.dart';
 import '../generate/gen_modules.dart';
@@ -276,9 +275,6 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
               },
               child: PageView.custom(
                 controller: pc,
-                // 吸附自己做:抬手后接着手上的速度走,不被默认弹簧拽着加速
-                pageSnapping: false,
-                physics: const SmoothPagePhysics(),
                 // 当前分类等翻页停稳才换(见 _settle):翻到一半就整页重建会卡一帧
                 childrenDelegate: SliverChildBuilderDelegate(
                   (context, i) {
