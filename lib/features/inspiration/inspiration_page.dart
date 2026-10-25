@@ -79,6 +79,9 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   bool _codexBuilt = false;
 
   late final TabController _tab = TabController(length: 2, vsync: this);
+
+  /// 正文左右滑的进度,顶栏页签跟着走(见 [SwipeSwitch])。
+  final _swipe = ValueNotifier<double>(0);
   // 账本 key 跟着当前分类走;网格按分类 + 分段换 key 重建,新网格从各自的账上落位
   // (换分类、换分段、骨架换成内容都一样)。
   late final _mineScroll = MemoScrollController.keyed(
@@ -139,6 +142,7 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   @override
   void dispose() {
     _tab.dispose();
+    _swipe.dispose();
     _mineScroll.dispose();
     _pubScroll.dispose();
     super.dispose();
@@ -450,6 +454,7 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
               canPrev: tab > 0,
               canNext: tab >= 0 && tab < keys.length - 1,
               onStep: (d) => _onPickCat(keys[tab + d]),
+              progress: _swipe,
               child: Stack(
                 fit: StackFit.expand,
                 children: [
@@ -579,6 +584,7 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
               index: keys.indexOf(current),
               onTap: (i) => _onPickCat(keys[i]),
               onManage: () => showCategoryManagerSheet(context),
+              swipe: _swipe,
               leftPad: _kEdge,
             ),
           ),

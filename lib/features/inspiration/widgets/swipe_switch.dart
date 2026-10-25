@@ -4,7 +4,8 @@ import '../../../core/theme/app_theme.dart';
 
 /// 左右滑动切换:正文跟手平移,松手过了门槛(四分之一屏宽或甩得够快)就滑出去、
 /// 调 [onStep] 换成相邻那页,新内容从另一侧滑进来;没过门槛弹回。
-/// 两头没有下一页时只给一点阻尼位移。
+/// 两头没有下一页时只给一点阻尼位移。[progress] 报出往相邻页的进度
+/// (正 = 往后一页,给顶栏页签跟手);换完页、新内容滑进来时报 0。
 class SwipeSwitch extends StatefulWidget {
   const SwipeSwitch({
     super.key,
@@ -12,6 +13,7 @@ class SwipeSwitch extends StatefulWidget {
     required this.canPrev,
     required this.canNext,
     required this.onStep,
+    this.progress,
   });
 
   final Widget child;
@@ -20,6 +22,7 @@ class SwipeSwitch extends StatefulWidget {
 
   /// -1 = 上一页,1 = 下一页。
   final ValueChanged<int> onStep;
+  final ValueNotifier<double>? progress;
 
   @override
   State<SwipeSwitch> createState() => _SwipeSwitchState();
@@ -28,7 +31,13 @@ class SwipeSwitch extends StatefulWidget {
 class _SwipeSwitchState extends State<SwipeSwitch>
     with SingleTickerProviderStateMixin {
   /// 平移量,按宽度算的比例(-1 ~ 1)。
-  late final _offset = AnimationController.unbounded(vsync: this);
+  late final AnimationController _offset =
+      AnimationController.unbounded(vsync: this)..addListener(() {
+        if (!_entering) widget.progress?.value = -_offset.value;
+      });
+
+  /// 换完页、新内容正在滑进来。
+  bool _entering = false;
   double _width = 1;
   bool _busy = false;
 
@@ -68,8 +77,11 @@ class _SwipeSwitchState extends State<SwipeSwitch>
     await _to(-dir.toDouble(), Motion.fast);
     if (!mounted) return;
     widget.onStep(dir);
+    _entering = true;
+    widget.progress?.value = 0;
     _offset.value = dir.toDouble();
     await _to(0, Motion.medium);
+    _entering = false;
     _busy = false;
   }
 
