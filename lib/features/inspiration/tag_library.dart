@@ -10,9 +10,6 @@ import 'tag_models.dart';
 /// 页签顺序 / 隐藏里法典的键(其余是各分类的 webId)。
 const kCodexTabKey = 'codex';
 
-/// 能藏起来的内置页签(角色、画风不能藏)。
-const kHideableTabKeys = {'scene', 'other', kCodexTabKey};
-
 /// 灵感页本地库状态:全部条目 + 每分类标签池 + 每分类最近使用 + 自定义类别
 /// 与页签的排列。标签池/最近使用对齐 web 的 `tag_pool:<id>` / `usage_order:<id>`
 /// (存 50 显 8)。
@@ -36,7 +33,7 @@ class TagLibraryState {
   /// 页签顺序(webId / [kCodexTabKey]);没列到的按默认顺序排在后面。
   final List<String> order;
 
-  /// 藏起来的页签。
+  /// 藏起来的页签。现在没有入口能藏,只为把早先存下的原样带进备份。
   final Set<String> hidden;
 
   /// 全部页签,含藏起来的:内置四类 → 自定义 → 法典 的默认顺序,再按 [order] 重排。
@@ -55,10 +52,7 @@ class TagLibraryState {
   }
 
   /// 顶栏上要显示的页签。
-  List<String> get visibleTabKeys => [
-    for (final k in tabKeys)
-      if (!hidden.contains(k)) k,
-  ];
+  List<String> get visibleTabKeys => tabKeys;
 
   List<TagEntry> of(TagCategory c) => [
     for (final e in entries)
@@ -406,14 +400,6 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
     final list = _s.tabKeys;
     list.insert(to, list.removeAt(from));
     await _set(_s.copyWith(order: list));
-  }
-
-  Future<void> setTabHidden(String key, bool hidden) async {
-    await _set(
-      _s.copyWith(
-        hidden: hidden ? {..._s.hidden, key} : ({..._s.hidden}..remove(key)),
-      ),
-    );
   }
 
   // ---- 标签池 ----

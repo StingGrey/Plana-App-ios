@@ -79,9 +79,6 @@ const kTagCategoryIcons = <String, IconData>{
   'Cloud': Icons.cloud_outlined,
   'Snowflake': Icons.ac_unit,
   'Droplet': Icons.water_drop_outlined,
-  'Coffee': Icons.coffee_outlined,
-  'Map': Icons.map_outlined,
-  'Compass': Icons.explore_outlined,
   'Tag': Icons.sell_outlined,
 };
 

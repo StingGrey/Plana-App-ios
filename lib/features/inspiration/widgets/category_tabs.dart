@@ -4,7 +4,7 @@ import 'package:flutter/scheduler.dart';
 
 import '../../../core/theme/app_theme.dart';
 
-/// 灵感页顶栏的分类页签:一条连续的横滚标签,选中项放大加深、下面一道主色短线。
+/// 灵感页顶栏的分类页签:一条连续的横滚标签,选中项放大加深、下面一道与字同宽的主色线。
 /// [position] 是正文翻页的位置(可在两页之间),短线和字跟着它过渡,标签条跟着滚,
 /// 让当前项保持在中间。行末固定一颗「类别管理」。
 class CategoryTabs extends StatefulWidget {
@@ -43,8 +43,9 @@ class _CategoryTabsState extends State<CategoryTabs> {
   final _stripKey = GlobalKey();
   final _keys = <GlobalKey>[];
 
-  /// 各页签中心在标签条里的横坐标(量出来的);没量到之前不画短线。
+  /// 各页签中心在标签条里的横坐标、字宽(量出来的);没量到之前不画短线。
   List<double> _centers = const [];
+  List<double> _widths = const [];
 
   /// 按翻页位置画;还没有位置时按 [CategoryTabs.index]。
   double get _pos {
@@ -87,14 +88,19 @@ class _CategoryTabsState extends State<CategoryTabs> {
     final strip = _stripKey.currentContext?.findRenderObject() as RenderBox?;
     if (strip == null || !strip.hasSize) return;
     final centers = <double>[];
+    final widths = <double>[];
     for (final k in _keys.take(widget.labels.length)) {
       final box = k.currentContext?.findRenderObject() as RenderBox?;
       if (box == null || !box.hasSize) return;
       centers.add(
         box.localToGlobal(Offset(box.size.width / 2, 0), ancestor: strip).dx,
       );
+      widths.add(box.size.width - _padH * 2);
     }
-    setState(() => _centers = centers);
+    setState(() {
+      _centers = centers;
+      _widths = widths;
+    });
     _centerOn(_pos);
   }
 
@@ -104,6 +110,13 @@ class _CategoryTabsState extends State<CategoryTabs> {
     final c = p.clamp(0.0, _centers.length - 1.0);
     final i = c.floor(), j = c.ceil();
     return _centers[i] + (_centers[j] - _centers[i]) * (c - i);
+  }
+
+  /// 位置 [p] 处短线的宽度:跟字一样宽(选中项放大过,也乘上),两页之间渐变。
+  double _widthAt(double p) {
+    final c = p.clamp(0.0, _widths.length - 1.0);
+    final i = c.floor(), j = c.ceil();
+    return (_widths[i] + (_widths[j] - _widths[i]) * (c - i)) * (1 + _grow);
   }
 
   void _centerOn(double p) {
@@ -151,10 +164,10 @@ class _CategoryTabsState extends State<CategoryTabs> {
                   ),
                   if (x != null)
                     Positioned(
-                      left: x - 8,
+                      left: x - _widthAt(pos) / 2,
                       bottom: 4,
                       child: Container(
-                        width: 16,
+                        width: _widthAt(pos),
                         height: 3,
                         decoration: BoxDecoration(
                           color: scheme.primary,

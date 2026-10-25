@@ -27,11 +27,10 @@ void main() {
     expect(TagCategoryDef.fromJson({'id': 'scene', 'label': 'x'}), isNull);
   });
 
-  test('页签:按存下的顺序排,没列到的按默认顺序接在后面,藏起来的不出', () {
+  test('页签:按存下的顺序排,没列到的按默认顺序接在后面', () {
     final lib = TagLibraryState(
       customDefs: [cloth],
       order: const ['codex', 'artist-style'],
-      hidden: const {'other'},
     );
     expect(lib.tabKeys, [
       'codex',
@@ -41,7 +40,6 @@ void main() {
       'other',
       'c_1',
     ]);
-    expect(lib.visibleTabKeys, isNot(contains('other')));
   });
 
   test('自定义类别条目进备份时带上 subtypeId 与可外发的预览', () {

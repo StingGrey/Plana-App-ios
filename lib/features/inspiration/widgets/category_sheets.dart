@@ -6,7 +6,7 @@ import '../../generate/widgets/common.dart' show confirmDialog, hintSnack;
 import '../tag_library.dart';
 import '../tag_models.dart';
 
-/// 类别管理:页签排序(拖动)、⏻ 隐藏、自定义类别的新建 / 改名 / 删除。
+/// 类别管理:页签排序(拖动)、自定义类别的新建 / 编辑 / 删除。
 /// 版式同标签池管理那张。
 Future<void> showCategoryManagerSheet(BuildContext context) =>
     showModalBottomSheet<void>(
@@ -96,14 +96,10 @@ class _ManagerSheet extends ConsumerWidget {
     int index,
   ) {
     final scheme = context.scheme;
-    final notifier = ref.read(tagLibraryProvider.notifier);
     final codex = key == kCodexTabKey;
     final cat = codex ? null : tagCategoryByWebId(key);
     final def = cat == null ? null : tagCategoryDef(cat);
     final custom = cat?.isCustom ?? false;
-    final hidden = lib.hidden.contains(key);
-    final canHide = custom || kHideableTabKeys.contains(key);
-    final fg = hidden ? scheme.outline : scheme.onSurface;
     return ListTile(
       dense: true,
       onTap: custom ? () => _edit(context, ref, def!) : null,
@@ -122,14 +118,11 @@ class _ManagerSheet extends ConsumerWidget {
           Icon(
             codex ? Icons.menu_book_outlined : def!.icon,
             size: 20,
-            color: hidden ? scheme.outline : scheme.onSurfaceVariant,
+            color: scheme.onSurfaceVariant,
           ),
         ],
       ),
-      title: Text(
-        codex ? '法典' : def!.label,
-        style: context.texts.bodyLarge!.copyWith(color: fg),
-      ),
+      title: Text(codex ? '法典' : def!.label, style: context.texts.bodyLarge),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -138,31 +131,22 @@ class _ManagerSheet extends ConsumerWidget {
               '${lib.of(cat).length}',
               style: mono(context, size: 12, color: scheme.outline),
             ),
-          if (canHide)
-            IconButton(
-              tooltip: hidden ? '显示' : '隐藏',
-              icon: Icon(
-                Icons.power_settings_new,
-                size: 20,
-                color: hidden ? scheme.outline : scheme.primary,
-              ),
-              onPressed: () => notifier.setTabHidden(key, !hidden),
-            )
-          else
-            const SizedBox(width: 48),
+          // 删除钮固定在行尾;内置的不能删,留同宽的空位让条数对齐
           if (custom)
             IconButton(
               tooltip: '删除',
               icon: Icon(Icons.delete_outline, size: 20, color: scheme.error),
               onPressed: () => _remove(context, ref, lib, def!),
-            ),
+            )
+          else
+            const SizedBox(width: 48),
         ],
       ),
     );
   }
 
   Future<void> _create(BuildContext context, WidgetRef ref) async {
-    final v = await showCategoryEditDialog(context, ref);
+    final v = await showCategoryEditSheet(context);
     if (v == null) return;
     await ref
         .read(tagLibraryProvider.notifier)
@@ -174,7 +158,7 @@ class _ManagerSheet extends ConsumerWidget {
     WidgetRef ref,
     TagCategoryDef def,
   ) async {
-    final v = await showCategoryEditDialog(context, ref, edit: def);
+    final v = await showCategoryEditSheet(context, edit: def);
     if (v == null) return;
     await ref
         .read(tagLibraryProvider.notifier)
@@ -208,28 +192,33 @@ class _ManagerSheet extends ConsumerWidget {
 typedef CategoryForm = ({String label, String iconName, TagCardLayout layout});
 
 /// 新建 / 编辑类别:名称、图标、预览图形状。取消返回 null。
-Future<CategoryForm?> showCategoryEditDialog(
-  BuildContext context,
-  WidgetRef ref, {
+Future<CategoryForm?> showCategoryEditSheet(
+  BuildContext context, {
   TagCategoryDef? edit,
-}) => showDialog<CategoryForm>(
+}) => showModalBottomSheet<CategoryForm>(
   context: context,
-  builder: (_) => _EditDialog(edit: edit),
+  isScrollControlled: true,
+  useSafeArea: true,
+  builder: (_) => _EditSheet(edit: edit),
 );
 
-class _EditDialog extends ConsumerStatefulWidget {
-  const _EditDialog({this.edit});
+class _EditSheet extends ConsumerStatefulWidget {
+  const _EditSheet({this.edit});
 
   final TagCategoryDef? edit;
 
   @override
-  ConsumerState<_EditDialog> createState() => _EditDialogState();
+  ConsumerState<_EditSheet> createState() => _EditSheetState();
 }
 
-class _EditDialogState extends ConsumerState<_EditDialog> {
+class _EditSheetState extends ConsumerState<_EditSheet> {
   late final _name = TextEditingController(text: widget.edit?.label ?? '');
-  late String _icon = widget.edit?.iconName ?? kTagCategoryIcons.keys.first;
+  late String _icon = kTagCategoryIcons.containsKey(widget.edit?.iconName)
+      ? widget.edit!.iconName!
+      : kTagCategoryIcons.keys.first;
   late TagCardLayout _layout = widget.edit?.layout ?? TagCardLayout.square;
+
+  static const _iconCols = 8;
 
   @override
   void dispose() {
@@ -257,87 +246,193 @@ class _EditDialogState extends ConsumerState<_EditDialog> {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    final muted = context.texts.labelMedium!.copyWith(
-      color: scheme.onSurfaceVariant,
-    );
-    return AlertDialog(
-      title: Text(widget.edit == null ? '新建类别' : '编辑类别'),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            TextField(
-              controller: _name,
-              autofocus: widget.edit == null,
-              maxLength: 8,
-              decoration: const InputDecoration(
-                isDense: true,
-                labelText: '名称',
-                counterText: '',
+    final empty = _name.text.trim().isEmpty;
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+      child: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(18, 14, 18, 14),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                widget.edit == null ? '新建类别' : '编辑类别',
+                style: context.texts.titleMedium!.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
               ),
-              onChanged: (_) => setState(() {}),
-              onSubmitted: (_) => _submit(),
-            ),
-            const SizedBox(height: 16),
-            Text('图标', style: muted),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: [
-                for (final e in kTagCategoryIcons.entries)
-                  Material(
-                    color: e.key == _icon
-                        ? scheme.primary
-                        : scheme.surfaceContainerHigh,
-                    borderRadius: BorderRadius.circular(10),
-                    clipBehavior: Clip.antiAlias,
-                    child: InkWell(
-                      onTap: () => setState(() => _icon = e.key),
-                      child: SizedBox(
-                        width: 38,
-                        height: 38,
-                        child: Icon(
-                          e.value,
-                          size: 20,
-                          color: e.key == _icon
-                              ? scheme.onPrimary
-                              : scheme.onSurfaceVariant,
-                        ),
-                      ),
+              const SizedBox(height: 14),
+              // 名称:左边是选中的图标,右边输入
+              Row(
+                children: [
+                  Container(
+                    width: 48,
+                    height: 48,
+                    decoration: BoxDecoration(
+                      color: scheme.primaryContainer,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(
+                      kTagCategoryIcons[_icon],
+                      size: 24,
+                      color: scheme.onPrimaryContainer,
                     ),
                   ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            Text('预览图', style: muted),
-            const SizedBox(height: 8),
-            SizedBox(
-              width: double.infinity,
-              child: SegmentedButton<TagCardLayout>(
-                showSelectedIcon: false,
-                segments: [
-                  for (final l in TagCardLayout.values)
-                    ButtonSegment(value: l, label: Text(l.label)),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: TextField(
+                      controller: _name,
+                      autofocus: widget.edit == null,
+                      maxLength: 8,
+                      style: context.texts.bodyLarge!.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                      decoration: InputDecoration(
+                        isDense: true,
+                        hintText: '类别名称',
+                        counterText: '',
+                        filled: true,
+                        fillColor: scheme.surfaceContainerHigh,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 14,
+                        ),
+                      ),
+                      onChanged: (_) => setState(() {}),
+                      onSubmitted: (_) => _submit(),
+                    ),
+                  ),
                 ],
-                selected: {_layout},
-                onSelectionChanged: (v) => setState(() => _layout = v.first),
               ),
-            ),
-          ],
+              const SizedBox(height: 18),
+              _label('图标'),
+              GridView.count(
+                crossAxisCount: _iconCols,
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                mainAxisSpacing: 6,
+                crossAxisSpacing: 6,
+                children: [
+                  for (final e in kTagCategoryIcons.entries)
+                    _iconCell(scheme, e.key, e.value),
+                ],
+              ),
+              const SizedBox(height: 18),
+              _label('预览图'),
+              Row(
+                children: [
+                  for (final l in TagCardLayout.values) ...[
+                    if (l != TagCardLayout.values.first)
+                      const SizedBox(width: 8),
+                    Expanded(child: _layoutCell(scheme, l)),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 22),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.pop(context),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size(0, 48),
+                      ),
+                      child: const Text('取消'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: FilledButton(
+                      onPressed: empty ? null : _submit,
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size(0, 48),
+                      ),
+                      child: Text(widget.edit == null ? '创建' : '保存'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('取消'),
+    );
+  }
+
+  Widget _label(String text) => Padding(
+    padding: const EdgeInsets.only(bottom: 8),
+    child: Text(
+      text,
+      style: context.texts.labelLarge!.copyWith(
+        color: context.scheme.onSurfaceVariant,
+        fontWeight: FontWeight.w700,
+      ),
+    ),
+  );
+
+  Widget _iconCell(ColorScheme scheme, String key, IconData icon) {
+    final sel = key == _icon;
+    return Material(
+      color: sel ? scheme.primary : scheme.surfaceContainerHigh,
+      borderRadius: BorderRadius.circular(10),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => setState(() => _icon = key),
+        child: Icon(
+          icon,
+          size: 20,
+          color: sel ? scheme.onPrimary : scheme.onSurfaceVariant,
         ),
-        FilledButton(
-          onPressed: _name.text.trim().isEmpty ? null : _submit,
-          child: Text(widget.edit == null ? '创建' : '保存'),
+      ),
+    );
+  }
+
+  /// 预览图形状:一块按比例画的小框 + 名字;无图画一道横线。
+  Widget _layoutCell(ColorScheme scheme, TagCardLayout l) {
+    final sel = l == _layout;
+    final fg = sel ? scheme.primary : scheme.onSurfaceVariant;
+    return Material(
+      color: sel ? scheme.primaryContainer : scheme.surfaceContainerHigh,
+      borderRadius: BorderRadius.circular(12),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => setState(() => _layout = l),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Column(
+            children: [
+              SizedBox(
+                height: 34,
+                child: Center(
+                  child: l == TagCardLayout.none
+                      ? Icon(Icons.notes, size: 22, color: fg)
+                      : Container(
+                          width: 34 * (l.aspect > 1 ? 1 : l.aspect),
+                          height: 34 / (l.aspect > 1 ? l.aspect : 1),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(color: fg, width: 1.6),
+                          ),
+                        ),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                l.label,
+                style: context.texts.labelMedium!.copyWith(
+                  color: fg,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
         ),
-      ],
+      ),
     );
   }
 }
