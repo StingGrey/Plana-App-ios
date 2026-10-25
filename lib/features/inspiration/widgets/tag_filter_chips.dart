@@ -4,7 +4,7 @@ import '../../../core/theme/app_theme.dart';
 
 /// 「我的」库的全部 / 收藏 / 用户标签筛选行,灵感页与灵感库面板共用。
 ///
-/// 方角浅底小块:未选浅灰底,选中浅主色底 + 主色字;用户标签前加 #。
+/// 描边小胶囊:未选只描一圈细边,选中实心主色;用户标签前加 #。
 /// 标签横滑、右缘渐隐,行尾固定一颗齿轮(标签池管理)。
 class TagFilterChips extends StatelessWidget {
   const TagFilterChips({
@@ -33,14 +33,16 @@ class TagFilterChips extends StatelessWidget {
       VoidCallback onTap, {
       IconData? icon,
     }) {
-      final fg = selected ? scheme.primary : scheme.onSurfaceVariant;
+      final fg = selected ? scheme.onPrimary : scheme.onSurfaceVariant;
       return Padding(
         padding: const EdgeInsets.only(right: 6),
         child: Material(
-          color: selected
-              ? scheme.primaryContainer
-              : scheme.surfaceContainerHigh,
-          borderRadius: BorderRadius.circular(8),
+          color: selected ? scheme.primary : Colors.transparent,
+          shape: StadiumBorder(
+            side: BorderSide(
+              color: selected ? scheme.primary : scheme.outlineVariant,
+            ),
+          ),
           clipBehavior: Clip.antiAlias,
           child: InkWell(
             onTap: onTap,
@@ -56,7 +58,7 @@ class TagFilterChips extends StatelessWidget {
                   Text(
                     label,
                     style: context.texts.labelLarge!.copyWith(
-                      fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
+                      fontWeight: FontWeight.w600,
                       color: fg,
                     ),
                   ),
