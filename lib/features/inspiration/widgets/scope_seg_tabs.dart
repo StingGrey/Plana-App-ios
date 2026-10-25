@@ -133,11 +133,11 @@ class ScopeSegTabs extends StatelessWidget {
             label,
             maxLines: 1,
             softWrap: false,
-            style:
-                (compact
-                        ? context.texts.labelMedium
-                        : context.texts.labelLarge)!
-                    .copyWith(fontWeight: FontWeight.w700, color: color),
+            style: context.texts.labelLarge!.copyWith(
+              fontSize: compact ? 15 : null,
+              fontWeight: FontWeight.w700,
+              color: color,
+            ),
           ),
         ],
       ),
