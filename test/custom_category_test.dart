@@ -58,4 +58,20 @@ void main() {
     expect(back.category, TagCategory.custom('c_1'));
     expect(back.positive, 'swimsuit');
   });
+
+  test('删掉的场景不出页签;内置改名进 defs、查表时生效', () {
+    final lib = TagLibraryState(
+      hidden: const {'scene', 'codex'},
+      labels: const {'other': '杂项', 'codex': '图鉴'},
+    );
+    // 只有场景 / 其他算删除,法典不受影响
+    expect(lib.visibleTabKeys, isNot(contains('scene')));
+    expect(lib.visibleTabKeys, contains('codex'));
+    final defs = lib.layoutJson()['defs'] as List;
+    expect(defs, contains(equals({'id': 'other', 'label': '杂项'})));
+    syncCustomTagCategories(const [], labels: lib.labels);
+    addTearDown(() => syncCustomTagCategories(const []));
+    expect(tagCategoryDef(TagCategory.other).label, '杂项');
+    expect(codexTabLabel(), '图鉴');
+  });
 }

@@ -290,7 +290,7 @@ class _PickSheetState extends ConsumerState<_PickSheet> {
               .length;
     String label(String k) {
       final name = k == kCodexTabKey
-          ? '法典'
+          ? codexTabLabel()
           : tagCategoryDef(tagCategoryByWebId(k)!).label;
       final n = pickedIn(k);
       return n > 0 ? '$name $n' : name;

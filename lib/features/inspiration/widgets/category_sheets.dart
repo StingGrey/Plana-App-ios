@@ -6,7 +6,8 @@ import '../../generate/widgets/common.dart' show confirmDialog, hintSnack;
 import '../tag_library.dart';
 import '../tag_models.dart';
 
-/// 类别管理:页签排序(拖动)、自定义类别的新建 / 编辑 / 删除。
+/// 类别管理:页签排序(拖动)、改名(内置类别也能改)、新建 / 编辑自定义类别、
+/// 删除(自定义类别与场景、其他)。
 /// 版式同标签池管理那张。
 Future<void> showCategoryManagerSheet(BuildContext context) =>
     showModalBottomSheet<void>(
@@ -24,7 +25,7 @@ class _ManagerSheet extends ConsumerWidget {
     final scheme = context.scheme;
     final lib = ref.watch(tagLibraryProvider).value ?? const TagLibraryState();
     final notifier = ref.read(tagLibraryProvider.notifier);
-    final keys = lib.tabKeys;
+    final keys = lib.visibleTabKeys;
     return SafeArea(
       child: ConstrainedBox(
         constraints: BoxConstraints(
@@ -100,9 +101,13 @@ class _ManagerSheet extends ConsumerWidget {
     final cat = codex ? null : tagCategoryByWebId(key);
     final def = cat == null ? null : tagCategoryDef(cat);
     final custom = cat?.isCustom ?? false;
+    final removable = custom || kRemovableBuiltins.contains(key);
+    // 自定义类别进完整的编辑面板(名称 / 图标 / 形状),内置的只改名
+    void edit() =>
+        custom ? _edit(context, ref, def!) : _rename(context, ref, lib, key);
     return ListTile(
       dense: true,
-      onTap: custom ? () => _edit(context, ref, def!) : null,
+      onTap: edit,
       leading: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -122,7 +127,10 @@ class _ManagerSheet extends ConsumerWidget {
           ),
         ],
       ),
-      title: Text(codex ? '法典' : def!.label, style: context.texts.bodyLarge),
+      title: Text(
+        codex ? codexTabLabel() : def!.label,
+        style: context.texts.bodyLarge,
+      ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -131,8 +139,17 @@ class _ManagerSheet extends ConsumerWidget {
               '${lib.of(cat).length}',
               style: mono(context, size: 12, color: scheme.outline),
             ),
-          // 删除钮固定在行尾;内置的不能删,留同宽的空位让条数对齐
-          if (custom)
+          IconButton(
+            tooltip: custom ? '编辑' : '改名',
+            icon: Icon(
+              Icons.edit_outlined,
+              size: 20,
+              color: scheme.onSurfaceVariant,
+            ),
+            onPressed: edit,
+          ),
+          // 删除钮固定在行尾;角色、画风、法典不能删,留同宽的空位让各行对齐
+          if (removable)
             IconButton(
               tooltip: '删除',
               icon: Icon(Icons.delete_outline, size: 20, color: scheme.error),
@@ -148,9 +165,76 @@ class _ManagerSheet extends ConsumerWidget {
   Future<void> _create(BuildContext context, WidgetRef ref) async {
     final v = await showCategoryEditSheet(context);
     if (v == null) return;
-    await ref
-        .read(tagLibraryProvider.notifier)
-        .addCategory(label: v.label, iconName: v.iconName, layout: v.layout);
+    final notifier = ref.read(tagLibraryProvider.notifier);
+    // 和删掉的场景 / 其他同名:把原来那一类加回来
+    final lib = ref.read(tagLibraryProvider).value;
+    for (final d in kTagCategoryDefs) {
+      if (d.label == v.label && (lib?.isRemoved(d.webId) ?? false)) {
+        await notifier.restoreBuiltin(d.webId);
+        return;
+      }
+    }
+    await notifier.addCategory(
+      label: v.label,
+      iconName: v.iconName,
+      layout: v.layout,
+    );
+  }
+
+  /// 内置类别(含法典)改名:清空或改回原名 = 恢复原名。
+  Future<void> _rename(
+    BuildContext context,
+    WidgetRef ref,
+    TagLibraryState lib,
+    String key,
+  ) async {
+    final current = key == kCodexTabKey
+        ? codexTabLabel()
+        : tagCategoryDef(tagCategoryByWebId(key)!).label;
+    final input = TextEditingController(text: current);
+    final scheme = context.scheme;
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('改名'),
+        content: TextField(
+          controller: input,
+          autofocus: true,
+          maxLength: 8,
+          decoration: InputDecoration(
+            isDense: true,
+            counterText: '',
+            filled: true,
+            fillColor: scheme.surfaceContainerHigh,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide.none,
+            ),
+          ),
+          onSubmitted: (v) => Navigator.pop(context, v),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, input.text),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    input.dispose();
+    if (name == null || !context.mounted) return;
+    final label = name.trim();
+    if (label.isNotEmpty &&
+        label != current &&
+        takenCategoryLabels(lib, except: key).contains(label)) {
+      hintSnack(context, '已有同名类别', icon: Icons.error_outline);
+      return;
+    }
+    await ref.read(tagLibraryProvider.notifier).renameBuiltin(key, label);
   }
 
   Future<void> _edit(
@@ -179,17 +263,35 @@ class _ManagerSheet extends ConsumerWidget {
     TagCategoryDef def,
   ) async {
     final n = lib.of(def.key).length;
+    final builtin = !def.key.isCustom;
+    final entries = n == 0 ? '这个类别还没有条目。' : '类别里的 $n 个条目会一起删除,不可恢复。';
     final ok = await confirmDialog(
       context,
       title: '删除「${def.label}」?',
-      message: n == 0 ? '这个类别还没有条目。' : '类别里的 $n 个条目会一起删除,不可恢复。',
+      message: builtin
+          ? '$entries\n之后新建一个叫「${kTagCategoryDefs.firstWhere((d) => d.key == def.key).label}」的类别,可以把它加回来。'
+          : entries,
       confirmLabel: '删除',
     );
-    if (ok) await ref.read(tagLibraryProvider.notifier).removeCategory(def.key);
+    if (!ok) return;
+    final notifier = ref.read(tagLibraryProvider.notifier);
+    builtin
+        ? await notifier.removeBuiltin(def.key)
+        : await notifier.removeCategory(def.key);
   }
 }
 
 typedef CategoryForm = ({String label, String iconName, TagCardLayout layout});
+
+/// 页签上现有的名字(除了 [except] 那一类),起名查重用。删掉的场景 / 其他
+/// 不算 —— 同名新建就是把它加回来。
+Set<String> takenCategoryLabels(TagLibraryState lib, {String? except}) => {
+  for (final k in lib.visibleTabKeys)
+    if (k != except)
+      k == kCodexTabKey
+          ? codexTabLabel()
+          : tagCategoryDef(tagCategoryByWebId(k)!).label,
+};
 
 /// 新建 / 编辑类别:名称、图标、预览图形状。取消返回 null。
 Future<CategoryForm?> showCategoryEditSheet(
@@ -229,14 +331,8 @@ class _EditSheetState extends ConsumerState<_EditSheet> {
   void _submit() {
     final label = _name.text.trim();
     if (label.isEmpty) return;
-    final lib = ref.read(tagLibraryProvider).value;
-    final taken = {
-      for (final d in kTagCategoryDefs) d.label,
-      for (final d in lib?.customDefs ?? const <TagCategoryDef>[])
-        if (d.webId != widget.edit?.webId) d.label,
-      '法典',
-    };
-    if (taken.contains(label)) {
+    final lib = ref.read(tagLibraryProvider).value ?? const TagLibraryState();
+    if (takenCategoryLabels(lib, except: widget.edit?.webId).contains(label)) {
       hintSnack(context, '已有同名类别', icon: Icons.error_outline);
       return;
     }

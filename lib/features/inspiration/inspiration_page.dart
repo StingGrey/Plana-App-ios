@@ -365,7 +365,7 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
             child: CategoryTabs(
               labels: [
                 for (final k in keys)
-                  k is TagCategory ? tagCategoryDef(k).label : '法典',
+                  k is TagCategory ? tagCategoryDef(k).label : codexTabLabel(),
               ],
               index: index,
               position: _pagePos,

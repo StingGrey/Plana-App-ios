@@ -147,6 +147,22 @@ class TagCategoryDef {
   final String? iconName;
   final TagCardLayout? layout;
 
+  /// 换个名字(内置类别改名用),其余不变。
+  TagCategoryDef withLabel(String label) => TagCategoryDef(
+    key,
+    webId,
+    label,
+    icon,
+    searchHint: searchHint,
+    maxSelectable: maxSelectable,
+    previewAspect: previewAspect,
+    hasPreview: hasPreview,
+    hasPublic: hasPublic,
+    alphabetRail: alphabetRail,
+    iconName: iconName,
+    layout: layout,
+  );
+
   Map<String, dynamic> toJson() => {
     'id': webId,
     'label': label,
@@ -222,12 +238,26 @@ const kTagCategoryDefs = <TagCategoryDef>[
 /// 只放 provider 里,是为了让 [tagCategoryDef] 这类同步查表在哪都能用。
 var _customDefs = <String, TagCategoryDef>{};
 
-void syncCustomTagCategories(Iterable<TagCategoryDef> defs) =>
-    _customDefs = {for (final d in defs) d.webId: d};
+/// 内置类别(含法典,键 `codex`)改过的名字。
+var _labels = <String, String>{};
+
+void syncCustomTagCategories(
+  Iterable<TagCategoryDef> defs, {
+  Map<String, String> labels = const {},
+}) {
+  _customDefs = {for (final d in defs) d.webId: d};
+  _labels = labels;
+}
+
+/// 法典页签的名字(可改名)。
+String codexTabLabel() => _labels['codex'] ?? '法典';
 
 TagCategoryDef tagCategoryDef(TagCategory c) {
   for (final d in kTagCategoryDefs) {
-    if (d.key == c) return d;
+    if (d.key == c) {
+      final l = _labels[d.webId];
+      return l == null ? d : d.withLabel(l);
+    }
   }
   return _customDefs[c.name] ??
       TagCategoryDef.custom(

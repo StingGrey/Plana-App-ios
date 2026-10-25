@@ -10,6 +10,9 @@ import 'tag_models.dart';
 /// 页签顺序 / 隐藏里法典的键(其余是各分类的 webId)。
 const kCodexTabKey = 'codex';
 
+/// 能删的内置类别(删了只是不出页签、条目一并清掉;同名新建即恢复)。
+const kRemovableBuiltins = {'scene', 'other'};
+
 /// 灵感页本地库状态:全部条目 + 每分类标签池 + 每分类最近使用 + 自定义类别
 /// 与页签的排列。标签池/最近使用对齐 web 的 `tag_pool:<id>` / `usage_order:<id>`
 /// (存 50 显 8)。
@@ -21,6 +24,7 @@ class TagLibraryState {
     this.customDefs = const [],
     this.order = const [],
     this.hidden = const {},
+    this.labels = const {},
   });
 
   final List<TagEntry> entries;
@@ -33,8 +37,14 @@ class TagLibraryState {
   /// 页签顺序(webId / [kCodexTabKey]);没列到的按默认顺序排在后面。
   final List<String> order;
 
-  /// 藏起来的页签。现在没有入口能藏,只为把早先存下的原样带进备份。
+  /// 删掉的内置类别(只认 [kRemovableBuiltins] 里的)。
   final Set<String> hidden;
+
+  /// 内置类别(含法典)改过的名字:webId / [kCodexTabKey] → 新名字。
+  final Map<String, String> labels;
+
+  bool isRemoved(String key) =>
+      kRemovableBuiltins.contains(key) && hidden.contains(key);
 
   /// 全部页签,含藏起来的:内置四类 → 自定义 → 法典 的默认顺序,再按 [order] 重排。
   List<String> get tabKeys {
@@ -51,8 +61,11 @@ class TagLibraryState {
     ];
   }
 
-  /// 顶栏上要显示的页签。
-  List<String> get visibleTabKeys => tabKeys;
+  /// 顶栏上要显示的页签(删掉的内置类别不出)。
+  List<String> get visibleTabKeys => [
+    for (final k in tabKeys)
+      if (!isRemoved(k)) k,
+  ];
 
   List<TagEntry> of(TagCategory c) => [
     for (final e in entries)
@@ -82,6 +95,7 @@ class TagLibraryState {
     List<TagCategoryDef>? customDefs,
     List<String>? order,
     Set<String>? hidden,
+    Map<String, String>? labels,
   }) => TagLibraryState(
     entries: entries ?? this.entries,
     pools: pools ?? this.pools,
@@ -89,11 +103,16 @@ class TagLibraryState {
     customDefs: customDefs ?? this.customDefs,
     order: order ?? this.order,
     hidden: hidden ?? this.hidden,
+    labels: labels ?? this.labels,
   );
 
   /// 云备份 / 落盘里的 `custom` 块(条目另算)。
   Map<String, dynamic> layoutJson() => {
-    'defs': [for (final d in customDefs) d.toJson()],
+    'defs': [
+      for (final d in customDefs) d.toJson(),
+      // 内置类别的改名也放这儿(id 是内置的 webId),后端原样存
+      for (final e in labels.entries) {'id': e.key, 'label': e.value},
+    ],
     'order': order,
     'hidden': hidden.toList(),
   };
@@ -117,7 +136,7 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
         final j = jsonDecode(await _file.readAsString());
         if (j is Map<String, dynamic>) {
           final s = _decode(j);
-          syncCustomTagCategories(s.customDefs);
+          syncCustomTagCategories(s.customDefs, labels: s.labels);
           return s;
         }
       }
@@ -132,6 +151,18 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
       for (final x in v)
         if (x is String) x,
   ];
+
+  /// 内置类别(含法典)的改名:defs 里 id 不是 `c_` 开头的那些。
+  static Map<String, String> _labelsOf(Object? v) => {
+    if (v is List)
+      for (final x in v)
+        if (x is Map &&
+            x['id'] is String &&
+            x['label'] is String &&
+            (x['id'] == kCodexTabKey ||
+                kTagCategoryDefs.any((d) => d.webId == x['id'])))
+          x['id'] as String: x['label'] as String,
+  };
 
   static List<TagCategoryDef> _defs(Object? v) => [
     if (v is List)
@@ -165,13 +196,14 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
       customDefs: _defs(layout['defs']),
       order: _strs(layout['order']),
       hidden: _strs(layout['hidden']).toSet(),
+      labels: _labelsOf(layout['defs']),
     );
   }
 
   TagLibraryState get _s => state.value ?? const TagLibraryState();
 
   Future<void> _set(TagLibraryState next) async {
-    syncCustomTagCategories(next.customDefs);
+    syncCustomTagCategories(next.customDefs, labels: next.labels);
     state = AsyncData(next);
     try {
       await _file.writeAsString(
@@ -394,12 +426,60 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
     );
   }
 
-  /// 调整页签顺序([from] / [to] 是 [TagLibraryState.tabKeys] 里的下标,
+  /// 内置类别(含法典)改名;[label] 为空或等于原名 = 改回原名。
+  Future<void> renameBuiltin(String key, String label) async {
+    final orig = key == kCodexTabKey
+        ? '法典'
+        : kTagCategoryDefs.firstWhere((d) => d.webId == key).label;
+    final next = {..._s.labels};
+    if (label.trim().isEmpty || label.trim() == orig) {
+      next.remove(key);
+    } else {
+      next[key] = label.trim();
+    }
+    await _set(_s.copyWith(labels: next));
+  }
+
+  /// 删掉场景 / 其他:不出页签,条目、标签池、最近使用与改名一并清掉。
+  Future<void> removeBuiltin(TagCategory c) async {
+    final key = tagCategoryDef(c).webId;
+    if (!kRemovableBuiltins.contains(key)) return;
+    for (final e in _s.entries) {
+      if (e.category == c) _gcPreviewFiles(e.previews);
+    }
+    await _set(
+      _s.copyWith(
+        entries: [
+          for (final e in _s.entries)
+            if (e.category != c) e,
+        ],
+        pools: {..._s.pools}..remove(c),
+        usage: {..._s.usage}..remove(c),
+        hidden: {..._s.hidden, key},
+        labels: {..._s.labels}..remove(key),
+      ),
+    );
+  }
+
+  /// 把删掉的场景 / 其他加回来(空的)。
+  Future<void> restoreBuiltin(String key) async {
+    await _set(_s.copyWith(hidden: {..._s.hidden}..remove(key)));
+  }
+
+  /// 调整页签顺序([from] / [to] 是 [TagLibraryState.visibleTabKeys] 里的下标,
   /// [to] 已按移走 [from] 后的列表算)。
   Future<void> moveTab(int from, int to) async {
-    final list = _s.tabKeys;
+    final list = _s.visibleTabKeys;
     list.insert(to, list.removeAt(from));
-    await _set(_s.copyWith(order: list));
+    await _set(
+      _s.copyWith(
+        order: [
+          ...list,
+          for (final k in _s.tabKeys)
+            if (_s.isRemoved(k)) k,
+        ],
+      ),
+    );
   }
 
   // ---- 标签池 ----
@@ -563,6 +643,7 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
         ],
         order: _strs(custom['order']),
         hidden: _strs(custom['hidden']).toSet(),
+        labels: _labelsOf(custom['defs']),
       );
     }
     await _set(next);
