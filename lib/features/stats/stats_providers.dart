@@ -4,6 +4,8 @@ import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
 import '../../core/net/nai_client.dart' show NaiUsage;
 
+export '../../core/net/anlas_provider.dart' show walletSummaryProvider;
+
 /// 统计页的数据源。服务端端点(除在线人数)都要 Bot 会话;
 /// 失败/未授权一律回 null,由页面按「—」/未授权提示降级,不弹错。
 /// range ∈ today/week/month。
@@ -104,12 +106,6 @@ final dayCallsProvider = FutureProvider.autoDispose
         ),
       ),
     );
-
-/// 我的钱包(余额 + 在跑的租卡)。统计页的入口副行和钱包页顶部共用。
-/// 最近几笔不要(limit=0):钱包页的列表走流水翻页,不靠这里。
-final walletSummaryProvider = FutureProvider.autoDispose<WalletSummary?>(
-  (ref) => _withSession(ref, (c, sid) => c.wallet(sid, limit: 0)),
-);
 
 /// 共享号池的 NAI 官方额度(全平台水位)。**公开端点,不要会话** —— 所以不走
 /// [_withSession];全平台统计页在没授权时本来就整页不可见,不必再挡一道。

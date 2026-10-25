@@ -9,19 +9,22 @@ import '../../../core/net/backend_client.dart' show NaiQuota;
 import '../../../core/net/nai_client.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/util/haptics.dart';
-import '../../stats/stats_providers.dart' show fmtInt;
+import '../../stats/stats_providers.dart' show fmtFen, fmtInt;
+import '../../stats/wallet_page.dart';
 import '../generate_state.dart';
 import '../models.dart' as m;
+import 'common.dart' show hintSnack, sharedAxisRoute;
 import 'top_bar_status.dart';
 
 /// 创作页顶栏的余额入口,以及它点开的「点数与额度」弹层。
 ///
-/// 点数常驻,额度画成点数底下的一条进度条(精确百分比在弹层里)—— 两种接入方式
-/// 那条的含义不同:
+/// 读数按接入方式取:token 直连报 Anlas 点数,bot 授权报钱包余额。额度画成读数
+/// 底下的一条进度条(精确百分比在弹层里)—— 两种接入方式那条的含义不同:
 ///  - token 直连:**切到 NAI 5 时才出现**,是自己账户的 Opus 充电式额度。
 ///    额度用尽后免费尺寸图会转扣 Anlas,所以点数和额度两个数得同时在场。
-///  - bot 授权:**常驻**,是我们发给你的个人配额(还能出几张)。常驻是因为
-///    它决定「要不要切到 V5 去画」,只有切过去才看得见就晚了。管理员显示 ∞。
+///  - bot 授权:共享号开着时**常驻**,是我们发给你的个人配额(还能出几张)。
+///    常驻是因为它决定「要不要切到 V5 去画」,只有切过去才看得见就晚了。管理员
+///    显示 ∞。共享号停用后配额不生效,不画。
 ///    共享号池的全平台水位不在这儿 —— 那是运维视角,摆在个人胶囊里会被误读成
 ///    「我还有 87%」,而自己可能只剩几张。
 ///
@@ -29,8 +32,8 @@ import 'top_bar_status.dart';
 class AnlasChip extends ConsumerWidget {
   const AnlasChip({super.key, this.budget});
 
-  /// 顶栏给这枚读数留的宽度:「点数 │ 百分比」放得下就这么写,放不下额度
-  /// 改画成点数底下的进度条。null = 不限,总是写百分比。
+  /// 顶栏给这枚读数留的宽度:「读数 │ 百分比」放得下就这么写,放不下额度
+  /// 改画成读数底下的进度条。null = 不限,总是写百分比。
   final double? budget;
 
   @override
@@ -42,25 +45,23 @@ class AnlasChip extends ConsumerWidget {
     final model = ref.watch(generateProvider.select((s) => s.params.model));
     final quota = bot ? ref.watch(naiQuotaProvider).asData?.value : null;
     final usage = (!bot && m.isNai5Model(model)) ? sub?.usage : null;
+    final wallet = bot ? ref.watch(walletSummaryProvider) : null;
+    final w = wallet?.value;
 
-    // 共享号停用:点数恒 0、额度不生效,胶囊只报中转开关的状态
-    if (quota != null && quota.relayOnly) {
-      final (text, color) = relayStateOf(context, quota);
-      return TopBarStatus(
-        tooltip: '点数与额度',
-        value: text,
-        valueSample: _kAnlasSample,
-        detail: null,
-        icon: Icons.toll,
-        valueColor: color,
-        onTap: () => showAnlasSheet(context),
-      );
+    final String? value;
+    final bool loading;
+    if (bot) {
+      value = w == null ? null : fmtFen(w.balanceFen, sign: false);
+      loading = wallet!.isLoading;
+    } else {
+      value = sub == null ? null : fmtInt(sub.anlas);
+      loading = anlas.isLoading;
     }
 
-    // 额度画成点数底下的进度条(填多少 = 剩多少):bot 线报自己的配额,直连线报
-    // 账户电池。两者都拿不到就只有图标 + 点数。
+    // 额度画成读数底下的进度条(填多少 = 剩多少):bot 线报自己的配额(共享号
+    // 停用后不画),直连线报账户电池。都拿不到就只有图标 + 读数。
     final meter = switch ((quota, usage)) {
-      (final NaiQuota q, _) => (
+      (final NaiQuota q, _) when !q.relayOnly => (
         fraction: q.isAdmin ? 1.0 : quotaPct(q) / 100,
         color: quotaColor(context, q),
         label: q.isAdmin ? '∞' : '${quotaPct(q).round()}%',
@@ -73,7 +74,7 @@ class AnlasChip extends ConsumerWidget {
       _ => null,
     };
 
-    // 「点数 │ 百分比」超出 [budget] 就把额度画成点数底下的进度条
+    // 「读数 │ 百分比」超出 [budget] 就把额度画成读数底下的进度条
     // (百分比只给读屏),省出来的地方留给画布名和模型名
     final style = mono(context, size: 15, weight: FontWeight.w700);
     final percent =
@@ -81,34 +82,35 @@ class AnlasChip extends ConsumerWidget {
         (budget == null ||
             18 +
                     4 +
-                    topBarTextWidth(context, fmtInt(sub?.anlas ?? 0), style) +
+                    topBarTextWidth(context, value ?? '0', style) +
                     13 +
                     topBarTextWidth(context, meter.label, style) <=
                 budget!);
     final bar = meter != null && !percent;
 
     return TopBarStatus(
-      tooltip: '点数与额度',
+      tooltip: bot ? '钱包余额' : '点数与额度',
       // 顶栏只报**合计**:常驻在那儿,一眼要的是「还剩多少」。
       // 「订阅额+已购额」的拆分留给弹层里的 Anlas 那行 —— 想分清
       // 哪截月底会重置的人,本来就会点进去看。
-      value: sub == null ? null : fmtInt(sub.anlas),
+      value: value,
       // 带百分比时按内容宽,不定宽
       valueSample: percent ? null : _kAnlasSample,
       // 还没数时数值位是一枚刷新图标:首次加载、换接入方式 / 主账号、
       // 弹层里点刷新,正在拉的时候它就转。
-      loading: anlas.isLoading,
+      loading: loading,
       detail: percent ? meter.label : null,
       detailColor: percent ? meter.color : null,
-      icon: Icons.toll,
+      icon: bot ? Icons.account_balance_wallet_outlined : Icons.toll,
       meter: bar ? meter : null,
-      valueColor: scheme.primary,
+      // 钱包欠费标错误色
+      valueColor: (w?.owing ?? false) ? scheme.error : scheme.primary,
       onTap: () => showAnlasSheet(context),
     );
   }
 }
 
-/// 顶栏点数位按五位数定宽:点数多少、中转状态几个字,这块都一样宽。
+/// 顶栏读数位按五位数定宽:点数、余额多少,这块都一样宽。
 const _kAnlasSample = '00,000';
 
 /// 点数读数(**弹层内**用):手里有已购额时摊开成「订阅额+已购额」,订阅额在前;
@@ -144,15 +146,6 @@ Color quotaColor(BuildContext context, NaiQuota q) {
   if (q.available < 1) return scheme.error;
   return quotaPct(q) <= 20 ? FixedSemantic.warn : scheme.primary;
 }
-
-/// 共享号停用后的中转状态(顶栏胶囊用):中转开着才出得了 NAI 图,所以直接报
-/// 能不能出。
-(String, Color) relayStateOf(BuildContext context, NaiQuota q) =>
-    !q.relayAvailable
-    ? ('停用', context.scheme.error)
-    : q.relayEnabled
-    ? ('中转', context.scheme.primary)
-    : ('未开', FixedSemantic.warn);
 
 /// 额度电池条。实心段 = 现在,后面那截半透明 = **24 小时后回充到的位置**
 /// (这就是「回充速率」那个数看得见的样子)。
@@ -296,6 +289,7 @@ class _AnlasSheetState extends ConsumerState<_AnlasSheet> {
     final usage = sub?.usage;
     final bot = ref.watch(authModeProvider).value == AuthMode.bot;
     final quota = bot ? ref.watch(naiQuotaProvider).asData?.value : null;
+    final wallet = bot ? ref.watch(walletSummaryProvider).value : null;
     // 共享号停用:额度卡换成中转开关,点数和额度那几行都不摆
     final relay = quota != null && quota.relayOnly;
 
@@ -311,7 +305,11 @@ class _AnlasSheetState extends ConsumerState<_AnlasSheet> {
               child: Row(
                 children: [
                   Text(
-                    '点数与额度',
+                    !bot
+                        ? '点数与额度'
+                        : relay
+                        ? '钱包与中转'
+                        : '钱包与额度',
                     style: context.texts.titleMedium!.copyWith(
                       fontWeight: FontWeight.w700,
                     ),
@@ -341,12 +339,25 @@ class _AnlasSheetState extends ConsumerState<_AnlasSheet> {
             // bot 线只摆**自己的**配额:池子那块是全平台水位,属于运维视角,
             // 放在个人弹层里会让人误以为「我还有 87%」,而自己可能只剩几张。
             // 它在全平台统计页(那儿才是看全局的地方)。
-            if (relay)
-              _RelayCard(quota: quota)
-            else if (bot && quota != null)
+            if (bot && quota != null && !relay)
               _MyQuotaCard(quota: quota)
             else if (!bot && usage != null)
               UsageCard(usage: usage),
+            if (bot) ...[
+              _row(
+                context,
+                '钱包余额',
+                wallet == null ? '—' : fmtFen(wallet.balanceFen, sign: false),
+                valueColor: (wallet?.owing ?? false) ? scheme.error : null,
+                onTap: () {
+                  final nav = Navigator.of(context);
+                  nav.pop();
+                  nav.push(sharedAxisRoute(const WalletPage()));
+                },
+              ),
+              _divider(context),
+            ],
+            if (relay) ...[_RelayRow(quota: quota), _divider(context)],
             _row(
               context,
               '订阅档位',
@@ -524,32 +535,30 @@ class _MyQuotaCard extends StatelessWidget {
   }
 }
 
-/// 中转出图卡(共享号停用后替换「我的 NAI 5 额度」):状态 + 两档单价 + 开关。
+/// 中转出图开关(共享号停用后替换「我的 NAI 5 额度」):一行开关 + 一行单价。
 /// 不开就出不了 NAI 图,开关得在这里拨得到。
-class _RelayCard extends ConsumerStatefulWidget {
-  const _RelayCard({required this.quota});
+class _RelayRow extends ConsumerStatefulWidget {
+  const _RelayRow({required this.quota});
 
   final NaiQuota quota;
 
   @override
-  ConsumerState<_RelayCard> createState() => _RelayCardState();
+  ConsumerState<_RelayRow> createState() => _RelayRowState();
 }
 
-class _RelayCardState extends ConsumerState<_RelayCard> {
-  bool _busy = false;
-  bool _failed = false;
+class _RelayRowState extends ConsumerState<_RelayRow> {
+  /// 拨动中的目标值;null = 没在设置。
+  bool? _pending;
 
   Future<void> _toggle(bool enabled) async {
-    setState(() {
-      _busy = true;
-      _failed = false;
-    });
+    Haptics.selection();
+    setState(() => _pending = enabled);
     try {
       await ref.read(naiQuotaProvider.notifier).setRelay(enabled);
     } catch (_) {
-      if (mounted) setState(() => _failed = true);
+      if (mounted) hintSnack(context, '没有设置成功,请稍后再试');
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) setState(() => _pending = null);
     }
   }
 
@@ -557,97 +566,54 @@ class _RelayCardState extends ConsumerState<_RelayCard> {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final q = widget.quota;
-    final on = q.relayEnabled;
-    final available = q.relayAvailable;
-    final (_, color) = relayStateOf(context, q);
-    final small = context.texts.bodySmall!.copyWith(
-      color: scheme.outline,
-      fontWeight: FontWeight.w600,
-      height: 1.35,
-    );
+    String yuan(double v) => '¥${v.toStringAsFixed(2)}';
 
-    Widget price(String label, double yuan) => Padding(
-      padding: const EdgeInsets.only(top: 6),
-      child: Row(
-        children: [
-          Text(
-            label,
-            style: context.texts.bodySmall!.copyWith(
-              color: scheme.onSurfaceVariant,
-            ),
-          ),
-          const Spacer(),
-          Text(
-            '¥${yuan.toStringAsFixed(2)} / 张',
-            style: mono(context, size: 13, weight: FontWeight.w700),
-          ),
-        ],
-      ),
-    );
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 6),
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 13),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(16),
-      ),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 5, 4, 11),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Row(
             children: [
               Text(
-                'NAI 出图 · 中转',
+                '中转出图',
                 style: context.texts.bodyMedium!.copyWith(
                   color: scheme.onSurfaceVariant,
-                  fontWeight: FontWeight.w600,
                 ),
               ),
               const Spacer(),
-              Text(
-                !available
-                    ? '暂不可用'
-                    : on
-                    ? '已开启'
-                    : '未开启',
-                style: context.texts.titleSmall!.copyWith(
-                  color: color,
-                  fontWeight: FontWeight.w700,
+              if (q.relayAvailable)
+                Switch(
+                  value: _pending ?? q.relayEnabled,
+                  onChanged: _pending == null ? _toggle : null,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                )
+              else
+                // 和开关同高,行高不跟着变
+                SizedBox(
+                  height: 32,
+                  child: Center(
+                    child: Text(
+                      '暂不可用',
+                      style: context.texts.bodyMedium!.copyWith(
+                        color: scheme.error,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
                 ),
-              ),
             ],
           ),
-          const SizedBox(height: 4),
-          price('V5', q.relayPrice),
-          price('V4.5 及更早', q.relayPriceLegacy),
-          const SizedBox(height: 9),
-          Text(
-            !available
-                ? 'NAI 暂时出不了图,请联系管理员。其它模型不受影响'
-                : on
-                ? '出图成功才从钱包扣费。大图(总像素超过 1024×1024 或超过 28 步)'
-                      '和角色参考用不了'
-                : '开启后才能出 NAI 图,出图成功才从钱包扣费。其它模型不受影响',
-            style: small,
-          ),
-          if (available) ...[
-            const SizedBox(height: 12),
-            if (on)
-              OutlinedButton(
-                onPressed: _busy ? null : () => _toggle(false),
-                child: Text(_busy ? '设置中…' : '关闭中转'),
-              )
-            else
-              FilledButton(
-                onPressed: _busy ? null : () => _toggle(true),
-                child: Text(_busy ? '设置中…' : '开启中转'),
-              ),
-          ],
-          if (_failed) ...[
-            const SizedBox(height: 6),
-            Text('没有设置成功,请稍后再试', style: small.copyWith(color: scheme.error)),
-          ],
+          if (q.relayAvailable)
+            Text(
+              q.relayPrice == q.relayPriceLegacy
+                  ? '每张从钱包扣 ${yuan(q.relayPrice)}'
+                  : '每张从钱包扣 V5 ${yuan(q.relayPrice)} · '
+                        'V4.5 及更早 ${yuan(q.relayPriceLegacy)}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: context.texts.labelSmall!.copyWith(color: scheme.outline),
+            ),
         ],
       ),
     );
@@ -763,34 +729,54 @@ class UsageCard extends StatelessWidget {
   }
 }
 
-Widget _row(BuildContext context, String label, String value) => Padding(
-  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 11),
-  child: Row(
-    children: [
-      Text(
-        label,
-        style: context.texts.bodyMedium!.copyWith(
-          color: context.scheme.onSurfaceVariant,
-        ),
-      ),
-      const SizedBox(width: 12),
-      // 值这边**不能**再摆 Spacer:它跟 Flexible 一样是弹性子项,两者会把余量
-      // 对半分,值只拿到一半宽度 —— 明明放得下也提前打省略号。让 Flexible 独占
-      // 余量、文字自己右对齐就行。
-      Expanded(
-        child: Text(
-          value,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          textAlign: TextAlign.right,
+/// 给了 [onTap] 就整行可点,值后面跟一枚箭头。
+Widget _row(
+  BuildContext context,
+  String label,
+  String value, {
+  Color? valueColor,
+  VoidCallback? onTap,
+}) {
+  final row = Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 11),
+    child: Row(
+      children: [
+        Text(
+          label,
           style: context.texts.bodyMedium!.copyWith(
-            fontWeight: FontWeight.w700,
+            color: context.scheme.onSurfaceVariant,
           ),
         ),
-      ),
-    ],
-  ),
-);
+        const SizedBox(width: 12),
+        // 值这边**不能**再摆 Spacer:它跟 Flexible 一样是弹性子项,两者会把余量
+        // 对半分,值只拿到一半宽度 —— 明明放得下也提前打省略号。让 Flexible 独占
+        // 余量、文字自己右对齐就行。
+        Expanded(
+          child: Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.right,
+            style: context.texts.bodyMedium!.copyWith(
+              color: valueColor,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+        if (onTap != null) ...[
+          const SizedBox(width: 2),
+          Icon(Icons.chevron_right, size: 20, color: context.scheme.outline),
+        ],
+      ],
+    ),
+  );
+  if (onTap == null) return row;
+  return InkWell(
+    onTap: onTap,
+    borderRadius: BorderRadius.circular(10),
+    child: row,
+  );
+}
 
 Widget _divider(BuildContext context) => Divider(
   height: 1,
