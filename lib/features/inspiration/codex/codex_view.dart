@@ -597,9 +597,10 @@ class CodexPickerButton extends ConsumerWidget {
           children: [
             Icon(Icons.menu_book_outlined, size: 19, color: scheme.primary),
             const SizedBox(width: 8),
+            // 整行都给了标题:写全名(选择器里那个是缩短的)
             Flexible(
               child: Text(
-                meta.displayTitle,
+                meta.title.isNotEmpty ? meta.title : meta.displayTitle,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: context.texts.titleMedium!.copyWith(
