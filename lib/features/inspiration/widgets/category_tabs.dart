@@ -189,7 +189,7 @@ class _CategoryTabsState extends State<CategoryTabs> {
                         width: _pillWidthAt(pos),
                         decoration: BoxDecoration(
                           color: scheme.surface,
-                          borderRadius: BorderRadius.circular(15),
+                          borderRadius: BorderRadius.circular(17),
                           boxShadow: [
                             BoxShadow(
                               color: Colors.black.withValues(alpha: .06),
@@ -247,9 +247,9 @@ class _CategoryTabsState extends State<CategoryTabs> {
     return SizedBox(
       height: 48,
       child: Padding(
-        padding: EdgeInsets.fromLTRB(widget.leftPad, 6, 4, 6),
+        padding: EdgeInsets.fromLTRB(widget.leftPad, 4, 4, 4),
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(20),
           child: ColoredBox(color: scheme.surfaceContainerHigh, child: row),
         ),
       ),
