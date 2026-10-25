@@ -30,6 +30,16 @@ extension ResultBadgeX on ResultBadge {
   };
 }
 
+/// 回收站保留天数(按自然日算),过了就彻底删除。
+const kTrashKeepDays = 30;
+
+/// 回收站里的一张:原条目 + 移入时刻(ms epoch)。
+class TrashedImage {
+  const TrashedImage(this.image, this.deletedAt);
+  final ResultImage image;
+  final int deletedAt;
+}
+
 /// 一张生成结果。bytes/input 只是**内存缓存**——重启水合或 RAM 减负后
 /// 为 null,像素与快照按 id 从 GalleryStore 懒读;hasInput 记录盘上
 /// 是否有参数快照(操作门禁用,与 input 是否驻留内存无关)。

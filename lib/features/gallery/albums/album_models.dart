@@ -1,6 +1,16 @@
 import 'package:flutter/foundation.dart' show setEquals;
 
 const allPhotosName = '全部相册';
+
+/// 固定的「收藏」相册:和用户相册一样记在 memberships 里,但不在 [AlbumsData.albums]
+/// 列表中,不能改名、删除,也不能设为保存相册;封面是固定的图标。
+const favoritesId = 'favorites';
+const favoritesName = '收藏';
+
+/// 相册墙末尾的「回收站」:不是相册,只在图库面板里当一本来浏览,
+/// 图来自 `GalleryState.trash`。
+const trashId = 'trash';
+const trashName = '回收站';
 bool validGalleryId(String id) => RegExp(r'^[a-zA-Z0-9_-]+$').hasMatch(id);
 
 /// null 是明确的“仅全部作品”；参数本身为 null 才表示读取当前设置。
@@ -72,11 +82,14 @@ class AlbumsData {
   final AlbumCover? allPhotosCover;
   GalleryAlbum? album(String? id) =>
       albums.where((a) => a.id == id).firstOrNull;
-  bool exists(String? id) => id == null || album(id) != null;
-  String name(String? id) => album(id)?.name ?? allPhotosName;
+  bool exists(String? id) =>
+      id == null || id == favoritesId || album(id) != null;
+  String name(String? id) =>
+      id == favoritesId ? favoritesName : album(id)?.name ?? allPhotosName;
   bool contains(String? albumId, String imageId) =>
       albumId == null ||
       (exists(albumId) && (memberships[imageId]?.contains(albumId) ?? false));
+  bool isFavorite(String imageId) => contains(favoritesId, imageId);
   Set<String> ofImage(String imageId) => memberships[imageId] ?? const {};
   AlbumCover? cover(String? id) =>
       id == null ? allPhotosCover : album(id)?.cover;
@@ -130,6 +143,11 @@ class AlbumsData {
     },
   );
 
+  /// 收藏 / 取消收藏。
+  AlbumsData favorite(Set<String> imageIds, bool on) => on
+      ? organize(imageIds, {favoritesId})
+      : organize(imageIds, const {}, sources: {favoritesId});
+
   /// sources=null 表示添加；移动仅处理属于明确来源的图片。
   AlbumsData organize(
     Set<String> imageIds,
@@ -177,7 +195,7 @@ class AlbumsData {
       throw const FormatException('图库数据格式无效');
     }
     final albums = <GalleryAlbum>[];
-    final ids = <String>{};
+    final ids = <String>{favoritesId};
     for (final a in raw['albums'] as List) {
       if (a is! Map ||
           a['id'] is! String ||

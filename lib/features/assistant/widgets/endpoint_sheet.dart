@@ -54,6 +54,9 @@ class _EndpointSheetState extends ConsumerState<_EndpointSheet> {
   final _model = TextEditingController();
   late final _path = TextEditingController(text: widget.source?.apiPath ?? '');
   late final List<String> _models = [...?widget.source?.models];
+  late final _headers = TextEditingController(
+    text: formatHeaderLines(widget.source?.headers ?? const {}),
+  );
 
   late AgentApiFormat _format = widget.source?.format ?? AgentApiFormat.openai;
   bool _loading = false;
@@ -65,6 +68,7 @@ class _EndpointSheetState extends ConsumerState<_EndpointSheet> {
     _key.dispose();
     _model.dispose();
     _path.dispose();
+    _headers.dispose();
     super.dispose();
   }
 
@@ -76,6 +80,7 @@ class _EndpointSheetState extends ConsumerState<_EndpointSheet> {
     apiKey: _key.text.trim(),
     models: cleanModelList([..._models, _model.text]),
     apiPath: _path.text.trim(),
+    headers: parseHeaderLines(_headers.text).headers,
   );
 
   void _addTyped() {
@@ -88,7 +93,20 @@ class _EndpointSheetState extends ConsumerState<_EndpointSheet> {
     });
   }
 
+  /// 请求头有不合格的行就提示行号,返回 false。
+  bool _headersOk() {
+    final bad = parseHeaderLines(_headers.text).bad;
+    if (bad == null) return true;
+    hintSnack(
+      context,
+      '请求头第 $bad 行要写成「名称: 值」,只能用英文字符',
+      icon: Icons.error_outline,
+    );
+    return false;
+  }
+
   Future<void> _pickModel() async {
+    if (!_headersOk()) return;
     final draft = _draft();
     if (draft.apiKey.isEmpty) {
       hintSnack(context, '先填 API Key 才能拉列表', icon: Icons.key_off_outlined);
@@ -125,6 +143,7 @@ class _EndpointSheetState extends ConsumerState<_EndpointSheet> {
   }
 
   Future<void> _save() async {
+    if (!_headersOk()) return;
     final draft = _draft();
     if (draft.models.isEmpty) {
       hintSnack(context, '还没填模型', icon: Icons.error_outline);
@@ -207,6 +226,7 @@ class _EndpointSheetState extends ConsumerState<_EndpointSheet> {
           keyboard: TextInputType.url,
         ),
         _field('API Key', _key, obscure: true),
+        _field('请求头', _headers, hint: '一行一条,如 X-Title: Plana', multiline: true),
         settingSection(context, '模型'),
         if (_models.isNotEmpty)
           Padding(
@@ -291,13 +311,16 @@ class _EndpointSheetState extends ConsumerState<_EndpointSheet> {
     TextEditingController c, {
     String? hint,
     bool obscure = false,
+    bool multiline = false,
     TextInputType? keyboard,
   }) => Padding(
     padding: const EdgeInsets.fromLTRB(20, 6, 20, 6),
     child: TextField(
       controller: c,
       obscureText: obscure,
-      keyboardType: keyboard,
+      keyboardType: multiline ? TextInputType.multiline : keyboard,
+      minLines: 1,
+      maxLines: multiline ? 5 : 1,
       autocorrect: false,
       enableSuggestions: !obscure,
       decoration: InputDecoration(

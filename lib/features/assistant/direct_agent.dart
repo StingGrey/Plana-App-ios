@@ -743,11 +743,13 @@ Stream<AgentDelta> directModelStream(
   );
   Future<http.StreamedResponse> send(Map<String, dynamic> body) async {
     final req = http.Request('POST', uri)
-      ..headers.addAll({
-        'Content-Type': 'application/json',
-        'Accept': 'text/event-stream',
-        ...headers,
-      })
+      ..headers.addAll(
+        e.withHeaders({
+          'Content-Type': 'application/json',
+          'Accept': 'text/event-stream',
+          ...headers,
+        }),
+      )
       ..bodyBytes = utf8.encode(jsonEncode(body));
     try {
       return await c.send(req).timeout(timeout);

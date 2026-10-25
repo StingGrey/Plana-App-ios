@@ -312,7 +312,7 @@ void main() {
     expect([for (final r in stores2.gallery.initialResults) r.id], [b.id]);
   });
 
-  test('批量删除:状态移除、文件同删、选中保持相邻图片', () async {
+  test('批量删除:移进回收站、选中保持相邻图片,彻底删除才删文件', () async {
     final root = Directory.systemTemp.createTempSync('plana_delete');
     addTearDown(() async {
       for (var i = 0; i < 10; i++) {
@@ -340,6 +340,19 @@ void main() {
     final s = c.read(galleryProvider);
     expect([for (final r in s.results) r.id], [ids[2], ids[1]]);
     expect(s.selectedId, ids[2]); // 最前面的选中项被删 → 相邻旧图
+    // 进回收站:新删的在前,文件还在
+    expect([for (final t in s.trash) t.image.id], [ids[3], ids[0]]);
+    await stores.gallery.idle;
+    expect(
+      File('${root.path}/gallery/images/${ids[3]}.png').existsSync(),
+      isTrue,
+    );
+    // 彻底删除才删文件
+    gal.purgeTrash([ids[3]]);
+    expect(
+      [for (final t in c.read(galleryProvider).trash) t.image.id],
+      [ids[0]],
+    );
     await stores.gallery.idle;
     expect(
       File('${root.path}/gallery/images/${ids[3]}.png').existsSync(),
@@ -365,6 +378,10 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 200));
     final stores2 = await AppStores.open(rootOverride: root);
     expect(stores2.gallery.initialResults, isEmpty);
+    expect(
+      [for (final t in stores2.gallery.initialTrash) t.image.id],
+      [ids[2], ids[1], ids[0]],
+    );
   });
 
   test('图库上限:超出裁最旧,文件同删', () async {

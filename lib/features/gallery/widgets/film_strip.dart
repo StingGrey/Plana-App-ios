@@ -1,8 +1,11 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart' show Ticker;
 
 import '../../../core/theme/app_theme.dart';
 import '../../generate/gen_jobs.dart' show GenJob;
-import '../../generate/widgets/common.dart' show StripeThumb, hintSnack;
+import '../../generate/widgets/common.dart' show StripeThumb;
 import '../models.dart';
 import 'gallery_grid_sheet.dart';
 import 'result_badge_chip.dart';
@@ -32,10 +35,11 @@ const _thumbSlotH = _thumbH + (_thumbPad + _thumbBorder) * 2;
 const _moreSize = 44.0; // 圆钮直径
 const _moreRight = 12.0; // 距右边缘
 
-// 上滑后浮出的落点:两条横带浮在胶片条正上方(overlay 层,不占布局,不推画布),
-// 自下而上是「分享」「删除」。
+// 上滑后浮出的落点:三条横带浮在胶片条正上方(overlay 层,不占布局,不推画布),
+// 自下而上是「分享」「收藏」「删除」。
 const _bandH = 54.0;
 const _bandSpacing = 10.0; // 两条之间的缝,松在缝里 = 取消
+const _bandCount = 3;
 
 /// 下面那条(分享)与胶片条的间距 —— 同时也是**这个手势唯一的保险**。
 ///
@@ -44,10 +48,10 @@ const _bandSpacing = 10.0; // 两条之间的缝,松在缝里 = 取消
 /// 约 `10(条内衬) + 38(缩略图半高) + 64 ≈ 110` 才碰到分享,是一个明确的
 /// 「往上甩一下」,横滑翻图或点选时的竖向抖动够不着。
 ///
-/// 删除排在**更远**那条(再过一条带加一道缝,约 175):松手早了落在分享上,
-/// 顶多弹一下系统分享面板,关掉就是;反过来排的话,想分享却松早了就是一次
-/// 不可撤销的删除。拖过分享继续往上就到删除,不用绕 —— 带是通宽的,
-/// 而拖起来的那张本来就只能上下走(见 [_FilmThumb] 的 axis)。
+/// 删除排在**最远**那条(再过两条带加两道缝,约 240):松手早了落在分享或
+/// 收藏上,顶多弹一下系统分享面板、或者收藏一下再撤销;反过来排的话,想分享
+/// 却松早了就是一次删除。拖过分享继续往上就到收藏、删除,不用绕 ——
+/// 带是通宽的,而拖起来的那张本来就只能上下走(见 [_FilmThumb] 的 axis)。
 const _bandGap = 64.0;
 
 /// 极端长宽比的兜底:太窄点不着,太宽一张就把条占满。
@@ -65,11 +69,12 @@ double _thumbSlotW(double aspect) =>
 /// 跟随它,点历史缩略图切走看历史 —— 对齐 web 桌面端的占位卡交互。
 /// 取消不在卡上:卡这么小,取消挨着「切换跟随」这个主手势太容易点错,
 /// 它长在画布那条进度胶囊上(见 ProgressPill,web 也是放在状态条上)。
-/// 历史图**上滑**即拿起,条上方浮出两条落点(下分享、上删除),拖上去松手即
-/// 分享 / 删;拖回来或松在别处什么都不发生 —— 所以删除不再另弹确认。
+/// 历史图**上滑**即拿起,条上方浮出三条落点(自下而上分享、收藏、删除),拖上去
+/// 松手即分享 / 收藏 / 删;拖回来或松在别处什么都不发生 —— 所以删除不再另弹确认。
 /// 竖向手势与横向滚动各认各的轴(见 [_FilmThumb] 的 affinity),不用自己
 /// 进竞技场调解。
-/// 选中项变化(含画布横滑切图、从展开页跳选)时自动滚动,把选中项摆到视野中央。
+/// 选中项变化(含画布横滑切图、从展开页跳选)时自动滚动,把选中项摆到视野中央;
+/// 画布跟随的任务卡也算选中项。
 class FilmStrip extends StatefulWidget {
   const FilmStrip({
     super.key,
@@ -77,6 +82,8 @@ class FilmStrip extends StatefulWidget {
     required this.selectedId,
     required this.onSelect,
     required this.onShare,
+    required this.onFavorite,
+    required this.isFavorite,
     required this.onDelete,
     this.jobs = const [],
     this.selectedJobId,
@@ -90,7 +97,13 @@ class FilmStrip extends StatefulWidget {
   /// 拖进分享区后分享这一张(按保存设置处理、拉系统面板都在调用方)。
   final ValueChanged<String> onShare;
 
-  /// 拖进删除区后删这一张(状态与盘上文件由调用方处理)。
+  /// 拖进收藏区后收藏 / 取消收藏这一张。
+  final ValueChanged<String> onFavorite;
+
+  /// 这一张眼下收藏了没有:拿起时据此决定收藏那条写「收藏」还是「取消收藏」。
+  final bool Function(String id) isFavorite;
+
+  /// 拖进删除区后删这一张(移进回收站与提示由调用方处理)。
   final ValueChanged<String> onDelete;
 
   /// 在跑的任务,**已按新→旧排好**(调用方给 `GenPool.newestFirst`)。
@@ -104,8 +117,33 @@ class FilmStrip extends StatefulWidget {
   State<FilmStrip> createState() => _FilmStripState();
 }
 
-class _FilmStripState extends State<FilmStrip> {
-  final _sc = ScrollController();
+class _FilmStripState extends State<FilmStrip>
+    with SingleTickerProviderStateMixin {
+  final _sc = _StripController();
+
+  // ---- 条目进出 ----
+  //
+  // 视野里进来一条:宽从 0 长到整格,后面的跟着让开;视野里移除一条:留个影子从
+  // 整格收到 0,后面的跟着补上。视野外的进出直接生效,位移补回滚动位置,
+  // 视野里的图不动。
+
+  /// 一次进出超过这么多条(切相册、批量删)就不做动画,直接换。
+  static const _kMaxAnimated = 4;
+
+  /// 正在长出的条目:键 → 进度 0..1。
+  final _entering = <String, double>{};
+
+  /// 正在收起的影子:键 → 影子。
+  final _leaving = <String, _Leaving>{};
+
+  /// 拖上去删掉的图:拖起时原位已经是空位,收起的影子也画空位。
+  final _vacated = <String>{};
+
+  Ticker? _ticker;
+  Duration _lastTick = Duration.zero;
+
+  /// 上一次 build 排出来的条目(含影子)。
+  List<_Entry> _display = const [];
 
   @override
   void initState() {
@@ -117,25 +155,270 @@ class _FilmStripState extends State<FilmStrip> {
   @override
   void didUpdateWidget(FilmStrip old) {
     super.didUpdateWidget(old);
+    if (!_sameItems(old)) _reconcile();
     // 删除后保持用户正在看的胶片位置。即使删的是选中图，状态会自动改选相邻图，
     // 此时也不能把手动滚开的胶片条重新拉回选中项。
     final deleted = widget.results.length < old.results.length;
     if (!deleted &&
         (old.selectedId != widget.selectedId ||
-            old.results.length != widget.results.length ||
-            old.jobs.length != widget.jobs.length)) {
+            old.selectedJobId != widget.selectedJobId)) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _reveal());
     }
   }
 
+  bool _sameItems(FilmStrip old) {
+    if (!identical(old.results, widget.results) ||
+        old.jobs.length != widget.jobs.length) {
+      return false;
+    }
+    for (var i = 0; i < old.jobs.length; i++) {
+      if (old.jobs[i].id != widget.jobs[i].id) return false;
+    }
+    return true;
+  }
+
+  /// 要排的条目:任务在前、历史图在后,影子插回它原来的位置。
+  List<_Entry> _entries() {
+    final items = [
+      for (final j in widget.jobs)
+        _Entry('j:${j.id}', _thumbSlotW(_aspectOf(j.width, j.height)), job: j),
+      for (final r in widget.results)
+        _Entry('r:${r.id}', _thumbSlotW(_resultAspect(r)), result: r),
+    ];
+    if (_leaving.isEmpty) return items;
+    final waiting = <String?, List<_Entry>>{};
+    for (final l in _leaving.values) {
+      (waiting[l.before] ??= []).add(l.entry);
+    }
+    final out = <_Entry>[];
+    final done = <String>{};
+    void put(_Entry e) {
+      if (!done.add(e.key)) return;
+      for (final g in waiting.remove(e.key) ?? const <_Entry>[]) {
+        put(g);
+      }
+      out.add(e);
+    }
+
+    items.forEach(put);
+    // 排在末尾的,以及原本挨着的那条也已经不在的
+    for (final g in [for (final gs in waiting.values) ...gs]) {
+      put(g);
+    }
+    return out;
+  }
+
+  /// 这条眼下占整格的比例。
+  double _factor(String key) {
+    final l = _leaving[key];
+    if (l != null) return l.from * (1 - Motion.standard.transform(l.t));
+    final t = _entering[key];
+    return t == null ? 1 : Motion.standard.transform(t);
+  }
+
+  /// 这条在滚动轴上占的宽:占位 + 后面那道分隔,乘上进出比例。
+  /// 列表的 itemExtentBuilder 与定位计算都走这里。
+  double _extentOf(_Entry e) => (e.slot + _thumbGap) * _factor(e.key);
+
+  /// 各条的(键, 左缘, 宽)。
+  List<({String key, double x, double w})> _geometry(List<_Entry> es) {
+    final out = <({String key, double x, double w})>[];
+    var x = _stripPadH;
+    for (final e in es) {
+      final w = _extentOf(e);
+      out.add((key: e.key, x: x, w: w));
+      x += w;
+    }
+    return out;
+  }
+
+  double _xOf(List<_Entry> es, String key) {
+    var x = _stripPadH;
+    for (final e in es) {
+      if (e.key == key) break;
+      x += _extentOf(e);
+    }
+    return x;
+  }
+
+  _StripPosition? get _laidOut {
+    if (!_sc.hasClients) return null;
+    final pos = _sc.position;
+    return pos is _StripPosition && pos.hasContentDimensions ? pos : null;
+  }
+
+  /// 视野最左、在新排布里还在的那条。
+  String? _anchor(
+    List<({String key, double x, double w})> geo,
+    double px,
+    Set<String> present,
+  ) {
+    final first = geo.indexWhere((g) => g.x + g.w > px);
+    if (first < 0) return null;
+    for (final g in geo.skip(first)) {
+      if (present.contains(g.key)) return g.key;
+    }
+    return null;
+  }
+
+  /// 锚点在新排布里挪了多少,滚动位置就补多少。
+  double _keep(
+    _StripPosition pos,
+    List<({String key, double x, double w})> geo,
+    String? anchor,
+    List<_Entry> after,
+  ) {
+    if (anchor == null) return 0;
+    final delta =
+        _xOf(after, anchor) - geo.firstWhere((g) => g.key == anchor).x;
+    if (delta.abs() > 1e-6) pos.shift(delta);
+    return delta;
+  }
+
+  /// 条目有进出时:视野里的长出 / 收起,视野外的直接生效。
+  void _reconcile() {
+    final pos = _laidOut;
+    if (pos == null) return;
+    final before = _display;
+    final geo = _geometry(before);
+    final px = pos.pixels + pos.pendingShift;
+    final vp = pos.viewportDimension;
+    final keys = {
+      for (final j in widget.jobs) 'j:${j.id}',
+      for (final r in widget.results) 'r:${r.id}',
+    };
+    final added = keys.difference({for (final e in before) e.key});
+    final removed = [
+      for (var i = 0; i < before.length; i++)
+        if (!before[i].ghost && !keys.contains(before[i].key)) i,
+    ];
+    bool visible(int i) =>
+        geo[i].w > 0 && geo[i].x + geo[i].w > px && geo[i].x < px + vp;
+    final seen = removed.where(visible).toSet();
+    final animate = added.length + seen.length <= _kMaxAnimated;
+
+    for (final i in removed) {
+      final e = before[i];
+      final from = _factor(e.key);
+      _entering.remove(e.key);
+      if (animate && seen.contains(i)) {
+        _leaving[e.key] = _Leaving(
+          e.asGhost(vacant: _vacated.contains(e.key)),
+          from,
+        );
+      }
+    }
+    _leaving.removeWhere((k, _) => keys.contains(k)); // 影子那条又回来了
+    final present = {...keys, ..._leaving.keys};
+    // 影子排在旧排布里它后面第一条还在的前面
+    for (var i = 0; i < before.length; i++) {
+      final l = _leaving[before[i].key];
+      if (l == null) continue;
+      l.before = null;
+      for (final e in before.skip(i + 1)) {
+        if (present.contains(e.key)) {
+          l.before = e.key;
+          break;
+        }
+      }
+    }
+
+    _vacated.retainWhere(keys.contains);
+
+    final anchor = _anchor(geo, px, present);
+    final after = _entries();
+    if (animate && added.isNotEmpty) {
+      final ai = anchor == null
+          ? after.length
+          : after.indexWhere((e) => e.key == anchor);
+      // 锚点前面新来的:停在最左头时看得见,长出来;否则在视野外,直接出现
+      if (px <= pos.minScrollExtent + .5) {
+        for (var i = 0; i < ai; i++) {
+          if (added.contains(after[i].key)) _entering[after[i].key] = 0;
+        }
+      }
+      // 锚点后面新来的:落在视野里的长出来
+      if (anchor != null) {
+        var x = _xOf(after, anchor);
+        // 视野右缘在新排布里的位置:锚点挪了多少,视野跟着挪多少
+        final right = px + x - geo.firstWhere((g) => g.key == anchor).x + vp;
+        for (var i = ai; i < after.length && x < right; i++) {
+          if (added.contains(after[i].key)) _entering[after[i].key] = 0;
+          x += _extentOf(after[i]);
+        }
+      }
+    }
+    final delta = _keep(pos, geo, anchor, after);
+    if (_entering.isNotEmpty || _leaving.isNotEmpty) _startTicker();
+    final target = _animTarget;
+    if (delta.abs() > .5 && target != null) {
+      // 正在滚的那段目标是按旧位置算的,跟着挪
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _animateTo(target + delta),
+      );
+    }
+  }
+
+  void _startTicker() {
+    final ticker = _ticker ??= createTicker(_tick);
+    if (ticker.isActive) return;
+    _lastTick = Duration.zero;
+    ticker.start();
+  }
+
+  void _tick(Duration elapsed) {
+    final dt =
+        (elapsed - _lastTick).inMicroseconds / Motion.medium.inMicroseconds;
+    _lastTick = elapsed;
+    final pos = _laidOut;
+    final geo = _geometry(_display);
+    for (final k in _entering.keys.toList()) {
+      final t = _entering[k]! + dt;
+      if (t >= 1) {
+        _entering.remove(k);
+      } else {
+        _entering[k] = t;
+      }
+    }
+    for (final l in _leaving.values) {
+      l.t = math.min(1.0, l.t + dt);
+    }
+    _leaving.removeWhere((_, l) => l.t >= 1);
+    final after = _entries();
+    if (pos != null) {
+      // 用户滚动过,进出中的那条跑到了视野左边:照样补,视野里的图不动
+      final px = pos.pixels + pos.pendingShift;
+      _keep(pos, geo, _anchor(geo, px, {for (final e in after) e.key}), after);
+    }
+    if (_entering.isEmpty && _leaving.isEmpty) _ticker?.stop();
+    setState(() {});
+  }
+
+  /// 进行中的定位动画的目标;没有在滚就是 null。
+  double? _animTarget;
+
+  void _animateTo(double target) {
+    if (!mounted || !_sc.hasClients) return;
+    final p = _sc.position;
+    final t = target.clamp(p.minScrollExtent, p.maxScrollExtent);
+    if ((t - p.pixels).abs() < 1) return;
+    _animTarget = t;
+    _sc
+        .animateTo(t, duration: Motion.medium, curve: Motion.emphasized)
+        .whenComplete(() {
+          if (_animTarget == t) _animTarget = null;
+        });
+  }
+
   @override
   void dispose() {
+    _ticker?.dispose();
     _hideBands();
     _sc.dispose();
     super.dispose();
   }
 
-  // ---- 拖拽落点:分享 / 删除两条带走 overlay ----
+  // ---- 拖拽落点:分享 / 收藏 / 删除三条带走 overlay ----
   //
   // 不能把它们塞进胶片条自己的 Stack 里:一来会把画布顶上去(拖到一半整屏
   // 跳一下),二来 Stack 越界的子节点根本收不到命中测试,而 DragTarget
@@ -147,21 +430,27 @@ class _FilmStripState extends State<FilmStrip> {
 
   OverlayEntry? _bands;
 
-  void _showBands() {
+  void _showBands(String id) {
     if (_bands != null) return;
     final box = context.findRenderObject() as RenderBox?;
     final overlay = Overlay.of(context);
     final ob = overlay.context.findRenderObject() as RenderBox?;
     if (box == null || !box.hasSize || ob == null) return;
     final top = box.localToGlobal(Offset.zero, ancestor: ob).dy;
-    const h = _bandH * 2 + _bandSpacing;
+    const h = _bandH * _bandCount + _bandSpacing * (_bandCount - 1);
+    final favorite = widget.isFavorite(id);
     _bands = OverlayEntry(
       builder: (_) => Positioned(
         left: _stripPadH,
         right: _stripPadH,
         top: top - h - _bandGap,
         height: h,
-        child: _DropBands(onShare: _dropShare, onDelete: _dropDelete),
+        child: _DropBands(
+          favorite: favorite,
+          onShare: _dropShare,
+          onFavorite: _dropFavorite,
+          onDelete: _dropDelete,
+        ),
       ),
     );
     overlay.insert(_bands!);
@@ -177,10 +466,15 @@ class _FilmStripState extends State<FilmStrip> {
     widget.onShare(id);
   }
 
+  void _dropFavorite(String id) {
+    Haptics.medium();
+    widget.onFavorite(id);
+  }
+
   void _dropDelete(String id) {
     Haptics.medium();
+    _vacated.add('r:$id');
     widget.onDelete(id);
-    if (mounted) hintSnack(context, '已删除', icon: Icons.delete_outline);
   }
 
   /// 把选中缩略图滚到**视野中央**。位置按渲染同款公式推算(缩略图宽 +
@@ -192,30 +486,28 @@ class _FilmStripState extends State<FilmStrip> {
   /// 蹭进屏幕。首尾几张自然贴边(clamp 到滚动范围),那是应该的。
   void _reveal() {
     if (!mounted || !_sc.hasClients) return;
+    final jobId = widget.selectedJobId;
     final id = widget.selectedId;
-    if (id == null) return;
-    final i = widget.results.indexWhere((r) => r.id == id);
-    if (i < 0) return;
+    // 画布跟随的任务卡也算选中项;任务卡都排在头部,历史图要把它们让出来
+    final key = jobId != null ? 'j:$jobId' : (id == null ? null : 'r:$id');
+    if (key == null) return;
+    // 按进出动画走完之后的排布算:影子不占位,长出中的按整格
     var x = _stripPadH;
-    for (final j in widget.jobs) {
-      // 在跑的任务卡都排在头部,历史图的位置要把它们让出来
-      x += _thumbSlotW(_aspectOf(j.width, j.height)) + _thumbGap;
+    for (final e in _entries()) {
+      if (e.ghost) continue;
+      if (e.key == key) {
+        _animateTo(x + e.slot / 2 - _sc.position.viewportDimension / 2);
+        return;
+      }
+      x += e.slot + _thumbGap;
     }
-    for (var k = 0; k < i; k++) {
-      x += _thumbSlotW(widget.results[k].aspect) + _thumbGap;
-    }
-    final w = _thumbSlotW(widget.results[i].aspect);
-    final vp = _sc.position.viewportDimension;
-    final t = (x + w / 2 - vp / 2).clamp(0.0, _sc.position.maxScrollExtent);
-    if ((t - _sc.offset).abs() < 1) return;
-    _sc.animateTo(t, duration: Motion.medium, curve: Motion.emphasized);
   }
 
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    final jobs = widget.jobs;
-    final extra = jobs.length;
+    final display = _display = _entries();
+    final index = {for (var i = 0; i < display.length; i++) display[i].key: i};
     return Material(
       color: scheme.surface,
       child: Padding(
@@ -225,30 +517,59 @@ class _FilmStripState extends State<FilmStrip> {
           child: Stack(
             children: [
               Positioned.fill(
-                child: ListView.separated(
+                // 每条宽度按公式给定(不靠量):进出后位置立刻是对的,
+                // 补回滚动位置的位移和 _reveal 算的落点才对得上实际布局
+                child: ListView.builder(
                   controller: _sc,
                   scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: _stripPadH),
-                  itemCount: widget.results.length + extra,
-                  separatorBuilder: (_, _) => const SizedBox(width: _thumbGap),
+                  // 每条的宽里带着后面那道分隔,右边距相应减掉
+                  padding: const EdgeInsets.only(
+                    left: _stripPadH,
+                    right: _stripPadH - _thumbGap,
+                  ),
+                  itemCount: display.length,
+                  itemExtentBuilder: (i, _) =>
+                      i < display.length ? _extentOf(display[i]) : null,
+                  findChildIndexCallback: (key) =>
+                      index[(key as ValueKey<String>).value],
                   itemBuilder: (context, i) {
-                    if (i < extra) {
-                      final j = jobs[i];
-                      return _GenThumb(
-                        job: j,
-                        active: j.id == widget.selectedJobId,
-                        onTap: () => widget.onSelectJob?.call(j.id),
-                      );
-                    }
-                    final r = widget.results[i - extra];
-                    return _FilmThumb(
-                      result: r,
-                      selected:
-                          r.id == widget.selectedId &&
-                          widget.selectedJobId == null,
-                      onTap: () => widget.onSelect(r.id),
-                      onDragStart: _showBands,
-                      onDragEnd: _hideBands,
+                    final e = display[i];
+                    final job = e.job;
+                    final result = e.result;
+                    final Widget thumb = job != null
+                        ? _GenThumb(
+                            job: job,
+                            active: !e.ghost && job.id == widget.selectedJobId,
+                            onTap: () => widget.onSelectJob?.call(job.id),
+                          )
+                        : _FilmThumb(
+                            result: result!,
+                            vacant: e.vacant,
+                            selected:
+                                !e.ghost &&
+                                result.id == widget.selectedId &&
+                                widget.selectedJobId == null,
+                            onTap: () => widget.onSelect(result.id),
+                            onDragStart: () => _showBands(result.id),
+                            onDragEnd: _hideBands,
+                          );
+                    // 进出时按比例裁宽、淡入淡出。结构不随状态变,影子与原条目
+                    // 同一个键,条目内部状态(选中环过渡、拖拽)不会被重建打断
+                    return ClipRect(
+                      key: ValueKey(e.key),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Opacity(
+                          opacity: _factor(e.key).clamp(0.0, 1.0),
+                          child: IgnorePointer(
+                            ignoring: e.ghost,
+                            child: Padding(
+                              padding: const EdgeInsets.only(right: _thumbGap),
+                              child: thumb,
+                            ),
+                          ),
+                        ),
+                      ),
                     );
                   },
                 ),
@@ -289,6 +610,103 @@ class _FilmStripState extends State<FilmStrip> {
 }
 
 double _aspectOf(int w, int h) => (w > 0 && h > 0) ? w / h : 1.0;
+
+double _resultAspect(ResultImage r) => _aspectOf(r.width, r.height);
+
+/// 胶片条上的一条:在跑的任务或历史图。[ghost] = 刚移除、正在收起的影子。
+class _Entry {
+  const _Entry(
+    this.key,
+    this.slot, {
+    this.job,
+    this.result,
+    this.ghost = false,
+    this.vacant = false,
+  });
+
+  final String key;
+
+  /// 缩略图占位宽(含内衬与边框),不含分隔。
+  final double slot;
+  final GenJob? job;
+  final ResultImage? result;
+  final bool ghost;
+
+  /// 影子画成空位(拖走删掉的那张)。
+  final bool vacant;
+
+  _Entry asGhost({required bool vacant}) =>
+      _Entry(key, slot, job: job, result: result, ghost: true, vacant: vacant);
+}
+
+/// 收起中的影子:比例从 [from] 收到 0。[before] = 排在哪条前面,null 为末尾。
+class _Leaving {
+  _Leaving(this.entry, this.from);
+
+  final _Entry entry;
+  final double from;
+  String? before;
+  double t = 0;
+}
+
+/// 胶片条的滚动位置:头部进出条目时,在同一次布局里把位移补回来。
+///
+/// 补在 [correctForNewDimensions] 里:那时新内容已经排好、这一帧还没画。
+/// 帧后再 jumpTo 会先画出一帧错位。
+class _StripPosition extends ScrollPositionWithSingleContext {
+  _StripPosition({
+    required super.physics,
+    required super.context,
+    super.initialPixels,
+    super.keepScrollOffset,
+    super.oldPosition,
+    super.debugLabel,
+  });
+
+  double _shift = 0;
+
+  /// 已登记、还没补上的位移。
+  double get pendingShift => _shift;
+
+  void shift(double delta) {
+    _shift += delta;
+    correctBy(0); // 让下一次布局一定走到 correctForNewDimensions
+  }
+
+  @override
+  bool correctForNewDimensions(
+    ScrollMetrics oldPosition,
+    ScrollMetrics newPosition,
+  ) {
+    if (_shift == 0) {
+      return super.correctForNewDimensions(oldPosition, newPosition);
+    }
+    final to = (pixels + _shift).clamp(
+      newPosition.minScrollExtent,
+      newPosition.maxScrollExtent,
+    );
+    _shift = 0;
+    if (to == pixels) return true;
+    correctPixels(to);
+    return false;
+  }
+}
+
+class _StripController extends ScrollController {
+  @override
+  ScrollPosition createScrollPosition(
+    ScrollPhysics physics,
+    ScrollContext context,
+    ScrollPosition? oldPosition,
+  ) => _StripPosition(
+    physics: physics,
+    context: context,
+    initialPixels: initialScrollOffset,
+    keepScrollOffset: keepScrollOffset,
+    oldPosition: oldPosition,
+    debugLabel: debugLabel,
+  );
+}
 
 /// 在跑的任务卡:逐帧预览(未到帧显斜纹)+ 底部细进度条。
 /// 点卡片让画布跟随这条;active 时亮选中环。取消在画布的进度胶囊上,不在这儿。
@@ -364,10 +782,14 @@ class _FilmThumb extends StatelessWidget {
     required this.onTap,
     required this.onDragStart,
     required this.onDragEnd,
+    this.vacant = false,
   });
 
   final ResultImage result;
   final bool selected;
+
+  /// 只画空位:拖走删掉之后收起的那一下。
+  final bool vacant;
   final VoidCallback onTap;
   final VoidCallback onDragStart;
   final VoidCallback onDragEnd;
@@ -375,7 +797,8 @@ class _FilmThumb extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    final w = _thumbImgW(result.aspect);
+    final w = _thumbImgW(_resultAspect(result));
+    if (vacant) return _vacantSlot(scheme, w);
     return Draggable<String>(
       data: result.id,
       // affinity 竖直 = 只用 VerticalDragGestureRecognizer 进竞技场:一上来就
@@ -394,18 +817,7 @@ class _FilmThumb extends StatelessWidget {
       feedback: _feedback(w),
       // 占位保住原来的宽度,否则拿起一张整条会往左塌一截,
       // 拖回来时又弹回去 —— 拖到哪儿了就更看不清了
-      childWhenDragging: _shell(
-        scheme,
-        selected: false,
-        child: Container(
-          width: w,
-          height: _thumbH,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(10),
-            color: scheme.surfaceContainerHighest,
-          ),
-        ),
-      ),
+      childWhenDragging: _vacantSlot(scheme, w),
       child: GestureDetector(
         onTap: onTap,
         child: _shell(
@@ -433,6 +845,20 @@ class _FilmThumb extends StatelessWidget {
       ),
     );
   }
+
+  /// 拿走后的空位。
+  Widget _vacantSlot(ColorScheme scheme, double w) => _shell(
+    scheme,
+    selected: false,
+    child: Container(
+      width: w,
+      height: _thumbH,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        color: scheme.surfaceContainerHighest,
+      ),
+    ),
+  );
 
   /// 选中环 + 内衬那层壳。**拿走后的占位也走这层** —— 两边尺寸必须同源,
   /// 否则拖起来的那一刻整条会抖一下。
@@ -479,13 +905,21 @@ class _FilmThumb extends StatelessWidget {
   );
 }
 
-/// 上滑后浮出的落点:上删除、下分享(为什么这么排见 [_bandGap]),只在拖拽期间
-/// 存在。悬停到哪条,哪条就亮起并把文案换成「松手 ×」—— 删除那下不可撤销,
-/// 得先让人看见自己正停在哪儿。
+/// 上滑后浮出的落点:上删除、中收藏、下分享(为什么这么排见 [_bandGap]),只在
+/// 拖拽期间存在。悬停到哪条,哪条就亮起并把文案换成「松手 ×」—— 得先让人看见
+/// 自己正停在哪儿。
 class _DropBands extends StatefulWidget {
-  const _DropBands({required this.onShare, required this.onDelete});
+  const _DropBands({
+    required this.favorite,
+    required this.onShare,
+    required this.onFavorite,
+    required this.onDelete,
+  });
 
+  /// 拿起的这张已经收藏了:收藏那条改成「取消收藏」。
+  final bool favorite;
   final ValueChanged<String> onShare;
+  final ValueChanged<String> onFavorite;
   final ValueChanged<String> onDelete;
 
   @override
@@ -526,6 +960,17 @@ class _DropBandsState extends State<_DropBands>
               activeLabel: '松手删除',
               destructive: true,
               onAccept: widget.onDelete,
+            ),
+            const SizedBox(height: _bandSpacing),
+            _DropBand(
+              icon: widget.favorite ? Icons.favorite : Icons.favorite_border,
+              activeIcon: widget.favorite
+                  ? Icons.favorite_border
+                  : Icons.favorite,
+              label: widget.favorite ? '拖到这里取消收藏' : '拖到这里收藏',
+              activeLabel: widget.favorite ? '松手取消收藏' : '松手收藏',
+              destructive: false,
+              onAccept: widget.onFavorite,
             ),
             const SizedBox(height: _bandSpacing),
             _DropBand(

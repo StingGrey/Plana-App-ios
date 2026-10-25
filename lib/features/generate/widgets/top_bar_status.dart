@@ -60,7 +60,7 @@ class TopBarStatus extends StatelessWidget {
     };
     if (valueSample case final sample?) {
       readout = Stack(
-        alignment: AlignmentDirectional.centerStart,
+        alignment: Alignment.center,
         children: [
           Opacity(
             opacity: 0,
@@ -210,6 +210,15 @@ class _MeterPainter extends CustomPainter {
   bool shouldRepaint(_MeterPainter old) =>
       old.fraction != fraction || old.color != color || old.track != track;
 }
+
+/// 一行字按当前字号缩放排出来有多宽(顶栏据此算各段要多少地方)。
+double topBarTextWidth(BuildContext context, String text, TextStyle style) =>
+    (TextPainter(
+      text: TextSpan(text: text, style: style),
+      textDirection: TextDirection.ltr,
+      textScaler: MediaQuery.textScalerOf(context),
+      maxLines: 1,
+    )..layout()).width;
 
 /// 读数还没到时占数值位的刷新图标（与点数弹层的刷新按钮同一枚）。
 /// 拉取中持续转圈；停下时转完手上这一圈再停，不歪在半截。

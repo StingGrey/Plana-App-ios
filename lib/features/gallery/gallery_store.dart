@@ -2,6 +2,7 @@ import '../../core/util/log.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import '../../core/store/atomic_file.dart';
@@ -12,8 +13,8 @@ import '../generate/state_codec.dart';
 import 'models.dart';
 
 /// 图库持久化(`<support>/gallery/`):每张结果 `images/<id>.png` 原图 +
-/// `thumbs/<id>.png` 缩略图 + `inputs/<id>.json` 参数快照(参考图外置
-/// blob 仓),旁挂 index.json(顺序/选中/发号器)。启动只读索引,像素
+/// `thumbs/<id>.jpg` 缩略图(带透明的是 .png)+ `inputs/<id>.json` 参数快照(参考图外置
+/// blob 仓),旁挂 index.json(顺序/选中/发号器/回收站)。启动只读索引,像素
 /// 按需懒读——重启不丢图,也不把整库塞回内存。
 class GalleryStore {
   GalleryStore(this._blobs, Directory supportRoot)
@@ -28,7 +29,8 @@ class GalleryStore {
   File get _indexFile => File('${_root.path}/index.json');
 
   File _imageFile(String id) => File('${_imagesDir.path}/$id.png');
-  File _thumbFile(String id) => File('${_thumbsDir.path}/$id.png');
+  File _thumbPng(String id) => File('${_thumbsDir.path}/$id.png');
+  File _thumbJpg(String id) => File('${_thumbsDir.path}/$id.jpg');
   File _inputFile(String id) => File('${_inputsDir.path}/$id.json');
 
   /// 重绘产物要继承的源图 id:发起重绘时置,落新图时**消费一次**后清空。
@@ -36,6 +38,9 @@ class GalleryStore {
 
   /// 启动读出的图库(字节/快照皆空壳,懒读);首启为空。
   List<ResultImage> initialResults = const [];
+
+  /// 启动读出的回收站,新删的在前。
+  List<TrashedImage> initialTrash = const [];
   String? initialSelectedId;
   int seq = 0;
 
@@ -57,36 +62,15 @@ class GalleryStore {
       }
       seq = (j['seq'] as num?)?.toInt() ?? 0;
       initialSelectedId = j['selectedId'] as String?;
+      if (j['trash'] is List) {
+        initialTrash = List.unmodifiable([
+          for (final e in j['trash'] as List)
+            if (_parseItem(e) case final r?)
+              TrashedImage(r, ((e as Map)['dt'] as num?)?.toInt() ?? 0),
+        ]);
+      }
       if (j['items'] is List) {
-        final out = <ResultImage>[];
-        for (final e in j['items'] as List) {
-          if (e is! Map || e['id'] is! String) continue;
-          final id = e['id'] as String;
-          ResultBadge badge = ResultBadge.none;
-          for (final b in ResultBadge.values) {
-            if (b.name == e['badge']) badge = b;
-          }
-          out.add(
-            ResultImage(
-              id: id,
-              width: (e['w'] as num?)?.toInt() ?? 0,
-              height: (e['h'] as num?)?.toInt() ?? 0,
-              seed: (e['seed'] as num?)?.toInt() ?? 0,
-              badge: badge,
-              createdAt: (e['t'] as num?)?.toInt() ?? 0,
-              // 老索引没这键 → -1(不是批次产物)
-              batchIndex: (e['bi'] as num?)?.toInt() ?? -1,
-              saved: e['sv'] == true,
-              hasInput: e['hasInput'] == true,
-            ),
-          );
-          // 索引防抖窗口内被杀时 seq 可能落后于条目 id,取最大防撞车
-          final m = _seqRe.firstMatch(id);
-          if (m != null) {
-            final n = int.parse(m.group(1)!) + 1;
-            if (n > seq) seq = n;
-          }
-        }
+        final out = [for (final e in j['items'] as List) ?_parseItem(e)];
         initialResults = List.unmodifiable(await _backfillCreatedAt(out));
       }
     } catch (e) {
@@ -94,6 +78,48 @@ class GalleryStore {
       await _rebuildFromDisk();
     }
   }
+
+  /// 索引里的一条;坏条目返回 null。顺带把发号器推过它的 id。
+  ResultImage? _parseItem(Object? e) {
+    if (e is! Map || e['id'] is! String) return null;
+    final id = e['id'] as String;
+    ResultBadge badge = ResultBadge.none;
+    for (final b in ResultBadge.values) {
+      if (b.name == e['badge']) badge = b;
+    }
+    // 索引防抖窗口内被杀时 seq 可能落后于条目 id,取最大防撞车
+    final m = _seqRe.firstMatch(id);
+    if (m != null) {
+      final n = int.parse(m.group(1)!) + 1;
+      if (n > seq) seq = n;
+    }
+    return ResultImage(
+      id: id,
+      width: (e['w'] as num?)?.toInt() ?? 0,
+      height: (e['h'] as num?)?.toInt() ?? 0,
+      seed: (e['seed'] as num?)?.toInt() ?? 0,
+      badge: badge,
+      createdAt: (e['t'] as num?)?.toInt() ?? 0,
+      // 老索引没这键 → -1(不是批次产物)
+      batchIndex: (e['bi'] as num?)?.toInt() ?? -1,
+      saved: e['sv'] == true,
+      hasInput: e['hasInput'] == true,
+    );
+  }
+
+  static Map<String, Object?> _itemJson(ResultImage r) => {
+    'id': r.id,
+    'w': r.width,
+    'h': r.height,
+    'seed': r.seed,
+    'badge': r.badge.name,
+    't': r.createdAt,
+    // 批次内位置。只有批次产物才写,单张不占位 ——
+    // 这张索引每次出图都要整份重写,能省一个键是一个。
+    if (r.batchIndex >= 0) 'bi': r.batchIndex,
+    if (r.saved) 'sv': true,
+    'hasInput': r.hasInput,
+  };
 
   /// 生成时刻缺失(升级前的老索引)→ 原图文件 mtime 一次性回填并落索引,
   /// 之后不再 stat。mtime 在备份恢复场景可能失真,但它是老图唯一可用来源。
@@ -117,7 +143,12 @@ class GalleryStore {
     }
     if (changed) {
       // 防抖窗口内被杀也无妨:回填幂等,下次启动重来
-      scheduleIndex(results: out, selectedId: initialSelectedId, seq: seq);
+      scheduleIndex(
+        results: out,
+        trash: initialTrash,
+        selectedId: initialSelectedId,
+        seq: seq,
+      );
     }
     return out;
   }
@@ -170,6 +201,7 @@ class GalleryStore {
       logd('[gallery-store] 目录重建失败: $e');
     }
     initialResults = List.unmodifiable(out);
+    initialTrash = const []; // 回收站只记在索引里,重建时连同其余图一起回到列表
     initialSelectedId = out.isEmpty ? null : out.last.id;
     // 关键一行:发号器只进不退,否则新图会覆盖盘上老图
     if (maxSeq > seq) seq = maxSeq;
@@ -240,10 +272,7 @@ class GalleryStore {
         // 「重新生成」读不出参数(见 atomic_file.dart)
         await writeBytesAtomic(_imageFile(r.id), bytes);
         try {
-          await writeBytesAtomic(
-            _thumbFile(r.id),
-            await coverResizePng(bytes, 256, 256, keepAlpha: true),
-          );
+          await _writeThumb(r.id, await makeThumb(bytes));
         } catch (_) {} // 缩略图失败不阻断,读取端退回原图
         if (input != null) {
           final enc = await encodeGenerateState(input, _blobs);
@@ -261,16 +290,19 @@ class GalleryStore {
   // 索引防抖:新增/点选共用,窗口内合并成一次全量重写
   Timer? _idxTimer;
   List<ResultImage>? _idxItems;
+  List<TrashedImage> _idxTrash = const [];
   String? _idxSelected;
   int _idxSeq = 0;
   Future<void> _indexWrite = Future.value();
 
   void scheduleIndex({
     required List<ResultImage> results,
+    List<TrashedImage> trash = const [],
     required String? selectedId,
     required int seq,
   }) {
     _idxItems = results;
+    _idxTrash = trash;
     _idxSelected = selectedId;
     _idxSeq = seq;
     _idxTimer?.cancel();
@@ -283,6 +315,7 @@ class GalleryStore {
     if (items == null) return _indexWrite;
     _idxItems = null;
     _idxTimer?.cancel();
+    final trash = _idxTrash;
     final selected = _idxSelected;
     final seq = _idxSeq;
     return _indexWrite = _enqueue(() async {
@@ -293,28 +326,17 @@ class GalleryStore {
           'v': 1,
           'seq': seq,
           'selectedId': ?selected,
-          'items': [
-            for (final r in items)
-              {
-                'id': r.id,
-                'w': r.width,
-                'h': r.height,
-                'seed': r.seed,
-                'badge': r.badge.name,
-                't': r.createdAt,
-                // 批次内位置。只有批次产物才写,单张不占位 ——
-                // 这张索引每次出图都要整份重写,能省一个键是一个。
-                if (r.batchIndex >= 0) 'bi': r.batchIndex,
-                if (r.saved) 'sv': true,
-                'hasInput': r.hasInput,
-              },
-          ],
+          'items': [for (final r in items) _itemJson(r)],
+          if (trash.isNotEmpty)
+            'trash': [
+              for (final t in trash) {..._itemJson(t.image), 'dt': t.deletedAt},
+            ],
         }),
       );
     });
   }
 
-  /// 删除若干条结果的文件(上限裁剪用):原图/缩略图/快照一并删。
+  /// 删除若干条结果的文件(上限裁剪 / 彻底删除用):原图/缩略图/快照一并删。
   /// 索引由调用方随后 scheduleIndex 重写。
   void deleteResultFiles(List<String> ids) {
     if (ids.isEmpty) return;
@@ -328,7 +350,12 @@ class GalleryStore {
     }
     _enqueue(() async {
       for (final id in ids) {
-        for (final f in [_imageFile(id), _thumbFile(id), _inputFile(id)]) {
+        for (final f in [
+          _imageFile(id),
+          _thumbJpg(id),
+          _thumbPng(id),
+          _inputFile(id),
+        ]) {
           try {
             if (await f.exists()) await f.delete();
           } catch (_) {}
@@ -385,13 +412,62 @@ class GalleryStore {
     return _pendingImages[id];
   }
 
-  /// 缩略图;缺失(旧数据/生成失败)退回原图。
+  /// 缩略图;缺失(旧数据/生成失败)退回原图。旧版小缩略图从原图重做。
   Future<Uint8List?> readThumb(String id) async {
     try {
-      final f = _thumbFile(id);
-      if (await f.exists()) return await f.readAsBytes();
+      final jpg = _thumbJpg(id);
+      if (await jpg.exists()) return await jpg.readAsBytes();
+      final png = _thumbPng(id);
+      if (await png.exists()) {
+        final bytes = await png.readAsBytes();
+        if (!await _isOutdated(id, bytes)) return bytes;
+        return await _refitThumb(id) ?? bytes;
+      }
     } catch (_) {}
     return readImage(id);
+  }
+
+  /// 旧版缩略图:短边 256(方形居中裁或等比),原图比它大就该重做。
+  Future<bool> _isOutdated(String id, Uint8List png) async {
+    if (png.length < 24) return false;
+    final bd = ByteData.sublistView(png);
+    final tw = bd.getUint32(16), th = bd.getUint32(20);
+    if (math.min(tw, th) >= kThumbShortSide) return false;
+    final (w, h) = await _pngSize(_imageFile(id));
+    if (w <= 0 || h <= 0) return false;
+    return math.min(w, h) > math.min(tw, th) || (tw == th && w != h);
+  }
+
+  /// 不透明的存 .jpg,带透明的存 .png;另一种格式的旧文件一并删掉。
+  Future<void> _writeThumb(String id, ({Uint8List bytes, bool jpeg}) t) async {
+    final keep = t.jpeg ? _thumbJpg(id) : _thumbPng(id);
+    final drop = t.jpeg ? _thumbPng(id) : _thumbJpg(id);
+    await writeBytesAtomic(keep, t.bytes);
+    try {
+      if (await drop.exists()) await drop.delete();
+    } catch (_) {}
+  }
+
+  /// 重做分三路排队:老图库一屏几十张同时解原图,内存会一下子顶上去。
+  final _refitLanes = List<Future<void>>.filled(3, Future.value());
+  var _refitNext = 0;
+
+  Future<Uint8List?> _refitThumb(String id) {
+    final lane = _refitNext++ % _refitLanes.length;
+    final work = _refitLanes[lane].then((_) async {
+      final src = await readImage(id);
+      if (src == null) return null;
+      final thumb = await makeThumb(src);
+      unawaited(
+        _enqueue(() async {
+          // 排队期间图被删了就不写,免得留下孤儿缩略图
+          if (await _imageFile(id).exists()) await _writeThumb(id, thumb);
+        }),
+      );
+      return thumb.bytes;
+    });
+    _refitLanes[lane] = work.then<void>((_) {}, onError: (Object _) {});
+    return work;
   }
 
   // ---- 检索索引(search.json;可重建,容错语义与 index.json 不同) ----

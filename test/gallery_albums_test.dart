@@ -138,6 +138,24 @@ void main() {
     expect(back.name('b'), 'B');
     expect(AlbumCover.parse({'key': '../outside'}), isNull);
   });
+  test('收藏是固定相册:收藏 / 取消只动这一项，归属能往返，没有封面', () {
+    final data = fixture()
+        .favorite({'one', 'two'}, true)
+        .withCover(favoritesId, const AlbumCover('k', sourceImageId: 'two'));
+    expect(data.cover(favoritesId), isNull);
+    expect(data.exists(favoritesId), isTrue);
+    expect(data.name(favoritesId), favoritesName);
+    expect(data.albums.map((a) => a.id), ['a', 'b', 'c']);
+    expect(data.ofImage('one'), {'a', 'c', favoritesId});
+    expect(data.isFavorite('two'), isTrue);
+    final off = data.favorite({'one'}, false);
+    expect(off.ofImage('one'), {'a', 'c'});
+    expect(off.isFavorite('two'), isTrue);
+
+    final back = AlbumsData.fromJson(jsonDecode(jsonEncode(data.toJson())));
+    expect(back.ofImage('one'), {'a', 'c', favoritesId});
+    expect(back.albums.map((a) => a.id), ['a', 'b', 'c']);
+  });
   test('串行修改、重启、坏主档恢复有效备份', () async {
     final root = await Directory.systemTemp.createTemp('plana_albums_');
     addTearDown(() => root.delete(recursive: true));

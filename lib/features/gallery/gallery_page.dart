@@ -11,6 +11,7 @@ import '../generate/generation_controller.dart';
 import '../generate/widgets/common.dart' show hintSnack, sharedAxisRoute;
 import '../local_gallery/local_gallery_page.dart';
 import '../inpaint/inpaint_overlay.dart';
+import '../shell/shell_state.dart';
 import 'albums/album_state.dart';
 import 'albums/album_ui.dart';
 import 'gallery_state.dart';
@@ -18,12 +19,13 @@ import 'models.dart';
 import 'save_settings.dart';
 import 'share_pipeline.dart';
 import 'widgets/film_strip.dart';
+import 'widgets/gallery_grid_sheet.dart';
 import 'widgets/result_canvas.dart';
 import 'widgets/result_thumb.dart';
 
 /// 图库页:上方结果画布(大图 + 操作轨 + seed)、下方历史胶片条。
 /// 生成链路产出的结果落在这里查看与二次操作。
-/// 重绘会话期间 keep-alive:切去其他 tab 再回来,编辑面板(遮罩等)原样保留。
+/// keep-alive:切去其他 tab 再回来,胶片条滚动位置、重绘编辑面板(遮罩等)原样保留。
 ///
 /// 画布是一条真正的 PageView(一页一张,与胶片条同序:0=最新在左,左滑看更旧),
 /// 图跟手走、松手吸附 —— 以前那套「raw pointer 认快滑 + 自己放一段推移动画」的
@@ -52,14 +54,13 @@ const _kGalleryHints = <({String key, String text, IconData icon})>[
   ),
   (
     key: 'hint_strip_swipe',
-    text: '底部胶片条里的图,向上滑可以分享或删除',
+    text: '底部胶片条里的图,向上滑可以分享、收藏或删除',
     icon: Icons.swipe_up_outlined,
   ),
 ];
 
 class _GalleryPageState extends ConsumerState<GalleryPage>
     with AutomaticKeepAliveClientMixin {
-  bool _keep = false;
   bool _hintChecked = false;
   bool _historyCollapsed = false;
 
@@ -107,7 +108,7 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
   }
 
   @override
-  bool get wantKeepAlive => _keep;
+  bool get wantKeepAlive => true;
 
   /// 跳页只能在帧后做(build 里动 controller 会打断本帧布局)。空窗这一两帧
   /// 由 build 里的「顶图层」盖着,看不出断层。
@@ -220,14 +221,9 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
     final inpaint = ref.watch(inpaintSessionProvider);
     final selected = state.selected;
 
-    // 重绘会话开/关时更新 keep-alive(仅编辑期间常驻,平时随 PageView 回收)
-    final keep = inpaint != null;
-    if (keep != _keep) {
-      _keep = keep;
-      updateKeepAlive();
-    }
-
-    _maybeHint(!state.isEmpty);
+    // 页面常驻,停在别的 tab 时也会重建:只在图库在前台时提引导
+    final front = ref.watch(shellIndexProvider.select((i) => i == kTabGallery));
+    _maybeHint(front && !state.isEmpty);
 
     // 空库:平板上仍要摆出三栏骨架(右侧历史栏是空的但可收起),
     // 手机就直接一张空态页。队列里有任务时不算空 —— 胶片条得留着看进度。
@@ -426,6 +422,24 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
       ref.read(galleryProvider.notifier).select(id);
     }
 
+    // 删除是移进回收站,提示条上可撤销;撤销时删的正是选中那张就选回它
+    void deleteResult(String id) {
+      final gallery = ref.read(galleryProvider.notifier);
+      final wasSelected = ref.read(galleryProvider).selectedId == id;
+      gallery.deleteResults([id]);
+      hintSnack(
+        context,
+        '已移到回收站',
+        icon: Icons.delete_outline,
+        actionLabel: '撤销',
+        onAction: () {
+          if (gallery.restoreTrash([id]) > 0 && wasSelected) {
+            gallery.select(id);
+          }
+        },
+      );
+    }
+
     // 存到**当前浏览范围之外**的图库后不走选图,而是进临时预览:顶上挂一条
     // 说明「已保存到哪本」的横条。手机和平板都摆在这(平板挂在画布与操作轨
     // 之间,手机挂在画布与胶片条之间),所以先把它抽出来。
@@ -471,7 +485,9 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
       selectedId: previewImage == null ? history.selectedId : null,
       onSelect: selectResult,
       onShare: _shareResult,
-      onDelete: (id) => ref.read(galleryProvider.notifier).deleteResults([id]),
+      onFavorite: (id) => toggleFavorite(context, id),
+      isFavorite: (id) => ref.read(albumsProvider).isFavorite(id),
+      onDelete: deleteResult,
       jobs: pool.newestFirst,
       selectedJobId: pool.selectedId,
       onSelectJob: (id) {
@@ -501,8 +517,7 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
                 onToggle: () =>
                     setState(() => _historyCollapsed = !_historyCollapsed),
                 onSelect: selectResult,
-                onDelete: (id) =>
-                    ref.read(galleryProvider.notifier).deleteResults([id]),
+                onDelete: deleteResult,
               ),
             ],
           )
@@ -730,6 +745,9 @@ class _EmptyGallery extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final scheme = context.scheme;
     final inAlbum = ref.watch(galleryBrowseAlbumProvider) != null;
+    final hasTrash = ref.watch(
+      galleryProvider.select((s) => s.trash.isNotEmpty),
+    );
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -749,6 +767,11 @@ class _EmptyGallery extends ConsumerWidget {
             TextButton(
               onPressed: () => showAlbumBrowsePicker(context),
               child: const Text('选择相册'),
+            )
+          else if (hasTrash)
+            TextButton(
+              onPressed: () => showGalleryGrid(context, trash: true),
+              child: const Text('查看回收站'),
             ),
           Text(
             '去「创作」生成第一张',

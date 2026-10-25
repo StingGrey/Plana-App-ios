@@ -47,10 +47,12 @@ class _TokenMode extends AuthModeNotifier {
 }
 
 class _Balance extends AnlasNotifier {
+  static int anlas = 1234;
+
   @override
   Future<NaiSubscription?> build() async => (
-    anlas: 1234,
-    fixedAnlas: 1234,
+    anlas: anlas,
+    fixedAnlas: anlas,
     purchasedAnlas: 0,
     isOpus: true,
     tier: 3,
@@ -1194,17 +1196,13 @@ void main() {
     final a = c.read(canvasWorkspaceProvider).activeId;
     gen.setPrompts(positive: 'rain');
     gen.addVibe(image: Uint8List.fromList([9, 9, 9]), name: 'v');
-    await stores.history.record(
-      a,
-      CanvasPrompts.of(c.read(generateProvider)),
-      ['g1'],
-    );
+    await stores.history.record(a, CanvasPrompts.of(c.read(generateProvider)), [
+      'g1',
+    ]);
     final b = canvases.create();
-    await stores.history.record(
-      b,
-      CanvasPrompts.of(c.read(generateProvider)),
-      ['g2'],
-    );
+    await stores.history.record(b, CanvasPrompts.of(c.read(generateProvider)), [
+      'g2',
+    ]);
     gen.removeVibe(c.read(generateProvider).vibes.firstOrNull?.id ?? '');
     canvases.select(a);
     gen.removeVibe(c.read(generateProvider).vibes.single.id);
@@ -1292,7 +1290,10 @@ void main() {
     expect(historyChanges(entry(base), entry(base)), '参数有改动');
     final now = DateTime(2026, 10, 24, 15);
     int at(DateTime t) => t.millisecondsSinceEpoch;
-    expect(historyTimeLabel(at(DateTime(2026, 10, 24, 9, 5)), now: now), '09:05');
+    expect(
+      historyTimeLabel(at(DateTime(2026, 10, 24, 9, 5)), now: now),
+      '09:05',
+    );
     expect(
       historyTimeLabel(at(DateTime(2026, 10, 23, 21, 30)), now: now),
       '昨天 21:30',
@@ -1303,9 +1304,13 @@ void main() {
     );
   });
 
-  Future<void> pumpHeader(WidgetTester tester, {double textScale = 1}) async {
+  Future<void> pumpHeader(
+    WidgetTester tester, {
+    double textScale = 1,
+    double width = 320,
+  }) async {
     widgetCase = true;
-    tester.view.physicalSize = const Size(320, 740);
+    tester.view.physicalSize = Size(width, 740);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
@@ -1824,9 +1829,49 @@ void main() {
     expect(c.read(generateProvider).params.model, 'NAI 5.0 Curated');
     expect(find.text('NAI 5 Curated'), findsOneWidget);
     expect(find.text('1,234'), findsOneWidget);
+    // 320 宽放不下百分比:额度画成进度条
+    expect(find.text('70%'), findsNothing);
+    canvases.create();
+    gen.setModel('NAI 4.0 Full');
+    await tester.pumpAndSettle();
+    expect(find.text('NAI 4 Full'), findsOneWidget);
+    canvases.select(a);
+    await tester.pumpAndSettle();
+    expect(find.text('NAI 5 Curated'), findsOneWidget);
+    await tester.tap(find.byTooltip('点数与额度'));
+    await tester.pumpAndSettle();
+    expect(find.text('点数与额度'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('宽屏放得下:点数 │ 百分比,没有进度条', (tester) async {
+    _Balance.anlas = 12345;
+    addTearDown(() => _Balance.anlas = 1234);
+    gen.setModel('NAI 5.0 Curated');
+    await pumpHeader(tester, width: 800);
+    expect(find.text('12,345'), findsOneWidget);
+    expect(find.text('70%'), findsOneWidget);
+    expect(
+      find.byWidgetPredicate(
+        (w) =>
+            w is CustomPaint &&
+            '${w.foregroundPainter.runtimeType}' == '_MeterPainter',
+      ),
+      findsNothing,
+    );
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('窄屏放不下:百分比换成点数底下的进度条', (tester) async {
+    _Balance.anlas = 12345;
+    addTearDown(() => _Balance.anlas = 1234);
+    gen.setModel('NAI 5.0 Curated');
+    await pumpHeader(tester);
+    expect(find.text('12,345'), findsOneWidget);
     // 额度画成点数底下的进度条,百分比只给读屏
     expect(find.text('70%'), findsNothing);
-    expect(find.bySemanticsLabel(RegExp('1,234，70%')), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp('12,345，70%')), findsOneWidget);
     // 条画在读数框外,得落在这枚入口的可见范围里(被撑满行高就画出界、被裁掉)
     final status = find.byTooltip('点数与额度');
     final meter = find.descendant(
@@ -1852,17 +1897,6 @@ void main() {
       ),
       findsNothing,
     );
-    canvases.create();
-    gen.setModel('NAI 4.0 Full');
-    await tester.pumpAndSettle();
-    expect(find.text('NAI 4 Full'), findsOneWidget);
-    canvases.select(a);
-    await tester.pumpAndSettle();
-    expect(find.text('NAI 5 Curated'), findsOneWidget);
-    await tester.tap(find.byTooltip('点数与额度'));
-    await tester.pumpAndSettle();
-    expect(find.text('点数与额度'), findsOneWidget);
-    expect(tester.takeException(), isNull);
     await tester.pump(const Duration(seconds: 1));
   });
 

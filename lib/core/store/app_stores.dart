@@ -103,7 +103,10 @@ class AppStores {
       // A missing/unsupported local-gallery directory must not block startup.
     }
     await albums.load(
-      liveImages: gallery.initialResults.map((r) => r.id).toSet(),
+      liveImages: {
+        for (final r in gallery.initialResults) r.id,
+        for (final t in gallery.initialTrash) t.image.id,
+      },
     );
     await ledger.load();
     await assistant.load();

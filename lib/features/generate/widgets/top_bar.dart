@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -5,6 +7,7 @@ import '../../../core/auth/auth_mode.dart';
 import '../../../core/auth/bot_session_store.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/util/haptics.dart';
+import '../canvas_state.dart';
 import '../generate_state.dart';
 import '../gpu_rental.dart';
 import '../models.dart' as m;
@@ -12,6 +15,7 @@ import 'anlas_panel.dart';
 import 'canvas_picker.dart';
 import 'common.dart' show hintSnack;
 import 'rental_panel.dart';
+import 'top_bar_status.dart' show topBarTextWidth;
 
 /// 单行顶栏：画布、模型和资源均裸显示。
 class GenerateTopBar extends ConsumerWidget {
@@ -58,6 +62,9 @@ class GenerateTopBar extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final model = ref.watch(generateProvider.select((s) => s.params.model));
+    final canvasName = ref.watch(
+      canvasWorkspaceProvider.select((w) => w.active.name),
+    );
     final rentalActive = ref.watch(gpuRentalProvider).active;
     final scheme = context.scheme;
     final textScale = MediaQuery.textScalerOf(context).scale(14) / 14;
@@ -135,7 +142,14 @@ class GenerateTopBar extends ConsumerWidget {
                 // 持续订阅实例状态，NAI 下也显示仍在计费的算力。
                 child: m.isModalModel(model) || rentalActive
                     ? const RentalSourceChip(compact: true)
-                    : const AnlasChip(),
+                    : AnlasChip(
+                        budget: _readoutBudget(
+                          context,
+                          constraints.maxWidth,
+                          canvasName,
+                          model,
+                        ),
+                      ),
               ),
             ),
           ],
@@ -143,6 +157,24 @@ class GenerateTopBar extends ConsumerWidget {
       ),
     );
   }
+}
+
+/// 读数最多能占多宽,画布名和模型名才都不被截(两格按 4 : 5 分读数以外的
+/// 宽度):画布格是图标 + 名字 + 箭头,模型格是名字 + 箭头。
+double _readoutBudget(
+  BuildContext context,
+  double width,
+  String canvasName,
+  String model,
+) {
+  final style = context.texts.bodyMedium!.copyWith(
+    fontSize: 15,
+    fontWeight: FontWeight.w600,
+  );
+  final canvasNeed = 47 + topBarTextWidth(context, canvasName, style);
+  final modelNeed =
+      25 + topBarTextWidth(context, m.shortModelName(model), style);
+  return width - 8 - max(canvasNeed * 9 / 4, modelNeed * 9 / 5);
 }
 
 /// 模型选择弹层(定高七成屏):下划线 Tab + 可左右滑的分页,每页是该大类的型号列表。

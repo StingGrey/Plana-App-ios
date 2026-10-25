@@ -5,6 +5,8 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart' show compute;
 import 'package:image/image.dart' as img;
 
+import 'transparency.dart' show rgbaHasAlpha;
+
 /// 解码图片像素尺寸 (宽, 高)。
 Future<(int, int)> decodeImageSize(Uint8List bytes) async {
   final codec = await ui.instantiateImageCodec(bytes);
@@ -96,6 +98,67 @@ Future<Uint8List> coverResizePng(
   out.dispose();
   picture.dispose();
   return data!.buffer.asUint8List();
+}
+
+/// 缩略图短边像素。
+const kThumbShortSide = 512;
+
+/// 缩略图:等比缩到短边 [kThumbShortSide]、长边不超过三倍短边(不放大、不裁切)。
+/// 不透明的编 JPEG,带透明的编 PNG。
+Future<({Uint8List bytes, bool jpeg})> makeThumb(Uint8List src) async {
+  final codec = await ui.instantiateImageCodec(src);
+  final frame = await codec.getNextFrame();
+  final image = frame.image;
+
+  final iw = image.width, ih = image.height;
+  final scale = math.min(
+    1.0,
+    math.min(
+      kThumbShortSide / math.min(iw, ih),
+      kThumbShortSide * 3 / math.max(iw, ih),
+    ),
+  );
+  final tw = math.max(1, (iw * scale).round());
+  final th = math.max(1, (ih * scale).round());
+
+  final recorder = ui.PictureRecorder();
+  final canvas = ui.Canvas(
+    recorder,
+    ui.Rect.fromLTWH(0, 0, tw.toDouble(), th.toDouble()),
+  );
+  canvas.drawImageRect(
+    image,
+    ui.Rect.fromLTWH(0, 0, iw.toDouble(), ih.toDouble()),
+    ui.Rect.fromLTWH(0, 0, tw.toDouble(), th.toDouble()),
+    ui.Paint()..filterQuality = ui.FilterQuality.high,
+  );
+  final picture = recorder.endRecording();
+  final out = await picture.toImage(tw, th);
+  try {
+    final raw = (await out.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+    final rgba = raw.buffer.asUint8List(raw.offsetInBytes, raw.lengthInBytes);
+    if (!rgbaHasAlpha(rgba)) {
+      return (bytes: await compute(_thumbJpg, (rgba, tw, th)), jpeg: true);
+    }
+    final png = (await out.toByteData(format: ui.ImageByteFormat.png))!;
+    return (bytes: png.buffer.asUint8List(), jpeg: false);
+  } finally {
+    image.dispose();
+    out.dispose();
+    picture.dispose();
+  }
+}
+
+Uint8List _thumbJpg((Uint8List, int, int) arg) {
+  final (rgba, w, h) = arg;
+  final image = img.Image.fromBytes(
+    width: w,
+    height: h,
+    bytes: rgba.buffer,
+    bytesOffset: rgba.offsetInBytes,
+    numChannels: 4,
+  );
+  return Uint8List.fromList(img.encodeJpg(image, quality: 88));
 }
 
 /// Krea 风格参考预处理,复刻 web `applyKreaStyleRefFile`:长边缩到

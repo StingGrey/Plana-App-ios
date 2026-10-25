@@ -79,10 +79,15 @@ double ocTokenWeight(int posts) {
 }
 
 /// 按天分堆。列表天然新→旧,键的首现序即堆序。
-List<GalleryGroup> groupByDay(List<ResultImage> items, DateTime now) {
+/// [at] 取分堆用的时刻,默认生成时刻(回收站按删除时刻分)。
+List<GalleryGroup> groupByDay(
+  List<ResultImage> items,
+  DateTime now, {
+  int Function(ResultImage r)? at,
+}) {
   final by = <int, List<ResultImage>>{};
   for (final r in items) {
-    by.putIfAbsent(galleryDayKey(r.createdAt), () => []).add(r);
+    by.putIfAbsent(galleryDayKey(at?.call(r) ?? r.createdAt), () => []).add(r);
   }
   return [
     for (final e in by.entries)

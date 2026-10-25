@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -16,12 +18,45 @@ void albumError(BuildContext context, Object error) => hintSnack(
   icon: Icons.error_outline,
 );
 
+/// 收藏、回收站的固定封面图标;其余相册取图做封面,返回 null。
+IconData? albumCoverIcon(String? id) => switch (id) {
+  favoritesId => Icons.favorite_border,
+  trashId => Icons.delete_outline,
+  _ => null,
+};
+
+/// 收藏 / 取消收藏这一张。取消时给撤销:在「收藏」里看着的话,图会随即离开。
+Future<void> toggleFavorite(BuildContext context, String imageId) async {
+  final container = ProviderScope.containerOf(context, listen: false);
+  final albums = container.read(albumsProvider.notifier);
+  final on = !container.read(albumsProvider).isFavorite(imageId);
+  try {
+    await albums.setFavorite(imageId, on);
+  } catch (e) {
+    if (context.mounted) albumError(context, e);
+    return;
+  }
+  if (!context.mounted) return;
+  hintSnack(
+    context,
+    on ? '已收藏' : '已取消收藏',
+    icon: on ? Icons.favorite : Icons.favorite_border,
+    actionLabel: on ? null : '撤销',
+    onAction: on
+        ? null
+        : () => unawaited(
+            albums.setFavorite(imageId, true).catchError((Object _) {}),
+          ),
+  );
+}
+
 Future<void> showGallerySaveAlbumPicker(BuildContext context) async {
   final container = ProviderScope.containerOf(context, listen: false);
   final pick = await _pickAlbum(
     context,
     title: '保存到',
     keyPrefix: 'save-album-choice',
+    includeFavorites: false,
     checked: (id: container.read(gallerySaveTargetProvider).albumId),
   );
   if (pick == null) return;
@@ -39,6 +74,7 @@ Future<void> showAlbumBrowsePicker(BuildContext context) async {
     context,
     title: '选择相册',
     keyPrefix: 'browse-album-choice',
+    includeFavorites: false,
     checked: (id: container.read(galleryBrowseAlbumProvider)),
   );
   if (pick == null) return;
@@ -68,6 +104,7 @@ Future<({String? id})?> _pickAlbum(
   required String keyPrefix,
   String? exclude,
   bool includeAll = true,
+  bool includeFavorites = true,
   ({String? id})? checked,
 }) => showModalBottomSheet<({String? id})>(
   context: context,
@@ -77,6 +114,7 @@ Future<({String? id})?> _pickAlbum(
     keyPrefix: keyPrefix,
     exclude: exclude,
     includeAll: includeAll,
+    includeFavorites: includeFavorites,
     checked: checked,
   ),
 );
@@ -90,6 +128,7 @@ class _AlbumChoiceSheet extends ConsumerWidget {
     required this.keyPrefix,
     this.exclude,
     this.includeAll = true,
+    this.includeFavorites = true,
     this.checked,
   });
 
@@ -99,6 +138,7 @@ class _AlbumChoiceSheet extends ConsumerWidget {
   /// 不列出的相册(移动时的来源相册)。
   final String? exclude;
   final bool includeAll;
+  final bool includeFavorites;
 
   /// 打勾的那一项;null = 不打勾。
   final ({String? id})? checked;
@@ -110,6 +150,7 @@ class _AlbumChoiceSheet extends ConsumerWidget {
     final cols = ref.watch(uiPrefsProvider).galleryColumns;
     final ids = <String?>[
       if (includeAll) null,
+      if (includeFavorites && exclude != favoritesId) favoritesId,
       for (final album in albums.albums)
         if (album.id != exclude) album.id,
     ];
@@ -208,6 +249,7 @@ class _AlbumChoiceSheet extends ConsumerWidget {
                           items: items,
                         ),
                         cover: albumCoverOf(albums, id, items),
+                        coverIcon: albumCoverIcon(id),
                         // 当前那本:描边 + 左上角的勾,借多选的勾选圈来画;
                         // 其余几本不画空圈,免得看着像能多选
                         selecting: on,

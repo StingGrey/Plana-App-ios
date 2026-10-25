@@ -77,6 +77,7 @@ class CustomEndpoint {
     this._models = const [],
     String model = '',
     this.apiPath = '',
+    this.headers = const {},
   }) : _picked = model;
 
   final String id;
@@ -111,6 +112,20 @@ class CustomEndpoint {
 
   /// 对话接口路径。空 = 用 [agentApiDefaultPath]。`{model}` 会被替换成模型名。
   final String apiPath;
+
+  /// 自定义请求头,对话和拉模型列表都带。
+  final Map<String, String> headers;
+
+  /// [builtIn] 叠上 [headers]。头名不分大小写,同名的以 [headers] 为准。
+  Map<String, String> withHeaders(Map<String, String> builtIn) {
+    if (headers.isEmpty) return builtIn;
+    final own = {for (final k in headers.keys) k.toLowerCase()};
+    return {
+      for (final h in builtIn.entries)
+        if (!own.contains(h.key.toLowerCase())) h.key: h.value,
+      ...headers,
+    };
+  }
 
   String get displayName => name.trim().isNotEmpty ? name.trim() : model;
 
@@ -166,6 +181,7 @@ class CustomEndpoint {
     List<String>? models,
     String? model,
     String? apiPath,
+    Map<String, String>? headers,
   }) => CustomEndpoint(
     id: id,
     name: name ?? this.name,
@@ -175,6 +191,7 @@ class CustomEndpoint {
     models: models ?? _models,
     model: model ?? _picked,
     apiPath: apiPath ?? this.apiPath,
+    headers: headers ?? this.headers,
   );
 
   Map<String, dynamic> toJson() => {
@@ -187,6 +204,7 @@ class CustomEndpoint {
     // 老版本只认 `model` 这一个字段:装回老版本时至少第一个模型还在
     'model': models.isEmpty ? '' : models.first,
     if (apiPath.isNotEmpty) 'apiPath': apiPath,
+    if (headers.isNotEmpty) 'headers': headers,
   };
 
   static CustomEndpoint? fromJson(Object? e) {
@@ -208,6 +226,13 @@ class CustomEndpoint {
           ? cleanModelList([for (final m in list) '$m'])
           : [if (single.isNotEmpty) single],
       apiPath: e['apiPath']?.toString() ?? '',
+      headers: switch (e['headers']) {
+        final Map h => {
+          for (final x in h.entries)
+            if ('${x.key}'.isNotEmpty) '${x.key}': x.value?.toString() ?? '',
+        },
+        _ => const {},
+      },
     );
   }
 }
@@ -221,6 +246,33 @@ List<String> cleanModelList(Iterable<String> raw) {
   }
   return out;
 }
+
+final _headerName = RegExp(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$");
+final _headerValue = RegExp(r'^[\x20-\x7E\t]*$');
+
+/// 「名称: 值」一行一条 → 请求头。空行跳过,同名(不分大小写)后写的为准。
+/// [bad] 是第一条不合格的行号(从 1 起),全合格为 null。
+({Map<String, String> headers, int? bad}) parseHeaderLines(String text) {
+  final out = <String, String>{};
+  final lines = text.split('\n');
+  for (var i = 0; i < lines.length; i++) {
+    final line = lines[i].trim();
+    if (line.isEmpty) continue;
+    final at = line.indexOf(':');
+    final name = at < 0 ? '' : line.substring(0, at).trim();
+    final value = at < 0 ? '' : line.substring(at + 1).trim();
+    if (!_headerName.hasMatch(name) || !_headerValue.hasMatch(value)) {
+      return (headers: out, bad: i + 1);
+    }
+    out.removeWhere((k, _) => k.toLowerCase() == name.toLowerCase());
+    out[name] = value;
+  }
+  return (headers: out, bad: null);
+}
+
+/// [parseHeaderLines] 的反向。
+String formatHeaderLines(Map<String, String> headers) =>
+    [for (final h in headers.entries) '${h.key}: ${h.value}'].join('\n');
 
 final customEndpointsProvider =
     AsyncNotifierProvider<CustomEndpointsNotifier, List<CustomEndpoint>>(
