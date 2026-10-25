@@ -120,9 +120,14 @@ Future<({ProviderContainer c, LibraryPicks? Function() result})> _open(
   return (c: c, result: () => result);
 }
 
-/// 点顶上那排分段里的 [label]。
+/// 顶上页签里的 [label](勾过的类名字后面跟着个数)。
+Finder _tab(String label) => find.byWidgetPredicate(
+  (w) => w is Text && (w.data == label || (w.data ?? '').startsWith('$label ')),
+);
+
+/// 点顶上页签里的 [label]。
 Future<void> _switchTo(WidgetTester tester, String label) async {
-  await tester.tap(find.text(label));
+  await tester.tap(_tab(label));
   await tester.pumpAndSettle();
 }
 
@@ -165,7 +170,7 @@ void main() {
     });
   });
 
-  testWidgets('分段上标出各类已勾几个;取消选择一次清掉全部', (tester) async {
+  testWidgets('页签上标出各类已勾几个;取消选择一次清掉全部', (tester) async {
     await _open(tester);
     await _switchTo(tester, '画风');
     await tester.tap(_tagCard('a12'));
@@ -176,13 +181,13 @@ void main() {
     await tester.pump();
     expect(find.text('加入 (3)'), findsOneWidget);
 
-    // 四段都在一排上,不用再点开菜单;「其他」不放进来
-    for (final label in ['角色', '画风', '场景', '法典']) {
+    // 各类都在一排页签上;「其他」不放进来
+    for (final label in ['场景', '法典']) {
       expect(find.text(label), findsOneWidget);
     }
     expect(find.text('其他'), findsNothing);
-    expect(find.text('2'), findsOneWidget); // 画风那段
-    expect(find.text('1'), findsOneWidget); // 角色那段
+    expect(find.text('画风 2'), findsOneWidget);
+    expect(find.text('角色 1'), findsOneWidget);
     await _switchTo(tester, '画风');
 
     await tester.tap(find.text('取消选择'));
@@ -193,23 +198,13 @@ void main() {
     expect(tester.widget<TagCard>(_tagCard('b3')).selected, isFalse);
   });
 
-  testWidgets('分段文字在整条里垂直居中,点分段下半截也能切过去', (tester) async {
+  testWidgets('左右滑整页切到相邻分类', (tester) async {
     await _open(tester);
     await _switchTo(tester, '画风');
-    final track = tester.getRect(
-      find
-          .ancestor(
-            of: find.text('场景'),
-            matching: find.byWidgetPredicate(
-              (w) => w is SizedBox && w.height == 42,
-            ),
-          )
-          .first,
-    );
-    final label = tester.getCenter(find.text('场景'));
-    expect((label.dy - track.center.dy).abs(), lessThan(1.5));
-    await tester.tapAt(Offset(label.dx, track.bottom - 4));
+    expect(_tagCard('a12'), findsOneWidget);
+    await tester.fling(_tagCard('a12'), const Offset(-300, 0), 1500);
     await tester.pumpAndSettle();
     expect(_tagCard('rain'), findsOneWidget);
+    expect(_tagCard('a12'), findsNothing);
   });
 }
