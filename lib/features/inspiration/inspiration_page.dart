@@ -13,6 +13,7 @@ import '../../core/ui/lift_menu.dart';
 import '../../core/ui/pinch_columns.dart';
 import '../../core/ui/scroll_memory.dart';
 import '../../core/ui/selection_bar.dart';
+import '../../core/ui/smooth_page_physics.dart';
 import '../editor/editor_models.dart' show draftOf, outputOf, pickEditorText;
 import '../generate/canvas_state.dart';
 import '../generate/gen_modules.dart';
@@ -270,6 +271,9 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
           Expanded(
             child: PageView.custom(
               controller: pc,
+              // 吸附自己做:抬手后接着手上的速度走,不被默认弹簧拽着加速
+              pageSnapping: false,
+              physics: const SmoothPagePhysics(),
               onPageChanged: (i) => setState(() {
                 final k = keys[i];
                 if (k is TagCategory) {
