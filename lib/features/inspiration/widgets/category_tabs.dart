@@ -6,7 +6,7 @@ import '../../../core/theme/app_theme.dart';
 
 /// 灵感页顶栏的分类页签:一条连续的横滚标签,选中项放大加深、下面一道与字同宽的主色线。
 /// [position] 是正文翻页的位置(可在两页之间),短线和字跟着它过渡,标签条跟着滚,
-/// 让当前项保持在中间。行末固定一颗「类别管理」。
+/// 让当前项保持在中间。行末固定一颗「类别管理」箭头,标签条渐隐进它。
 class CategoryTabs extends StatefulWidget {
   const CategoryTabs({
     super.key,
@@ -148,46 +148,62 @@ class _CategoryTabsState extends State<CategoryTabs> {
       child: Row(
         children: [
           Expanded(
-            child: SingleChildScrollView(
-              controller: _scroll,
-              scrollDirection: Axis.horizontal,
-              padding: EdgeInsets.only(left: widget.leftPad - _padH, right: 4),
-              child: Stack(
-                key: _stripKey,
-                children: [
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      for (var i = 0; i < widget.labels.length; i++)
-                        _tab(context, i, pos, scheme),
-                    ],
-                  ),
-                  if (x != null)
-                    Positioned(
-                      left: x - _widthAt(pos) / 2,
-                      bottom: 4,
-                      child: Container(
-                        width: _widthAt(pos),
-                        height: 3,
-                        decoration: BoxDecoration(
-                          color: scheme.primary,
-                          borderRadius: BorderRadius.circular(2),
+            // 右缘渐隐进后面的「全部类别」箭头,两者看着是一条
+            child: ShaderMask(
+              blendMode: BlendMode.dstIn,
+              shaderCallback: (rect) => LinearGradient(
+                colors: const [Colors.black, Colors.black, Colors.transparent],
+                stops: [0, 1 - 28 / rect.width.clamp(56, double.infinity), 1],
+              ).createShader(rect),
+              child: SingleChildScrollView(
+                controller: _scroll,
+                scrollDirection: Axis.horizontal,
+                // 右边留出渐隐那一截,滚到底时最后一个页签不被压暗
+                padding: EdgeInsets.only(
+                  left: widget.leftPad - _padH,
+                  right: 28,
+                ),
+                child: Stack(
+                  key: _stripKey,
+                  children: [
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        for (var i = 0; i < widget.labels.length; i++)
+                          _tab(context, i, pos, scheme),
+                      ],
+                    ),
+                    if (x != null)
+                      Positioned(
+                        left: x - _widthAt(pos) / 2,
+                        bottom: 4,
+                        child: Container(
+                          width: _widthAt(pos),
+                          height: 3,
+                          decoration: BoxDecoration(
+                            color: scheme.primary,
+                            borderRadius: BorderRadius.circular(2),
+                          ),
                         ),
                       ),
-                    ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
-          // 固定在页签外面,页签再多也不会被挤到滚动区后头
+          // 固定在页签外面,页签再多也不会被挤到滚动区后头。用和页签字同色的
+          // 向下箭头,下移一点对齐页签的字
           if (widget.onManage != null)
-            IconButton(
-              tooltip: '类别管理',
-              onPressed: widget.onManage,
-              icon: Icon(
-                Icons.dashboard_customize_outlined,
-                size: 20,
-                color: scheme.onSurfaceVariant,
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: IconButton(
+                tooltip: '类别管理',
+                onPressed: widget.onManage,
+                icon: Icon(
+                  Icons.expand_more_rounded,
+                  size: 26,
+                  color: scheme.onSurfaceVariant,
+                ),
               ),
             ),
         ],
