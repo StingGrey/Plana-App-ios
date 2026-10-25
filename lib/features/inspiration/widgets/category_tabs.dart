@@ -6,7 +6,7 @@ import '../../../core/theme/app_theme.dart';
 
 /// 灵感页顶栏的分类页签:一条连续的横滚标签,选中项放大加深、下面一道与字同宽的主色线。
 /// [position] 是正文翻页的位置(可在两页之间),短线和字跟着它过渡,标签条跟着滚,
-/// 让当前项保持在中间。行末固定一颗「类别管理」箭头,标签条渐隐进它。
+/// 让当前项保持在中间。行末固定一颗「类别管理」(三横),标签条渐隐进它。
 class CategoryTabs extends StatefulWidget {
   const CategoryTabs({
     super.key,
@@ -148,7 +148,7 @@ class _CategoryTabsState extends State<CategoryTabs> {
       child: Row(
         children: [
           Expanded(
-            // 右缘渐隐进后面的「全部类别」箭头,两者看着是一条
+            // 右缘渐隐进后面的类别管理钮,两者看着是一条
             child: ShaderMask(
               blendMode: BlendMode.dstIn,
               shaderCallback: (rect) => LinearGradient(
@@ -192,7 +192,7 @@ class _CategoryTabsState extends State<CategoryTabs> {
             ),
           ),
           // 固定在页签外面,页签再多也不会被挤到滚动区后头。用和页签字同色的
-          // 向下箭头,下移一点对齐页签的字
+          // 三横,下移一点对齐页签的字
           if (widget.onManage != null)
             Padding(
               padding: const EdgeInsets.only(top: 4),
@@ -200,8 +200,8 @@ class _CategoryTabsState extends State<CategoryTabs> {
                 tooltip: '类别管理',
                 onPressed: widget.onManage,
                 icon: Icon(
-                  Icons.expand_more_rounded,
-                  size: 26,
+                  Icons.menu_rounded,
+                  size: 24,
                   color: scheme.onSurfaceVariant,
                 ),
               ),
