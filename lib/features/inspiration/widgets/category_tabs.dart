@@ -5,25 +5,25 @@ import 'package:flutter/scheduler.dart';
 import '../../../core/theme/app_theme.dart';
 
 /// 灵感页顶栏的分类页签:一条连续的横滚标签,选中项放大加深、下面一道主色短线。
-/// 正文左右滑时 [swipe] 给出往相邻页签的进度(正 = 往后一个),短线和字跟手过渡,
-/// 标签条跟着滚,让当前项保持在中间;点页签时同样滑过去。行末固定一颗「类别管理」。
+/// [position] 是正文翻页的位置(可在两页之间),短线和字跟着它过渡,标签条跟着滚,
+/// 让当前项保持在中间。行末固定一颗「类别管理」。
 class CategoryTabs extends StatefulWidget {
   const CategoryTabs({
     super.key,
     required this.labels,
     required this.index,
     required this.onTap,
-    this.swipe,
+    this.position,
     this.onManage,
     this.leftPad = 14,
   });
 
   final List<String> labels;
+
+  /// 当前页签;[position] 还没有值时按它画。
   final int index;
   final ValueChanged<int> onTap;
-
-  /// 正文滑动进度(-1 ~ 1);null = 不跟手。
-  final ValueListenable<double>? swipe;
+  final ValueListenable<double>? position;
 
   /// null = 不出行末的「类别管理」。
   final VoidCallback? onManage;
@@ -33,8 +33,7 @@ class CategoryTabs extends StatefulWidget {
   State<CategoryTabs> createState() => _CategoryTabsState();
 }
 
-class _CategoryTabsState extends State<CategoryTabs>
-    with SingleTickerProviderStateMixin {
+class _CategoryTabsState extends State<CategoryTabs> {
   static const _padH = 11.0;
 
   /// 选中项放大的比例。字号不变、只做缩放,页签宽度就是固定的,短线好对位。
@@ -47,61 +46,34 @@ class _CategoryTabsState extends State<CategoryTabs>
   /// 各页签中心在标签条里的横坐标(量出来的);没量到之前不画短线。
   List<double> _centers = const [];
 
-  /// 点页签 / 滑完以后的位置过渡。
-  late final _anim = AnimationController(vsync: this, duration: Motion.medium)
-    ..value = 1;
-  late double _from = widget.index.toDouble();
-  late double _to = widget.index.toDouble();
-
-  /// 上一帧画出来的位置:换页签时从这儿滑过去,滑动刚换完页时就不会往回跳。
-  late double _lastPos = widget.index.toDouble();
-
-  double get _swipe => widget.swipe?.value ?? 0;
-
+  /// 正在翻页时按翻页位置画;停下来以后以 [CategoryTabs.index] 为准
+  /// (页签增删、换序时页码会先对不上一帧)。
   double get _pos {
-    final s = _swipe;
-    if (s != 0) return widget.index + s;
-    return _from +
-        (_to - _from) * Motion.standard.transform(_anim.value.clamp(0, 1));
+    final p = widget.position?.value;
+    if (p == null || (p - widget.index).abs() > 1) {
+      return widget.index.toDouble();
+    }
+    return p;
   }
 
   @override
   void initState() {
     super.initState();
-    widget.swipe?.addListener(_onSwipe);
-    _anim.addListener(_follow);
+    widget.position?.addListener(_follow);
     _measureLater();
   }
 
   @override
   void didUpdateWidget(covariant CategoryTabs old) {
     super.didUpdateWidget(old);
-    if (old.swipe != widget.swipe) {
-      old.swipe?.removeListener(_onSwipe);
-      widget.swipe?.addListener(_onSwipe);
+    if (old.position != widget.position) {
+      old.position?.removeListener(_follow);
+      widget.position?.addListener(_follow);
     }
     if (old.labels.join('\n') != widget.labels.join('\n')) _measureLater();
-    if (old.index != widget.index) _glide(_lastPos);
-  }
-
-  void _glide(double from) {
-    _from = from;
-    _to = widget.index.toDouble();
-    _anim.forward(from: 0);
-  }
-
-  void _onSwipe() {
-    if (_swipe == 0) {
-      // 滑动结束:停在当前画出来的地方;换了页的话下一帧 index 才更新,
-      // 到时候再从这儿滑到位(没换页就是滑回原位)
-      final stop = _lastPos;
-      _from = _to = stop;
-      _anim.value = 1;
-      SchedulerBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _glide(stop);
-      });
+    if (old.index != widget.index) {
+      SchedulerBinding.instance.addPostFrameCallback((_) => _centerOn(_pos));
     }
-    _follow();
   }
 
   void _follow() {
@@ -148,8 +120,7 @@ class _CategoryTabsState extends State<CategoryTabs>
 
   @override
   void dispose() {
-    widget.swipe?.removeListener(_onSwipe);
-    _anim.dispose();
+    widget.position?.removeListener(_follow);
     _scroll.dispose();
     super.dispose();
   }
@@ -160,7 +131,7 @@ class _CategoryTabsState extends State<CategoryTabs>
     while (_keys.length < widget.labels.length) {
       _keys.add(GlobalKey());
     }
-    final pos = _lastPos = _pos;
+    final pos = _pos;
     final x = _centerAt(pos);
     return SizedBox(
       height: 48,
