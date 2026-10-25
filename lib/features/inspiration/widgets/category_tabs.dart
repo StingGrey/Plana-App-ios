@@ -6,7 +6,8 @@ import '../../../core/theme/app_theme.dart';
 
 /// 灵感页顶栏的分类页签:一条连续的横滚标签,选中项放大加深、下面一道与字同宽的主色线。
 /// [position] 是正文翻页的位置(可在两页之间),短线和字跟着它过渡,标签条跟着滚,
-/// 让当前项保持在中间。行末固定一颗「类别管理」(三横),标签条渐隐进它。
+/// 让当前项保持在中间。行末固定一颗「类别管理」(三横),标签条渐隐进它;
+/// [capsule] 时两者一起包进一颗浅底胶囊。
 class CategoryTabs extends StatefulWidget {
   const CategoryTabs({
     super.key,
@@ -16,6 +17,7 @@ class CategoryTabs extends StatefulWidget {
     this.position,
     this.onManage,
     this.leftPad = 14,
+    this.capsule = false,
   });
 
   final List<String> labels;
@@ -29,6 +31,9 @@ class CategoryTabs extends StatefulWidget {
   final VoidCallback? onManage;
   final double leftPad;
 
+  /// 整条(含行末的类别管理)包进一颗浅底胶囊。
+  final bool capsule;
+
   @override
   State<CategoryTabs> createState() => _CategoryTabsState();
 }
@@ -38,6 +43,10 @@ class _CategoryTabsState extends State<CategoryTabs> {
 
   /// 选中项放大的比例。字号不变、只做缩放,页签宽度就是固定的,短线好对位。
   static const _grow = .2;
+
+  /// 标签内容离滚动区左边的距离(胶囊里就从胶囊内边算)。
+  double get _contentLeft =>
+      widget.capsule ? 14 - _padH : widget.leftPad - _padH;
 
   final _scroll = ScrollController();
   final _stripKey = GlobalKey();
@@ -123,8 +132,10 @@ class _CategoryTabsState extends State<CategoryTabs> {
     final x = _centerAt(p);
     if (x == null || !_scroll.hasClients) return;
     final pos = _scroll.position;
-    final target = (x + widget.leftPad - _padH - pos.viewportDimension / 2)
-        .clamp(0.0, pos.maxScrollExtent);
+    final target = (x + _contentLeft - pos.viewportDimension / 2).clamp(
+      0.0,
+      pos.maxScrollExtent,
+    );
     if ((target - pos.pixels).abs() > .5) _scroll.jumpTo(target);
   }
 
@@ -143,70 +154,75 @@ class _CategoryTabsState extends State<CategoryTabs> {
     }
     final pos = _pos;
     final x = _centerAt(pos);
-    return SizedBox(
-      height: 48,
-      child: Row(
-        children: [
-          Expanded(
-            // 右缘渐隐进后面的类别管理钮,两者看着是一条
-            child: ShaderMask(
-              blendMode: BlendMode.dstIn,
-              shaderCallback: (rect) => LinearGradient(
-                colors: const [Colors.black, Colors.black, Colors.transparent],
-                stops: [0, 1 - 28 / rect.width.clamp(56, double.infinity), 1],
-              ).createShader(rect),
-              child: SingleChildScrollView(
-                controller: _scroll,
-                scrollDirection: Axis.horizontal,
-                // 右边留出渐隐那一截,滚到底时最后一个页签不被压暗
-                padding: EdgeInsets.only(
-                  left: widget.leftPad - _padH,
-                  right: 28,
-                ),
-                child: Stack(
-                  key: _stripKey,
-                  children: [
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        for (var i = 0; i < widget.labels.length; i++)
-                          _tab(context, i, pos, scheme),
-                      ],
-                    ),
-                    if (x != null)
-                      Positioned(
-                        left: x - _widthAt(pos) / 2,
-                        bottom: 4,
-                        child: Container(
-                          width: _widthAt(pos),
-                          height: 3,
-                          decoration: BoxDecoration(
-                            color: scheme.primary,
-                            borderRadius: BorderRadius.circular(2),
-                          ),
+    final row = Row(
+      children: [
+        Expanded(
+          // 右缘渐隐进后面的类别管理钮,两者看着是一条
+          child: ShaderMask(
+            blendMode: BlendMode.dstIn,
+            shaderCallback: (rect) => LinearGradient(
+              colors: const [Colors.black, Colors.black, Colors.transparent],
+              stops: [0, 1 - 28 / rect.width.clamp(56, double.infinity), 1],
+            ).createShader(rect),
+            child: SingleChildScrollView(
+              controller: _scroll,
+              scrollDirection: Axis.horizontal,
+              // 右边留出渐隐那一截,滚到底时最后一个页签不被压暗
+              padding: EdgeInsets.only(left: _contentLeft, right: 28),
+              child: Stack(
+                key: _stripKey,
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      for (var i = 0; i < widget.labels.length; i++)
+                        _tab(context, i, pos, scheme),
+                    ],
+                  ),
+                  if (x != null)
+                    Positioned(
+                      left: x - _widthAt(pos) / 2,
+                      bottom: 4,
+                      child: Container(
+                        width: _widthAt(pos),
+                        height: 3,
+                        decoration: BoxDecoration(
+                          color: scheme.primary,
+                          borderRadius: BorderRadius.circular(2),
                         ),
                       ),
-                  ],
-                ),
+                    ),
+                ],
               ),
             ),
           ),
-          // 固定在页签外面,页签再多也不会被挤到滚动区后头。用和页签字同色的
-          // 三横,下移一点对齐页签的字
-          if (widget.onManage != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: IconButton(
-                tooltip: '类别管理',
-                onPressed: widget.onManage,
-                icon: Icon(
-                  Icons.menu_rounded,
-                  size: 24,
-                  color: scheme.onSurfaceVariant,
-                ),
+        ),
+        // 固定在页签外面,页签再多也不会被挤到滚动区后头。用和页签字同色的
+        // 三横,下移一点对齐页签的字
+        if (widget.onManage != null)
+          Padding(
+            padding: EdgeInsets.only(top: widget.capsule ? 0 : 4),
+            child: IconButton(
+              tooltip: '类别管理',
+              onPressed: widget.onManage,
+              icon: Icon(
+                Icons.menu_rounded,
+                size: 24,
+                color: scheme.onSurfaceVariant,
               ),
             ),
-        ],
+          ),
+      ],
+    );
+    if (!widget.capsule) return SizedBox(height: 48, child: row);
+    return SizedBox(
+      height: 48,
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(widget.leftPad, 2, 4, 2),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(22),
+          child: ColoredBox(color: scheme.surfaceContainerHigh, child: row),
+        ),
       ),
     );
   }
@@ -218,7 +234,7 @@ class _CategoryTabsState extends State<CategoryTabs> {
       behavior: HitTestBehavior.opaque,
       onTap: () => widget.onTap(i),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(_padH, 0, _padH, 12),
+        padding: EdgeInsets.fromLTRB(_padH, 0, _padH, widget.capsule ? 10 : 12),
         child: Align(
           alignment: Alignment.bottomCenter,
           child: Transform.scale(

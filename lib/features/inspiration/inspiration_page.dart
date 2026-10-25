@@ -376,6 +376,7 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
               ),
               onManage: () => showCategoryManagerSheet(context),
               leftPad: _kEdge,
+              capsule: true,
             ),
           ),
           // 备份 / 新建:翻向法典页时跟着翻页进度收起、淡出,翻回来再展开
