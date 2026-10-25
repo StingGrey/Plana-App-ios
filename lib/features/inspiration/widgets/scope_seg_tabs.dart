@@ -134,7 +134,8 @@ class ScopeSegTabs extends StatelessWidget {
             maxLines: 1,
             softWrap: false,
             style: context.texts.labelLarge!.copyWith(
-              fontSize: compact ? 15 : null,
+              // 窄版与旁边搜索框的字(提示文字)同大
+              fontSize: compact ? context.texts.bodyLarge!.fontSize : null,
               fontWeight: FontWeight.w700,
               color: color,
             ),
