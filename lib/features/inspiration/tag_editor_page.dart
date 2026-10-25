@@ -101,7 +101,7 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
   int? _genIndex;
   (int, int)? _genProgress;
 
-  bool get _hasPreview => widget.cat != TagCategory.other;
+  bool get _hasPreview => _def.hasPreview;
   bool get _canGenerate =>
       widget.cat == TagCategory.character || widget.cat == TagCategory.artist;
   bool get _generating => _genIndex != null;

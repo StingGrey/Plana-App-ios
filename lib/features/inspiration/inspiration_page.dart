@@ -28,6 +28,7 @@ import 'public_tags.dart';
 import 'tag_editor_page.dart';
 import 'tag_library.dart';
 import 'tag_models.dart';
+import 'widgets/category_sheets.dart';
 import 'widgets/category_tabs.dart';
 import 'widgets/scope_seg_tabs.dart';
 import 'widgets/tag_card.dart';
@@ -533,14 +534,21 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     );
   }
 
-  /// 页签里的分类顺序:四类标签库在前,法典最后。
-  List<Object> get _tabKeys => [
-    for (final d in kTagCategoryDefs) d.key,
-    _kCodexSel,
+  /// 顶栏页签:按类别管理里排的顺序,藏起来的不出。
+  List<Object> _tabKeys(TagLibraryState lib) => [
+    for (final k in lib.visibleTabKeys)
+      if (k == kCodexTabKey) _kCodexSel else ?tagCategoryByWebId(k),
   ];
 
   Widget _topBar(ColorScheme scheme, TagLibraryState lib) {
-    final keys = _tabKeys;
+    final keys = _tabKeys(lib);
+    final current = _codex ? _kCodexSel : _cat;
+    // 当前这一类被删了 / 藏起来了:回到角色
+    if (!keys.contains(current)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _onPickCat(TagCategory.character);
+      });
+    }
     return Padding(
       // 行尾是 IconButton:右边距减去它的内衬,图标视觉边与其他行对齐
       padding: const EdgeInsets.fromLTRB(0, 6, _kIconEdge, 0),
@@ -552,8 +560,9 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
                 for (final k in keys)
                   k is TagCategory ? tagCategoryDef(k).label : '法典',
               ],
-              index: keys.indexOf(_codex ? _kCodexSel : _cat),
+              index: keys.indexOf(current),
               onTap: (i) => _onPickCat(keys[i]),
+              onManage: () => showCategoryManagerSheet(context),
               leftPad: _kEdge,
             ),
           ),

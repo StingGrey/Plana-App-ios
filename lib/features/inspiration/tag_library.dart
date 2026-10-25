@@ -7,18 +7,58 @@ import 'package:path_provider/path_provider.dart';
 
 import 'tag_models.dart';
 
-/// 灵感页本地库状态:全部条目 + 每分类标签池 + 每分类最近使用。
-/// 标签池/最近使用对齐 web 的 `tag_pool:<id>` / `usage_order:<id>`(存 50 显 8)。
+/// 页签顺序 / 隐藏里法典的键(其余是各分类的 webId)。
+const kCodexTabKey = 'codex';
+
+/// 能藏起来的内置页签(角色、画风不能藏)。
+const kHideableTabKeys = {'scene', 'other', kCodexTabKey};
+
+/// 灵感页本地库状态:全部条目 + 每分类标签池 + 每分类最近使用 + 自定义类别
+/// 与页签的排列。标签池/最近使用对齐 web 的 `tag_pool:<id>` / `usage_order:<id>`
+/// (存 50 显 8)。
 class TagLibraryState {
   const TagLibraryState({
     this.entries = const [],
     this.pools = const {},
     this.usage = const {},
+    this.customDefs = const [],
+    this.order = const [],
+    this.hidden = const {},
   });
 
   final List<TagEntry> entries;
   final Map<TagCategory, List<String>> pools;
   final Map<TagCategory, List<String>> usage;
+
+  /// 自定义类别,按创建先后。
+  final List<TagCategoryDef> customDefs;
+
+  /// 页签顺序(webId / [kCodexTabKey]);没列到的按默认顺序排在后面。
+  final List<String> order;
+
+  /// 藏起来的页签。
+  final Set<String> hidden;
+
+  /// 全部页签,含藏起来的:内置四类 → 自定义 → 法典 的默认顺序,再按 [order] 重排。
+  List<String> get tabKeys {
+    final all = [
+      for (final d in kTagCategoryDefs) d.webId,
+      for (final d in customDefs) d.webId,
+      kCodexTabKey,
+    ];
+    return [
+      for (final k in order)
+        if (all.contains(k)) k,
+      for (final k in all)
+        if (!order.contains(k)) k,
+    ];
+  }
+
+  /// 顶栏上要显示的页签。
+  List<String> get visibleTabKeys => [
+    for (final k in tabKeys)
+      if (!hidden.contains(k)) k,
+  ];
 
   List<TagEntry> of(TagCategory c) => [
     for (final e in entries)
@@ -45,11 +85,24 @@ class TagLibraryState {
     List<TagEntry>? entries,
     Map<TagCategory, List<String>>? pools,
     Map<TagCategory, List<String>>? usage,
+    List<TagCategoryDef>? customDefs,
+    List<String>? order,
+    Set<String>? hidden,
   }) => TagLibraryState(
     entries: entries ?? this.entries,
     pools: pools ?? this.pools,
     usage: usage ?? this.usage,
+    customDefs: customDefs ?? this.customDefs,
+    order: order ?? this.order,
+    hidden: hidden ?? this.hidden,
   );
+
+  /// 云备份 / 落盘里的 `custom` 块(条目另算)。
+  Map<String, dynamic> layoutJson() => {
+    'defs': [for (final d in customDefs) d.toJson()],
+    'order': order,
+    'hidden': hidden.toList(),
+  };
 }
 
 final tagLibraryProvider = AsyncNotifierProvider<TagLibrary, TagLibraryState>(
@@ -68,13 +121,29 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
     try {
       if (await _file.exists()) {
         final j = jsonDecode(await _file.readAsString());
-        if (j is Map<String, dynamic>) return _decode(j);
+        if (j is Map<String, dynamic>) {
+          final s = _decode(j);
+          syncCustomTagCategories(s.customDefs);
+          return s;
+        }
       }
     } catch (_) {
       // 损坏 → 空库(条目无二进制本体,无从重建)
     }
     return const TagLibraryState();
   }
+
+  static List<String> _strs(Object? v) => [
+    if (v is List)
+      for (final x in v)
+        if (x is String) x,
+  ];
+
+  static List<TagCategoryDef> _defs(Object? v) => [
+    if (v is List)
+      for (final x in v)
+        if (TagCategoryDef.fromJson(x) case final TagCategoryDef d) d,
+  ];
 
   static TagLibraryState _decode(Map<String, dynamic> j) {
     final entries = <TagEntry>[];
@@ -94,16 +163,21 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
                 if (t is String) t,
             ],
     };
+    final layout = j['categories'] is Map ? j['categories'] as Map : const {};
     return TagLibraryState(
       entries: entries,
       pools: byCat(j['pools']),
       usage: byCat(j['usage']),
+      customDefs: _defs(layout['defs']),
+      order: _strs(layout['order']),
+      hidden: _strs(layout['hidden']).toSet(),
     );
   }
 
   TagLibraryState get _s => state.value ?? const TagLibraryState();
 
   Future<void> _set(TagLibraryState next) async {
+    syncCustomTagCategories(next.customDefs);
     state = AsyncData(next);
     try {
       await _file.writeAsString(
@@ -118,6 +192,7 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
             for (final en in next.usage.entries)
               tagCategoryDef(en.key).webId: en.value,
           },
+          'categories': next.layoutJson(),
         }),
       );
     } catch (_) {}
@@ -269,6 +344,78 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
     return true;
   }
 
+  // ---- 自定义类别 / 页签排列 ----
+
+  /// 新建类别,返回它。
+  Future<TagCategoryDef> addCategory({
+    required String label,
+    required String iconName,
+    required TagCardLayout layout,
+  }) async {
+    final ts = DateTime.now().millisecondsSinceEpoch.toRadixString(36);
+    final r = Random().nextInt(36 * 36 * 36).toRadixString(36).padLeft(3, '0');
+    final def = TagCategoryDef.custom(
+      id: '${TagCategory.customPrefix}${ts}_$r',
+      label: label,
+      iconName: iconName,
+      layout: layout,
+    );
+    await _set(_s.copyWith(customDefs: [..._s.customDefs, def]));
+    return def;
+  }
+
+  Future<void> updateCategory(TagCategoryDef def) async {
+    await _set(
+      _s.copyWith(
+        customDefs: [
+          for (final d in _s.customDefs) d.webId == def.webId ? def : d,
+        ],
+      ),
+    );
+  }
+
+  /// 删类别,连同它的条目、标签池与最近使用。
+  Future<void> removeCategory(TagCategory c) async {
+    for (final e in _s.entries) {
+      if (e.category == c) _gcPreviewFiles(e.previews);
+    }
+    await _set(
+      _s.copyWith(
+        customDefs: [
+          for (final d in _s.customDefs)
+            if (d.key != c) d,
+        ],
+        entries: [
+          for (final e in _s.entries)
+            if (e.category != c) e,
+        ],
+        pools: {..._s.pools}..remove(c),
+        usage: {..._s.usage}..remove(c),
+        order: [
+          for (final k in _s.order)
+            if (k != c.name) k,
+        ],
+        hidden: {..._s.hidden}..remove(c.name),
+      ),
+    );
+  }
+
+  /// 调整页签顺序([from] / [to] 是 [TagLibraryState.tabKeys] 里的下标,
+  /// [to] 已按移走 [from] 后的列表算)。
+  Future<void> moveTab(int from, int to) async {
+    final list = _s.tabKeys;
+    list.insert(to, list.removeAt(from));
+    await _set(_s.copyWith(order: list));
+  }
+
+  Future<void> setTabHidden(String key, bool hidden) async {
+    await _set(
+      _s.copyWith(
+        hidden: hidden ? {..._s.hidden, key} : ({..._s.hidden}..remove(key)),
+      ),
+    );
+  }
+
   // ---- 标签池 ----
 
   Future<bool> addPoolTag(TagCategory c, String tag) async {
@@ -346,20 +493,46 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
     for (final d in kTagCategoryDefs) d.webId: encodeCategory(d.key),
   };
 
+  /// 自定义类别那一块(云备份的 `custom`):定义、页签排列 + 各类条目。
+  Map<String, dynamic> encodeCustom() => {
+    ..._s.layoutJson(),
+    'items': {for (final d in _s.customDefs) d.webId: encodeCategory(d.key)},
+  };
+
   /// 单分类条目打包(本地 JSON 导出用)。
   List<Map<String, dynamic>> encodeCategory(TagCategory c) => [
     for (final e in _s.entries)
       if (e.category == c) encodeBackupEntry(e),
   ];
 
+  /// 四类 + 自定义类别的条目摊成一张 webId → 原始条目表。[categories] 里也可以
+  /// 直接放自定义类别的键(单类 JSON 导入)。
+  static Map<String, dynamic> _flat(
+    Map<String, dynamic> categories,
+    Map<String, dynamic>? custom,
+  ) => {
+    for (final d in kTagCategoryDefs)
+      if (categories[d.webId] case final List l) d.webId: l,
+    for (final e in categories.entries)
+      if (e.key.startsWith(TagCategory.customPrefix) && e.value is List)
+        e.key: e.value,
+    if (custom?['items'] case final Map items)
+      for (final e in items.entries)
+        if (e.key is String &&
+            (e.key as String).startsWith(TagCategory.customPrefix) &&
+            e.value is List)
+          e.key as String: e.value,
+  };
+
   /// 恢复前预检:按 id 数出「覆盖 / 新增」(与 web 的冲突提示一致)。
-  ({int overwrite, int add}) previewMerge(Map<String, dynamic> categories) {
+  ({int overwrite, int add}) previewMerge(
+    Map<String, dynamic> categories, {
+    Map<String, dynamic>? custom,
+  }) {
     final localIds = {for (final e in _s.entries) e.id};
     var overwrite = 0, add = 0;
-    for (final d in kTagCategoryDefs) {
-      final raw = categories[d.webId];
-      if (raw is! List) continue;
-      for (final item in raw) {
+    for (final raw in _flat(categories, custom).values) {
+      for (final item in raw as List) {
         if (item is! Map || item['id'] is! String) continue;
         localIds.contains(item['id']) ? overwrite++ : add++;
       }
@@ -367,30 +540,46 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
     return (overwrite: overwrite, add: add);
   }
 
-  /// 恢复:按 id 合并(同 id 覆盖、新 id 追加,本地独有保留)。
+  /// 恢复:按 id 合并(同 id 覆盖、新 id 追加,本地独有保留)。自定义类别的
+  /// 定义同 id 以云端为准、本地独有的保留;页签排列用云端的。
   /// 返回每类的 (新增, 覆盖) 明细,供结果文案与日志使用。
   Future<Map<TagCategory, ({int added, int updated})>> mergeBackup(
-    Map<String, dynamic> categories,
-  ) async {
+    Map<String, dynamic> categories, {
+    Map<String, dynamic>? custom,
+  }) async {
     final byId = {for (final e in _s.entries) e.id: e};
     final localIds = {...byId.keys};
     final stat = <TagCategory, ({int added, int updated})>{};
-    for (final d in kTagCategoryDefs) {
-      final raw = categories[d.webId];
-      if (raw is! List) continue;
+    for (final en in _flat(categories, custom).entries) {
+      final cat = tagCategoryByWebId(en.key);
+      if (cat == null) continue;
       var added = 0, updated = 0;
-      for (final item in raw) {
+      for (final item in en.value as List) {
         if (item is! Map<String, dynamic>) continue;
-        final e = decodeBackupEntry(d.key, item);
+        final e = decodeBackupEntry(cat, item);
         if (e == null) continue;
         localIds.contains(e.id) ? updated++ : added++;
         byId[e.id] = e;
       }
       if (added + updated > 0) {
-        stat[d.key] = (added: added, updated: updated);
+        stat[cat] = (added: added, updated: updated);
       }
     }
-    await _set(_s.copyWith(entries: byId.values.toList()));
+    var next = _s.copyWith(entries: byId.values.toList());
+    if (custom != null) {
+      final cloud = _defs(custom['defs']);
+      final cloudIds = {for (final d in cloud) d.webId};
+      next = next.copyWith(
+        customDefs: [
+          ...cloud,
+          for (final d in _s.customDefs)
+            if (!cloudIds.contains(d.webId)) d,
+        ],
+        order: _strs(custom['order']),
+        hidden: _strs(custom['hidden']).toSet(),
+      );
+    }
+    await _set(next);
     return stat;
   }
 }

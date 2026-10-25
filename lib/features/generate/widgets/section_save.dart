@@ -9,7 +9,7 @@ import '../../inspiration/public_tags.dart';
 import '../../inspiration/tag_editor_page.dart';
 import '../../inspiration/tag_library.dart';
 import '../../inspiration/tag_models.dart';
-import '../../inspiration/widgets/char_pick_sheet.dart' show kPanelTagCats;
+import '../../inspiration/widgets/char_pick_sheet.dart' show panelTagCats;
 import '../generate_state.dart';
 import '../models.dart' show PromptSection;
 import 'common.dart';
@@ -23,12 +23,12 @@ import 'common.dart';
     ? (positive: mainPrompt.trim(), negative: '')
     : (positive: s.positive.trim(), negative: s.negative.trim());
 
-/// 存进灵感库时默认落的分类:画风格是画风;名字就叫「画风」「角色」「场景」的
-/// 落那一类;别的不猜。
-TagCategory? sectionSaveCategory(PromptSection s) {
+/// 存进灵感库时默认落的分类:画风格是画风;名字就叫「画风」「角色」「场景」
+/// 或某个自定义类别名的落那一类;别的不猜。
+TagCategory? sectionSaveCategory(PromptSection s, List<TagCategory> cats) {
   if (s.artist) return TagCategory.artist;
   final name = s.name.trim();
-  for (final c in kPanelTagCats) {
+  for (final c in cats) {
     if (tagCategoryDef(c).label == name) return c;
   }
   return null;
@@ -36,13 +36,14 @@ TagCategory? sectionSaveCategory(PromptSection s) {
 
 /// 自己起的分区名,存进灵感库时直接当条目名。主体、「分区 N」、分类名、
 /// 「法典」这类默认名不算。
-String? customSectionName(PromptSection s) {
+String? customSectionName(PromptSection s, List<TagCategory> cats) {
   final name = s.name.trim();
   if (name.isEmpty ||
       name == '主体' ||
       name == '法典' ||
       RegExp(r'^分区 \d+$').hasMatch(name) ||
-      kTagCategoryDefs.any((d) => d.label == name)) {
+      kTagCategoryDefs.any((d) => d.label == name) ||
+      cats.any((c) => tagCategoryDef(c).label == name)) {
     return null;
   }
   return name;
@@ -82,10 +83,12 @@ Future<bool> saveSectionToLibrary(
 ) async {
   final text = sectionSaveText(section, ref.read(generateProvider).prompt);
   if (text.positive.isEmpty) return false;
-  final cat = sectionSaveCategory(section) ?? await _pickCategory(anchor);
-  if (cat == null || !anchor.mounted) return false;
   final lib = await ref.read(tagLibraryProvider.future);
   if (!anchor.mounted) return false;
+  final cats = panelTagCats(lib);
+  final cat =
+      sectionSaveCategory(section, cats) ?? await _pickCategory(anchor, cats);
+  if (cat == null || !anchor.mounted) return false;
   // 调用方随后退出多选,这颗钮就没了:导航先拿在手里
   final nav = Navigator.of(anchor);
   if (sameLibraryEntry(lib.entries, cat, text.positive, text.negative)
@@ -115,7 +118,7 @@ Future<bool> saveSectionToLibrary(
         TagEditorPage(
           cat: cat,
           draft: (
-            name: customSectionName(section) ?? code ?? '',
+            name: customSectionName(section, cats) ?? code ?? '',
             positive: text.positive,
             negative: text.negative,
           ),
@@ -126,8 +129,11 @@ Future<bool> saveSectionToLibrary(
   return true;
 }
 
-/// 分类下拉,样式同灵感页切分类那个,从 [anchor] 底下弹出来。
-Future<TagCategory?> _pickCategory(BuildContext anchor) {
+/// 分类下拉,从 [anchor] 底下弹出来。
+Future<TagCategory?> _pickCategory(
+  BuildContext anchor,
+  List<TagCategory> cats,
+) {
   final scheme = anchor.scheme;
   final box = anchor.findRenderObject()! as RenderBox;
   final overlay =
@@ -145,7 +151,7 @@ Future<TagCategory?> _pickCategory(BuildContext anchor) {
     ),
     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
     items: [
-      for (final c in kPanelTagCats)
+      for (final c in cats)
         PopupMenuItem(
           value: c,
           child: Row(

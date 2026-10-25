@@ -4,9 +4,86 @@ import '../../core/util/prompt_tokens.dart';
 import '../editor/editor_models.dart' show foldWrap, outputOf;
 
 /// 灵感页(Tag 管理器)数据模型,对齐 web tag-manager 的注册表与条目结构。
-/// 分类 id 沿用 web(character/artist-style/scene/other),云备份四类键
-/// 与 web 完全互通;自定义分类 web 端未开放,app 不实现。
-enum TagCategory { character, artist, scene, other }
+/// 内置四类的 id 沿用 web(character/artist-style/scene/other),云备份四类键
+/// 与 web 完全互通;用户自建的类别 id 以 `c_` 开头,云备份里单走 `custom`。
+final class TagCategory {
+  const TagCategory._(this.name);
+
+  /// 内置四类是原来的枚举名;自定义类别就是它的 id(`c_…`,同 webId)。
+  final String name;
+
+  static const character = TagCategory._('character');
+  static const artist = TagCategory._('artist');
+  static const scene = TagCategory._('scene');
+  static const other = TagCategory._('other');
+
+  static const builtins = [character, artist, scene, other];
+
+  static const customPrefix = 'c_';
+
+  /// 自定义类别。
+  factory TagCategory.custom(String id) => TagCategory._(id);
+
+  bool get isCustom => name.startsWith(customPrefix);
+
+  @override
+  bool operator ==(Object other) => other is TagCategory && other.name == name;
+
+  @override
+  int get hashCode => name.hashCode;
+
+  @override
+  String toString() => 'TagCategory($name)';
+}
+
+/// 预览图形状(自定义类别可选;内置四类各自固定)。
+enum TagCardLayout { portrait, landscape, square, none }
+
+extension TagCardLayoutX on TagCardLayout {
+  String get label => switch (this) {
+    TagCardLayout.portrait => '竖图',
+    TagCardLayout.landscape => '横图',
+    TagCardLayout.square => '方图',
+    TagCardLayout.none => '无图',
+  };
+
+  double get aspect => switch (this) {
+    TagCardLayout.portrait => 832 / 1216,
+    TagCardLayout.landscape => 1216 / 832,
+    _ => 1,
+  };
+}
+
+/// 自定义类别可选的图标。键名同 web 注册表的 lucide 图标名(`Shirt` 是 app 加的)。
+const kTagCategoryIcons = <String, IconData>{
+  'Shirt': Icons.checkroom_outlined,
+  'Sparkles': Icons.auto_awesome_outlined,
+  'Sun': Icons.wb_sunny_outlined,
+  'Moon': Icons.dark_mode_outlined,
+  'Heart': Icons.favorite_border,
+  'Star': Icons.star_outline,
+  'Camera': Icons.photo_camera_outlined,
+  'Flame': Icons.local_fire_department_outlined,
+  'Leaf': Icons.eco_outlined,
+  'Flower': Icons.local_florist_outlined,
+  'Crown': Icons.workspace_premium_outlined,
+  'Gem': Icons.diamond_outlined,
+  'Hand': Icons.back_hand_outlined,
+  'Eye': Icons.visibility_outlined,
+  'Smile': Icons.sentiment_satisfied_outlined,
+  'PersonStanding': Icons.accessibility_new,
+  'Music': Icons.music_note_outlined,
+  'Brush': Icons.brush_outlined,
+  'Wand': Icons.auto_fix_high_outlined,
+  'Zap': Icons.bolt_outlined,
+  'Cloud': Icons.cloud_outlined,
+  'Snowflake': Icons.ac_unit,
+  'Droplet': Icons.water_drop_outlined,
+  'Coffee': Icons.coffee_outlined,
+  'Map': Icons.map_outlined,
+  'Compass': Icons.explore_outlined,
+  'Tag': Icons.sell_outlined,
+};
 
 class TagCategoryDef {
   const TagCategoryDef(
@@ -17,19 +94,41 @@ class TagCategoryDef {
     required this.searchHint,
     required this.maxSelectable,
     required this.previewAspect,
+    this.hasPreview = true,
     this.hasPublic = false,
     this.alphabetRail = false,
+    this.iconName,
+    this.layout,
   });
+
+  /// 自定义类别。
+  factory TagCategoryDef.custom({
+    required String id,
+    required String label,
+    required String iconName,
+    required TagCardLayout layout,
+  }) => TagCategoryDef(
+    TagCategory.custom(id),
+    id,
+    label,
+    kTagCategoryIcons[iconName] ?? Icons.sell_outlined,
+    searchHint: '搜索名称 / 提示词…',
+    maxSelectable: 20,
+    previewAspect: layout.aspect,
+    hasPreview: layout != TagCardLayout.none,
+    iconName: iconName,
+    layout: layout,
+  );
 
   final TagCategory key;
 
-  /// web 端 subtypeId,同时是云备份 categories 的键。
+  /// web 端 subtypeId,同时是云备份 categories 的键(自定义类别 = 它的 id)。
   final String webId;
   final String label;
   final IconData icon;
   final String searchHint;
 
-  /// 单次可选上限(角色 6 = 角色卡槽位;画风 99;场景/其他 20,对齐 web)。
+  /// 单次可选上限(角色 6 = 角色卡槽位;画风 99;场景/其他/自定义 20,对齐 web)。
   /// 角色分类在灵感页会被按模型覆盖(NAI 5 槽位 20,见 maxCharactersOf),
   /// 这里的 6 只是 const 表放不下模型参数的兜底。
   final int maxSelectable;
@@ -41,8 +140,42 @@ class TagCategoryDef {
   /// 卡片按此比例排版,BoxFit.cover 下预览图恰好完整铺满不裁切。
   final double previewAspect;
 
+  /// 条目有没有预览图(其他、无图的自定义类别没有)。
+  final bool hasPreview;
+
   /// 右缘字母导航(仅画风,条目名以 A1..Z99 编号为主)。
   final bool alphabetRail;
+
+  /// 自定义类别才有:图标键名、预览图形状。
+  final String? iconName;
+  final TagCardLayout? layout;
+
+  Map<String, dynamic> toJson() => {
+    'id': webId,
+    'label': label,
+    'iconName': iconName,
+    'cardLayout': layout?.name,
+  };
+
+  /// 自定义类别定义;不合规返回 null。
+  static TagCategoryDef? fromJson(Object? j) {
+    if (j is! Map) return null;
+    final id = j['id'];
+    final label = j['label'];
+    if (id is! String ||
+        !id.startsWith(TagCategory.customPrefix) ||
+        label is! String) {
+      return null;
+    }
+    return TagCategoryDef.custom(
+      id: id,
+      label: label,
+      iconName: j['iconName'] is String ? j['iconName'] as String : 'Tag',
+      layout:
+          TagCardLayout.values.asNameMap()[j['cardLayout']] ??
+          TagCardLayout.square,
+    );
+  }
 }
 
 const kTagCategoryDefs = <TagCategoryDef>[
@@ -84,11 +217,29 @@ const kTagCategoryDefs = <TagCategoryDef>[
     searchHint: '搜索名称 / 提示词…',
     maxSelectable: 20,
     previewAspect: 1,
+    hasPreview: false,
   ),
 ];
 
-TagCategoryDef tagCategoryDef(TagCategory c) =>
-    kTagCategoryDefs.firstWhere((d) => d.key == c);
+/// 当前的自定义类别(由 [TagLibrary] 在载入 / 改动时同步)。放在这里而不是
+/// 只放 provider 里,是为了让 [tagCategoryDef] 这类同步查表在哪都能用。
+var _customDefs = <String, TagCategoryDef>{};
+
+void syncCustomTagCategories(Iterable<TagCategoryDef> defs) =>
+    _customDefs = {for (final d in defs) d.webId: d};
+
+TagCategoryDef tagCategoryDef(TagCategory c) {
+  for (final d in kTagCategoryDefs) {
+    if (d.key == c) return d;
+  }
+  return _customDefs[c.name] ??
+      TagCategoryDef.custom(
+        id: c.name,
+        label: '未命名',
+        iconName: 'Tag',
+        layout: TagCardLayout.square,
+      );
+}
 
 /// 灵感页网格的排序档。
 ///   [number] 按名字自然序(A1<A2<A10)—— 只有画风有,它的名字本来就是编号;
@@ -113,9 +264,13 @@ List<TagSort> tagSortOptions(TagCategory c) => c == TagCategory.artist
     ? const [TagSort.number, TagSort.time, TagSort.author]
     : const [TagSort.time, TagSort.author];
 
+/// 按 webId 认分类:内置四类按表,`c_` 开头的是自定义类别。
 TagCategory? tagCategoryByWebId(String webId) {
   for (final d in kTagCategoryDefs) {
     if (d.webId == webId) return d.key;
+  }
+  if (webId.startsWith(TagCategory.customPrefix)) {
+    return TagCategory.custom(webId);
   }
   return null;
 }
@@ -520,6 +675,10 @@ Map<String, dynamic> encodeBackupEntry(TagEntry e) {
     case TagCategory.scene || TagCategory.other:
       base['positive'] = e.positive;
       base['subtypeId'] = tagCategoryDef(e.category).webId;
+    default:
+      base['positive'] = e.positive;
+      base['subtypeId'] = e.category.name;
+      base['previews'] ??= portablePreviews(e.previews);
   }
   return base;
 }

@@ -28,12 +28,15 @@ typedef LibraryPick = ({PickedChar? tag, CodexFavorite? codex});
 /// 灵感库面板选中的全部,按勾选的先后(跨分类、跨标签库与法典)。
 typedef LibraryPicks = List<LibraryPick>;
 
-/// 创作页灵感库面板给哪几类标签库,顺序同灵感页(法典另算);「其他」不放。
-/// 「存到灵感库」也只给这几类,存进「其他」在面板里就选不到了。
-const kPanelTagCats = [
+/// 创作页灵感库面板给哪几类标签库(法典另算):角色、画风、场景,再接没藏起来的
+/// 自定义类别(按灵感页页签的顺序);「其他」不放。「存到灵感库」也只给这几类,
+/// 存进「其他」在面板里就选不到了。
+List<TagCategory> panelTagCats(TagLibraryState lib) => [
   TagCategory.character,
   TagCategory.artist,
   TagCategory.scene,
+  for (final k in lib.visibleTabKeys)
+    if (k.startsWith(TagCategory.customPrefix)) TagCategory.custom(k),
 ];
 
 /// 从灵感角色库选角色 —— 角色卡的头像、角色卡头的「角色库」共用。
@@ -221,7 +224,7 @@ class _PickSheetState extends ConsumerState<_PickSheet> {
                   ? const EdgeInsets.fromLTRB(_pad, 0, _pad, 10)
                   : const EdgeInsets.fromLTRB(20, 4, 20, 10),
               child: widget.library
-                  ? _catTabs()
+                  ? _catTabs(lib)
                   : Align(
                       alignment: Alignment.centerLeft,
                       child: Text('选择角色', style: context.texts.titleLarge),
@@ -284,8 +287,8 @@ class _PickSheetState extends ConsumerState<_PickSheet> {
 
   /// 分类横排:角色、画风、场景 + 法典(只列收藏),某类勾了几个跟在名字后面。
   /// 「其他」不放进来。
-  Widget _catTabs() {
-    final cats = kPanelTagCats;
+  Widget _catTabs(TagLibraryState lib) {
+    final cats = panelTagCats(lib);
     int pickedIn(TagCategory c) =>
         _picks.values.where((p) => p.tag?.entry.category == c).length;
     final cat = _cat;
@@ -514,77 +517,86 @@ class _CatSegTabs extends StatelessWidget {
         ),
         child: LayoutBuilder(
           builder: (context, c) {
-            final segW = c.maxWidth / labels.length;
-            return Stack(
-              children: [
-                AnimatedPositioned(
-                  duration: Motion.medium,
-                  curve: Motion.emphasized,
-                  top: 3,
-                  bottom: 3,
-                  left: 3 + index * segW,
-                  width: segW - 6,
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: scheme.surface,
-                      borderRadius: BorderRadius.circular(9),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: .06),
-                          blurRadius: 4,
-                          offset: const Offset(0, 1),
-                        ),
-                      ],
+            // 段多了(自定义类别)每段至少 64 宽,整条横滑
+            final segW = (c.maxWidth / labels.length).clamp(64.0, c.maxWidth);
+            final bar = SizedBox(
+              width: segW * labels.length,
+              child: Stack(
+                children: [
+                  AnimatedPositioned(
+                    duration: Motion.medium,
+                    curve: Motion.emphasized,
+                    top: 3,
+                    bottom: 3,
+                    left: 3 + index * segW,
+                    width: segW - 6,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: scheme.surface,
+                        borderRadius: BorderRadius.circular(9),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: .06),
+                            blurRadius: 4,
+                            offset: const Offset(0, 1),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                ),
-                // 铺满整条:不 fill 的话这排只有字那么高、贴在顶上,点分段下半截
-                // 也切不过去
-                Positioned.fill(
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      for (var i = 0; i < labels.length; i++)
-                        Expanded(
-                          child: Semantics(
-                            button: true,
-                            selected: i == index,
-                            child: GestureDetector(
-                              behavior: HitTestBehavior.opaque,
-                              onTap: () => onTap(i),
-                              child: Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  AnimatedDefaultTextStyle(
-                                    duration: Motion.fast,
-                                    style: context.texts.labelLarge!.copyWith(
-                                      fontWeight: FontWeight.w700,
-                                      color: i == index
-                                          ? scheme.primary
-                                          : scheme.onSurfaceVariant,
+                  // 铺满整条:不 fill 的话这排只有字那么高、贴在顶上,点分段下半截
+                  // 也切不过去
+                  Positioned.fill(
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        for (var i = 0; i < labels.length; i++)
+                          Expanded(
+                            child: Semantics(
+                              button: true,
+                              selected: i == index,
+                              child: GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onTap: () => onTap(i),
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    AnimatedDefaultTextStyle(
+                                      duration: Motion.fast,
+                                      style: context.texts.labelLarge!.copyWith(
+                                        fontWeight: FontWeight.w700,
+                                        color: i == index
+                                            ? scheme.primary
+                                            : scheme.onSurfaceVariant,
+                                      ),
+                                      child: Text(labels[i]),
                                     ),
-                                    child: Text(labels[i]),
-                                  ),
-                                  if (counts[i] > 0) ...[
-                                    const SizedBox(width: 4),
-                                    Text(
-                                      '${counts[i]}',
-                                      style: mono(
-                                        context,
-                                        size: 11,
-                                        weight: FontWeight.w700,
-                                      ).copyWith(color: scheme.primary),
-                                    ),
+                                    if (counts[i] > 0) ...[
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        '${counts[i]}',
+                                        style: mono(
+                                          context,
+                                          size: 11,
+                                          weight: FontWeight.w700,
+                                        ).copyWith(color: scheme.primary),
+                                      ),
+                                    ],
                                   ],
-                                ],
+                                ),
                               ),
                             ),
                           ),
-                        ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
+            );
+            if (segW * labels.length <= c.maxWidth) return bar;
+            return SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: bar,
             );
           },
         ),
