@@ -357,18 +357,42 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
               leftPad: _kEdge,
             ),
           ),
-          if (!_codex) ...[
-            IconButton(
-              tooltip: '数据备份',
-              icon: const Icon(Icons.cloud_outlined),
-              onPressed: () => showTagBackupSheet(context, ref),
+          // 备份 / 新建:翻向法典页时跟着翻页进度收起、淡出,翻回来再展开
+          ValueListenableBuilder(
+            valueListenable: _pagePos,
+            builder: (context, pos, child) {
+              final ci = keys.indexOf(_kCodexSel);
+              final hide = ci < 0
+                  ? 0.0
+                  : (1 - (pos - ci).abs()).clamp(0.0, 1.0).toDouble();
+              final t = Curves.easeOut.transform(1 - hide);
+              return IgnorePointer(
+                ignoring: hide > .5,
+                child: ClipRect(
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    widthFactor: t,
+                    child: Opacity(opacity: t, child: child),
+                  ),
+                ),
+              );
+            },
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  tooltip: '数据备份',
+                  icon: const Icon(Icons.cloud_outlined),
+                  onPressed: () => showTagBackupSheet(context, ref),
+                ),
+                IconButton(
+                  tooltip: '新建',
+                  icon: const Icon(Icons.add),
+                  onPressed: () => _openNew(_cat),
+                ),
+              ],
             ),
-            IconButton(
-              tooltip: '新建',
-              icon: const Icon(Icons.add),
-              onPressed: () => _openNew(_cat),
-            ),
-          ],
+          ),
         ],
       ),
     );

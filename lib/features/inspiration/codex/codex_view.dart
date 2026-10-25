@@ -245,42 +245,35 @@ class _CodexViewState extends ConsumerState<CodexView>
 
   Widget _searchRow() {
     final scheme = context.scheme;
+    // 选法典单独一行当标题,搜索框占满整行
     return Padding(
-      padding: const EdgeInsets.fromLTRB(_edge, 8, _edge, 0),
-      child: Row(
+      padding: const EdgeInsets.fromLTRB(_edge, 4, _edge, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // 选法典按内容自适应宽度,标题过长时截断,最多占四成
-          ConstrainedBox(
-            constraints: BoxConstraints(
-              maxWidth: MediaQuery.sizeOf(context).width * .4,
-            ),
-            child: const CodexPickerButton(),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: SizedBox(
-              // 与左边的选法典按钮同高
-              height: 40,
-              child: TextField(
-                controller: _searchCtrl,
-                onChanged: _onSearch,
-                textAlignVertical: TextAlignVertical.center,
-                decoration: InputDecoration(
-                  isDense: true,
-                  hintText: '搜索标题 / 提示词…',
-                  prefixIcon: const Icon(Icons.search, size: 20),
-                  prefixIconConstraints: const BoxConstraints(
-                    minWidth: 40,
-                    minHeight: 40,
-                  ),
-                  filled: true,
-                  fillColor: scheme.surfaceContainerHigh,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
-                  ),
-                  contentPadding: EdgeInsets.zero,
+          const CodexPickerButton(),
+          const SizedBox(height: 4),
+          SizedBox(
+            height: 40,
+            child: TextField(
+              controller: _searchCtrl,
+              onChanged: _onSearch,
+              textAlignVertical: TextAlignVertical.center,
+              decoration: InputDecoration(
+                isDense: true,
+                hintText: '搜索标题 / 提示词…',
+                prefixIcon: const Icon(Icons.search, size: 20),
+                prefixIconConstraints: const BoxConstraints(
+                  minWidth: 40,
+                  minHeight: 40,
                 ),
+                filled: true,
+                fillColor: scheme.surfaceContainerHigh,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide.none,
+                ),
+                contentPadding: EdgeInsets.zero,
               ),
             ),
           ),
@@ -579,7 +572,7 @@ CodexMeta resolveSelectedCodex(List<CodexMeta> index, String? sel) {
   return sfw.isNotEmpty ? sfw.first : index.first;
 }
 
-/// 「选择主法典」按钮:显示当前法典标题,点开选择器换法典。放在搜索框左边。
+/// 「选择主法典」:法典页搜索框上面那行标题,写当前法典名与条数,点开换法典。
 /// 换法典只改 [selectedCodexProvider],正文的分类筛选由 CodexView 监听联动重置。
 class CodexPickerButton extends ConsumerWidget {
   const CodexPickerButton({super.key});
@@ -590,45 +583,48 @@ class CodexPickerButton extends ConsumerWidget {
     final index = ref.watch(codexIndexProvider).value;
     if (index == null || index.isEmpty) return const SizedBox(height: 40);
     final meta = resolveSelectedCodex(index, ref.watch(selectedCodexProvider));
-    return Material(
-      color: scheme.surfaceContainerHigh,
-      borderRadius: BorderRadius.circular(12),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: () async {
-          final id = await showCodexPickerSheet(context, index, meta.id);
-          if (id != null) {
-            ref.read(selectedCodexProvider.notifier).select(id);
-          }
-        },
-        child: Container(
-          height: 40,
-          padding: const EdgeInsets.fromLTRB(12, 0, 6, 0),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Flexible(
-                child: Text(
-                  meta.displayTitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: context.texts.titleSmall!.copyWith(
-                    fontWeight: FontWeight.w800,
-                  ),
+    return InkWell(
+      borderRadius: BorderRadius.circular(10),
+      onTap: () async {
+        final id = await showCodexPickerSheet(context, index, meta.id);
+        if (id != null) {
+          ref.read(selectedCodexProvider.notifier).select(id);
+        }
+      },
+      child: SizedBox(
+        height: 40,
+        child: Row(
+          children: [
+            Icon(Icons.menu_book_outlined, size: 19, color: scheme.primary),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                meta.displayTitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: context.texts.titleMedium!.copyWith(
+                  fontWeight: FontWeight.w800,
                 ),
               ),
-              if (meta.nsfw) ...[
-                const SizedBox(width: 6),
-                _miniTag(context, 'R18', scheme.error),
-              ],
-              const SizedBox(width: 4),
-              Icon(
-                Icons.keyboard_arrow_down,
-                size: 20,
+            ),
+            if (meta.nsfw) ...[
+              const SizedBox(width: 6),
+              _miniTag(context, 'R18', scheme.error),
+            ],
+            const SizedBox(width: 2),
+            Icon(
+              Icons.keyboard_arrow_down,
+              size: 20,
+              color: scheme.onSurfaceVariant,
+            ),
+            const Spacer(),
+            Text(
+              '${meta.entryCount} 条',
+              style: context.texts.labelMedium!.copyWith(
                 color: scheme.onSurfaceVariant,
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
