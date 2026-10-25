@@ -575,71 +575,6 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
 
   // ---- 底部操作条 ----
 
-  /// 角色分类的动作:一体式分段胶囊 —— 左「主提示词」右「加入角色 N」,
-  /// 同一主色底,中间发丝分隔,整体一颗药丸。
-  Widget _splitAction(ColorScheme scheme, TagLibraryState lib, int n) {
-    final bg = scheme.primary;
-    final fg = scheme.onPrimary;
-    Widget seg({
-      required int flex,
-      required IconData icon,
-      required String label,
-      required VoidCallback onTap,
-    }) => Expanded(
-      flex: flex,
-      child: Material(
-        color: bg,
-        child: InkWell(
-          onTap: onTap,
-          child: Center(
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, size: 17, color: fg),
-                const SizedBox(width: 6),
-                Flexible(
-                  child: Text(
-                    label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: context.texts.labelLarge!.copyWith(
-                      fontWeight: FontWeight.w800,
-                      color: fg,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-
-    return SizedBox(
-      height: kSelectionActionHeight,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(kSelectionActionRadius),
-        child: Row(
-          children: [
-            seg(
-              flex: 5,
-              icon: Icons.bolt_outlined,
-              label: '主提示词',
-              onTap: () => _confirmToPrompt(lib),
-            ),
-            Container(width: 1.5, color: scheme.surfaceContainer),
-            seg(
-              flex: 6,
-              icon: Icons.person_add_alt,
-              label: '加入角色',
-              onTap: () => _confirmAsCharacters(lib),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   /// 角色模块对当前模型是否可见 —— 决定「加入角色」这个去处存不存在。
   /// anima 下 NAI 四件套整组收走(角色卡都不渲染),此时加进去的角色既不进
   /// 载荷也看不见,只会把提示词计数顶大,是个纯幽灵动作,故收起按钮。
@@ -649,46 +584,48 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     return ms.isVisibleFor(GenModule.character, model);
   }
 
+  /// 多选底栏(一行):✕ 取消 · 标签 / 收藏 · 删除 · 添加。
+  /// 「添加」:角色加成角色卡;角色模块不可见时(anima 等)和其余分类一样
+  /// 拼进主提示词。
   Widget _selectionBar(ColorScheme scheme, TagLibraryState lib) {
     final n = _sel.length;
     final publicScope = _def.hasPublic && _scopes[_cat] == 1;
+    final asCharacters = _cat == TagCategory.character && _charModuleOn;
     return SelectionBar(
       visible: n > 0,
+      compact: true,
       // shell 里的 tab 页,底部安全区由导航栏兜着
       safeArea: false,
       onClear: () => setState(() => _sel.clear()),
       actions: [
         if (publicScope)
-          SelectionPill(
+          SelectionIconButton(
             icon: Icons.favorite_border,
-            label: '收藏',
+            tooltip: '收藏',
             onTap: _busy ? null : () => _batchCollect(lib),
           )
         else
-          SelectionPill(
+          SelectionIconButton(
             icon: Icons.sell_outlined,
-            label: '标签',
+            tooltip: '标签',
             onTap: _busy ? null : () => _batchTag(lib),
           ),
       ],
       destructive: publicScope
           ? null
-          : SelectionPill(
+          : SelectionIconButton(
               icon: Icons.delete_outline,
-              label: '删除',
+              tooltip: '删除',
               color: scheme.error,
               onTap: _busy ? null : () => _batchDelete(lib),
             ),
-      // 角色分类有两个去处,主动作是一体式分段按钮;角色模块不可见时
-      // (anima 等)只剩「主提示词」一个去处,退回普通整条按钮
-      primary: _cat == TagCategory.character && _charModuleOn
-          ? _splitAction(scheme, lib, n)
-          : FilledButton.icon(
-              onPressed: () => _confirmToPrompt(lib),
-              icon: const Icon(Icons.check, size: 18),
-              label: Text('确认选择 ($n)'),
-              style: selectionPrimaryStyle(),
-            ),
+      primary: FilledButton.icon(
+        onPressed: () =>
+            asCharacters ? _confirmAsCharacters(lib) : _confirmToPrompt(lib),
+        icon: Icon(asCharacters ? Icons.person_add_alt : Icons.add, size: 18),
+        label: Text('添加 ($n)'),
+        style: selectionPrimaryStyle(),
+      ),
     );
   }
 }
