@@ -1,4 +1,4 @@
-/// 自定义接口的**模型列表**拉取。三家的路径、鉴权头、返回形状都不一样。
+/// 自定义接口的**模型列表**拉取。各家的路径、鉴权头、返回形状都不一样。
 ///
 /// 只做这一件事:让用户不必手抄模型 id。抄错一个字符的表现是「发出去 404」,
 /// 而 404 在中转服务上又常被包成别的错,查半天查不到根因。
@@ -19,8 +19,8 @@ Future<List<String>> fetchModelList(
   final c = client ?? http.Client();
   try {
     final (uri, headers) = switch (e.format) {
-      // OpenAI:GET {base}/models
-      AgentApiFormat.openai => (
+      // OpenAI(两种报文同一个列表接口):GET {base}/models
+      AgentApiFormat.openai || AgentApiFormat.responses => (
         Uri.parse('${e.effectiveBase}/models'),
         {'Authorization': 'Bearer ${e.apiKey.trim()}'},
       ),
@@ -68,7 +68,9 @@ List<String> parseModelList(AgentApiFormat format, Object? body) {
   if (body is! Map) return const [];
   final raw = switch (format) {
     // {"data":[{"id":"gpt-4o"}]}
-    AgentApiFormat.openai || AgentApiFormat.anthropic => body['data'],
+    AgentApiFormat.openai ||
+    AgentApiFormat.responses ||
+    AgentApiFormat.anthropic => body['data'],
     // {"models":[{"name":"models/gemini-3.7-flash"}]}
     AgentApiFormat.google => body['models'],
   };

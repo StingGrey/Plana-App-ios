@@ -38,12 +38,6 @@ import 'custom_endpoint.dart';
 import 'local_library.dart';
 import 'preset_rules.dart';
 
-/// 一轮里最多跑几跳(每跳 = 一次模型调用)。
-///
-/// 服务端那条也是这个量级。放大没用:模型连查三轮还定不下来,多半是它在原地
-/// 打转,再给它两跳只是多烧两次钱。
-const _maxHops = 4;
-
 final _toolFence = RegExp(
   r'```[ \t]*tool_call[ \t]*\r?\n(.*?)```',
   dotAll: true,
@@ -54,16 +48,18 @@ final _drawFence = RegExp(
   dotAll: true,
   caseSensitive: false,
 );
+// 写在正文里的思考段。规则让模型用 `<Think>`;推理模型自己带的是 `<think>`(DeepSeek
+// 那一系),Gemini 的 OpenAI 兼容口开了思考回的是 `<thought>`,有的中转转 Claude 时
+// 包成 `<thinking>` —— 认不出的那几种会原样摊在气泡里。
 final _thinkTag = RegExp(
-  r'<Think>.*?</Think>',
+  r'<(think|thinking|thought)>.*?</\1>',
   dotAll: true,
   caseSensitive: false,
 );
 
 // 流到一半时切正文用的几把尺子(见 [directStreamView])。整段的 [_thinkTag] 在这里
 // 不够用 —— 流中途的 `<Think>` 多半还没收尾,那就得按「开标签之后全是思考」算。
-final _thinkOpen = RegExp(r'<Think>', caseSensitive: false);
-final _thinkClose = RegExp(r'</Think>', caseSensitive: false);
+final _thinkOpen = RegExp(r'<(think|thinking|thought)>', caseSensitive: false);
 final _liveFenceOpen = RegExp(
   r'```[ \t]*(?:tool_call|nai_draw)',
   caseSensitive: false,
@@ -74,7 +70,7 @@ final _liveFenceOpen = RegExp(
 ///
 /// 反引号后面**必须跟着字母**才算:光秃秃的 ``` 多半是代码块的收尾、`…` 是行内
 /// 代码的收尾,切掉反而把好好的块拆了。
-final _liveTail = RegExp(r'(?:<[A-Za-z/]{0,6}|`{1,3}[ \t]*[A-Za-z_]{1,9})$');
+final _liveTail = RegExp(r'(?:<[A-Za-z/]{0,9}|`{1,3}[ \t]*[A-Za-z_]{1,9})$');
 
 /// 附图:MIME + base64。
 typedef DirectImage = ({String mime, String data});
@@ -340,9 +336,15 @@ Stream<AgentEvent> streamDirectPrompt({
         },
     ];
 
-    for (var hop = 0; hop < _maxHops; hop++) {
+    // 每一跳的思考都留着:查资料那几跳里想的(「先查一下这个角色」)和最后一跳一样
+    // 是这一轮怎么想出来的,只留最后一跳就看不出它为什么去查。
+    final thoughts = <String>[];
+    // 不限跳数(每跳 = 一次模型调用):模型不再调工具才收尾。原地打转的话只能靠
+    // 用户点停止 —— 订阅一取消,下一次 yield 就退出循环,finally 照常关连接。
+    while (true) {
       final hopStart = trace?.sinceStart() ?? 0;
       final buf = StringBuffer();
+      final reason = StringBuffer();
       await for (final d in directModelStream(
         client,
         endpoint,
@@ -352,19 +354,26 @@ Stream<AgentEvent> streamDirectPrompt({
         stream: stream,
         timeout: timeout,
         out: buf,
+        reasoning: reason,
       )) {
         yield d;
       }
       final raw = buf.toString();
+      final hopThink = joinThoughts([
+        reason.toString(),
+        directStreamView(raw).think,
+      ]);
+      if (hopThink.isNotEmpty) thoughts.add(hopThink);
       if (raw.trim().isEmpty) throw BackendException('模型回了一段空的');
       final hopRec = <String, Object?>{
         't': hopStart,
         'ms': (trace?.sinceStart() ?? 0) - hopStart,
         'reply': raw,
+        if (hopThink.isNotEmpty) 'reasoning': hopThink,
       };
       trace?.hops.add(hopRec);
       final calls = parseToolCalls(raw);
-      if (calls.isEmpty || hop == _maxHops - 1) {
+      if (calls.isEmpty) {
         final parsed = parseDirectReply(raw);
         final resolve = artistResolver(pre.plan, artists);
         if (libraryScope == 'all' && parsed.draw != null) {
@@ -395,7 +404,9 @@ Stream<AgentEvent> streamDirectPrompt({
           if (draw != parsed.draw) 'draw_expanded': draw,
           'resources': ledger,
         });
-        yield AgentDone(_toResult(reply, draw, ledger));
+        yield AgentDone(
+          _toResult(reply, draw, ledger, reasoning: thoughts.join('\n\n')),
+        );
         return;
       }
 
@@ -463,11 +474,13 @@ Stream<AgentEvent> streamDirectPrompt({
 AgentResult _toResult(
   String reply,
   Map<String, dynamic>? draw,
-  Map<String, Map<String, String>> resources,
-) {
+  Map<String, Map<String, String>> resources, {
+  String reasoning = '',
+}) {
   final d = draw ?? const <String, dynamic>{};
   return AgentResult(
     replyText: reply.isNotEmpty ? reply : '本喵在喵~',
+    reasoning: reasoning,
     positive: d['positive']?.toString() ?? '',
     negative: d['negative']?.toString() ?? '',
     characters: [
@@ -711,6 +724,10 @@ Stream<AgentDelta> directModelStream(
   required Duration timeout,
   required StringBuffer out,
 
+  /// 模型原生的思考(不含正文里的 `<Think>` 段 —— 那段在 [out] 里,调用方自己切)。
+  /// 不传就不收。
+  StringBuffer? reasoning,
+
   /// 关掉就是老样子:一个 POST 收完整段,一帧都不推。
   bool stream = true,
 }) async* {
@@ -724,27 +741,40 @@ Stream<AgentDelta> directModelStream(
     think: think,
     stream: stream,
   );
-  final req = http.Request('POST', uri)
-    ..headers.addAll({
-      'Content-Type': 'application/json',
-      'Accept': 'text/event-stream',
-      ...headers,
-    })
-    ..bodyBytes = utf8.encode(jsonEncode(body));
-
-  final http.StreamedResponse resp;
-  try {
-    resp = await c.send(req).timeout(timeout);
-  } on TimeoutException {
-    throw BackendException('模型没在时限内回复');
-  } catch (_) {
-    throw BackendException('连不上 ${uri.host}');
+  Future<http.StreamedResponse> send(Map<String, dynamic> body) async {
+    final req = http.Request('POST', uri)
+      ..headers.addAll({
+        'Content-Type': 'application/json',
+        'Accept': 'text/event-stream',
+        ...headers,
+      })
+      ..bodyBytes = utf8.encode(jsonEncode(body));
+    try {
+      return await c.send(req).timeout(timeout);
+    } on TimeoutException {
+      throw BackendException('模型没在时限内回复');
+    } catch (_) {
+      throw BackendException('连不上 ${uri.host}');
+    }
   }
 
+  var resp = await send(body);
   if (resp.statusCode < 200 || resp.statusCode >= 300) {
     final raw = await resp.stream.bytesToString().timeout(timeout);
-    throw BackendException(_errorOf(_tryJson(raw), resp.statusCode));
+    final msg = _errorOf(_tryJson(raw), resp.statusCode);
+    // OpenAI 的思考摘要要组织做过认证才给,没认证的整条请求 400。为了看思考
+    // 把人整个挡在外面不值:去掉摘要再发一次,照常出词,只是没有思考可看。
+    final retry = resp.statusCode == 400
+        ? withoutReasoningSummary(body, msg)
+        : null;
+    if (retry == null) throw BackendException(msg);
+    resp = await send(retry);
+    if (resp.statusCode < 200 || resp.statusCode >= 300) {
+      final raw = await resp.stream.bytesToString().timeout(timeout);
+      throw BackendException(_errorOf(_tryJson(raw), resp.statusCode));
+    }
   }
+  final reason = reasoning ?? StringBuffer();
   final Stream<String> lines;
   if (stream &&
       (resp.headers['content-type'] ?? '').toLowerCase().contains(
@@ -759,11 +789,13 @@ Stream<AgentDelta> directModelStream(
         );
   } else {
     final raw = await resp.stream.bytesToString().timeout(timeout);
-    final text = extractReplyText(e.format, _tryJson(raw));
+    final j = _tryJson(raw);
+    final text = extractReplyText(e.format, j);
     if (text.isNotEmpty || !stream || !raw.contains('data:')) {
       out.write(text); // 空的话由调用方报「模型回了一段空的」
+      reason.write(extractReplyReasoning(e.format, j));
       // 关着开关时一帧都不推:气泡就该老老实实转圈到出结果
-      if (text.isNotEmpty && stream) yield _liveDelta(out, StringBuffer());
+      if (text.isNotEmpty && stream) yield _liveDelta(out, reason);
       return;
     }
     // 类型写着 json、身子却是一串 SSE 帧 —— 有的中转就这德行。按帧收,
@@ -771,17 +803,19 @@ Stream<AgentDelta> directModelStream(
     lines = Stream.fromIterable(const LineSplitter().convert(raw));
   }
 
-  final reason = StringBuffer();
   var lastFrame = 0;
   await for (final line in lines) {
-    // `event:` 行与 `:` 心跳不看:三家的 data 自带类型,光看 data 就够
+    // `event:` 行与 `:` 心跳不看:各家的 data 自带类型,光看 data 就够
     if (!line.startsWith('data:')) continue;
     final data = line.substring(5).trim();
     if (data.isEmpty || data == '[DONE]') continue;
     final frame = _tryJson(data);
-    // Claude 的报错是流中间的一帧,不是 HTTP 状态码
+    // Claude / Responses 的报错是流中间的一帧,不是 HTTP 状态码
     if (frame is Map && frame['type'] == 'error') {
       throw BackendException(_errorOf(frame, resp.statusCode));
+    }
+    if (frame is Map && frame['type'] == 'response.failed') {
+      throw BackendException(_errorOf(frame['response'], resp.statusCode));
     }
     final d = directDelta(e.format, frame);
     if (d.text.isEmpty && d.reasoning.isEmpty) continue;
@@ -796,16 +830,38 @@ Stream<AgentDelta> directModelStream(
   yield _liveDelta(out, reason);
 }
 
+/// 请求被拒是因为要了思考摘要(OpenAI 没做组织认证)→ 去掉摘要的那份请求体;
+/// 别的原因返回 null,照常报错。
+///
+/// 只认 Responses 那种 `reasoning.summary`;判据是报错原话里提没提摘要 / 认证 ——
+/// OpenAI 没给专门的错误码,而只凭 400 就重发会把别的错(模型名写错)掩盖成一次白跑。
+Map<String, dynamic>? withoutReasoningSummary(
+  Map<String, dynamic> body,
+  String error,
+) {
+  final r = body['reasoning'];
+  if (r is! Map || !r.containsKey('summary')) return null;
+  final e = error.toLowerCase();
+  if (!e.contains('summar') && !e.contains('verif')) return null;
+  return {
+    ...body,
+    'reasoning': {...r}..remove('summary'),
+  };
+}
+
 AgentDelta _liveDelta(StringBuffer raw, StringBuffer reason) {
   final v = directStreamView(raw.toString());
   return AgentDelta(
     text: v.body,
-    reasoning: [
-      reason.toString().trim(),
-      v.think,
-    ].where((s) => s.isNotEmpty).join('\n'),
+    reasoning: joinThoughts([reason.toString(), v.think]),
   );
 }
+
+/// 几段思考拼成一段:各自去掉首尾空白,空的不要。
+String joinThoughts(List<String> parts) => [
+  for (final p in parts)
+    if (p.trim().isNotEmpty) p.trim(),
+].join('\n');
 
 Object? _tryJson(String s) {
   try {
@@ -815,11 +871,13 @@ Object? _tryJson(String s) {
   }
 }
 
-/// 流式响应的一帧 → 这一帧新增的字。三家形状各不相同,抽出来单测 —— 认错字段的
+/// 流式响应的一帧 → 这一帧新增的字。各家形状各不相同,抽出来单测 —— 认错字段的
 /// 表现是「一路空白、最后整段蹦出来」,跟模型自己慢分不出来。
 ///
-/// 思考在三家都是正文之外的另一个字段,所以分两路回:
-///   · OpenAI:`delta.reasoning_content`(DeepSeek 那套)或 `delta.reasoning`(OpenRouter)
+/// 思考在各家都是正文之外的另一个字段,所以分两路回:
+///   · OpenAI 兼容:见 [_openaiMessage](各家推理模型、中转、本地推理的几种写法)
+///   · Responses:`response.reasoning_summary_text.delta`(官方推理模型的摘要)、
+///     `response.reasoning_text.delta`(gpt-oss 这类开源模型的原文)
 ///   · Gemini:`parts[]` 里 `thought` 为真的那几段
 ///   · Claude:`thinking_delta`
 ({String text, String reasoning}) directDelta(
@@ -842,25 +900,21 @@ Object? _tryJson(String s) {
           reasoning: '',
         );
       }
-      final r = d['reasoning_content'] ?? d['reasoning'];
-      return (
-        text: d['content'] is String ? d['content'] as String : '',
-        reasoning: r is String ? r : '',
-      );
+      return _openaiMessage(d);
+    case AgentApiFormat.responses:
+      final delta = frame['delta'] is String ? frame['delta'] as String : '';
+      return switch (frame['type']) {
+        'response.output_text.delta' => (text: delta, reasoning: ''),
+        'response.reasoning_summary_text.delta' ||
+        'response.reasoning_text.delta' => (text: '', reasoning: delta),
+        // 摘要是分段写的(每段一个小标题),段与段之间空一行,不然全挤成一坨
+        'response.reasoning_summary_part.added'
+            when (frame['summary_index'] as num? ?? 0) > 0 =>
+          (text: '', reasoning: '\n\n'),
+        _ => none,
+      };
     case AgentApiFormat.google:
-      final cands = frame['candidates'];
-      if (cands is! List || cands.isEmpty) return none;
-      final first = cands.first;
-      if (first is! Map) return none;
-      final parts = (first['content'] as Map?)?['parts'];
-      if (parts is! List) return none;
-      final text = StringBuffer();
-      final think = StringBuffer();
-      for (final p in parts) {
-        if (p is! Map || p['text'] is! String) continue;
-        (p['thought'] == true ? think : text).write(p['text']);
-      }
-      return (text: text.toString(), reasoning: think.toString());
+      return _geminiParts(frame);
     case AgentApiFormat.anthropic:
       final d = frame['delta'];
       if (d is! Map) return none;
@@ -879,6 +933,78 @@ Object? _tryJson(String s) {
   }
 }
 
+/// OpenAI 兼容的一条消息(非流式的 `message` / 流式的 `delta`)→ 正文与思考。
+///
+/// 「OpenAI 兼容」只兼容到正文为止,思考各家各写各的:
+///   · `reasoning_content`:DeepSeek、通义、智谱、豆包、Kimi、硅基流动、LM Studio、老版 vLLM;
+///     多数中转把 Claude / Gemini 的思考也转成这个
+///   · `reasoning`:OpenRouter、Ollama、新版 vLLM
+///   · `reasoning_details[]`:OpenRouter 的另一份,有的模型 `reasoning` 空着、
+///     思考只在这里(原文 `text` 或摘要 `summary`;加密的那种没字可看)
+///   · `content` 是分段数组、思考段 `type: thinking`:Mistral 的推理模型
+/// 写在正文里的 `<think>` 那一派(MiniMax、部分本地模型)不在这里,留在正文里由
+/// [directStreamView] / [parseDirectReply] 切。
+({String text, String reasoning}) _openaiMessage(Map m) {
+  final text = StringBuffer();
+  final think = StringBuffer();
+  final c = m['content'];
+  if (c is String) {
+    text.write(c);
+  } else if (c is List) {
+    for (final p in c) {
+      if (p is! Map) continue;
+      if (p['type'] == 'thinking') {
+        think.write(_flatText(p['thinking']));
+      } else if (p['text'] is String) {
+        text.write(p['text']);
+      }
+    }
+  }
+  final r = m['reasoning_content'] ?? m['reasoning'];
+  if (r is String && r.isNotEmpty) {
+    think.write(r);
+  } else if (m['reasoning_details'] case final List details) {
+    for (final d in details) {
+      if (d is! Map) continue;
+      final t = d['text'] ?? d['summary'];
+      if (t is String) think.write(t);
+    }
+  }
+  return (text: text.toString(), reasoning: think.toString());
+}
+
+/// 字符串原样;分段数组(`[{type: text, text}]`)拼起来。
+String _flatText(Object? v) => switch (v) {
+  final String s => s,
+  final List l => [
+    for (final p in l)
+      if (p is String)
+        p
+      else if (p is Map && p['text'] is String)
+        p['text'] as String,
+  ].join(),
+  _ => '',
+};
+
+/// Gemini 的一个候选 → 正文与思考(`thought: true` 的那几段)。流式的每一帧和
+/// 非流式的整包是同一个形状。
+({String text, String reasoning}) _geminiParts(Map body) {
+  const none = (text: '', reasoning: '');
+  final cands = body['candidates'];
+  if (cands is! List || cands.isEmpty) return none;
+  final first = cands.first;
+  if (first is! Map) return none;
+  final parts = (first['content'] as Map?)?['parts'];
+  if (parts is! List) return none;
+  final text = StringBuffer();
+  final think = StringBuffer();
+  for (final p in parts) {
+    if (p is! Map || p['text'] is! String) continue;
+    (p['thought'] == true ? think : text).write(p['text']);
+  }
+  return (text: text.toString(), reasoning: think.toString());
+}
+
 /// 流到一半的原文 → 气泡里该显示的两块。
 ///
 /// 纯函数,每帧拿全量原文重算:`</Think>` 收尾那一刻正文会整段挪位,增量式拼接
@@ -894,7 +1020,11 @@ Object? _tryJson(String s) {
   for (final m in _thinkOpen.allMatches(raw)) {
     if (m.start < pos) continue; // 上一段 <Think> 内部的,不重复处理
     body.write(raw.substring(pos, m.start));
-    final close = _thinkClose.firstMatch(raw.substring(m.end));
+    // 收尾标签得和开头同名:`<think>` 里提到一句 `</thought>` 不算收尾
+    final close = RegExp(
+      '</${m[1]}>',
+      caseSensitive: false,
+    ).firstMatch(raw.substring(m.end));
     if (close == null) {
       think.add(raw.substring(m.end)); // 还没收尾:后面全算思考
       pos = raw.length;
@@ -913,7 +1043,7 @@ Object? _tryJson(String s) {
   );
 }
 
-/// 一次模型调用的请求头与请求体。三家的形状各不相同,抽出来单测 ——
+/// 一次模型调用的请求头与请求体。各家的形状各不相同,抽出来单测 ——
 /// 附图字段写错的表现是「模型说没看到图」,和它自己看走眼分不出来。
 ///
 /// 带图的那条 content 从字符串换成分段数组,**图在前、字在后**
@@ -928,6 +1058,13 @@ Object? _tryJson(String s) {
   bool stream = false,
 }) {
   final key = e.apiKey.trim();
+  final thinking = thinkFields(
+    e.format,
+    think,
+    model: e.model,
+    host: e.chatUri.host,
+    stream: stream,
+  );
   return switch (e.format) {
     AgentApiFormat.openai => (
       {'Authorization': 'Bearer $key'},
@@ -951,7 +1088,35 @@ Object? _tryJson(String s) {
             },
         ],
         if (stream) 'stream': true,
-        ...thinkFields(AgentApiFormat.openai, think),
+        ...thinking,
+      },
+    ),
+    AgentApiFormat.responses => (
+      {'Authorization': 'Bearer $key'},
+      {
+        'model': e.model,
+        'instructions': system,
+        'input': [
+          for (final m in msgs)
+            {
+              'role': m.role,
+              'content': switch (m.image) {
+                final i? => [
+                  {
+                    'type': 'input_image',
+                    'image_url': 'data:${i.mime};base64,${i.data}',
+                  },
+                  if (m.content.isNotEmpty)
+                    {'type': 'input_text', 'text': m.content},
+                ],
+                null => m.content,
+              },
+            },
+        ],
+        if (stream) 'stream': true,
+        // 历史每轮都是 app 自己带着发的,用不着服务端再替你存一份对话
+        'store': false,
+        ...thinking,
       },
     ),
     AgentApiFormat.google => (
@@ -977,16 +1142,19 @@ Object? _tryJson(String s) {
               ],
             },
         ],
-        ...thinkFields(AgentApiFormat.google, think),
+        ...thinking,
       },
     ),
     AgentApiFormat.anthropic => (
       {'x-api-key': key, 'anthropic-version': '2023-06-01'},
       {
         'model': e.model,
-        // Anthropic 必填,且没有"不限"这一档。开了思考还得**大于**思考预算,
-        // 否则整条请求会被拒:那笔预算是从 max_tokens 里切出去的。
-        'max_tokens': 4096 + _anthropicBudget(think),
+        // Anthropic 必填,且没有"不限"这一档。老模型开了思考还得**大于**思考预算,
+        // 否则整条请求会被拒:那笔预算是从 max_tokens 里切出去的。新模型(自适应思考)
+        // 想多少由它自己定,同样从这里面扣,给少了会想到一半被截断、正文一个字没写。
+        'max_tokens': _claudeLegacy.hasMatch(e.model)
+            ? 4096 + _anthropicBudget(think)
+            : 16000,
         'system': system,
         'messages': [
           for (final m in msgs)
@@ -1009,13 +1177,13 @@ Object? _tryJson(String s) {
             },
         ],
         if (stream) 'stream': true,
-        ...thinkFields(AgentApiFormat.anthropic, think),
+        ...thinking,
       },
     ),
   };
 }
 
-/// Anthropic 的思考预算(token)。0 = 不开。下限是它自己规定的 1024。
+/// Anthropic 老模型的思考预算(token)。0 = 不开。下限是它自己规定的 1024。
 int _anthropicBudget(ThinkLevel l) => switch (l) {
   ThinkLevel.auto || ThinkLevel.off => 0,
   ThinkLevel.low => 1024,
@@ -1024,73 +1192,228 @@ int _anthropicBudget(ThinkLevel l) => switch (l) {
   ThinkLevel.ultra => 16384,
 };
 
-/// 思考等级 → 各家请求体里的那几个字段。
+/// Gemini 的思考预算(token)。原生接口和 OpenAI 兼容口、通义都按这张表。
+int _thinkBudget(ThinkLevel l) => switch (l) {
+  ThinkLevel.off => 0,
+  ThinkLevel.low => 1024,
+  ThinkLevel.high => 16384,
+  ThinkLevel.ultra => 24576,
+  _ => 8192,
+};
+
+/// 还在用固定思考预算(`budget_tokens`)的 Claude:3.x、4、4.1、4.5。
 ///
-/// 三家的旋钮完全不是一回事:OpenAI 给的是档位字符串,另外两家要的是 **token 预算**。
-/// [ThinkLevel.auto] 一律返回空表 —— 不发这个字段,让模型/服务方用自己的默认。
-/// 中转不认这些字段时通常直接忽略,所以发了也不至于把请求打死。
-Map<String, dynamic> thinkFields(AgentApiFormat format, ThinkLevel level) {
-  if (level == ThinkLevel.auto) return const {};
-  switch (format) {
-    case AgentApiFormat.openai:
-      return {
-        'reasoning_effort': switch (level) {
-          // OpenAI 两头都封顶:没有「关」,minimal 是最低;也没有「超高」,
-          // high 是最高 —— 所以这两档各自撞在端点上,不是写漏了。
-          ThinkLevel.off => 'minimal',
-          ThinkLevel.low => 'low',
-          ThinkLevel.high || ThinkLevel.ultra => 'high',
-          _ => 'medium',
-        },
-      };
-    case AgentApiFormat.google:
-      return {
-        'generationConfig': {
-          'thinkingConfig': {
-            'thinkingBudget': switch (level) {
-              ThinkLevel.off => 0,
-              ThinkLevel.low => 1024,
-              ThinkLevel.high => 16384,
-              ThinkLevel.ultra => 24576,
-              _ => 8192,
-            },
+/// 4.6 起换成了自适应思考,4.7 起 `budget_tokens` 直接 400 —— 按模型名分两路。
+/// 认不出的名字(中转起的别名)按新的走:老模型在下线,新模型越来越多。
+/// 版本号可能写成 `4-5` 也可能写成 `4.5`(OpenRouter),后面可能跟日期。
+final _claudeLegacy = RegExp(
+  r'claude-3|(?:opus|sonnet|haiku)-4(?:[.-][015])?(?=$|-20\d{6}|[^0-9.-]|[.-][^0-9])',
+  caseSensitive: false,
+);
+
+/// 思考关不掉、默认就在想的 Claude(5 代起,以及 Fable / Mythos)。
+///
+/// 这几个模型默认**不回思考的字**(`display` 默认 `omitted`,思考块是空串),
+/// 要显示得明着要 `summarized`;想关也关不掉,`disabled` 是 400,只能把力度调低。
+final _claudeAlwaysThinks = RegExp(
+  r'(?:opus|sonnet|haiku)-[5-9]|fable|mythos',
+  caseSensitive: false,
+);
+
+/// 会思考的 Gemini(2.5 起)。只有这些认 `includeThoughts`。
+final _geminiThinks = RegExp(r'gemini-(?:2\.5|[3-9])', caseSensitive: false);
+
+/// 有推理能力的 OpenAI 模型:只有这些认 `reasoning`,别的(4o、4.1)带了就 400。
+/// `gpt-5-chat` 那几个名字里带 5 却是不推理的聊天模型。
+final _openaiReasons = RegExp(
+  r'(?:^|/)(?:o\d|gpt-5(?!.*chat)|gpt-oss|codex)',
+  caseSensitive: false,
+);
+
+/// [host] 是 [domain] 本身或它的子域。
+bool _hostIs(String host, String domain) =>
+    host == domain || host.endsWith('.$domain');
+
+/// 思考等级 → 请求体里的那几个字段。
+///
+/// 各家的旋钮完全不是一回事:OpenAI 给的是档位字符串,Gemini 要 token 预算,
+/// Claude 新老模型两套,国内几家还各有一个开关。
+///
+/// [ThinkLevel.auto] 的意思是「思考按模型自己的默认」—— **不替用户开也不替用户关**。
+/// 但「默认在想、默认不给看」的那几家(新 Claude、Gemini、OpenAI 推理模型)会补上
+/// 「把思考给我看」的那个字段,只改看不看得见,不改想不想、想多深。
+///
+/// 中转不认这些字段时通常直接忽略,所以发了也不至于把请求打死;
+/// 只对认得出的服务商(按 [host])发它家的私有字段 —— OpenAI 官方见到不认识的字段是 400。
+Map<String, dynamic> thinkFields(
+  AgentApiFormat format,
+  ThinkLevel level, {
+  String model = '',
+  String host = '',
+
+  /// 通义的开源模型开着思考时**只能流式**,非流式请求带 `enable_thinking: true` 直接 400。
+  bool stream = true,
+}) => switch (format) {
+  AgentApiFormat.openai => _openaiThink(
+    level,
+    model: model,
+    host: host.toLowerCase(),
+    stream: stream,
+  ),
+  AgentApiFormat.responses => _responsesThink(level, model),
+  AgentApiFormat.google => _geminiThink(level, model),
+  AgentApiFormat.anthropic => _claudeThink(level, model),
+};
+
+Map<String, dynamic> _openaiThink(
+  ThinkLevel level, {
+  required String model,
+  required String host,
+  required bool stream,
+}) {
+  // Gemini 的 OpenAI 兼容口:思考要在 extra_body 里另开,开了才会把思考
+  // 包成 `<thought>` 写进正文;`reasoning_effort` 和预算两个只能给一个。
+  if (_hostIs(host, 'generativelanguage.googleapis.com')) {
+    if (level == ThinkLevel.auto && !_geminiThinks.hasMatch(model)) {
+      return const {};
+    }
+    return {
+      'extra_body': {
+        'google': {
+          'thinking_config': {
+            if (level != ThinkLevel.auto)
+              'thinking_budget': _thinkBudget(level),
+            if (level != ThinkLevel.off) 'include_thoughts': true,
           },
         },
-      };
-    case AgentApiFormat.anthropic:
-      final budget = _anthropicBudget(level);
-      // 「关」在 Anthropic 这边就是不带 thinking 字段
-      if (budget == 0) return const {};
-      return {
-        'thinking': {'type': 'enabled', 'budget_tokens': budget},
-      };
+      },
+    };
   }
+  if (level == ThinkLevel.auto) return const {};
+  final on = level != ThinkLevel.off;
+  return {
+    'reasoning_effort': switch (level) {
+      // OpenAI 两头都封顶:没有「关」,minimal 是最低;也没有「超高」,
+      // high 是最高 —— 所以这两档各自撞在端点上,不是写漏了。
+      ThinkLevel.off => 'minimal',
+      ThinkLevel.low => 'low',
+      ThinkLevel.high || ThinkLevel.ultra => 'high',
+      _ => 'medium',
+    },
+    // 通义:思考靠 enable_thinking 开关,不认 reasoning_effort
+    if (host.startsWith('dashscope') && _hostIs(host, 'aliyuncs.com'))
+      if (!on)
+        'enable_thinking': false
+      else if (stream) ...{
+        'enable_thinking': true,
+        'thinking_budget': _thinkBudget(level),
+      },
+    // 智谱 / 豆包:thinking.type 开关
+    if (_hostIs(host, 'bigmodel.cn') ||
+        _hostIs(host, 'z.ai') ||
+        _hostIs(host, 'volces.com'))
+      'thinking': {'type': on ? 'enabled' : 'disabled'},
+  };
 }
 
-/// 三家的响应 → 正文。认错字段的表现是「模型回了一段空的」,和真的空回
-/// 长得一样,所以抽出来单测。
+Map<String, dynamic> _responsesThink(ThinkLevel level, String model) =>
+    switch (level) {
+      // 摘要是官方推理模型唯一能看的思考,不要就一个字都没有。
+      // 没认证的组织要了会被拒,那时去掉摘要重发(见 withoutReasoningSummary)。
+      ThinkLevel.auto =>
+        _openaiReasons.hasMatch(model)
+            ? {
+                'reasoning': {'summary': 'auto'},
+              }
+            : const {},
+      ThinkLevel.off => {
+        'reasoning': {'effort': 'minimal'},
+      },
+      _ => {
+        'reasoning': {
+          'effort': switch (level) {
+            ThinkLevel.low => 'low',
+            ThinkLevel.medium => 'medium',
+            _ => 'high',
+          },
+          'summary': 'auto',
+        },
+      },
+    };
+
+Map<String, dynamic> _geminiThink(ThinkLevel level, String model) {
+  // 不带 includeThoughts 时 Gemini 照想不误,只是一个字都不回
+  if (level == ThinkLevel.auto) {
+    return _geminiThinks.hasMatch(model)
+        ? {
+            'generationConfig': {
+              'thinkingConfig': {'includeThoughts': true},
+            },
+          }
+        : const {};
+  }
+  return {
+    'generationConfig': {
+      'thinkingConfig': {
+        'thinkingBudget': _thinkBudget(level),
+        if (level != ThinkLevel.off) 'includeThoughts': true,
+      },
+    },
+  };
+}
+
+Map<String, dynamic> _claudeThink(ThinkLevel level, String model) {
+  if (_claudeLegacy.hasMatch(model)) {
+    final budget = _anthropicBudget(level);
+    // 「关」「自动」在老模型上就是不带 thinking 字段(它们默认不想)
+    if (budget == 0) return const {};
+    return {
+      'thinking': {'type': 'enabled', 'budget_tokens': budget},
+    };
+  }
+  const adaptive = {'type': 'adaptive', 'display': 'summarized'};
+  final alwaysOn = _claudeAlwaysThinks.hasMatch(model);
+  return switch (level) {
+    // 4.6 ~ 4.8 默认不想,自动就不替它开;5 代默认在想,补上「给我看」
+    ThinkLevel.auto => alwaysOn ? const {'thinking': adaptive} : const {},
+    // 4.6 ~ 4.8 不带 thinking 就是不想;5 代关不掉(disabled 是 400),压到最低力度
+    ThinkLevel.off =>
+      alwaysOn
+          ? const {
+              'output_config': {'effort': 'low'},
+            }
+          : const {},
+    _ => {
+      'thinking': adaptive,
+      'output_config': {
+        'effort': switch (level) {
+          ThinkLevel.low => 'low',
+          ThinkLevel.medium => 'medium',
+          ThinkLevel.high => 'high',
+          _ => 'max',
+        },
+      },
+    },
+  };
+}
+
+/// 各家的响应 → 正文。认错字段的表现是「模型回了一段空的」,和真的空回
+/// 长得一样,所以抽出来单测。思考不算正文,见 [extractReplyReasoning]。
 String extractReplyText(AgentApiFormat format, Object? body) {
   if (body is! Map) return '';
   switch (format) {
     case AgentApiFormat.openai:
-      final choices = body['choices'];
-      if (choices is! List || choices.isEmpty) return '';
-      final first = choices.first;
-      if (first is! Map) return '';
+      final first = _firstChoice(body);
+      if (first == null) return '';
       final msg = first['message'];
-      if (msg is Map) return msg['content']?.toString() ?? '';
+      if (msg is Map) return _openaiMessage(msg).text;
       return first['text']?.toString() ?? '';
+    case AgentApiFormat.responses:
+      final text = _responsesOutput(body, 'message', 'output_text');
+      // 有的中转在顶上多给一个拼好的 output_text(官方 SDK 才有的便利字段)
+      return text.isNotEmpty ? text : (body['output_text']?.toString() ?? '');
     case AgentApiFormat.google:
-      final cands = body['candidates'];
-      if (cands is! List || cands.isEmpty) return '';
-      final first = cands.first;
-      if (first is! Map) return '';
-      final parts = (first['content'] as Map?)?['parts'];
-      if (parts is! List) return '';
-      return [
-        for (final p in parts)
-          if (p is Map && p['text'] != null) p['text'].toString(),
-      ].join();
+      return _geminiParts(body).text;
     case AgentApiFormat.anthropic:
       final content = body['content'];
       if (content is! List) return '';
@@ -1099,6 +1422,63 @@ String extractReplyText(AgentApiFormat format, Object? body) {
           if (p is Map && p['type'] == 'text') p['text']?.toString() ?? '',
       ].join();
   }
+}
+
+/// 各家的响应 → 模型原生的思考(非流式那条)。没有就是空串。
+/// 写在正文里的 `<Think>` 段不在这里,见 [directStreamView]。
+String extractReplyReasoning(AgentApiFormat format, Object? body) {
+  if (body is! Map) return '';
+  switch (format) {
+    case AgentApiFormat.openai:
+      final msg = _firstChoice(body)?['message'];
+      return msg is Map ? _openaiMessage(msg).reasoning : '';
+    case AgentApiFormat.responses:
+      return joinThoughts([
+        _responsesOutput(body, 'reasoning', 'summary_text', field: 'summary'),
+        _responsesOutput(body, 'reasoning', 'reasoning_text'),
+      ]);
+    case AgentApiFormat.google:
+      return _geminiParts(body).reasoning;
+    case AgentApiFormat.anthropic:
+      final content = body['content'];
+      if (content is! List) return '';
+      return joinThoughts([
+        for (final p in content)
+          if (p is Map && p['type'] == 'thinking') '${p['thinking'] ?? ''}',
+      ]);
+  }
+}
+
+Map? _firstChoice(Map body) {
+  final choices = body['choices'];
+  if (choices is! List || choices.isEmpty) return null;
+  final first = choices.first;
+  return first is Map ? first : null;
+}
+
+/// Responses 的 `output[]` 里 [itemType] 那几项的 [field] 下 [partType] 那几段文字。
+/// 正文在 message 的 content 里,思考摘要在 reasoning 的 summary 里;
+/// 多段之间空一行(摘要每段一个小标题)。
+String _responsesOutput(
+  Map body,
+  String itemType,
+  String partType, {
+  String field = 'content',
+}) {
+  final output = body['output'];
+  if (output is! List) return '';
+  final parts = <String>[];
+  for (final item in output) {
+    if (item is! Map || item['type'] != itemType) continue;
+    final list = item[field];
+    if (list is! List) continue;
+    for (final p in list) {
+      if (p is Map && p['type'] == partType && p['text'] is String) {
+        parts.add(p['text'] as String);
+      }
+    }
+  }
+  return parts.join(itemType == 'reasoning' ? '\n\n' : '');
 }
 
 /// 错误体 → 给用户看的一句话。三家都把话装在 `error` 里,但形状不同。

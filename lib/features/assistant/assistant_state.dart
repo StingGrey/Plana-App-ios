@@ -840,6 +840,9 @@ class AssistantNotifier extends Notifier<AssistantState> {
             role: MsgRole.ai,
             text: text,
             at: _now,
+            // 两条路都把思考带回来了(后端在 final 的 reasoning 里,直连在 app 里收),
+            // 不存的话气泡一换场,刚才看着它写的那段思考就没了
+            reasoning: r.reasoning.trim(),
             tools: List.of(tools),
             draw: draw,
             resources: r.resources,

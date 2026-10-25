@@ -3,6 +3,9 @@
 /// 四样必填之外还给一颗「拉取模型列表」:模型 id 抄错一个字符的表现是发出去 404,
 /// 而 404 在中转服务上又常被包成别的错,查半天查不到根因。拉不到也不拦着 ——
 /// 有些自建服务压根没有列表接口,手填照样能用。
+///
+/// 一个接口可以挂好几个模型(同一个地址、同一把 Key),列表里勾几个就挂几个,
+/// 手填的一个个加。选模型的弹层里每个模型单独一行。
 library;
 
 import 'dart:async';
@@ -46,8 +49,11 @@ class _EndpointSheetState extends ConsumerState<_EndpointSheet> {
   late final _name = TextEditingController(text: widget.source?.name ?? '');
   late final _base = TextEditingController(text: widget.source?.baseUrl ?? '');
   late final _key = TextEditingController(text: widget.source?.apiKey ?? '');
-  late final _model = TextEditingController(text: widget.source?.model ?? '');
+
+  /// 手填模型的那一格。填了没点「添加」就保存的,保存时一并收进去。
+  final _model = TextEditingController();
   late final _path = TextEditingController(text: widget.source?.apiPath ?? '');
+  late final List<String> _models = [...?widget.source?.models];
 
   late AgentApiFormat _format = widget.source?.format ?? AgentApiFormat.openai;
   bool _loading = false;
@@ -68,9 +74,19 @@ class _EndpointSheetState extends ConsumerState<_EndpointSheet> {
     format: _format,
     baseUrl: _base.text.trim(),
     apiKey: _key.text.trim(),
-    model: _model.text.trim(),
+    models: cleanModelList([..._models, _model.text]),
     apiPath: _path.text.trim(),
   );
+
+  void _addTyped() {
+    final added = cleanModelList([..._models, _model.text]);
+    setState(() {
+      _models
+        ..clear()
+        ..addAll(added);
+      _model.clear();
+    });
+  }
 
   Future<void> _pickModel() async {
     final draft = _draft();
@@ -92,13 +108,25 @@ class _EndpointSheetState extends ConsumerState<_EndpointSheet> {
       if (mounted) setState(() => _loading = false);
     }
     if (!mounted) return;
-    final picked = await _showModelPicker(context, models, _model.text.trim());
-    if (picked != null && mounted) setState(() => _model.text = picked);
+    final picked = await _showModelPicker(context, models, _models.toSet());
+    if (picked == null || !mounted) return;
+    setState(() {
+      final next = [
+        // 手填的(列表里没有的)不受勾选影响;列表里有的按勾没勾去留,顺序不动
+        for (final m in _models)
+          if (!models.contains(m) || picked.contains(m)) m,
+        for (final m in models)
+          if (picked.contains(m) && !_models.contains(m)) m,
+      ];
+      _models
+        ..clear()
+        ..addAll(next);
+    });
   }
 
   Future<void> _save() async {
     final draft = _draft();
-    if (draft.model.isEmpty) {
+    if (draft.models.isEmpty) {
       hintSnack(context, '还没填模型', icon: Icons.error_outline);
       return;
     }
@@ -136,14 +164,35 @@ class _EndpointSheetState extends ConsumerState<_EndpointSheet> {
           child: SegmentedButton<AgentApiFormat>(
             segments: [
               for (final f in AgentApiFormat.values)
-                ButtonSegment(value: f, label: Text(agentApiFormatLabel(f))),
+                if (f != AgentApiFormat.responses)
+                  ButtonSegment(value: f, label: Text(agentApiFormatLabel(f))),
             ],
-            selected: {_format},
+            // Responses 是 OpenAI 那段底下的一个开关,不单占一段
+            selected: {
+              _format == AgentApiFormat.responses
+                  ? AgentApiFormat.openai
+                  : _format,
+            },
             showSelectedIcon: false,
             style: const ButtonStyle(visualDensity: VisualDensity.compact),
             onSelectionChanged: (v) => setState(() => _format = v.first),
           ),
         ),
+        if (_format == AgentApiFormat.openai ||
+            _format == AgentApiFormat.responses)
+          SettingRow(
+            icon: Icons.psychology_outlined,
+            title: '用 Responses 接口',
+            desc:
+                'OpenAI 官方的推理模型(o 系、GPT-5)只在这个接口上给思考过程。'
+                '中转和别家模型大多只认老接口,保持关闭',
+            value: _format == AgentApiFormat.responses,
+            onChanged: (on) => setState(
+              () => _format = on
+                  ? AgentApiFormat.responses
+                  : AgentApiFormat.openai,
+            ),
+          ),
         _field(
           '接口地址',
           _base,
@@ -159,20 +208,44 @@ class _EndpointSheetState extends ConsumerState<_EndpointSheet> {
         ),
         _field('API Key', _key, obscure: true),
         settingSection(context, '模型'),
+        if (_models.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 2),
+            child: Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final m in _models)
+                  InputChip(
+                    label: Text(m),
+                    visualDensity: VisualDensity.compact,
+                    deleteButtonTooltipMessage: '移除',
+                    onDeleted: () => setState(() => _models.remove(m)),
+                  ),
+              ],
+            ),
+          ),
         Padding(
-          padding: const EdgeInsets.fromLTRB(20, 2, 20, 8),
+          padding: const EdgeInsets.fromLTRB(20, 6, 20, 8),
           child: Row(
             children: [
               Expanded(
                 child: TextField(
                   controller: _model,
                   autocorrect: false,
-                  decoration: const InputDecoration(
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => _addTyped(),
+                  decoration: InputDecoration(
                     isDense: true,
-                    labelText: '模型',
+                    labelText: _models.isEmpty ? '模型' : '再加一个模型',
                     hintText: 'gpt-5.6-luna',
                     floatingLabelBehavior: FloatingLabelBehavior.always,
-                    border: OutlineInputBorder(),
+                    border: const OutlineInputBorder(),
+                    suffixIcon: IconButton(
+                      tooltip: '添加',
+                      icon: const Icon(Icons.add, size: 20),
+                      onPressed: _addTyped,
+                    ),
                   ),
                 ),
               ),
@@ -240,12 +313,13 @@ class _EndpointSheetState extends ConsumerState<_EndpointSheet> {
   );
 }
 
-/// 模型列表选择器。条数可能上百,给个搜索框。
-Future<String?> _showModelPicker(
+/// 模型列表选择器。条数可能上百,给个搜索框;可以多选,勾上的都挂到这个接口上。
+/// 返回勾选结果,关掉不算数(null)。
+Future<Set<String>?> _showModelPicker(
   BuildContext context,
   List<String> models,
-  String current,
-) => showModalBottomSheet<String>(
+  Set<String> current,
+) => showModalBottomSheet<Set<String>>(
   context: context,
   isScrollControlled: true,
   builder: (_) => _ModelPicker(models: models, current: current),
@@ -255,7 +329,7 @@ class _ModelPicker extends StatefulWidget {
   const _ModelPicker({required this.models, required this.current});
 
   final List<String> models;
-  final String current;
+  final Set<String> current;
 
   @override
   State<_ModelPicker> createState() => _ModelPickerState();
@@ -263,6 +337,7 @@ class _ModelPicker extends StatefulWidget {
 
 class _ModelPickerState extends State<_ModelPicker> {
   String _q = '';
+  late final Set<String> _sel = {...widget.current};
 
   @override
   Widget build(BuildContext context) {
@@ -272,6 +347,7 @@ class _ModelPickerState extends State<_ModelPicker> {
       for (final m in widget.models)
         if (q.isEmpty || m.toLowerCase().contains(q)) m,
     ];
+    final picked = widget.models.where(_sel.contains).length;
     return SafeArea(
       child: ConstrainedBox(
         constraints: BoxConstraints(
@@ -298,7 +374,7 @@ class _ModelPickerState extends State<_ModelPicker> {
                 itemCount: list.length,
                 itemBuilder: (context, i) {
                   final m = list[i];
-                  final sel = m == widget.current;
+                  final sel = _sel.contains(m);
                   return ListTile(
                     dense: true,
                     title: Text(
@@ -308,12 +384,25 @@ class _ModelPickerState extends State<_ModelPicker> {
                         color: sel ? scheme.primary : null,
                       ),
                     ),
-                    trailing: sel
-                        ? Icon(Icons.check, size: 18, color: scheme.primary)
-                        : null,
-                    onTap: () => Navigator.pop(context, m),
+                    trailing: Icon(
+                      sel ? Icons.check_box : Icons.check_box_outline_blank,
+                      size: 20,
+                      color: sel ? scheme.primary : scheme.outline,
+                    ),
+                    onTap: () =>
+                        setState(() => sel ? _sel.remove(m) : _sel.add(m)),
                   );
                 },
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 6, 20, 8),
+              child: SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  onPressed: () => Navigator.pop(context, _sel),
+                  child: Text(picked == 0 ? '完成' : '完成(已选 $picked 个)'),
+                ),
               ),
             ),
           ],

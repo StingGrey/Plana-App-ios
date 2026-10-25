@@ -158,18 +158,46 @@ final agentModelsProvider = FutureProvider<AgentModelList>((ref) async {
   return parseAgentModels(j);
 });
 
-/// 选中自定义接口时,存的是这个前缀加接口 id。
+/// 选中自定义接口时,存的是这个前缀加接口 id,再加 `:模型`。
 ///
 /// 与后端渠道共用一个偏好键:两者是**互斥的一次选择**,分两个键存就会出现
 /// 「都选着」这种表达不出来的状态,界面还得再判一次谁优先。
+///
+/// 模型名里可能带冒号(Ollama 的 `qwen3:8b`)和斜杠(OpenRouter 的
+/// `anthropic/claude-…`),接口 id 两样都不带 —— 所以按 id 后的**第一个**冒号切。
+/// 老存档只有 `custom:<id>`,按那个接口的第一个模型算。
 const kCustomKeyPrefix = 'custom:';
 
-String customModelKey(String endpointId) => '$kCustomKeyPrefix$endpointId';
+String customModelKey(String endpointId, [String model = '']) => model.isEmpty
+    ? '$kCustomKeyPrefix$endpointId'
+    : '$kCustomKeyPrefix$endpointId:$model';
+
+/// 选中的是不是自定义接口;是就给出接口 id 和模型(没写模型是空串)。
+({String id, String model})? customPickOf(String key) {
+  if (!key.startsWith(kCustomKeyPrefix)) return null;
+  final rest = key.substring(kCustomKeyPrefix.length);
+  final i = rest.indexOf(':');
+  return i < 0
+      ? (id: rest, model: '')
+      : (id: rest.substring(0, i), model: rest.substring(i + 1));
+}
 
 /// 选中的是不是自定义接口;是就给出接口 id。
-String? customEndpointIdOf(String key) => key.startsWith(kCustomKeyPrefix)
-    ? key.substring(kCustomKeyPrefix.length)
-    : null;
+String? customEndpointIdOf(String key) => customPickOf(key)?.id;
+
+/// 偏好 → 这一轮实际用的接口(模型已经换好)。找不到这个接口是 null。
+///
+/// 选过的模型后来从接口里删掉了,就回落第一个 —— 当成没选过,别让人卡在一个
+/// 已经不存在的模型上发一条必然 404 的请求。
+CustomEndpoint? resolveCustomPick(String key, List<CustomEndpoint> endpoints) {
+  final pick = customPickOf(key);
+  if (pick == null) return null;
+  for (final e in endpoints) {
+    if (e.id != pick.id) continue;
+    return e.models.contains(pick.model) ? e.withModel(pick.model) : e;
+  }
+  return null;
+}
 
 const _key = 'assistant_model';
 
@@ -239,13 +267,12 @@ final assistantBackendAvailableProvider = Provider<bool>((ref) {
 final assistantModelProvider = Provider<AgentModelChoice?>((ref) {
   final pinned = ref.watch(assistantModelPrefProvider).value ?? '';
   // 自定义接口不在后端那张表里,名字从本机的接口列表取
-  final custom = customEndpointIdOf(pinned);
+  final custom = resolveCustomPick(
+    pinned,
+    ref.watch(customEndpointsProvider).value ?? const [],
+  );
   if (custom != null) {
-    for (final e in ref.watch(customEndpointsProvider).value ?? const []) {
-      if (e.id == custom) {
-        return AgentModelChoice(key: pinned, name: e.displayName);
-      }
-    }
+    return AgentModelChoice(key: pinned, name: custom.pickLabel);
   }
   return ref
       .watch(agentModelsProvider)
@@ -255,13 +282,10 @@ final assistantModelProvider = Provider<AgentModelChoice?>((ref) {
 
 /// 这一轮该走哪条路:非 null = 直连这个自定义接口,null = 走 Plana 后端。
 final assistantEndpointProvider = Provider<CustomEndpoint?>((ref) {
-  final id = customEndpointIdOf(
+  final e = resolveCustomPick(
     ref.watch(assistantModelPrefProvider).value ?? '',
+    ref.watch(customEndpointsProvider).value ?? const [],
   );
-  if (id == null) return null;
-  for (final e in ref.watch(customEndpointsProvider).value ?? const []) {
-    // 填不全的不算数:发出去必然失败,不如当没选,回落后端那条
-    if (e.id == id && e.usable) return e;
-  }
-  return null;
+  // 填不全的不算数:发出去必然失败,不如当没选,回落后端那条
+  return e != null && e.usable ? e : null;
 });

@@ -429,6 +429,7 @@ class AssistantMsg {
     required this.role,
     required this.text,
     required this.at,
+    this.reasoning = '',
     this.imageHash,
     this.withCanvas = false,
     this.mode = AssistantMode.normal,
@@ -449,6 +450,12 @@ class AssistantMsg {
 
   /// UNIX 毫秒。
   final int at;
+
+  /// 模型这一轮的思考过程(原生思考 + 正文里的 `<Think>` 段)。仅 [MsgRole.ai]。
+  ///
+  /// 只供人看:不进下一轮的对话历史 —— 回带给模型的是它说出口的话,
+  /// 不是它的草稿纸。空 = 这个模型不给看,或这条是老版本存的。
+  final String reasoning;
 
   /// 用户这条带的图(blob 键)。仅 [MsgRole.user]。
   final String? imageHash;
@@ -520,6 +527,7 @@ class AssistantMsg {
     role: role,
     text: text ?? this.text,
     at: at,
+    reasoning: reasoning,
     imageHash: imageHash,
     withCanvas: withCanvas,
     mode: mode,
@@ -537,6 +545,7 @@ class AssistantMsg {
     'role': role.name,
     'text': text,
     'at': at,
+    if (reasoning.isNotEmpty) 'reasoning': reasoning,
     if (imageHash != null) 'imageHash': imageHash,
     if (withCanvas) 'withCanvas': true,
     if (mode != AssistantMode.normal) 'mode': mode.name,
@@ -554,6 +563,7 @@ class AssistantMsg {
     role: MsgRole.values.asNameMap()[j['role']] ?? MsgRole.ai,
     text: j['text']?.toString() ?? '',
     at: (j['at'] as num?)?.toInt() ?? 0,
+    reasoning: j['reasoning']?.toString() ?? '',
     imageHash: j['imageHash'] as String?,
     withCanvas: j['withCanvas'] == true,
     mode: AssistantMode.values.asNameMap()[j['mode']] ?? AssistantMode.normal,

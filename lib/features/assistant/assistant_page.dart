@@ -401,7 +401,7 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
   /// 长按菜单。原生能力红利:长按是一等公民,不做「先选中再点按钮」那套。
   ///
   ///   用户的话:复制内容 / 编辑该消息 / 从这里重新生成
-  ///   AI 回复:复制内容 / 重新生成(重发它回的那一句)
+  ///   AI 回复:复制内容 / 复制思考过程(有的话) / 重新生成(重发它回的那一句)
   Future<void> _menu(AssistantMsg m) async {
     if (m.role == MsgRole.error) return;
     Haptics.medium();
@@ -418,6 +418,12 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
               title: const Text('复制内容'),
               onTap: () => Navigator.pop(context, 'copy'),
             ),
+            if (m.reasoning.isNotEmpty)
+              ListTile(
+                leading: const Icon(Icons.psychology_outlined),
+                title: const Text('复制思考过程'),
+                onTap: () => Navigator.pop(context, 'copyThink'),
+              ),
             if (isUser)
               ListTile(
                 leading: const Icon(Icons.edit_outlined),
@@ -441,6 +447,8 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
     switch (action) {
       case 'copy':
         await copyText(context, m.text);
+      case 'copyThink':
+        await copyText(context, m.reasoning);
       case 'edit':
         if (!await _confirmDropLater(m)) {
           dropFocusSoon(); // 不改了:同样别让焦点还回输入框
@@ -1056,6 +1064,8 @@ class _MsgTile extends ConsumerWidget {
                         ),
                       ),
                     ),
+                  if (msg.reasoning.isNotEmpty)
+                    _ThinkFold(text: msg.reasoning, fontSize: fontSize),
                   ReplyBody(msg.text, fontSize: fontSize),
                   if (asText) ...[
                     const SizedBox(height: 10),
@@ -1432,6 +1442,93 @@ class _PendingBubbleState extends State<_PendingBubble> {
       ),
     ),
   );
+}
+
+/// 跑完之后的思考过程:默认收着,只占一行「思考过程」,点开看全文。
+///
+/// 等待那会儿思考是摊开、只露最新几行的(见 [_PendingBubble]);跑完了该看的是答案,
+/// 所以收起来。但不能丢 —— 「它怎么写成这样」多半得翻思考才知道。
+class _ThinkFold extends StatefulWidget {
+  const _ThinkFold({required this.text, required this.fontSize});
+
+  final String text;
+  final double fontSize;
+
+  @override
+  State<_ThinkFold> createState() => _ThinkFoldState();
+}
+
+class _ThinkFoldState extends State<_ThinkFold> {
+  bool _open = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    final style = context.texts.labelSmall!.copyWith(
+      fontSize: widget.fontSize - 2,
+      height: 1.5,
+      color: scheme.outline,
+    );
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => setState(() => _open = !_open),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.psychology_outlined,
+                  size: widget.fontSize + 1,
+                  color: scheme.outline,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  '思考过程',
+                  style: style.copyWith(fontSize: widget.fontSize - 1),
+                ),
+                const SizedBox(width: 2),
+                AnimatedRotation(
+                  turns: _open ? .5 : 0,
+                  duration: Motion.fast,
+                  curve: Motion.standard,
+                  child: Icon(
+                    Icons.expand_more,
+                    size: widget.fontSize + 2,
+                    color: scheme.outline,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          AnimatedSize(
+            duration: Motion.fast,
+            curve: Motion.standard,
+            alignment: Alignment.topLeft,
+            child: _open
+                ? Container(
+                    margin: const EdgeInsets.only(top: 6),
+                    padding: const EdgeInsets.only(left: 10),
+                    decoration: BoxDecoration(
+                      border: Border(
+                        left: BorderSide(
+                          color: scheme.outlineVariant,
+                          width: 2,
+                        ),
+                      ),
+                    ),
+                    child: Text(widget.text, style: style),
+                  )
+                : const SizedBox(width: 1),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 /// 「思考中 · 12 秒」这一行。等待气泡与刚换过来的回复气泡共用 —— 换场时两边

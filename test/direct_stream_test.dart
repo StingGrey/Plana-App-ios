@@ -14,6 +14,7 @@ import 'package:plana_app/core/net/backend_client.dart';
 import 'package:plana_app/features/assistant/assistant_settings.dart';
 import 'package:plana_app/features/assistant/custom_endpoint.dart';
 import 'package:plana_app/features/assistant/direct_agent.dart';
+import 'package:plana_app/features/assistant/preset_rules.dart';
 
 CustomEndpoint _ep(AgentApiFormat f) => CustomEndpoint(
   id: 'e1',
@@ -25,8 +26,7 @@ CustomEndpoint _ep(AgentApiFormat f) => CustomEndpoint(
 );
 
 /// 一段 SSE 响应体。
-String _sse(List<String> frames) =>
-    frames.map((f) => 'data: $f\n\n').join();
+String _sse(List<String> frames) => frames.map((f) => 'data: $f\n\n').join();
 
 MockClient _streamingClient(
   String body, {
@@ -42,12 +42,13 @@ MockClient _streamingClient(
   );
 });
 
-Future<({String raw, List<AgentDelta> deltas})> _run(
+Future<({String raw, List<AgentDelta> deltas, String reasoning})> _run(
   http.Client c,
   CustomEndpoint e, {
   bool stream = true,
 }) async {
   final out = StringBuffer();
+  final reasoning = StringBuffer();
   final deltas = await directModelStream(
     c,
     e,
@@ -56,9 +57,10 @@ Future<({String raw, List<AgentDelta> deltas})> _run(
     think: ThinkLevel.auto,
     timeout: const Duration(seconds: 5),
     out: out,
+    reasoning: reasoning,
     stream: stream,
   ).toList();
-  return (raw: out.toString(), deltas: deltas);
+  return (raw: out.toString(), deltas: deltas, reasoning: reasoning.toString());
 }
 
 void main() {
@@ -162,6 +164,108 @@ void main() {
     });
   });
 
+  group('directDelta:各家的思考字段', () {
+    test('OpenRouter:reasoning 空着时从 reasoning_details 取', () {
+      expect(
+        directDelta(AgentApiFormat.openai, {
+          'choices': [
+            {
+              'delta': {
+                'reasoning': '',
+                'reasoning_details': [
+                  {'type': 'reasoning.summary', 'summary': '摘要'},
+                  {'type': 'reasoning.encrypted', 'data': 'xx'},
+                ],
+              },
+            },
+          ],
+        }),
+        (text: '', reasoning: '摘要'),
+      );
+      // 两样都有时只取 reasoning,不重复
+      expect(
+        directDelta(AgentApiFormat.openai, {
+          'choices': [
+            {
+              'delta': {
+                'reasoning': '想',
+                'reasoning_details': [
+                  {'type': 'reasoning.text', 'text': '想'},
+                ],
+              },
+            },
+          ],
+        }),
+        (text: '', reasoning: '想'),
+      );
+    });
+
+    test('Mistral:delta.content 是分段数组', () {
+      expect(
+        directDelta(AgentApiFormat.openai, {
+          'choices': [
+            {
+              'delta': {
+                'content': [
+                  {
+                    'type': 'thinking',
+                    'thinking': [
+                      {'type': 'text', 'text': '想'},
+                    ],
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        (text: '', reasoning: '想'),
+      );
+    });
+
+    test('Responses:正文、摘要、开源模型原文三种增量', () {
+      expect(
+        directDelta(AgentApiFormat.responses, {
+          'type': 'response.output_text.delta',
+          'delta': '好的',
+        }),
+        (text: '好的', reasoning: ''),
+      );
+      expect(
+        directDelta(AgentApiFormat.responses, {
+          'type': 'response.reasoning_summary_text.delta',
+          'delta': '想',
+        }),
+        (text: '', reasoning: '想'),
+      );
+      expect(
+        directDelta(AgentApiFormat.responses, {
+          'type': 'response.reasoning_text.delta',
+          'delta': '想',
+        }),
+        (text: '', reasoning: '想'),
+      );
+      // 第二段摘要开头空一行;第一段不空
+      expect(
+        directDelta(AgentApiFormat.responses, {
+          'type': 'response.reasoning_summary_part.added',
+          'summary_index': 1,
+        }).reasoning,
+        '\n\n',
+      );
+      expect(
+        directDelta(AgentApiFormat.responses, {
+          'type': 'response.reasoning_summary_part.added',
+          'summary_index': 0,
+        }).reasoning,
+        '',
+      );
+      expect(
+        directDelta(AgentApiFormat.responses, {'type': 'response.completed'}),
+        (text: '', reasoning: ''),
+      );
+    });
+  });
+
   group('directStreamView', () {
     test('收完的 <Think> 划到思考,正文接着往下', () {
       final v = directStreamView('<Think>先想想</Think>好的,画一张');
@@ -242,9 +346,7 @@ void main() {
     test('Gemini:换成 streamGenerateContent 并带 alt=sse', () async {
       late Uri uri;
       final c = _streamingClient(
-        _sse([
-          '{"candidates":[{"content":{"parts":[{"text":"好的"}]}}]}',
-        ]),
+        _sse(['{"candidates":[{"content":{"parts":[{"text":"好的"}]}}]}']),
         onRequest: (req, _) => uri = req.url,
       );
       final r = await _run(c, _ep(AgentApiFormat.google));
@@ -361,6 +463,157 @@ void main() {
       );
     });
 
+    test('Responses:打 /responses,带 instructions 与摘要,流里正文和思考分开', () async {
+      late Uri uri;
+      late Map<String, dynamic> sent;
+      final c = _streamingClient(
+        [
+          'event: response.reasoning_summary_text.delta\n'
+              'data: {"type":"response.reasoning_summary_text.delta","delta":"想"}\n\n',
+          'event: response.output_text.delta\n'
+              'data: {"type":"response.output_text.delta","delta":"好的"}\n\n',
+        ].join(),
+        onRequest: (req, b) {
+          uri = req.url;
+          sent = jsonDecode(b) as Map<String, dynamic>;
+        },
+      );
+      final r = await _run(
+        c,
+        _ep(AgentApiFormat.responses).withModel('gpt-5.6'),
+      );
+
+      expect(uri.toString(), 'http://api.test/v1/responses');
+      expect(sent['instructions'], 'sys');
+      expect(sent['input'], [
+        {'role': 'user', 'content': '画一张'},
+      ]);
+      expect(sent['reasoning'], {'summary': 'auto'});
+      expect(sent['store'], isFalse);
+      expect(r.raw, '好的');
+      expect(r.reasoning, '想');
+      expect(r.deltas.last.reasoning, '想');
+    });
+
+    test('Responses:没认证不给摘要 → 去掉摘要重发一次,照常出词', () async {
+      final sent = <Map<String, dynamic>>[];
+      final c = MockClient.streaming((req, bodyStream) async {
+        sent.add(
+          jsonDecode(utf8.decode(await bodyStream.toBytes()))
+              as Map<String, dynamic>,
+        );
+        if (sent.length == 1) {
+          return http.StreamedResponse(
+            Stream.value(
+              utf8.encode(
+                jsonEncode({
+                  'error': {
+                    'message':
+                        'Your organization must be verified to generate reasoning summaries.',
+                  },
+                }),
+              ),
+            ),
+            400,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.StreamedResponse(
+          Stream.value(
+            utf8.encode(
+              _sse(['{"type":"response.output_text.delta","delta":"好的"}']),
+            ),
+          ),
+          200,
+          headers: {'content-type': 'text/event-stream'},
+        );
+      });
+      final r = await _run(
+        c,
+        _ep(AgentApiFormat.responses).withModel('o4-mini'),
+      );
+
+      expect(sent, hasLength(2));
+      expect(
+        (sent.last['reasoning'] as Map?)?.containsKey('summary'),
+        isNot(true),
+      );
+      expect(r.raw, '好的');
+    });
+
+    test('别的 400 不重发:模型名写错不能被掩盖成白跑一趟', () async {
+      var calls = 0;
+      final c = MockClient.streaming((req, _) async {
+        calls++;
+        return http.StreamedResponse(
+          Stream.value(
+            utf8.encode(
+              jsonEncode({
+                'error': {'message': 'model not found'},
+              }),
+            ),
+          ),
+          400,
+          headers: {'content-type': 'application/json'},
+        );
+      });
+      await expectLater(
+        _run(c, _ep(AgentApiFormat.responses).withModel('gpt-5')),
+        throwsA(isA<BackendException>()),
+      );
+      expect(calls, 1);
+    });
+
+    test('Responses 流中途失败:把原因报出来', () async {
+      final c = _streamingClient(
+        _sse([
+          '{"type":"response.failed","response":{"error":{"message":"上游过载"}}}',
+        ]),
+      );
+      await expectLater(
+        _run(c, _ep(AgentApiFormat.responses)),
+        throwsA(
+          isA<BackendException>().having((e) => e.message, 'message', '上游过载'),
+        ),
+      );
+    });
+
+    test('Gemini 自动档:会思考的模型请求里带 includeThoughts', () async {
+      late Map<String, dynamic> sent;
+      final c = _streamingClient(
+        _sse([
+          '{"candidates":[{"content":{"parts":[{"text":"想","thought":true},{"text":"好的"}]}}]}',
+        ]),
+        onRequest: (_, b) => sent = jsonDecode(b) as Map<String, dynamic>,
+      );
+      final r = await _run(
+        c,
+        _ep(AgentApiFormat.google).withModel('gemini-3.7-flash'),
+      );
+      expect(
+        ((sent['generationConfig'] as Map)['thinkingConfig']
+            as Map)['includeThoughts'],
+        isTrue,
+      );
+      expect(r.raw, '好的', reason: '思考段不进原文,不然会被当正文解析');
+      expect(r.reasoning, '想');
+    });
+
+    test('非流式也把原生思考交出来', () async {
+      final c = _streamingClient(
+        jsonEncode({
+          'content': [
+            {'type': 'thinking', 'thinking': '想'},
+            {'type': 'text', 'text': '好的'},
+          ],
+        }),
+        contentType: 'application/json',
+      );
+      final r = await _run(c, _ep(AgentApiFormat.anthropic), stream: false);
+      expect(r.raw, '好的');
+      expect(r.reasoning, '想');
+    });
+
     test('围栏在流里:正文只到围栏前,原文一个字不少', () async {
       final c = _streamingClient(
         _sse([
@@ -377,6 +630,54 @@ void main() {
         reason: '解析用的是原文,围栏得原样留着',
       );
       expect(parseToolCalls(r.raw).single.name, 'search_artist');
+    });
+  });
+
+  group('streamDirectPrompt', () {
+    test('一轮跑完:每一跳的思考(原生的和 <think> 里的)都带进结果', () async {
+      var call = 0;
+      final mock = MockClient((req) async {
+        call++;
+        final body = call == 1
+            ? {
+                'choices': [
+                  {
+                    'message': {
+                      'reasoning_content': '先查一下',
+                      'content':
+                          '```tool_call\n{"name":"lookup_tag","arguments":{"q":"x"}}\n```',
+                    },
+                  },
+                ],
+              }
+            : {
+                'choices': [
+                  {
+                    'message': {'content': '<think>定下来了</think>画好了'},
+                  },
+                ],
+              };
+        return http.Response(
+          jsonEncode(body),
+          200,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      });
+      final events = await http.runWithClient(
+        () => streamDirectPrompt(
+          endpoint: _ep(AgentApiFormat.openai),
+          backendBase: '',
+          sessionId: '',
+          userRequest: '画一张',
+          rules: const [PresetRule(name: 'role', content: '你是画师')],
+          libraryScope: 'none',
+          stream: false,
+        ).toList(),
+        () => mock,
+      );
+      final done = events.whereType<AgentDone>().single;
+      expect(done.result.replyText, '画好了');
+      expect(done.result.reasoning, '先查一下\n\n定下来了');
     });
   });
 }

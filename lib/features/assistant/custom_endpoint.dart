@@ -17,11 +17,20 @@ import '../../core/auth/secure_storage.dart';
 
 const _key = 'assistant_endpoints';
 
-/// 接口的报文格式。三家的鉴权头、请求体、模型列表路径都不一样。
+/// 接口的报文格式。各家的鉴权头、请求体、模型列表路径都不一样。
+///
+/// 落盘存 `name`,插档不串位。
 enum AgentApiFormat {
   /// OpenAI 兼容(`/chat/completions`,`Authorization: Bearer`)。
   /// 绝大多数第三方中转、本地推理都是这个。
   openai,
+
+  /// OpenAI Responses(`/responses`,鉴权同上)。
+  ///
+  /// OpenAI 官方的推理模型(o 系、GPT-5)**只在这条接口上回思考摘要** ——
+  /// `/chat/completions` 上它们想归想,一个字都不给你看。界面上挂在 OpenAI 那段下面
+  /// 当一个开关,不单占一段:对用户来说它还是「OpenAI」。
+  responses,
 
   /// Google Gemini(`/models/{model}:generateContent`,`x-goog-api-key`)。
   google,
@@ -32,15 +41,18 @@ enum AgentApiFormat {
 
 /// 分段选择器上那三个字。用大家叫得出口的名字(Gemini / Claude),
 /// 不用公司名 —— 三段并排放不下「Google Gemini」这种长度。
+/// [AgentApiFormat.responses] 不上分段(见那边),这个名字只出现在列表副行。
 String agentApiFormatLabel(AgentApiFormat f) => switch (f) {
   AgentApiFormat.openai => 'OpenAI',
+  AgentApiFormat.responses => 'OpenAI Responses',
   AgentApiFormat.google => 'Gemini',
   AgentApiFormat.anthropic => 'Claude',
 };
 
 /// 各家默认基址。用户留空时用它,省得为官方地址还要查一遍文档。
 String agentApiDefaultBase(AgentApiFormat f) => switch (f) {
-  AgentApiFormat.openai => 'https://api.openai.com/v1',
+  AgentApiFormat.openai ||
+  AgentApiFormat.responses => 'https://api.openai.com/v1',
   AgentApiFormat.google => 'https://generativelanguage.googleapis.com/v1beta',
   AgentApiFormat.anthropic => 'https://api.anthropic.com/v1',
 };
@@ -50,6 +62,7 @@ String agentApiDefaultBase(AgentApiFormat f) => switch (f) {
 /// Gemini 那条**把模型名写在路径里**,所以用 `{model}` 占位,发请求时替换。
 String agentApiDefaultPath(AgentApiFormat f) => switch (f) {
   AgentApiFormat.openai => '/chat/completions',
+  AgentApiFormat.responses => '/responses',
   AgentApiFormat.google => '/models/{model}:generateContent',
   AgentApiFormat.anthropic => '/messages',
 };
@@ -61,9 +74,10 @@ class CustomEndpoint {
     required this.format,
     required this.baseUrl,
     required this.apiKey,
-    required this.model,
+    this._models = const [],
+    String model = '',
     this.apiPath = '',
-  });
+  }) : _picked = model;
 
   final String id;
 
@@ -77,13 +91,35 @@ class CustomEndpoint {
 
   final String apiKey;
 
-  /// 模型 id,如 `gpt-5.6-luna` / `gemini-3.7-flash` / `claude-sonnet-4-6`。
-  final String model;
+  final List<String> _models;
+
+  /// 这一轮选中的模型(见 [model])。不落盘:选的是哪条存在模型偏好里,
+  /// 发请求前由 `assistantEndpointProvider` 带进来。
+  final String _picked;
+
+  /// 这个接口上挂的全部模型 id,如 `gpt-5.6-luna` / `gemini-3.7-flash` / `claude-sonnet-5-5`。
+  ///
+  /// 同一个地址 + 同一把 Key 底下往往有一串模型可用(中转尤其如此),
+  /// 一个模型配一遍接口等于把 Key 抄 N 遍,改 Key 还得改 N 处。
+  /// 只给了 [model] 没给列表时,列表就是那一条。
+  List<String> get models =>
+      _models.isNotEmpty || _picked.isEmpty ? _models : [_picked];
+
+  /// 这一轮要打的模型:选过的那条,没选过就是列表第一条。
+  String get model =>
+      _picked.isNotEmpty ? _picked : (_models.isEmpty ? '' : _models.first);
 
   /// 对话接口路径。空 = 用 [agentApiDefaultPath]。`{model}` 会被替换成模型名。
   final String apiPath;
 
   String get displayName => name.trim().isNotEmpty ? name.trim() : model;
+
+  /// 选中这一条时顶栏显示什么。只挂一个模型时就是接口名;挂了一串时得显示
+  /// 模型名 —— 不然切了模型顶栏纹丝不动,看不出这轮到底在用哪个。
+  String get pickLabel => models.length > 1 ? model : displayName;
+
+  /// 换一个模型发。不在列表里也照用(调用方负责只传列表里的)。
+  CustomEndpoint withModel(String m) => copyWith(model: m);
 
   String get effectiveBase {
     final b = baseUrl.trim();
@@ -127,6 +163,7 @@ class CustomEndpoint {
     AgentApiFormat? format,
     String? baseUrl,
     String? apiKey,
+    List<String>? models,
     String? model,
     String? apiPath,
   }) => CustomEndpoint(
@@ -135,7 +172,8 @@ class CustomEndpoint {
     format: format ?? this.format,
     baseUrl: baseUrl ?? this.baseUrl,
     apiKey: apiKey ?? this.apiKey,
-    model: model ?? this.model,
+    models: models ?? _models,
+    model: model ?? _picked,
     apiPath: apiPath ?? this.apiPath,
   );
 
@@ -145,7 +183,9 @@ class CustomEndpoint {
     'format': format.name,
     'baseUrl': baseUrl,
     'apiKey': apiKey,
-    'model': model,
+    'models': models,
+    // 老版本只认 `model` 这一个字段:装回老版本时至少第一个模型还在
+    'model': models.isEmpty ? '' : models.first,
     if (apiPath.isNotEmpty) 'apiPath': apiPath,
   };
 
@@ -153,6 +193,8 @@ class CustomEndpoint {
     if (e is! Map) return null;
     final id = e['id']?.toString() ?? '';
     if (id.isEmpty) return null;
+    final list = e['models'];
+    final single = e['model']?.toString().trim() ?? '';
     return CustomEndpoint(
       id: id,
       name: e['name']?.toString() ?? '',
@@ -161,10 +203,23 @@ class CustomEndpoint {
           AgentApiFormat.openai,
       baseUrl: e['baseUrl']?.toString() ?? '',
       apiKey: e['apiKey']?.toString() ?? '',
-      model: e['model']?.toString() ?? '',
+      // 老存档只有 `model` 一个字段
+      models: list is List
+          ? cleanModelList([for (final m in list) '$m'])
+          : [if (single.isNotEmpty) single],
       apiPath: e['apiPath']?.toString() ?? '',
     );
   }
+}
+
+/// 模型 id 列表去空白、去空、去重,保持原顺序(第一个是默认那条)。
+List<String> cleanModelList(Iterable<String> raw) {
+  final out = <String>[];
+  for (final m in raw) {
+    final t = m.trim();
+    if (t.isNotEmpty && !out.contains(t)) out.add(t);
+  }
+  return out;
 }
 
 final customEndpointsProvider =

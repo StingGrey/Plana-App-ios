@@ -1638,6 +1638,22 @@ void main() {
     });
   });
 
+  group('思考标签的几种写法', () {
+    test('<think> / <thinking> / <thought> 都剥掉,收尾得同名', () {
+      for (final tag in ['Think', 'think', 'thinking', 'thought']) {
+        expect(parseDirectReply('<$tag>先想想</$tag>好的').reply, '好的', reason: tag);
+        final v = directStreamView('<$tag>先想想</$tag>好的');
+        expect(v.think, '先想想', reason: tag);
+        expect(v.body, '好的', reason: tag);
+      }
+      // 里面提到别的收尾标签不算收尾
+      final v = directStreamView('<think>别把 </thought> 当收尾</think>好的');
+      expect(v.think, '别把 </thought> 当收尾');
+      expect(v.body, '好的');
+      expect(directStreamView('好的 <thinkin').body, '好的');
+    });
+  });
+
   group('直连工具调用解析', () {
     test('一条回复里多个 tool_call 都要认出来', () {
       final calls = parseToolCalls(
@@ -1726,7 +1742,95 @@ void main() {
       for (final f in AgentApiFormat.values) {
         expect(extractReplyText(f, null), '');
         expect(extractReplyText(f, const {}), '');
+        expect(extractReplyReasoning(f, null), '');
+        expect(extractReplyReasoning(f, const {}), '');
       }
+    });
+
+    test('Gemini:thought 段是思考,不能混进正文', () {
+      const body = {
+        'candidates': [
+          {
+            'content': {
+              'parts': [
+                {'text': '先想想', 'thought': true},
+                {'text': '喵'},
+              ],
+            },
+          },
+        ],
+      };
+      expect(extractReplyText(AgentApiFormat.google, body), '喵');
+      expect(extractReplyReasoning(AgentApiFormat.google, body), '先想想');
+    });
+
+    test('非流式也要把思考取出来', () {
+      expect(
+        extractReplyReasoning(AgentApiFormat.openai, const {
+          'choices': [
+            {
+              'message': {'content': '喵', 'reasoning_content': '想'},
+            },
+          ],
+        }),
+        '想',
+      );
+      expect(
+        extractReplyReasoning(AgentApiFormat.anthropic, const {
+          'content': [
+            {'type': 'thinking', 'thinking': '想'},
+            {'type': 'text', 'text': '喵'},
+          ],
+        }),
+        '想',
+      );
+    });
+
+    test('Responses:正文在 message 里,思考摘要在 reasoning 里', () {
+      const body = {
+        'output': [
+          {
+            'type': 'reasoning',
+            'summary': [
+              {'type': 'summary_text', 'text': '**看需求**'},
+              {'type': 'summary_text', 'text': '**定画面**'},
+            ],
+          },
+          {
+            'type': 'message',
+            'content': [
+              {'type': 'output_text', 'text': '喵'},
+            ],
+          },
+        ],
+      };
+      expect(extractReplyText(AgentApiFormat.responses, body), '喵');
+      expect(
+        extractReplyReasoning(AgentApiFormat.responses, body),
+        '**看需求**\n\n**定画面**',
+      );
+    });
+
+    test('Mistral:content 是分段数组,thinking 段不进正文', () {
+      const body = {
+        'choices': [
+          {
+            'message': {
+              'content': [
+                {
+                  'type': 'thinking',
+                  'thinking': [
+                    {'type': 'text', 'text': '想'},
+                  ],
+                },
+                {'type': 'text', 'text': '喵'},
+              ],
+            },
+          },
+        ],
+      };
+      expect(extractReplyText(AgentApiFormat.openai, body), '喵');
+      expect(extractReplyReasoning(AgentApiFormat.openai, body), '想');
     });
   });
 
@@ -1992,23 +2096,238 @@ void main() {
       expect(budget(ThinkLevel.high), lessThan(budget(ThinkLevel.ultra)));
     });
 
-    test('Claude:关 = 不带 thinking 字段;开着预算不低于 1024 且递增', () {
-      expect(thinkFields(AgentApiFormat.anthropic, ThinkLevel.off), isEmpty);
-      var prev = 0;
-      for (final l in [
-        ThinkLevel.low,
-        ThinkLevel.medium,
-        ThinkLevel.high,
-        ThinkLevel.ultra,
+    test('Claude 老模型(4.5 及以前):关 = 不带 thinking;开着预算不低于 1024 且递增', () {
+      for (final model in [
+        'claude-sonnet-4-5',
+        'claude-haiku-4-5-20251001',
+        'claude-opus-4-1-20250805',
+        'claude-sonnet-4-20250514',
+        'claude-3-7-sonnet-latest',
+        'anthropic/claude-sonnet-4.5',
       ]) {
-        final t = thinkFields(AgentApiFormat.anthropic, l)['thinking'] as Map;
-        expect(t['type'], 'enabled');
-        final b = t['budget_tokens'] as int;
-        // Anthropic 自己规定的下限
-        expect(b, greaterThanOrEqualTo(1024));
-        expect(b, greaterThan(prev));
-        prev = b;
+        Map<String, dynamic> f(ThinkLevel l) =>
+            thinkFields(AgentApiFormat.anthropic, l, model: model);
+        expect(f(ThinkLevel.off), isEmpty, reason: model);
+        expect(f(ThinkLevel.auto), isEmpty, reason: model);
+        var prev = 0;
+        for (final l in [
+          ThinkLevel.low,
+          ThinkLevel.medium,
+          ThinkLevel.high,
+          ThinkLevel.ultra,
+        ]) {
+          final t = f(l)['thinking'] as Map;
+          expect(t['type'], 'enabled', reason: model);
+          final b = t['budget_tokens'] as int;
+          // Anthropic 自己规定的下限
+          expect(b, greaterThanOrEqualTo(1024));
+          expect(b, greaterThan(prev));
+          prev = b;
+        }
       }
+    });
+
+    test('Claude 新模型:自适应思考 + 力度,不发 budget_tokens(4.7 起是 400)', () {
+      for (final model in [
+        'claude-opus-4-6',
+        'claude-opus-4-8',
+        'claude-sonnet-5-5',
+        'claude-fable-5-1',
+        // 认不出的别名按新的走
+        'my-claude',
+      ]) {
+        final f = thinkFields(
+          AgentApiFormat.anthropic,
+          ThinkLevel.high,
+          model: model,
+        );
+        expect(f['thinking'], {
+          'type': 'adaptive',
+          'display': 'summarized',
+        }, reason: model);
+        expect(f['output_config'], {'effort': 'high'}, reason: model);
+        expect(jsonEncode(f), isNot(contains('budget_tokens')), reason: model);
+      }
+      expect(
+        (thinkFields(
+              AgentApiFormat.anthropic,
+              ThinkLevel.ultra,
+              model: 'claude-opus-5-5',
+            )['output_config']
+            as Map)['effort'],
+        'max',
+      );
+    });
+
+    test('Claude 5 代默认在想但不给看:自动档补上 summarized,关不掉就压力度', () {
+      // 不带 display 时思考块是空串 —— 这正是「看不了思维链」
+      expect(
+        thinkFields(
+          AgentApiFormat.anthropic,
+          ThinkLevel.auto,
+          model: 'claude-opus-5-5',
+        ),
+        {
+          'thinking': {'type': 'adaptive', 'display': 'summarized'},
+        },
+      );
+      // disabled 在这几个模型上是 400
+      final off = thinkFields(
+        AgentApiFormat.anthropic,
+        ThinkLevel.off,
+        model: 'claude-sonnet-5-5',
+      );
+      expect(off.containsKey('thinking'), isFalse);
+      expect(off['output_config'], {'effort': 'low'});
+      // 4.6 ~ 4.8 默认不想:自动档不替它开
+      expect(
+        thinkFields(
+          AgentApiFormat.anthropic,
+          ThinkLevel.auto,
+          model: 'claude-opus-4-8',
+        ),
+        isEmpty,
+      );
+    });
+
+    test('Claude 的 max_tokens:老模型要大过预算,新模型给足思考的余量', () {
+      int maxTokens(String model, ThinkLevel l) =>
+          directRequest(
+                CustomEndpoint(
+                  id: 'e',
+                  name: '',
+                  format: AgentApiFormat.anthropic,
+                  baseUrl: '',
+                  apiKey: 'k',
+                  model: model,
+                ),
+                system: 's',
+                msgs: const [],
+                think: l,
+              ).$2['max_tokens']
+              as int;
+      expect(maxTokens('claude-sonnet-4-5', ThinkLevel.ultra), 4096 + 16384);
+      expect(maxTokens('claude-opus-5-5', ThinkLevel.auto), 16000);
+    });
+
+    test('Gemini:会思考的模型要带 includeThoughts,不然一个字都不回', () {
+      Map<String, dynamic>? cfg(ThinkLevel l, String model) =>
+          (thinkFields(
+                    AgentApiFormat.google,
+                    l,
+                    model: model,
+                  )['generationConfig']
+                  as Map?)?['thinkingConfig']
+              as Map<String, dynamic>?;
+      expect(cfg(ThinkLevel.auto, 'gemini-3.7-flash'), {
+        'includeThoughts': true,
+      }, reason: '自动档只要「给我看」,不动预算');
+      expect(cfg(ThinkLevel.auto, 'gemini-2.5-pro'), {'includeThoughts': true});
+      expect(cfg(ThinkLevel.auto, 'gemini-2.0-flash'), isNull);
+      expect(
+        cfg(ThinkLevel.high, 'gemini-3.7-flash')!['includeThoughts'],
+        isTrue,
+      );
+      expect(
+        cfg(ThinkLevel.off, 'gemini-3.7-flash')!.containsKey('includeThoughts'),
+        isFalse,
+      );
+    });
+
+    test('Responses:官方推理模型要摘要才看得到思考', () {
+      expect(
+        thinkFields(
+          AgentApiFormat.responses,
+          ThinkLevel.auto,
+          model: 'gpt-5.6',
+        ),
+        {
+          'reasoning': {'summary': 'auto'},
+        },
+      );
+      expect(
+        thinkFields(
+          AgentApiFormat.responses,
+          ThinkLevel.auto,
+          model: 'o4-mini',
+        ),
+        isNotEmpty,
+      );
+      // 不推理的模型带了 reasoning 是 400
+      for (final m in ['gpt-4o', 'gpt-4.1', 'gpt-5-chat-latest']) {
+        expect(
+          thinkFields(AgentApiFormat.responses, ThinkLevel.auto, model: m),
+          isEmpty,
+          reason: m,
+        );
+      }
+      expect(
+        thinkFields(AgentApiFormat.responses, ThinkLevel.ultra, model: 'gpt-5'),
+        {
+          'reasoning': {'effort': 'high', 'summary': 'auto'},
+        },
+      );
+    });
+
+    test('OpenAI 兼容:认得出的服务商才发它家的思考开关', () {
+      Map<String, dynamic> f(ThinkLevel l, String host, {bool stream = true}) =>
+          thinkFields(
+            AgentApiFormat.openai,
+            l,
+            model: 'm',
+            host: host,
+            stream: stream,
+          );
+      // OpenAI 官方见到不认识的字段是 400
+      expect(f(ThinkLevel.high, 'api.openai.com').keys, ['reasoning_effort']);
+      // 通义
+      expect(
+        f(ThinkLevel.high, 'dashscope.aliyuncs.com')['enable_thinking'],
+        isTrue,
+      );
+      expect(
+        f(ThinkLevel.off, 'dashscope.aliyuncs.com')['enable_thinking'],
+        isFalse,
+      );
+      expect(
+        f(
+          ThinkLevel.high,
+          'dashscope.aliyuncs.com',
+          stream: false,
+        ).containsKey('enable_thinking'),
+        isFalse,
+        reason: '开源模型开着思考只能流式,非流式带 true 是 400',
+      );
+      // 智谱 / 豆包
+      expect(f(ThinkLevel.high, 'open.bigmodel.cn')['thinking'], {
+        'type': 'enabled',
+      });
+      expect(f(ThinkLevel.off, 'ark.cn-beijing.volces.com')['thinking'], {
+        'type': 'disabled',
+      });
+      expect(f(ThinkLevel.auto, 'open.bigmodel.cn'), isEmpty);
+      // 名字里带 z.ai 不算
+      expect(f(ThinkLevel.high, 'xyz.ai').containsKey('thinking'), isFalse);
+    });
+
+    test('Gemini 的 OpenAI 兼容口:思考在 extra_body 里开', () {
+      final f = thinkFields(
+        AgentApiFormat.openai,
+        ThinkLevel.low,
+        model: 'gemini-3.7-flash',
+        host: 'generativelanguage.googleapis.com',
+      );
+      expect(f, {
+        'extra_body': {
+          'google': {
+            'thinking_config': {
+              'thinking_budget': 1024,
+              'include_thoughts': true,
+            },
+          },
+        },
+      });
+      expect(f.containsKey('reasoning_effort'), isFalse, reason: '两个只能给一个');
     });
 
     test('存得下也读得回来,老存档自动档', () {
@@ -2163,6 +2482,95 @@ void main() {
         CustomEndpoint.fromJson(e.copyWith(apiPath: '/x').toJson())!.apiPath,
         '/x',
       );
+    });
+
+    test('一个接口挂多个模型:默认第一个,换模型只换这一轮', () {
+      const e = CustomEndpoint(
+        id: 'x',
+        name: '我的中转',
+        format: AgentApiFormat.google,
+        baseUrl: '',
+        apiKey: 'k',
+        models: ['gemini-3.7-flash', 'gemini-3.7-pro'],
+      );
+      expect(e.model, 'gemini-3.7-flash');
+      final pro = e.withModel('gemini-3.7-pro');
+      expect(pro.model, 'gemini-3.7-pro');
+      expect(pro.models, e.models, reason: '换模型不动列表');
+      expect(pro.effectivePath, '/models/gemini-3.7-pro:generateContent');
+      // 挂了一串时顶栏得显示模型名,不然切了模型看不出来
+      expect(pro.pickLabel, 'gemini-3.7-pro');
+      expect(
+        const CustomEndpoint(
+          id: 'y',
+          name: '单个',
+          format: AgentApiFormat.openai,
+          baseUrl: '',
+          apiKey: 'k',
+          models: ['m'],
+        ).pickLabel,
+        '单个',
+      );
+    });
+
+    test('多模型存得下也读得回来;老存档只有 model 也认', () {
+      const e = CustomEndpoint(
+        id: 'x',
+        name: '',
+        format: AgentApiFormat.responses,
+        baseUrl: '',
+        apiKey: 'k',
+        models: ['a', 'b'],
+      );
+      final back = CustomEndpoint.fromJson(e.toJson())!;
+      expect(back.models, ['a', 'b']);
+      expect(back.format, AgentApiFormat.responses);
+      expect(e.toJson()['model'], 'a', reason: '装回老版本时至少第一个还在');
+      final old = CustomEndpoint.fromJson(const {
+        'id': 'y',
+        'model': 'gpt-4o',
+      })!;
+      expect(old.models, ['gpt-4o']);
+      expect(old.model, 'gpt-4o');
+      // 空的、重复的不落
+      expect(
+        CustomEndpoint.fromJson(const {
+          'id': 'z',
+          'models': [' a ', '', 'a', 'b'],
+        })!.models,
+        ['a', 'b'],
+      );
+    });
+
+    test('选择键:接口 id + 模型,模型名里的冒号斜杠原样留着', () {
+      expect(customPickOf('custom:ep1_0:qwen3:8b'), (
+        id: 'ep1_0',
+        model: 'qwen3:8b',
+      ));
+      expect(customPickOf(customModelKey('ep1', 'anthropic/claude-x')), (
+        id: 'ep1',
+        model: 'anthropic/claude-x',
+      ));
+      expect(customPickOf('custom:ep1'), (id: 'ep1', model: ''));
+      expect(customPickOf('glm'), isNull);
+      expect(customEndpointIdOf('custom:ep1:m'), 'ep1');
+    });
+
+    test('选择键解析成接口:选的模型删了就回落第一个', () {
+      const e = CustomEndpoint(
+        id: 'ep1',
+        name: '',
+        format: AgentApiFormat.openai,
+        baseUrl: '',
+        apiKey: 'k',
+        models: ['a', 'b'],
+      );
+      expect(resolveCustomPick('custom:ep1:b', const [e])!.model, 'b');
+      expect(resolveCustomPick('custom:ep1:gone', const [e])!.model, 'a');
+      // 老存档没写模型
+      expect(resolveCustomPick('custom:ep1', const [e])!.model, 'a');
+      expect(resolveCustomPick('custom:nope:a', const [e]), isNull);
+      expect(resolveCustomPick('glm', const [e]), isNull);
     });
 
     test('缺 key 或缺模型都算没填全', () {
@@ -2489,6 +2897,38 @@ void main() {
       final again = await AppStores.open(rootOverride: root);
       expect(again.assistant.initialTraces.single.userText, '画个芙兰');
       expect(again.assistant.initialTraces.single.hops.single['ms'], 5200);
+    });
+  });
+
+  group('思考过程', () {
+    test('跟着 AI 消息落盘,copyWith 不丢;老存档读成空', () {
+      const m = AssistantMsg(
+        id: 'a',
+        role: MsgRole.ai,
+        text: '好的',
+        at: 1,
+        reasoning: '先想想',
+      );
+      final back = AssistantMsg.fromJson(m.toJson());
+      expect(back.reasoning, '先想想');
+      expect(back.copyWith(imageIds: const ['g1']).reasoning, '先想想');
+      expect(
+        AssistantMsg.fromJson(const {
+          'id': 'b',
+          'role': 'ai',
+          'text': 'x',
+        }).reasoning,
+        '',
+      );
+      expect(
+        const AssistantMsg(
+          id: 'c',
+          role: MsgRole.ai,
+          text: 'x',
+          at: 1,
+        ).toJson().containsKey('reasoning'),
+        isFalse,
+      );
     });
   });
 

@@ -2,6 +2,7 @@
 /// 没有 Bot 授权时后端那组只列免费模型。
 ///
 /// 两组共用**同一种行**:左边一个图标、中间完整型号名、右边留给「编辑」。
+/// 一个接口挂了几个模型就列几行,每行一个模型,编辑的都是那个接口。
 /// 不写 `short_label`(「GLM」「豆包」这种简称看不出是哪一代),也不写线路说明
 /// (commandcode / vertex / 火山方舟)—— 选哪条线不是用户的决定。
 ///
@@ -45,6 +46,8 @@ class _ModelSheet extends ConsumerWidget {
     final async = ref.watch(agentModelsProvider);
     final currentKey = ref.watch(assistantModelProvider)?.key ?? '';
     final endpoints = ref.watch(customEndpointsProvider).value ?? const [];
+    // 选中的是哪个接口的哪个模型:按解析好的比,老存档(没写模型)也能对上第一个
+    final current = ref.watch(assistantEndpointProvider);
     // 没有 Bot 授权时只列免费的;后端一条免费的都没有就整组不列
     final authorized = ref.watch(assistantBotAuthorizedProvider);
     List<AgentModelChoice> shown(AgentModelList l) =>
@@ -89,21 +92,32 @@ class _ModelSheet extends ConsumerWidget {
         ],
         settingSection(context, '我的接口'),
         for (final e in endpoints)
-          _row(
-            context,
-            icon: Icons.bolt_outlined,
-            title: e.displayName,
-            // 副行写格式和模型,不写地址 —— 地址又长又不是你要确认的东西
-            subtitle: e.usable
-                ? '${agentApiFormatLabel(e.format)} · ${e.model}'
-                : '还没填全,点一下去补',
-            dim: !e.usable,
-            selected: e.usable && customModelKey(e.id) == currentKey,
-            onTap: () => e.usable
-                ? _pick(context, ref, customModelKey(e.id))
-                : showEndpointSheet(context, source: e),
-            onEdit: () => showEndpointSheet(context, source: e),
-          ),
+          if (!e.usable)
+            _row(
+              context,
+              icon: Icons.bolt_outlined,
+              title: e.displayName.isEmpty ? '未命名接口' : e.displayName,
+              subtitle: '还没填全,点一下去补',
+              dim: true,
+              onTap: () => showEndpointSheet(context, source: e),
+              onEdit: () => showEndpointSheet(context, source: e),
+            )
+          else
+            for (final m in e.models)
+              _row(
+                context,
+                icon: Icons.bolt_outlined,
+                // 只挂一个模型:标题是接口名,副行写模型;挂了一串:标题是模型,
+                // 副行写是哪个接口的 —— 一列同名的接口名看不出谁是谁
+                title: e.models.length > 1 ? m : e.displayName,
+                // 副行写格式和模型,不写地址 —— 地址又长又不是你要确认的东西
+                subtitle: e.models.length > 1
+                    ? '${e.name.trim().isNotEmpty ? e.name.trim() : e.chatUri.host} · ${agentApiFormatLabel(e.format)}'
+                    : '${agentApiFormatLabel(e.format)} · $m',
+                selected: current?.id == e.id && current?.model == m,
+                onTap: () => _pick(context, ref, customModelKey(e.id, m)),
+                onEdit: () => showEndpointSheet(context, source: e),
+              ),
         _row(
           context,
           icon: Icons.add,

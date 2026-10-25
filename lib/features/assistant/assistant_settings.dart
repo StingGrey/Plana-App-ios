@@ -147,7 +147,8 @@ class AssistantSettings {
   /// 默认关:拿助手当草稿本、不想动画布的人一旦被自动覆盖,丢的是他自己写的词。
   final bool autoImport;
 
-  /// 自定义接口的思考等级。默认 [ThinkLevel.auto] = 不发这个字段。
+  /// 自定义接口的思考等级。默认 [ThinkLevel.auto] = 想不想、想多深按模型自己的默认,
+  /// 只补「把思考给我看」的字段(见 `thinkFields`)。
   final ThinkLevel thinkLevel;
 
   /// AI 查资料时认哪些库。默认 [LibraryScope.local]。
