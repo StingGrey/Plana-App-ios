@@ -179,7 +179,7 @@ class _CategoryTabsState extends State<CategoryTabs> {
               child: Stack(
                 key: _stripKey,
                 children: [
-                  // 胶囊里:选中项垫一块白底滑块(圆角、底色、阴影都同「我的 / 公共」分段),跟着翻页滑
+                  // 胶囊里:选中项垫一块圆头白底滑块(底色、阴影同「我的 / 公共」分段),跟着翻页滑
                   if (x != null && widget.capsule)
                     Positioned(
                       left: x - _pillWidthAt(pos) / 2,
@@ -189,7 +189,7 @@ class _CategoryTabsState extends State<CategoryTabs> {
                         width: _pillWidthAt(pos),
                         decoration: BoxDecoration(
                           color: scheme.surface,
-                          borderRadius: BorderRadius.circular(9),
+                          borderRadius: BorderRadius.circular(19),
                           boxShadow: [
                             BoxShadow(
                               color: Colors.black.withValues(alpha: .06),
@@ -248,7 +248,7 @@ class _CategoryTabsState extends State<CategoryTabs> {
       child: Padding(
         padding: EdgeInsets.fromLTRB(widget.leftPad, 2, 4, 2),
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(22),
           child: ColoredBox(color: scheme.surfaceContainerHigh, child: row),
         ),
       ),
