@@ -39,14 +39,14 @@ class CategoryTabs extends StatefulWidget {
 }
 
 class _CategoryTabsState extends State<CategoryTabs> {
-  static const _padH = 11.0;
+  /// 页签两侧留白;胶囊里放宽,每类更宽、整条更扁。
+  double get _padH => widget.capsule ? 16 : 11;
 
   /// 选中项放大的比例。字号不变、只做缩放,页签宽度就是固定的,短线好对位。
   static const _grow = .2;
 
   /// 标签内容离滚动区左边的距离(胶囊里就从胶囊内边算)。
-  double get _contentLeft =>
-      widget.capsule ? 14 - _padH : widget.leftPad - _padH;
+  double get _contentLeft => widget.capsule ? 3 : widget.leftPad - _padH;
 
   final _scroll = ScrollController();
   final _stripKey = GlobalKey();
@@ -189,7 +189,7 @@ class _CategoryTabsState extends State<CategoryTabs> {
                         width: _pillWidthAt(pos),
                         decoration: BoxDecoration(
                           color: scheme.surface,
-                          borderRadius: BorderRadius.circular(19),
+                          borderRadius: BorderRadius.circular(15),
                           boxShadow: [
                             BoxShadow(
                               color: Colors.black.withValues(alpha: .06),
@@ -232,6 +232,7 @@ class _CategoryTabsState extends State<CategoryTabs> {
             padding: EdgeInsets.only(top: widget.capsule ? 0 : 4),
             child: IconButton(
               tooltip: '类别管理',
+              visualDensity: widget.capsule ? VisualDensity.compact : null,
               onPressed: widget.onManage,
               icon: Icon(
                 Icons.menu_rounded,
@@ -246,9 +247,9 @@ class _CategoryTabsState extends State<CategoryTabs> {
     return SizedBox(
       height: 48,
       child: Padding(
-        padding: EdgeInsets.fromLTRB(widget.leftPad, 2, 4, 2),
+        padding: EdgeInsets.fromLTRB(widget.leftPad, 6, 4, 6),
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(22),
+          borderRadius: BorderRadius.circular(18),
           child: ColoredBox(color: scheme.surfaceContainerHigh, child: row),
         ),
       ),
