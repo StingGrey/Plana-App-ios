@@ -869,7 +869,7 @@ class _CategoryPageState extends ConsumerState<_CategoryPage>
     return Column(
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(_kEdge, 8, _kEdge, 0),
+          padding: const EdgeInsets.fromLTRB(_kEdge, 8, _kEdge, 8),
           child: Row(
             children: [
               Expanded(
