@@ -597,28 +597,36 @@ class CodexPickerButton extends ConsumerWidget {
           children: [
             Icon(Icons.menu_book_outlined, size: 19, color: scheme.primary),
             const SizedBox(width: 8),
-            // 整行都给了标题:写全名(选择器里那个是缩短的)
-            Flexible(
-              child: Text(
-                meta.title.isNotEmpty ? meta.title : meta.displayTitle,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: context.texts.titleMedium!.copyWith(
-                  fontWeight: FontWeight.w800,
-                ),
+            // 整行都给了标题:写全名(选择器里那个是缩短的)。标题与箭头一组
+            // 吃掉条数以外的全部宽度 —— Flexible 配 Spacer 会把余量对半分,
+            // 标题只拿得到一半
+            Expanded(
+              child: Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      meta.title.isNotEmpty ? meta.title : meta.displayTitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: context.texts.titleMedium!.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  if (meta.nsfw) ...[
+                    const SizedBox(width: 6),
+                    _miniTag(context, 'R18', scheme.error),
+                  ],
+                  const SizedBox(width: 2),
+                  Icon(
+                    Icons.keyboard_arrow_down,
+                    size: 20,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ],
               ),
             ),
-            if (meta.nsfw) ...[
-              const SizedBox(width: 6),
-              _miniTag(context, 'R18', scheme.error),
-            ],
-            const SizedBox(width: 2),
-            Icon(
-              Icons.keyboard_arrow_down,
-              size: 20,
-              color: scheme.onSurfaceVariant,
-            ),
-            const Spacer(),
+            const SizedBox(width: 10),
             Text(
               '${meta.entryCount} 条',
               style: context.texts.labelMedium!.copyWith(
