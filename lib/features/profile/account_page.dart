@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/auth/auth_mode.dart';
 import '../../core/auth/bot_session_store.dart';
 import '../../core/auth/nai_keys.dart';
-import '../../core/net/backend_config.dart';
 import '../../core/net/nai_client.dart';
 import '../../core/net/nai_key_status.dart';
 import '../../core/net/nai_proxy.dart';
@@ -64,7 +63,6 @@ class _AccountPageState extends ConsumerState<AccountPage> {
 
     final mode = ref.watch(authModeProvider).value ?? AuthMode.token;
     final session = ref.watch(botSessionProvider).value;
-    final backendUrl = ref.watch(backendBaseProvider).value ?? '';
     final compSource = ref.watch(effectiveCompletionSourceProvider);
 
     return Scaffold(
@@ -94,7 +92,6 @@ class _AccountPageState extends ConsumerState<AccountPage> {
           const SizedBox(height: 12),
           _BotCard(
             session: session,
-            backendUrl: backendUrl,
             onAuthorize: _openBotAuth,
             onRevoke: _revokeBot,
           ),
@@ -625,13 +622,11 @@ class _CompletionCard extends StatelessWidget {
 class _BotCard extends StatelessWidget {
   const _BotCard({
     required this.session,
-    required this.backendUrl,
     required this.onAuthorize,
     required this.onRevoke,
   });
 
   final BotSession? session;
-  final String backendUrl;
   final VoidCallback onAuthorize;
   final VoidCallback onRevoke;
 
@@ -674,13 +669,6 @@ class _BotCard extends StatelessWidget {
               _row(context, '账号', s.botUserId ?? '—'),
               const SizedBox(height: 8),
               _row(context, '有效期至', _fmtExpiry(s.expiresAtMs)),
-              const SizedBox(height: 8),
-              _row(
-                context,
-                '后端',
-                backendUrl.isEmpty ? '—' : backendUrl,
-                isMono: true,
-              ),
               const SizedBox(height: 16),
               Row(
                 children: [
@@ -716,12 +704,7 @@ class _BotCard extends StatelessWidget {
     );
   }
 
-  Widget _row(
-    BuildContext context,
-    String label,
-    String value, {
-    bool isMono = false,
-  }) {
+  Widget _row(BuildContext context, String label, String value) {
     final scheme = context.scheme;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -738,11 +721,9 @@ class _BotCard extends StatelessWidget {
         Expanded(
           child: Text(
             value,
-            style: isMono
-                ? mono(context, size: 13)
-                : context.texts.bodyMedium!.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
+            style: context.texts.bodyMedium!.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
           ),
         ),
       ],
