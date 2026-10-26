@@ -102,6 +102,24 @@ void main() {
     expect(autocompleteCalls, 0);
   });
 
+  test('离线词库模式同样分组,作品行不带骰子提示(抽角色要联网)', () async {
+    final c = makeClient();
+    TagCompletion offline() => TagCompletion(
+      source: CompletionSource.danbooru,
+      baseUrl: _base,
+      localDb: LocalTagDb(),
+      artistOcLib: ArtistOcLibrary(_base, null, c),
+      client: c,
+    );
+    final miku = await offline().query('hatsune mi');
+    expect(miku.characters.first.text, 'hatsune miku');
+    final voc = await offline().query('vocalo');
+    expect(voc.works.first.text, 'vocaloid');
+    expect(voc.works.first.note, isNull);
+    expect((await offline().query('hatsune mku')).isEmpty, isTrue);
+    expect(autocompleteCalls, 0, reason: '离线不问后端');
+  });
+
   test('离线词库一条没有(拼错)才问后端:category 4 进角色桶、3 进作品桶', () async {
     final c = makeClient();
     final res = await makeCompletion(c).query('hatsune mku');

@@ -31,8 +31,8 @@ class WikiPreview {
 }
 
 /// 标签补全引擎。按生效来源分流:
-///  - `danbooru`:**离线**词库 [LocalTagDb](assets/danbooru.tsv),仅英文,不碰网络
-///    (手机直连 danbooru.donmai.us 被 Cloudflare 挡死,早改离线了)。
+///  - `danbooru`:**离线**词库 [LocalTagDb](assets/danbooru.tsv) + 本机灵感库的角色,
+///    不碰网络(手机直连 danbooru.donmai.us 被 Cloudflare 挡死,早改离线了)。
 ///  - `enhanced`:英文先查离线词库,一条没有才问后端 `/autocomplete`;
 ///    中文过 `/tags/search` 语义搜词。
 /// query→result 结果缓存;顺带回填注音/热度缓存([cacheTagMeta]),供词下注音层与词条栏反查。
@@ -217,21 +217,14 @@ class TagCompletion {
     }
   }
 
-  // ---- Danbooru 离线库(仅英文,不碰网络/Cloudflare)----
+  // ---- Danbooru 离线库(不碰网络/Cloudflare)----
+  // 英文查离线词库,本机灵感库的角色条目中英文都并进来。
   Future<SuggestResult> _danbooru(String q, bool cjk) async {
-    if (cjk) return const SuggestResult(); // 离线英文库
-    final hits = await localDb.search(q, limit: _limit);
-    return SuggestResult(
-      tags: _rankEnglish([
-        for (final h in hits)
-          Suggestion(
-            text: _spaces(h.tag),
-            kind: SuggestionKind.tag,
-            trans: h.zh,
-            count: h.count,
-          ),
-      ], q),
-    );
+    final tags = cjk
+        ? const <Suggestion>[]
+        : await _localEnglishTags(q, dice: false);
+    final local = await (localOcs ?? Future.value(const <TagEntry>[]));
+    return _group(tags, const [], ArtistOcLibrary.searchLocal(q, local));
   }
 
   // ---- 后端增强:上游标签 + 画师/OC 库,并行合并 ----
@@ -247,7 +240,15 @@ class TagCompletion {
     );
     final tags = await tagsF;
     final (artists, ocs) = await aoF;
+    return _group(tags, artists, ocs);
+  }
 
+  /// 标签按类目分组,与画师 / OC 合成一份结果。
+  SuggestResult _group(
+    List<Suggestion> tags,
+    List<Suggestion> artists,
+    List<Suggestion> ocs,
+  ) {
     // 上游标签里也有画师类条目,与库实体同名时两行重复 → tags 剔除同名(实体行
     // 信息更全,保实体);顺手把同名 tag 的热度转给实体(库条目无热度,补上便于排序)。
     String norm(String s) => s.trim().toLowerCase().replaceAll('_', ' ');
@@ -289,11 +290,25 @@ class TagCompletion {
   /// 英文:先查离线词库(匹配口径同后端补全,见 [LocalTagDb.search]),译名用词库的。
   /// 一条都没有(多半是拼错或词库之后的新标签)才问后端,它会去问 Danbooru 纠错。
   Future<List<Suggestion>> _enhancedEnglishTags(String q) async {
+    final tags = await _localEnglishTags(q, dice: true);
+    return tags.isEmpty ? _backendAutocomplete(q) : tags;
+  }
+
+  /// 离线词库的英文结果。[dice] = 作品行带骰子提示(抽角色要联网)。
+  Future<List<Suggestion>> _localEnglishTags(
+    String q, {
+    required bool dice,
+  }) async {
     final hits = await localDb.search(q, limit: _limit);
-    if (hits.isEmpty) return _backendAutocomplete(q);
     return _rankEnglish([
       for (final h in hits)
-        _tagSuggestion(_spaces(h.tag), h.count, h.category, trans: h.zh),
+        _tagSuggestion(
+          _spaces(h.tag),
+          h.count,
+          h.category,
+          trans: h.zh,
+          dice: dice,
+        ),
     ], q);
   }
 
@@ -457,6 +472,7 @@ class TagCompletion {
     int count,
     int? category, {
     String? trans,
+    bool dice = true,
   }) {
     final kind = switch (category) {
       4 => SuggestionKind.character,
@@ -466,7 +482,7 @@ class TagCompletion {
     return Suggestion(
       text: text,
       kind: kind,
-      note: kind == SuggestionKind.work ? _kWorkNote : null,
+      note: kind == SuggestionKind.work && dice ? _kWorkNote : null,
       trans: trans,
       count: count,
     );
