@@ -45,6 +45,10 @@ class LocalTagDb {
   Future<List<TagHit>> search(String query, {int limit = 15}) async =>
       (await _ready)?.search(query, limit: limit) ?? const [];
 
+  /// 拼写纠错,口径同 Danbooru。见 [TagIndex.correct]。
+  Future<List<TagHit>> correct(String query, {int limit = 15}) async =>
+      (await _ready)?.correct(query, limit: limit) ?? const [];
+
   // ---- 角色反查(离线) ----
 
   /// 提示词分词集合 → 命中的角色标签,**按热度降序**(库本身即热度序)。

@@ -288,18 +288,20 @@ class TagCompletion {
   }
 
   /// 英文:先查离线词库(匹配口径同后端补全,见 [LocalTagDb.search]),译名用词库的。
-  /// 一条都没有(多半是拼错或词库之后的新标签)才问后端,它会去问 Danbooru 纠错。
+  /// 拼错也在离线词库里纠;还是一条都没有(多半是词库之后的新标签)才问后端。
   Future<List<Suggestion>> _enhancedEnglishTags(String q) async {
     final tags = await _localEnglishTags(q, dice: true);
     return tags.isEmpty ? _backendAutocomplete(q) : tags;
   }
 
-  /// 离线词库的英文结果。[dice] = 作品行带骰子提示(抽角色要联网)。
+  /// 离线词库的英文结果,一条都没有就按拼错纠一次(见 [LocalTagDb.correct])。
+  /// [dice] = 作品行带骰子提示(抽角色要联网)。
   Future<List<Suggestion>> _localEnglishTags(
     String q, {
     required bool dice,
   }) async {
-    final hits = await localDb.search(q, limit: _limit);
+    var hits = await localDb.search(q, limit: _limit);
+    if (hits.isEmpty) hits = await localDb.correct(q, limit: _limit);
     return _rankEnglish([
       for (final h in hits)
         _tagSuggestion(

@@ -103,6 +103,21 @@ void main() {
     expect(bad, isEmpty);
   });
 
+  test('拼写纠错:口径同 Danbooru autocorrect(样本取自 Danbooru 线上结果)', () {
+    List<String> fix(String q) => [
+      for (final h in idx.correct(q, limit: 12)) h.tag,
+    ];
+    expect(fix('scholl uniform').first, 'school_uniform');
+    expect(fix('blonde har').first, 'blonde_hair');
+    expect(fix('pleted skirt').take(2), ['pleated_skirt', 'pleated_shirt']);
+    expect(fix('hatsune mku').first, 'hatsune_miku');
+    expect(fix('yed_hair').take(3), ['red_hair', 'wet_hair', 'leg_hair']);
+    expect(fix('qqxxzzqq'), isEmpty, reason: '没有相近的');
+    expect(fix('a_b'), isEmpty, reason: '字母数字不足 3 个');
+    expect(fix('/lhh'), isEmpty, reason: '斜杠开头是快捷别名');
+    expect(fix('长发头发'), isEmpty, reason: '只纠英文');
+  });
+
   test('补全结果带类目与首段译名', () {
     final miku = idx.search('hatsune miku', limit: 1).single;
     expect(miku.tag, 'hatsune_miku');

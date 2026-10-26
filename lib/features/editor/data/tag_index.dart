@@ -65,6 +65,52 @@ final _splitBytes = () {
 
 bool _isSplit(int b) => b < 128 && _splitBytes[b] == 1;
 
+/// pg_trgm 的三元组:按字母数字切词,每个词前补两个空格、后补一个,
+/// 取每三个连续字符。三个字节压成一个 int,排序去重。
+List<int> _trigrams(Uint8List b, int at, int len) {
+  bool alnum(int c) => (c >= 0x61 && c <= 0x7A) || (c >= 0x30 && c <= 0x39);
+  final out = <int>[];
+  var i = at;
+  final end = at + len;
+  while (i < end) {
+    if (!alnum(b[i])) {
+      i++;
+      continue;
+    }
+    var a = 0x20, c = 0x20;
+    for (; i < end && alnum(b[i]); i++) {
+      out.add((a << 16) | (c << 8) | b[i]);
+      a = c;
+      c = b[i];
+    }
+    out.add((a << 16) | (c << 8) | 0x20);
+  }
+  out.sort();
+  var n = 0;
+  for (var k = 0; k < out.length; k++) {
+    if (k == 0 || out[k] != out[k - 1]) out[n++] = out[k];
+  }
+  return out..length = n;
+}
+
+/// pg_trgm 的 similarity:共有三元组数 / 合起来的三元组数。两边都已排序去重。
+double _similarity(List<int> x, List<int> y) {
+  var i = 0, j = 0, common = 0;
+  while (i < x.length && j < y.length) {
+    if (x[i] == y[j]) {
+      common++;
+      i++;
+      j++;
+    } else if (x[i] < y[j]) {
+      i++;
+    } else {
+      j++;
+    }
+  }
+  final union = x.length + y.length - common;
+  return union == 0 ? 0 : common / union;
+}
+
 /// 一枚命中的角色标签。[tag] 是词库正名(下划线形式),[zh] 可空。
 typedef CharacterTag = ({String tag, String? zh, int count});
 
@@ -411,6 +457,73 @@ class TagIndex implements OfflineTagMeta {
       }
     }
     return false;
+  }
+
+  /// 拼写纠错,口径同 Danbooru 补全的 autocorrect(`Tag.autocorrect_matches`):
+  /// 只比标签名,编辑距离 < max(输入长度 ÷ 4, 3) 且三元组相似度 ≥ 0.3
+  /// (pg_trgm 的 `%`),按编辑距离、热度降序、名字排。
+  /// 输入要是 ASCII、不以 `/` 开头、至少 3 个字母数字。
+  List<TagHit> correct(String query, {int limit = 15}) {
+    final q = query.trim().toLowerCase().replaceAll(' ', '_');
+    if (q.startsWith('/') || q.codeUnits.any((c) => c > 0x7F)) return const [];
+    if (q.replaceAll(RegExp('[^a-z0-9]'), '').length < 3) return const [];
+    final qb = Uint8List.fromList(q.codeUnits);
+    final maxDist = q.length ~/ 4 > 3 ? q.length ~/ 4 : 3;
+    final qTri = _trigrams(qb, 0, qb.length);
+    final prev = Int32List(qb.length + 1), cur = Int32List(qb.length + 1);
+    final found = <(int, int)>[]; // (编辑距离, 条目)
+    var p = _entriesOff;
+    for (var i = 0; i < _entryCount; i++) {
+      final row = p;
+      final tagLen = _u16(row);
+      final zhAt = row + 2 + tagLen;
+      final aliasAt = zhAt + 2 + _u16(zhAt) + 5;
+      p = aliasAt + 2 + _u16(aliasAt);
+      // 编辑距离不小于长度差:先按长度筛掉绝大多数
+      if ((tagLen - qb.length).abs() >= maxDist) continue;
+      final d = _levenshtein(row + 2, tagLen, qb, maxDist, prev, cur);
+      if (d >= maxDist) continue;
+      if (_similarity(qTri, _trigrams(_b, row + 2, tagLen)) < 0.3) continue;
+      found.add((d, row));
+    }
+    final hits = [for (final (d, row) in found) (d, _hit(row))];
+    hits.sort((a, b) {
+      if (a.$1 != b.$1) return a.$1 - b.$1;
+      if (a.$2.count != b.$2.count) return b.$2.count - a.$2.count;
+      return a.$2.tag.compareTo(b.$2.tag);
+    });
+    return [for (final h in hits.take(limit)) h.$2];
+  }
+
+  /// [at] 起 [len] 字节与 [q] 的编辑距离;到 [cap] 就不再算,回 [cap]。
+  int _levenshtein(
+    int at,
+    int len,
+    Uint8List q,
+    int cap,
+    Int32List prev,
+    Int32List cur,
+  ) {
+    for (var j = 0; j <= q.length; j++) {
+      prev[j] = j;
+    }
+    for (var i = 1; i <= len; i++) {
+      cur[0] = i;
+      var rowMin = i;
+      final c = _b[at + i - 1];
+      for (var j = 1; j <= q.length; j++) {
+        var v = prev[j - 1] + (c == q[j - 1] ? 0 : 1);
+        if (prev[j] + 1 < v) v = prev[j] + 1;
+        if (cur[j - 1] + 1 < v) v = cur[j - 1] + 1;
+        cur[j] = v;
+        if (v < rowMin) rowMin = v;
+      }
+      if (rowMin >= cap) return cap;
+      for (var j = 0; j <= q.length; j++) {
+        prev[j] = cur[j];
+      }
+    }
+    return prev[q.length] < cap ? prev[q.length] : cap;
   }
 
   TagHit _hit(int row) {

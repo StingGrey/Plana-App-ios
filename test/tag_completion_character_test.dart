@@ -116,13 +116,22 @@ void main() {
     final voc = await offline().query('vocalo');
     expect(voc.works.first.text, 'vocaloid');
     expect(voc.works.first.note, isNull);
-    expect((await offline().query('hatsune mku')).isEmpty, isTrue);
+    final typo = await offline().query('hatsune mku');
+    expect(typo.characters.first.text, 'hatsune miku', reason: '拼错在本地纠');
+    expect((await offline().query('qqxxzzqq')).isEmpty, isTrue);
     expect(autocompleteCalls, 0, reason: '离线不问后端');
   });
 
-  test('离线词库一条没有(拼错)才问后端:category 4 进角色桶、3 进作品桶', () async {
+  test('拼错先在离线词库里纠,不问后端', () async {
     final c = makeClient();
     final res = await makeCompletion(c).query('hatsune mku');
+    expect(res.characters.first.text, 'hatsune miku');
+    expect(autocompleteCalls, 0);
+  });
+
+  test('离线词库纠错也没有才问后端:category 4 进角色桶、3 进作品桶', () async {
+    final c = makeClient();
+    final res = await makeCompletion(c).query('qqxxzzqq');
     expect(autocompleteCalls, 1);
     expect(res.characters.map((s) => s.text), ['hatsune miku']);
     expect(res.works.map((s) => s.text), ['vocaloid']);
