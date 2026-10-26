@@ -1050,8 +1050,23 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
     );
   }
 
-  Widget _miniAction(IconData icon, String label, VoidCallback onTap) {
+  /// [shrink]:放不下时文字省略(调用处要给它有界宽度)。
+  Widget _miniAction(
+    IconData icon,
+    String label,
+    VoidCallback onTap, {
+    bool shrink = false,
+  }) {
     final scheme = context.scheme;
+    final text = Text(
+      label,
+      maxLines: shrink ? 1 : null,
+      overflow: shrink ? TextOverflow.ellipsis : null,
+      style: context.texts.labelSmall!.copyWith(
+        color: scheme.onSurfaceVariant,
+        fontWeight: FontWeight.w700,
+      ),
+    );
     return Padding(
       padding: const EdgeInsets.only(left: 6),
       child: Material(
@@ -1067,13 +1082,7 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
               children: [
                 Icon(icon, size: 13, color: scheme.onSurfaceVariant),
                 const SizedBox(width: 4),
-                Text(
-                  label,
-                  style: context.texts.labelSmall!.copyWith(
-                    color: scheme.onSurfaceVariant,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
+                if (shrink) Flexible(child: text) else text,
               ],
             ),
           ),
@@ -1298,9 +1307,20 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
             ),
             const SizedBox(width: 6),
             _tokenPill(_tokens(_positive.text)),
-            const Spacer(),
             if (import != null)
-              _miniAction(Icons.download_outlined, import.$1, import.$2),
+              Expanded(
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: _miniAction(
+                    Icons.download_outlined,
+                    import.$1,
+                    import.$2,
+                    shrink: true,
+                  ),
+                ),
+              )
+            else
+              const Spacer(),
             if (!_locked)
               _miniAction(Icons.content_paste, '粘贴', () => _paste(_positive)),
           ],
