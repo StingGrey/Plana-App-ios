@@ -10,6 +10,7 @@ import '../../../core/ui/fast_scroll_handle.dart';
 import '../../../core/ui/pinch_columns.dart';
 import '../../../core/ui/scroll_memory.dart';
 import '../../generate/widgets/common.dart' show hintSnack;
+import 'codex_block.dart';
 import 'codex_card.dart';
 import 'codex_favorites.dart';
 import 'codex_masonry.dart';
@@ -99,11 +100,12 @@ class _CodexViewState extends ConsumerState<CodexView>
   String _resolveSelectedId(List<CodexMeta> index) =>
       resolveSelectedCodex(index, ref.watch(selectedCodexProvider)).id;
 
-  List<CodexEntry> _filtered(CodexData d) {
+  List<CodexEntry> _filtered(CodexData d, CodexBlock block) {
     final q = _search.trim().toLowerCase();
     return [
       for (final e in d.entries)
         if (_underCat(e) &&
+            !block.hides(e.path) &&
             (q.isEmpty ||
                 e.title.toLowerCase().contains(q) ||
                 e.tags.toLowerCase().contains(q) ||
@@ -225,13 +227,18 @@ class _CodexViewState extends ConsumerState<CodexView>
         // 先出离线词库的译名、再被对照表换一遍字。listen 不 watch —— 表到了
         // 这层不用重建。
         ref.listen(codexTagZhProvider(meta.id), (_, _) {});
+        // 正选着的分类被屏蔽了:退回全部
+        ref.listen(codexBlockProvider(meta.id), (_, b) {
+          if (b.hides(_catPath)) setState(() => _catPath = const []);
+        });
+        final block = ref.watch(codexBlockProvider(meta.id));
         final media =
             ref.watch(codexMediaProvider).value ?? CodexMedia.fallback;
-        final entries = _filtered(d);
+        final entries = _filtered(d, block);
         return Column(
           children: [
             _searchRow(),
-            _filterBar(d, meta, media, entries),
+            _filterBar(d, meta, media, entries, block),
             Expanded(
               child: entries.isEmpty
                   ? _msg(_search.isNotEmpty ? '没有匹配的词条' : '暂无词条')
@@ -290,6 +297,7 @@ class _CodexViewState extends ConsumerState<CodexView>
     CodexMeta meta,
     CodexMedia media,
     List<CodexEntry> entries,
+    CodexBlock block,
   ) {
     final tree = d.effectiveTree;
     return Padding(
@@ -298,7 +306,10 @@ class _CodexViewState extends ConsumerState<CodexView>
         children: [
           Expanded(
             child: tree.isNotEmpty
-                ? Align(alignment: Alignment.centerLeft, child: _catButton(d))
+                ? Align(
+                    alignment: Alignment.centerLeft,
+                    child: _catButton(d, meta, block),
+                  )
                 : const SizedBox.shrink(),
           ),
           _favButton(),
@@ -353,7 +364,8 @@ class _CodexViewState extends ConsumerState<CodexView>
   }
 
   /// 分类胶囊:点开层级树选;已选时显示末级名 + 清除叉,主色实底标记。
-  Widget _catButton(CodexData d) {
+  /// 有屏蔽生效时名字后带闭眼 + 屏蔽数。
+  Widget _catButton(CodexData d, CodexMeta meta, CodexBlock block) {
     final scheme = context.scheme;
     final on = _catPath.isNotEmpty;
     final label = on ? _catPath.last : '全部分类';
@@ -365,9 +377,10 @@ class _CodexViewState extends ConsumerState<CodexView>
         onTap: () async {
           final picked = await showCodexCategorySheet(
             context,
+            meta.id,
             d.effectiveTree,
             _catPath,
-            d.entries.length,
+            d.entries,
           );
           if (picked != null && mounted) setState(() => _catPath = picked);
         },
@@ -393,6 +406,23 @@ class _CodexViewState extends ConsumerState<CodexView>
                   ),
                 ),
               ),
+              if (block.active) ...[
+                const SizedBox(width: 6),
+                Icon(
+                  Icons.visibility_off_outlined,
+                  size: 14,
+                  color: on ? scheme.onPrimary : scheme.primary,
+                ),
+                const SizedBox(width: 3),
+                Text(
+                  '${block.paths.length}',
+                  style: mono(
+                    context,
+                    size: 11,
+                    color: on ? scheme.onPrimary : scheme.primary,
+                  ),
+                ),
+              ],
               const SizedBox(width: 4),
               if (on)
                 InkWell(
