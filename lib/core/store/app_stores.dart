@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../../features/assistant/session_store.dart';
+import '../../features/editor/data/trans_cache_store.dart';
 import '../../features/gallery/gallery_store.dart';
 import '../../features/gallery/albums/album_store.dart';
 import '../../features/generate/canvas_history.dart';
@@ -28,6 +29,7 @@ class AppStores {
     this.prefs,
     this.albums,
     this.history,
+    this.transCache,
   );
 
   final BlobStore blobs;
@@ -45,6 +47,9 @@ class AppStores {
   /// 非机密设置(主题/生成参数/编辑器…),见 [PrefsStore]。
   final PrefsStore prefs;
 
+  /// 后端翻回来的译名,见 [TransCacheStore]。
+  final TransCacheStore transCache;
+
   /// 测试用空档:临时目录、不读盘;写入尽力而为。
   factory AppStores.ephemeral() {
     final root = Directory.systemTemp.createTempSync('plana_stores');
@@ -60,6 +65,7 @@ class AppStores {
       PrefsStore.emptyForTest(root),
       AlbumStore(root),
       CanvasHistoryStore(workspace, root),
+      TransCacheStore(root),
     );
   }
 
@@ -84,6 +90,7 @@ class AppStores {
     final albums = AlbumStore(root);
     final ledger = KeyLedgerStore(root);
     final assistant = AssistantStore(blobs, root);
+    final transCache = TransCacheStore(root);
     try {
       await blobs.ensureReady();
     } catch (_) {}
@@ -99,6 +106,7 @@ class AppStores {
     );
     await ledger.load();
     await assistant.load();
+    await transCache.load();
     return AppStores._(
       blobs,
       workspace,
@@ -108,6 +116,7 @@ class AppStores {
       prefs,
       albums,
       CanvasHistoryStore(workspace, root),
+      transCache,
     );
   }
 
@@ -117,6 +126,7 @@ class AppStores {
     gallery.flushIndex();
     ledger.flush();
     assistant.flush();
+    transCache.flush();
   }
 
   /// 启动后台维护(避开首帧,延迟几秒):清选图器缓存垃圾 + 远端图缓存裁剪
@@ -130,9 +140,7 @@ class AppStores {
       await clearRetiredRoleLexicon();
       try {
         final canvases = workspace.initialCanvases?.canvases ?? const [];
-        await history.removeOrphans({
-          for (final c in canvases) c.id,
-        }, bootedAt);
+        await history.removeOrphans({for (final c in canvases) c.id}, bootedAt);
         final live = <String>{
           ...await workspace.liveRefs(),
           ...await gallery.liveRefs(),

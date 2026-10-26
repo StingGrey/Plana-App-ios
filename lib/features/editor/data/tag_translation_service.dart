@@ -6,7 +6,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
 import '../../../core/net/backend_config.dart';
+import '../../../core/store/app_stores.dart';
 import 'suggestions.dart';
+import 'trans_cache_store.dart';
 
 /// 注音层的后端翻译通道。
 ///
@@ -23,7 +25,7 @@ import 'suggestions.dart';
 /// LLM 译文**不回写**公共映射库(服务端 2026-08-25 起也不再收 `ai` 源):那张库
 /// 攒到 24.2 万条时有 19.7 万条是 AI 回写的,抽样核实 94.6% 的 key 连
 /// danbooru.tsv 都不认识 —— 全是被当成 tag 提交的整段提示词碎片。译文照常显示、
-/// 照常进本地反查缓存,只是不固化。
+/// 照常进本地反查缓存,并存进本机([TransCacheStore]),下次开机不用再问。
 ///
 /// 命中回填 [cacheTagMeta](transCacheRev 随之自增)后 notifyListeners,编辑器
 /// 刷新注音层/词条栏。离线补全模式不联网(enabled=false 全程 no-op)。
@@ -31,11 +33,15 @@ class TagTranslationService extends ChangeNotifier {
   TagTranslationService({
     required this.enabled,
     required this.baseUrl,
+    this.saved,
     http.Client? client,
   }) : _client = client ?? http.Client();
 
   final bool enabled;
   final String baseUrl;
+
+  /// 翻出来的译名存一份到本机;null = 不存(测试)。
+  final TransCacheStore? saved;
   final http.Client _client;
 
   static const _timeout = Duration(seconds: 20);
@@ -129,6 +135,7 @@ class TagTranslationService extends ChangeNotifier {
       var gotAny = false;
       res.hits.forEach((name, zh) {
         cacheTagMeta(name, trans: zh); // 只进本地反查缓存,不回写公共库
+        saved?.put(name, zh);
         _asked.add(name);
         gotAny = true;
       });
@@ -202,7 +209,11 @@ class TagTranslationService extends ChangeNotifier {
 /// 不需要 bot 会话 —— 端点是公开的,回写那一步已取消(见类文档)。
 final tagTranslationServiceProvider = Provider<TagTranslationService>((ref) {
   final base = ref.watch(backendBaseProvider).value ?? '';
-  final s = TagTranslationService(enabled: true, baseUrl: base);
+  final s = TagTranslationService(
+    enabled: true,
+    baseUrl: base,
+    saved: ref.watch(appStoresProvider).transCache,
+  );
   ref.onDispose(s.dispose);
   return s;
 });
