@@ -8,13 +8,13 @@
 // 来自类目,所以这几条映射是唯一来源,错了就整组消失。请求体里的
 // target_categories 也必须显式带 Copyright,否则作品行拿不到。
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:plana_app/features/editor/data/artist_oc_library.dart';
-import 'package:plana_app/features/editor/data/completion_source.dart';
 import 'package:plana_app/features/editor/data/local_tag_db.dart';
 import 'package:plana_app/features/editor/data/suggestions.dart';
 import 'package:plana_app/features/editor/data/tag_completion.dart';
@@ -83,7 +83,6 @@ void main() {
   }
 
   TagCompletion makeCompletion(http.Client c) => TagCompletion(
-    source: CompletionSource.enhanced,
     baseUrl: _base,
     localDb: LocalTagDb(),
     artistOcLib: ArtistOcLibrary(_base, null, c),
@@ -102,24 +101,30 @@ void main() {
     expect(autocompleteCalls, 0);
   });
 
-  test('离线词库模式同样分组,作品行不带骰子提示(抽角色要联网)', () async {
-    final c = makeClient();
-    TagCompletion offline() => TagCompletion(
-      source: CompletionSource.danbooru,
+  test('后端连不上:英文照样从离线词库补,分组与纠错都在,不报错', () async {
+    final down = MockClient(
+      (req) async => throw const SocketException('network down'),
+    );
+    final tc = TagCompletion(
       baseUrl: _base,
       localDb: LocalTagDb(),
-      artistOcLib: ArtistOcLibrary(_base, null, c),
-      client: c,
+      artistOcLib: ArtistOcLibrary(_base, 'sid', down),
+      client: down,
     );
-    final miku = await offline().query('hatsune mi');
+    final miku = await tc.query('hatsune mi');
     expect(miku.characters.first.text, 'hatsune miku');
-    final voc = await offline().query('vocalo');
+    final voc = await tc.query('vocalo');
     expect(voc.works.first.text, 'vocaloid');
-    expect(voc.works.first.note, isNull);
-    final typo = await offline().query('hatsune mku');
+    final typo = await tc.query('hatsune mku');
     expect(typo.characters.first.text, 'hatsune miku', reason: '拼错在本地纠');
-    expect((await offline().query('qqxxzzqq')).isEmpty, isTrue);
-    expect(autocompleteCalls, 0, reason: '离线不问后端');
+    expect((await tc.query('qqxxzzqq')).isEmpty, isTrue);
+    expect((await tc.query('初音')).isEmpty, isTrue, reason: '语义搜词连不上就空着');
+    expect(
+      await tc.relatedOf('1girl'),
+      relatedTags('1girl'),
+      reason: '关联退回静态表',
+    );
+    expect(await tc.randomCharacterOf('vocaloid'), isNull);
   });
 
   test('拼错先在离线词库里纠,不问后端', () async {

@@ -17,7 +17,7 @@ bool get kIsPrerelease => kAppVersion.contains('-');
 /// 法典图鉴的数据来源。
 const kCodexSourceUrl = 'https://novelai.quicktagcloud.com/';
 
-/// 增强补全的中文搜词与译名来源。后端 `/api/tags/search` 是它的代理,
+/// 补全的中文搜词与译名来源。后端 `/api/tags/search` 是它的代理,
 /// 中文名与一句话简介也出自它的建库产物(tags_enhanced.csv)。
 const kDanbooruSearchUrl =
     'https://github.com/SuzumiyaAkizuki/DanbooruSearchOnline';

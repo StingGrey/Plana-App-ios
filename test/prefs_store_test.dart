@@ -111,6 +111,30 @@ void main() {
     expect(await c.read(key: 'save_settings'), isNull);
   });
 
+  test('已下线的设置项开机删掉,其余不动', () async {
+    final root = tmp();
+    final a = await PrefsStore.open(
+      root,
+      legacyRead: (_) async => null,
+      legacyDelete: (_) async {},
+    );
+    await a.write(key: 'completion_source_v2', value: 'danbooru');
+    await a.write(key: 'save_settings', value: 'keep');
+
+    final b = await PrefsStore.open(
+      root,
+      legacyRead: (_) async => null,
+      legacyDelete: (_) async {},
+    );
+    expect(await b.read(key: 'completion_source_v2'), isNull);
+    expect(await b.read(key: 'save_settings'), 'keep');
+    expect(
+      File('${root.path}/settings.json').readAsStringSync(),
+      isNot(contains('completion_source')),
+      reason: '落盘的那份也删掉',
+    );
+  });
+
   test('settings.json 损坏时按默认起步,不崩', () async {
     final root = tmp();
     File('${root.path}/settings.json')

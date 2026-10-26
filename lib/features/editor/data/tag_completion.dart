@@ -8,7 +8,6 @@ import '../../../core/net/backend_config.dart';
 import '../../inspiration/tag_library.dart';
 import '../../inspiration/tag_models.dart';
 import 'artist_oc_library.dart';
-import 'completion_source.dart';
 import 'local_tag_db.dart';
 import 'suggestions.dart';
 
@@ -30,15 +29,14 @@ class WikiPreview {
       otherNames.isNotEmpty;
 }
 
-/// 标签补全引擎。按生效来源分流:
-///  - `danbooru`:**离线**词库 [LocalTagDb](assets/danbooru.tsv) + 本机灵感库的角色,
-///    不碰网络(手机直连 danbooru.donmai.us 被 Cloudflare 挡死,早改离线了)。
-///  - `enhanced`:英文先查离线词库,一条没有才问后端 `/autocomplete`;
-///    中文过 `/tags/search` 语义搜词。
+/// 标签补全引擎。以离线词库 [LocalTagDb](assets/danbooru.tsv)为准,后端只做兜底:
+///  - 英文查离线词库(含拼写纠错),还是一条没有才问后端 `/autocomplete`;
+///  - 中文过后端 `/tags/search` 语义搜词;
+///  - 画师串 / 公共库 OC 来自后端,本机灵感库的角色条目一直并进来。
+/// 后端的几路一律静默:连不上、出错都退回本地能给的,不弹错。
 /// query→result 结果缓存;顺带回填注音/热度缓存([cacheTagMeta]),供词下注音层与词条栏反查。
 class TagCompletion {
   TagCompletion({
-    required this.source,
     required this.baseUrl,
     required this.localDb,
     required this.artistOcLib,
@@ -46,16 +44,13 @@ class TagCompletion {
     http.Client? client,
   }) : _client = client ?? http.Client();
 
-  /// 生效来源。
-  final CompletionSource source;
-
-  /// 后端基址(enhanced 用),形如 `https://nai.sora214.top`,末尾无斜杠。
+  /// 后端基址,形如 `https://nai.sora214.top`,末尾无斜杠。
   final String baseUrl;
 
-  /// 离线 Danbooru 标签库(两种来源的英文补全都用)。
+  /// 离线 Danbooru 标签库。
   final LocalTagDb localDb;
 
-  /// 画师/OC 库(增强模式合并)。角色·作品不再走本地库,见 [_enhanced]。
+  /// 画师 / OC 库,并进补全。
   final ArtistOcLibrary artistOcLib;
 
   /// 本机灵感库的角色条目,和公共库的 OC 一起并进补全(本地在前,见
@@ -96,15 +91,13 @@ class TagCompletion {
     final cjk = _cjk(q);
     if (cjk ? q.isEmpty : q.length < 2) return const SuggestResult();
 
-    final key = '${source.name}|${q.toLowerCase()}';
+    final key = q.toLowerCase();
     final hit = _cache[key];
     if (hit != null) return hit;
 
     SuggestResult res;
     try {
-      res = source == CompletionSource.danbooru
-          ? await _danbooru(q, cjk)
-          : await _enhanced(q, cjk);
+      res = await _complete(q, cjk);
     } catch (_) {
       res = const SuggestResult();
     }
@@ -112,18 +105,16 @@ class TagCompletion {
     return res;
   }
 
-  /// 关联共现标签(词条栏「关联」)。增强模式走后端 `/api/tags/related`
-  /// (DanbooruSearch 共现,web tagRelated.ts 同款参数);离线模式用内置
-  /// 静态表(不联网)。空结果也缓存——后端同参 24h 缓存,重复问无意义;
+  /// 关联共现标签(词条栏「关联」)。走后端 `/api/tags/related`
+  /// (DanbooruSearch 共现,web tagRelated.ts 同款参数),拿不到就用内置静态表。
+  /// 空结果也缓存——后端同参 24h 缓存,重复问无意义;
   /// 网络失败不缓存,下次再试。顺带把 cn_name 回填注音缓存。
   Future<List<String>> relatedOf(String name) async {
     final key = name.trim().toLowerCase();
     if (key.isEmpty) return const [];
     final hit = _relatedCache[key];
     if (hit != null) return hit;
-    if (source != CompletionSource.enhanced || baseUrl.isEmpty) {
-      return relatedTags(key);
-    }
+    if (baseUrl.isEmpty) return relatedTags(key);
     try {
       final r = await _retry(
         () => _client.post(
@@ -136,7 +127,7 @@ class TagCompletion {
           }),
         ),
       );
-      if (r.statusCode != 200) return const [];
+      if (r.statusCode != 200) return relatedTags(key);
       final j = jsonDecode(utf8.decode(r.bodyBytes));
       final results = j is Map ? j['results'] : null;
       final out = <String>[];
@@ -154,7 +145,7 @@ class TagCompletion {
       _capped(_relatedCache, key, out);
       return out;
     } catch (_) {
-      return const [];
+      return relatedTags(key);
     }
   }
 
@@ -164,9 +155,7 @@ class TagCompletion {
   /// 所以按作品缓存,同一行连点只打一次。对齐 web `pickRandomCharacterFromOrigin`。
   Future<String?> randomCharacterOf(String work) async {
     final key = _unders(work).toLowerCase();
-    if (key.isEmpty || source != CompletionSource.enhanced || baseUrl.isEmpty) {
-      return null;
-    }
+    if (key.isEmpty || baseUrl.isEmpty) return null;
     var pool = _originChars[key];
     if (pool == null) {
       try {
@@ -217,24 +206,12 @@ class TagCompletion {
     }
   }
 
-  // ---- Danbooru 离线库(不碰网络/Cloudflare)----
-  // 英文查离线词库,本机灵感库的角色条目中英文都并进来。
-  Future<SuggestResult> _danbooru(String q, bool cjk) async {
-    final tags = cjk
-        ? const <Suggestion>[]
-        : await _localEnglishTags(q, dice: false);
-    final local = await (localOcs ?? Future.value(const <TagEntry>[]));
-    return _group(tags, const [], ArtistOcLibrary.searchLocal(q, local));
-  }
-
-  // ---- 后端增强:上游标签 + 画师/OC 库,并行合并 ----
+  // ---- 标签 + 画师/OC 库,并行合并 ----
   //
-  // 角色与作品已全量交给上游(2026-08-25 跟 web 同步退役本地 `role_tag_mapping.json`):
-  // 英文走 autocomplete 的 category 3/4,中文走语义搜词的 Copyright/Character。
-  // 本地只剩画师串和 OC 两个自有数据源。
-  Future<SuggestResult> _enhanced(String q, bool cjk) async {
-    if (baseUrl.isEmpty) return const SuggestResult();
-    final tagsF = cjk ? _enhancedChineseTags(q) : _enhancedEnglishTags(q);
+  // 角色与作品按类目归组:英文是离线词库 / autocomplete 的 category 3/4,
+  // 中文是语义搜词的 Copyright/Character。
+  Future<SuggestResult> _complete(String q, bool cjk) async {
+    final tagsF = cjk ? _chineseTags(q) : _englishTags(q);
     final aoF = (localOcs ?? Future.value(const <TagEntry>[])).then(
       (local) => artistOcLib.search(q, localOcs: local),
     );
@@ -287,30 +264,22 @@ class TagCompletion {
     );
   }
 
-  /// 英文:先查离线词库(匹配口径同后端补全,见 [LocalTagDb.search]),译名用词库的。
-  /// 拼错也在离线词库里纠;还是一条都没有(多半是词库之后的新标签)才问后端。
-  Future<List<Suggestion>> _enhancedEnglishTags(String q) async {
-    final tags = await _localEnglishTags(q, dice: true);
-    return tags.isEmpty ? _backendAutocomplete(q) : tags;
-  }
-
-  /// 离线词库的英文结果,一条都没有就按拼错纠一次(见 [LocalTagDb.correct])。
-  /// [dice] = 作品行带骰子提示(抽角色要联网)。
-  Future<List<Suggestion>> _localEnglishTags(
-    String q, {
-    required bool dice,
-  }) async {
+  /// 英文:先查离线词库(匹配口径同后端补全,见 [LocalTagDb.search]),译名用词库的;
+  /// 一条都没有就按拼错纠一次(见 [LocalTagDb.correct])。还是没有(多半是词库之后的
+  /// 新标签)才问后端,问不到就空着。
+  Future<List<Suggestion>> _englishTags(String q) async {
     var hits = await localDb.search(q, limit: _limit);
     if (hits.isEmpty) hits = await localDb.correct(q, limit: _limit);
+    if (hits.isEmpty) {
+      try {
+        return await _backendAutocomplete(q);
+      } catch (_) {
+        return const [];
+      }
+    }
     return _rankEnglish([
       for (final h in hits)
-        _tagSuggestion(
-          _spaces(h.tag),
-          h.count,
-          h.category,
-          trans: h.zh,
-          dice: dice,
-        ),
+        _tagSuggestion(_spaces(h.tag), h.count, h.category, trans: h.zh),
     ], q);
   }
 
@@ -320,11 +289,17 @@ class TagCompletion {
   /// 2026-08-24 停用、2026-08-28 删除:它打的是 `/api/translate/en2zh` —— 一个
   /// 收任意 messages 的通用 chat 代理,那个端点已被收编成固定格式的翻译接口。
   /// web 那半边(aiRecommendTags / aiDirectTranslate)同时删掉。
-  Future<List<Suggestion>> _enhancedChineseTags(String q) async {
+  Future<List<Suggestion>> _chineseTags(String q) async {
+    final List<Suggestion> found;
+    try {
+      found = await _backendSearch(q);
+    } catch (_) {
+      return const []; // 连不上后端:中文只剩本地库的角色,翻译行也不出
+    }
     final seen = <String>{};
     final out = <Suggestion>[];
     // 去重保留:上游同一次搜索里角色与作品分类可能给出同名条目。
-    for (final s in await _backendSearch(q)) {
+    for (final s in found) {
       if (seen.add(s.text.toLowerCase())) out.add(s);
     }
     // 「翻译为英文」行:含中文逗号或 >3 个 CJK 字 → 顶部插一条整句翻译入口
@@ -474,7 +449,6 @@ class TagCompletion {
     int count,
     int? category, {
     String? trans,
-    bool dice = true,
   }) {
     final kind = switch (category) {
       4 => SuggestionKind.character,
@@ -484,7 +458,7 @@ class TagCompletion {
     return Suggestion(
       text: text,
       kind: kind,
-      note: kind == SuggestionKind.work && dice ? _kWorkNote : null,
+      note: kind == SuggestionKind.work ? _kWorkNote : null,
       trans: trans,
       count: count,
     );
@@ -562,9 +536,9 @@ class TagCompletion {
     return null;
   }
 
-  /// wiki 两个接口共用的规范化:来源不是增强、没有基址、空串一律 null(不发请求)。
+  /// wiki 两个接口共用的规范化:没有基址、空串一律 null(不发请求)。
   String? _wikiTag(String tag) {
-    if (source != CompletionSource.enhanced || baseUrl.isEmpty) return null;
+    if (baseUrl.isEmpty) return null;
     final t = tag.trim().toLowerCase().replaceAll(' ', '_');
     return t.isEmpty ? null : t;
   }
@@ -572,14 +546,12 @@ class TagCompletion {
   void dispose() => _client.close();
 }
 
-/// 按生效来源 + 后端基址 + 会话构造补全引擎;任一变化即重建(缓存随之刷新)。
+/// 按后端基址 + 会话构造补全引擎;任一变化即重建(缓存随之刷新)。
 final tagCompletionProvider = Provider<TagCompletion>((ref) {
-  final source = ref.watch(effectiveCompletionSourceProvider);
   final base = ref.watch(backendBaseProvider).value ?? '';
   // 不需要在这里 watch 会话:补全接口全是公开的,而画师串/OC 那两个私有接口
   // 由 artistOcLibraryProvider 自己 watch,会话一变它重建、这里跟着重建。
   final tc = TagCompletion(
-    source: source,
     baseUrl: base,
     localDb: ref.watch(localTagDbProvider),
     artistOcLib: ref.watch(artistOcLibraryProvider),

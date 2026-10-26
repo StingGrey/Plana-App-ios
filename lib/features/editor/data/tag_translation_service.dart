@@ -6,10 +6,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
 import '../../../core/net/backend_config.dart';
-import 'completion_source.dart';
 import 'suggestions.dart';
 
-/// 注音层的后端翻译通道(仅增强补全模式)。
+/// 注音层的后端翻译通道。
 ///
 /// **一次请求搞定**:`POST /api/tags/translate`,服务端内部依次走共享映射库 →
 /// 进程内 LLM 缓存 → 上游 LLM。2026-08-28 之前 app 要自己打两次(先
@@ -199,16 +198,11 @@ class TagTranslationService extends ChangeNotifier {
   }
 }
 
-/// 按生效来源 + 后端基址构造;任一变化即重建(与 tagCompletionProvider 同款)。
-/// 不再需要 bot 会话 —— 端点是公开的,回写那一步已取消(见类文档)。
-/// 来源本身就跟着会话走([effectiveCompletionSourceProvider]),登录/登出照样重建。
+/// 按后端基址构造;基址变化即重建(与 tagCompletionProvider 同款)。
+/// 不需要 bot 会话 —— 端点是公开的,回写那一步已取消(见类文档)。
 final tagTranslationServiceProvider = Provider<TagTranslationService>((ref) {
-  final source = ref.watch(effectiveCompletionSourceProvider);
   final base = ref.watch(backendBaseProvider).value ?? '';
-  final s = TagTranslationService(
-    enabled: source == CompletionSource.enhanced,
-    baseUrl: base,
-  );
+  final s = TagTranslationService(enabled: true, baseUrl: base);
   ref.onDispose(s.dispose);
   return s;
 });

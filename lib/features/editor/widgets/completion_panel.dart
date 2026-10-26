@@ -5,7 +5,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/store/ui_prefs.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../generate/widgets/common.dart' show hintSnack;
-import '../data/completion_source.dart';
 import '../data/suggestions.dart';
 import '../data/tag_completion.dart';
 import '../data/tag_translation_service.dart';
@@ -317,16 +316,10 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
   Widget _row(Suggestion s) {
     final scheme = context.scheme;
     final isWork = s.kind == SuggestionKind.work;
-    // 离线词库没有 wiki 数据,也抽不了角色(fetchWiki / randomCharacterOf 第一行
-    // 就 return null),眼睛和骰子给了也是死的。
-    final online =
-        ref.watch(effectiveCompletionSourceProvider) ==
-        CompletionSource.enhanced;
     // 眼睛 = Danbooru Wiki 预览。画师串是自建条目、OC 是本地条目,
     // Danbooru 上没有对应词条,给了按钮点开也是空,所以这两类不出。
     final canWiki =
-        (s.kind == SuggestionKind.tag || s.kind == SuggestionKind.character) &&
-        online;
+        s.kind == SuggestionKind.tag || s.kind == SuggestionKind.character;
     final subtitle = _subtitle(s);
     final count = isWork ? null : formatCount(s.count);
     final open = _wikiOpen == s.text;
@@ -375,7 +368,7 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
                   ),
                   const SizedBox(width: 6),
                 ],
-                if (isWork && online) ...[
+                if (isWork) ...[
                   _diceBtn(s),
                   const SizedBox(width: 4),
                 ] else if (canWiki) ...[

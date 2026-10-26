@@ -574,7 +574,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
         tok?.trans != _panelTok?.trans) {
       setState(() => _panelTok = tok);
     }
-    // 关联标签异步拉取(增强模式走后端共现,离线用静态表);换词即重拉,
+    // 关联标签异步拉取(走后端共现,拿不到用静态表);换词即重拉,
     // 引擎内有 per-tag 缓存,重复进同一词秒回。拉取期「关联」按钮转圈不置灰。
     final name = tok?.name;
     if (name != null && name != _relatedFor) {

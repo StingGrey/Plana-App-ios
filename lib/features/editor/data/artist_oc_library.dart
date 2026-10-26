@@ -9,7 +9,7 @@ import '../../../core/net/backend_config.dart';
 import '../../inspiration/tag_models.dart';
 import 'suggestions.dart';
 
-/// 画师串 + OC 库(增强模式,需 Bearer session)。
+/// 画师串 + OC 库(需 Bearer session)。
 /// `GET /api/artists/list` + `GET /api/oc/list`,内存缓存(会话生命周期)。
 /// **画师插 `artist_string`、OC 插 `tag_group`**——web 包成 `<<marker>>` 但发送前会被
 /// `cleanPromptMarkers` 剥成裸内容,故直接插裸载荷等价。归属默认 all(不按 mine 过滤)。
@@ -150,12 +150,10 @@ class ArtistOcLibrary {
     try {
       await _ensureLoaded();
     } catch (_) {
-      return (const <Suggestion>[], const <Suggestion>[]);
+      // 拉不到公共库:本地库照样补
     }
-    final artists = _artists, ocs = _ocs;
-    if (artists == null || ocs == null) {
-      return (const <Suggestion>[], const <Suggestion>[]);
-    }
+    final artists = _artists ?? const <_Artist>[];
+    final ocs = _ocs ?? const <_Oc>[];
     final q = query.trim().toLowerCase();
     if (q.isEmpty) return (const <Suggestion>[], const <Suggestion>[]);
 
@@ -173,7 +171,7 @@ class ArtistOcLibrary {
       }
     }
 
-    final localOut = searchLocal(query, localOcs, limit: limit);
+    final localOut = _searchLocal(query, localOcs, limit: limit);
     final mineIds = <String>{}, mineNames = <String>{};
     for (final e in localOcs) {
       final name = e.name.trim();
@@ -202,8 +200,7 @@ class ArtistOcLibrary {
   }
 
   /// 本机灵感库的角色条目里,名字 / 别名含 [query] 的前 [limit] 个,底行写「本地库」。
-  /// 不联网,离线词库模式也用它。
-  static List<Suggestion> searchLocal(
+  static List<Suggestion> _searchLocal(
     String query,
     List<TagEntry> localOcs, {
     int limit = 5,
