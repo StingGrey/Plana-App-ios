@@ -207,7 +207,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
   /// 离开编辑器时把输入法按下去。
   ///
   /// 只 unfocus 自己不够:出栈时 Navigator 会把焦点还给上一条路由的
-  /// FocusScope,那边可能还记着某个输入框(LoRA 搜索、自然语言补充说明…),
+  /// FocusScope,那边可能还记着某个输入框(LoRA 搜索…),
   /// 于是刚离开编辑器键盘又弹一次。所以当帧压一次、下一帧再压一次 ——
   /// 后者盖住「焦点还原发生在本帧之后」的情况。
   /// 下一帧那次只碰 FocusManager:本页可能已经 dispose,再动 _focus 会抛。

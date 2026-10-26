@@ -77,12 +77,8 @@ void main() {
 
   test('anima 下 NAI 模块全部不可见,数据整组剥离', () {
     const ms = GenModuleSettings();
-    // anima 组只有自然语言描述 + LoRA + 重绘放大(NAI 四件套全部收走)
-    expect(ms.visibleFor('Anima Turbo'), [
-      GenModule.animaNl,
-      GenModule.lora,
-      GenModule.hires,
-    ]);
+    // anima 组只有 LoRA + 重绘放大(NAI 四件套全部收走)
+    expect(ms.visibleFor('Anima Turbo'), [GenModule.lora, GenModule.hires]);
     final out = stripHiddenModules(_animaState(), ms);
     expect(out.characters, isEmpty);
     expect(out.vibes, isEmpty);

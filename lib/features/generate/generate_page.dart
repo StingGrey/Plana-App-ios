@@ -4,13 +4,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/ui/scroll_memory.dart';
 import 'gen_modules.dart';
 import 'generate_state.dart';
-import 'widgets/anima_nl_card.dart';
 import 'widgets/bottom_action_bar.dart';
 import 'widgets/char_ref_card.dart';
 import 'widgets/character_card.dart';
 import 'widgets/hires_card.dart';
 import 'widgets/img2img_card.dart';
-import 'widgets/krea_prompt_card.dart';
 import 'widgets/krea_style_ref_card.dart';
 import 'widgets/lora_card.dart';
 import 'widgets/prompt_card.dart';
@@ -111,7 +109,5 @@ Widget _moduleCard(GenModule m, int index) => switch (m) {
   // 挂载语义完全一致,差别只在库和载荷去处。
   GenModule.lora || GenModule.kreaLora => LoraCard(reorderIndex: index),
   GenModule.hires => HiresCard(reorderIndex: index),
-  GenModule.animaNl => AnimaNlCard(reorderIndex: index),
   GenModule.kreaStyleRef => KreaStyleRefCard(reorderIndex: index),
-  GenModule.kreaPrompt => KreaPromptCard(reorderIndex: index),
 };

@@ -102,11 +102,10 @@ void main() {
     expect(stepsRangeOf('NAI 4.5 Full'), (min: 1, max: 50));
   });
 
-  test('krea 下只剩自己那三个模块,NAI 数据整组剥离', () {
+  test('krea 下只剩自己那两个模块,NAI 数据整组剥离', () {
     const ms = GenModuleSettings();
     expect(ms.visibleFor('Krea 2 Raw'), [
       GenModule.kreaLora,
-      GenModule.kreaPrompt,
       GenModule.kreaStyleRef,
     ]);
     final out = stripHiddenModules(_kreaState(), ms);

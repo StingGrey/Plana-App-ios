@@ -191,11 +191,7 @@ void main() {
 
     test('lora 模块归 anima 组:NAI 下剥离,anima 下保留', () {
       const ms = GenModuleSettings();
-      expect(ms.visibleFor('Anima Turbo'), [
-        GenModule.animaNl,
-        GenModule.lora,
-        GenModule.hires,
-      ]);
+      expect(ms.visibleFor('Anima Turbo'), [GenModule.lora, GenModule.hires]);
       expect(ms.isVisibleFor(GenModule.lora, 'NAI 4.5 Full'), isFalse);
 
       final naiState = _animaState([
