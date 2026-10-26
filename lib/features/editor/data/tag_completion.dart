@@ -33,7 +33,7 @@ class WikiPreview {
 /// 标签补全引擎。按生效来源分流:
 ///  - `danbooru`:**离线**词库 [LocalTagDb](assets/danbooru.tsv),仅英文,不碰网络
 ///    (手机直连 danbooru.donmai.us 被 Cloudflare 挡死,早改离线了)。
-///  - `enhanced`:走后端 `/api/tags/*`——英文过 `/autocomplete` + `/wiki` 补中文;
+///  - `enhanced`:英文先查离线词库,一条没有才问后端 `/autocomplete`;
 ///    中文过 `/tags/search` 语义搜词。
 /// query→result 结果缓存;顺带回填注音/热度缓存([cacheTagMeta]),供词下注音层与词条栏反查。
 class TagCompletion {
@@ -52,7 +52,7 @@ class TagCompletion {
   /// 后端基址(enhanced 用),形如 `https://nai.sora214.top`,末尾无斜杠。
   final String baseUrl;
 
-  /// 离线 Danbooru 标签库(danbooru 来源用)。
+  /// 离线 Danbooru 标签库(两种来源的英文补全都用)。
   final LocalTagDb localDb;
 
   /// 画师/OC 库(增强模式合并)。角色·作品不再走本地库,见 [_enhanced]。
@@ -220,7 +220,18 @@ class TagCompletion {
   // ---- Danbooru 离线库(仅英文,不碰网络/Cloudflare)----
   Future<SuggestResult> _danbooru(String q, bool cjk) async {
     if (cjk) return const SuggestResult(); // 离线英文库
-    return SuggestResult(tags: await localDb.search(q, limit: _limit));
+    final hits = await localDb.search(q, limit: _limit);
+    return SuggestResult(
+      tags: _rankEnglish([
+        for (final h in hits)
+          Suggestion(
+            text: _spaces(h.tag),
+            kind: SuggestionKind.tag,
+            trans: h.zh,
+            count: h.count,
+          ),
+      ], q),
+    );
   }
 
   // ---- 后端增强:上游标签 + 画师/OC 库,并行合并 ----
@@ -275,11 +286,15 @@ class TagCompletion {
     );
   }
 
-  /// 英文:后端 autocomplete + wiki 补中文译名。
+  /// 英文:先查离线词库(匹配口径同后端补全,见 [LocalTagDb.search]),译名用词库的。
+  /// 一条都没有(多半是拼错或词库之后的新标签)才问后端,它会去问 Danbooru 纠错。
   Future<List<Suggestion>> _enhancedEnglishTags(String q) async {
-    final tags = await _backendAutocomplete(q);
-    if (tags.isNotEmpty) await _attachTranslations(tags);
-    return tags;
+    final hits = await localDb.search(q, limit: _limit);
+    if (hits.isEmpty) return _backendAutocomplete(q);
+    return _rankEnglish([
+      for (final h in hits)
+        _tagSuggestion(_spaces(h.tag), h.count, h.category, trans: h.zh),
+    ], q);
   }
 
   /// 中文:语义搜词(`/api/tags/search`)。
@@ -417,34 +432,10 @@ class TagCompletion {
     return out;
   }
 
-  /// 给英文补全结果补中文名(后端 wiki/词库),best-effort。
-  Future<void> _attachTranslations(List<Suggestion> tags) async {
-    final names = [for (final t in tags) _unders(t.text)];
-    final uri = Uri.parse(
-      '$baseUrl/api/tags/wiki',
-    ).replace(queryParameters: {'tags': names.join(',')});
-    try {
-      final resp = await _retry(() => _client.get(uri));
-      if (resp.statusCode != 200) return;
-      final body = jsonDecode(utf8.decode(resp.bodyBytes));
-      if (body is! Map) return;
-      for (var i = 0; i < tags.length; i++) {
-        final zh = body[names[i]];
-        if (zh is List && zh.isNotEmpty && zh.first is String) {
-          final t = (zh.first as String).trim();
-          if (t.isEmpty) continue;
-          tags[i] = tags[i].copyWith(trans: t);
-          cacheTagMeta(tags[i].text, trans: t);
-        }
-      }
-    } catch (_) {}
-  }
-
   /// 解析 Danbooru `autocomplete.json` 数组 → 标签建议(前缀优先 → 热度降序,剔除 <50 冷门)。
   List<Suggestion> _parseDanbooru(List<int> bytes, String q) {
     final data = jsonDecode(utf8.decode(bytes));
     if (data is! List) return const [];
-    final ql = q.toLowerCase();
     final out = <Suggestion>[];
     for (final e in data) {
       if (e is! Map) continue;
@@ -454,29 +445,42 @@ class TagCompletion {
       if (count != 0 && count < 50) continue; // 冷门标签剔除
       final text = _spaces(value);
       cacheTagMeta(text, count: count);
-      // Danbooru 的 category 是数字:4 = 角色、3 = 作品(copyright)。各自归组 ——
-      // 混在几十条普通标签里根本挑不出来(对齐 web isCharacter/isOrigin)。
-      final kind = switch ((e['category'] as num?)?.toInt()) {
-        4 => SuggestionKind.character,
-        3 => SuggestionKind.work,
-        _ => SuggestionKind.tag,
-      };
-      out.add(
-        Suggestion(
-          text: text,
-          kind: kind,
-          note: kind == SuggestionKind.work ? _kWorkNote : null,
-          count: count,
-        ),
-      );
+      out.add(_tagSuggestion(text, count, (e['category'] as num?)?.toInt()));
     }
-    out.sort((a, b) {
+    return _rankEnglish(out, q);
+  }
+
+  /// Danbooru 的 category 是数字:4 = 角色、3 = 作品(copyright)。各自归组 ——
+  /// 混在几十条普通标签里根本挑不出来(对齐 web isCharacter/isOrigin)。
+  Suggestion _tagSuggestion(
+    String text,
+    int count,
+    int? category, {
+    String? trans,
+  }) {
+    final kind = switch (category) {
+      4 => SuggestionKind.character,
+      3 => SuggestionKind.work,
+      _ => SuggestionKind.tag,
+    };
+    return Suggestion(
+      text: text,
+      kind: kind,
+      note: kind == SuggestionKind.work ? _kWorkNote : null,
+      trans: trans,
+      count: count,
+    );
+  }
+
+  /// 英文结果排序:以输入开头的在前,再按热度降序。
+  static List<Suggestion> _rankEnglish(List<Suggestion> xs, String q) {
+    final ql = q.toLowerCase();
+    return xs..sort((a, b) {
       final ap = a.text.toLowerCase().startsWith(ql);
       final bp = b.text.toLowerCase().startsWith(ql);
       if (ap != bp) return ap ? -1 : 1;
       return b.count.compareTo(a.count);
     });
-    return out;
   }
 
   /// 拉某标签的 Danbooru wiki 预览(仅增强模式;danbooru/离线返回 null)。文本走后端;

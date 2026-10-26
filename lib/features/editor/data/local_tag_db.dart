@@ -41,8 +41,8 @@ class LocalTagDb {
     offlineTagMeta = await _ready;
   }
 
-  /// 前缀匹配:标签名命中优先、别名命中次之。取前 [limit] 条。见 [TagIndex.search]。
-  Future<List<Suggestion>> search(String query, {int limit = 15}) async =>
+  /// 英文补全,口径同后端补全。取前 [limit] 条。见 [TagIndex.search]。
+  Future<List<TagHit>> search(String query, {int limit = 15}) async =>
       (await _ready)?.search(query, limit: limit) ?? const [];
 
   // ---- 角色反查(离线) ----

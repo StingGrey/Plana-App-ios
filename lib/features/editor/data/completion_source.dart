@@ -58,7 +58,7 @@ class CompletionSourcePrefNotifier extends AsyncNotifier<CompletionSource?> {
 }
 
 /// 生效补全来源。**不再要求 Bot 授权**(2026-08-25):补全用到的后端接口
-/// —— `/api/tags/autocomplete`、`/search`、`/wiki`、`/wiki-preview`、`/related`、
+/// —— `/api/tags/autocomplete`、`/search`、`/wiki-preview`、`/related`、
 /// `/tags/translate`、`/tags/naturalize` —— 实测全是公开的,无会话照样 200。
 /// 当初卡会话是照搬「后端功能 = 要授权」的惯例,并非接口本身的要求。
 ///
