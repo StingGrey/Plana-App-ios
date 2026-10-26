@@ -161,6 +161,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
       },
     );
     _controller.addListener(_onCtrl);
+    _focus.addListener(_onFieldFocus);
     // 占位符要从一开始就在:框子真空过一次,那一次的退格就收不到信号。
     _resetInput();
     // 灌注离线词库全量翻译(否则注音只显示补全零星回填过的词)。整轮在手机上要
@@ -224,7 +225,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
   /// 离开编辑器时把输入法按下去。
   ///
   /// 只 unfocus 自己不够:出栈时 Navigator 会把焦点还给上一条路由的
-  /// FocusScope,那边可能还记着某个输入框(LoRA 搜索、自然语言补充说明…),
+  /// FocusScope,那边可能还记着某个输入框(LoRA 搜索…),
   /// 于是刚离开编辑器键盘又弹一次。所以当帧压一次、下一帧再压一次 ——
   /// 后者盖住「焦点还原发生在本帧之后」的情况。
   /// 下一帧那次只碰 FocusManager:本页可能已经 dispose,再动 _focus 会抛。
@@ -241,6 +242,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _lifecycle?.dispose();
     _debounce?.cancel();
     _transSvc.removeListener(_refreshAnnotations);
+    _focus.removeListener(_onFieldFocus);
     _tabAnim.dispose();
     _controller.dispose();
     _input.dispose();
@@ -283,11 +285,31 @@ class _EditorPageState extends ConsumerState<EditorPage>
   }
 
   /// 把注音未命中的词喂给后端翻译通道(增强模式;离线模式 no-op)。
-  void _feedTranslation(String text) {
+  ///
+  /// [caret] = 打字/挪光标时的光标位置:落在哪枚词上,那枚这一轮先不喂 ——
+  /// 它多半还没打完,打 from_side 会先后问出 from_s、from_si、from_sid,每个
+  /// 都让服务端调一次模型,注音层还会闪出「来自si」这种半截译文。打了逗号、
+  /// 光标挪走、失焦([_onFieldFocus])时会再喂一轮,它就补上了。
+  /// 只是这一轮不往队里加,早已入队的照样问。
+  void _feedTranslation(String text, {int? caret}) {
+    final toks = parseToks(text);
+    final held = caret == null ? -1 : tokIndexAt(text, caret, toks);
     _transSvc.request([
-      for (final t in parseToks(text))
-        if (t.trans == null) t.name,
+      for (var i = 0; i < toks.length; i++)
+        if (i != held && toks[i].trans == null) toks[i].name,
     ]);
+  }
+
+  /// 正文里正在打字的光标位置;没焦点或划了选区时 null(那不是在打字)。
+  int? get _typingCaret {
+    if (!_focus.hasFocus) return null;
+    final s = _controller.selection;
+    return s.isValid && s.isCollapsed ? s.baseOffset : null;
+  }
+
+  /// 正文失焦:打字时扣下的那枚(见 [_feedTranslation])不再算「还在打」,补喂。
+  void _onFieldFocus() {
+    if (mounted && !_focus.hasFocus) _feedTranslation(_controller.text);
   }
 
   /// 补全结果里没译文的行,交给同一条后端翻译通道(共享库 → LLM → 回写)。
@@ -384,8 +406,14 @@ class _EditorPageState extends ConsumerState<EditorPage>
       _syncedText = text;
       _notifier.editActive(text);
       _routeTyping(); // 打字一律走补全
-      _feedTranslation(text);
+      _feedTranslation(text, caret: _typingCaret);
     } else {
+      // 光标挪了:打字时扣下的那枚若已不在光标下,这一喂就补上。
+      // 只比落点 —— 输入法只改 composing 的那种通知不算挪。
+      if (_prevSel.baseOffset != prevSel.baseOffset ||
+          _prevSel.extentOffset != prevSel.extentOffset) {
+        _feedTranslation(text, caret: _typingCaret);
+      }
       // 保留原生局部选区。iOS 输入法在退格/撤销自动修正时会短暂产生
       // 局部选区；自动扩成整枚标签会让下一次退格误删整词。
       if (_snapCaretOutOfFold()) return;
@@ -612,7 +640,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
         tok?.trans != _panelTok?.trans) {
       setState(() => _panelTok = tok);
     }
-    // 关联标签异步拉取(增强模式走后端共现,离线用静态表);换词即重拉,
+    // 关联标签异步拉取(走后端共现,拿不到用静态表);换词即重拉,
     // 引擎内有 per-tag 缓存,重复进同一词秒回。拉取期「关联」按钮转圈不置灰。
     final name = tok?.name;
     if (name != null && name != _relatedFor) {

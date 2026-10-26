@@ -4,12 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/auth/auth_mode.dart';
 import '../../core/auth/bot_session_store.dart';
 import '../../core/auth/nai_keys.dart';
-import '../../core/net/backend_config.dart';
 import '../../core/net/nai_client.dart';
 import '../../core/net/nai_key_status.dart';
 import '../../core/net/nai_proxy.dart';
 import '../../core/theme/app_theme.dart';
-import '../editor/data/completion_source.dart';
 import '../generate/widgets/common.dart'
     show confirmDialog, hintSnack, sharedAxisRoute;
 import '../onboarding/bot_auth_page.dart';
@@ -64,8 +62,6 @@ class _AccountPageState extends ConsumerState<AccountPage> {
 
     final mode = ref.watch(authModeProvider).value ?? AuthMode.token;
     final session = ref.watch(botSessionProvider).value;
-    final backendUrl = ref.watch(backendBaseProvider).value ?? '';
-    final compSource = ref.watch(effectiveCompletionSourceProvider);
 
     return Scaffold(
       appBar: AppBar(title: const Text('账号与接入')),
@@ -94,15 +90,8 @@ class _AccountPageState extends ConsumerState<AccountPage> {
           const SizedBox(height: 12),
           _BotCard(
             session: session,
-            backendUrl: backendUrl,
             onAuthorize: _openBotAuth,
             onRevoke: _revokeBot,
-          ),
-          const SizedBox(height: 12),
-          _CompletionCard(
-            source: compSource,
-            onSelect: (s) =>
-                ref.read(completionSourcePrefProvider.notifier).set(s),
           ),
         ],
       ),
@@ -563,75 +552,15 @@ class _RouteCard extends StatelessWidget {
   }
 }
 
-/// 标签补全来源切换卡:增强(后端)↔ 离线词库。
-/// 两档都不需要 Bot 会话——补全那几个接口是公开的(2026-08-25 起解除门禁)。
-/// 无会话时增强档只是少了画师串 / OC 两个分组,它们读的是私有接口。
-class _CompletionCard extends StatelessWidget {
-  const _CompletionCard({required this.source, required this.onSelect});
-
-  final CompletionSource source;
-  final ValueChanged<CompletionSource> onSelect;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = context.scheme;
-    return Material(
-      color: scheme.surfaceContainerLow,
-      borderRadius: BorderRadius.circular(16),
-      clipBehavior: Clip.antiAlias,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              '标签补全',
-              style: context.texts.labelMedium!.copyWith(
-                color: scheme.onSurfaceVariant,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              child: SegmentedButton<CompletionSource>(
-                segments: [
-                  // 不再按 Bot 授权置灰:补全那几个接口都是公开的,
-                  // 无会话只是少了画师串/OC 两组(私有数据,fail-soft 返空)。
-                  const ButtonSegment(
-                    value: CompletionSource.enhanced,
-                    label: Text('增强补全'),
-                    icon: Icon(Icons.auto_awesome, size: 16),
-                  ),
-                  const ButtonSegment(
-                    value: CompletionSource.danbooru,
-                    label: Text('离线词库'),
-                    icon: Icon(Icons.storage, size: 16),
-                  ),
-                ],
-                selected: {source},
-                onSelectionChanged: (s) => onSelect(s.first),
-                showSelectedIcon: false,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 /// Bot 授权状态卡:显示会话归属/有效期,提供 重新授权 / 解除授权。
 class _BotCard extends StatelessWidget {
   const _BotCard({
     required this.session,
-    required this.backendUrl,
     required this.onAuthorize,
     required this.onRevoke,
   });
 
   final BotSession? session;
-  final String backendUrl;
   final VoidCallback onAuthorize;
   final VoidCallback onRevoke;
 
@@ -674,13 +603,6 @@ class _BotCard extends StatelessWidget {
               _row(context, '账号', s.botUserId ?? '—'),
               const SizedBox(height: 8),
               _row(context, '有效期至', _fmtExpiry(s.expiresAtMs)),
-              const SizedBox(height: 8),
-              _row(
-                context,
-                '后端',
-                backendUrl.isEmpty ? '—' : backendUrl,
-                isMono: true,
-              ),
               const SizedBox(height: 16),
               Row(
                 children: [
@@ -716,12 +638,7 @@ class _BotCard extends StatelessWidget {
     );
   }
 
-  Widget _row(
-    BuildContext context,
-    String label,
-    String value, {
-    bool isMono = false,
-  }) {
+  Widget _row(BuildContext context, String label, String value) {
     final scheme = context.scheme;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -738,11 +655,9 @@ class _BotCard extends StatelessWidget {
         Expanded(
           child: Text(
             value,
-            style: isMono
-                ? mono(context, size: 13)
-                : context.texts.bodyMedium!.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
+            style: context.texts.bodyMedium!.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
           ),
         ),
       ],

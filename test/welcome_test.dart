@@ -35,7 +35,7 @@ void main() {
     child: const PlanaApp(),
   );
 
-  testWidgets('首启走欢迎流程,六页依次可达', (tester) async {
+  testWidgets('首启走欢迎流程,五页依次可达', (tester) async {
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
     await tester.pumpWidget(app(mode: _NoMode.new));
     await tester.pumpAndSettle();
@@ -60,12 +60,6 @@ void main() {
       isNull,
     );
     await tester.tap(find.text('暂时跳过'));
-    await tester.pumpAndSettle();
-    expect(find.text('扩展功能'), findsOneWidget);
-
-    // 未授权(且生成走直连)时主按钮是「跳过」而不是「下一步」
-    expect(find.widgetWithText(FilledButton, '跳过'), findsOneWidget);
-    await tester.tap(find.text('跳过'));
     await tester.pumpAndSettle();
     expect(find.text('生成进度通知'), findsOneWidget);
     expect(find.widgetWithText(FilledButton, '开启通知'), findsOneWidget);

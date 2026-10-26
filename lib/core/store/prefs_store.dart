@@ -41,7 +41,6 @@ class PrefsStore {
   static const migrateKeys = <String>[
     'theme_settings',
     'editor_settings',
-    'completion_source',
     'upscale_method',
     'gen_modules',
     'backend_base_url',
@@ -65,6 +64,7 @@ class PrefsStore {
       legacyRead ?? ((k) => kSecureStorage.read(key: k)),
       legacyDelete ?? ((k) => kSecureStorage.delete(key: k)),
     );
+    await store._dropRetired();
     return store;
   }
 
@@ -115,6 +115,20 @@ class PrefsStore {
       logd('[prefs] 已从 secure storage 迁出 $moved 项设置');
       await _flush();
     }
+  }
+
+  /// 已下线的设置项,开机从本地删掉。
+  static const retiredKeys = <String>[
+    'completion_source',
+    'completion_source_v2',
+  ];
+
+  Future<void> _dropRetired() async {
+    var dropped = false;
+    for (final k in retiredKeys) {
+      if (_map.remove(k) != null) dropped = true;
+    }
+    if (dropped) await _flush();
   }
 
   /// 测试用空档:不读盘、不迁移,写入落到临时目录。

@@ -8,8 +8,8 @@ library;
 /// `android:label` 一起改 —— 那个是桌面图标下的名字,读不到 Dart 常量。
 const kAppName = 'Plana App';
 const kAppTagline = 'NovelAI 移动创作端';
-const kAppVersion = '1.2.1';
-const kAppBuild = '21';
+const kAppVersion = '1.2.2';
+const kAppBuild = '22';
 
 /// 预发布版(版号带 `-`):关于页加内测标,免得测试反馈回来分不清版本。
 bool get kIsPrerelease => kAppVersion.contains('-');
@@ -17,7 +17,7 @@ bool get kIsPrerelease => kAppVersion.contains('-');
 /// 法典图鉴的数据来源。
 const kCodexSourceUrl = 'https://novelai.quicktagcloud.com/';
 
-/// 增强补全的中文搜词与译名来源。后端 `/api/tags/search` 是它的代理,
+/// 补全的中文搜词与译名来源。后端 `/api/tags/search` 是它的代理,
 /// 中文名与一句话简介也出自它的建库产物(tags_enhanced.csv)。
 const kDanbooruSearchUrl =
     'https://github.com/SuzumiyaAkizuki/DanbooruSearchOnline';

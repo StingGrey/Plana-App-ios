@@ -6,10 +6,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
 import '../../../core/net/backend_config.dart';
-import 'completion_source.dart';
+import '../../../core/store/app_stores.dart';
 import 'suggestions.dart';
+import 'trans_cache_store.dart';
 
-/// 注音层的后端翻译通道(仅增强补全模式)。
+/// 注音层的后端翻译通道。
 ///
 /// **一次请求搞定**:`POST /api/tags/translate`,服务端内部依次走共享映射库 →
 /// 进程内 LLM 缓存 → 上游 LLM。2026-08-28 之前 app 要自己打两次(先
@@ -24,19 +25,23 @@ import 'suggestions.dart';
 /// LLM 译文**不回写**公共映射库(服务端 2026-08-25 起也不再收 `ai` 源):那张库
 /// 攒到 24.2 万条时有 19.7 万条是 AI 回写的,抽样核实 94.6% 的 key 连
 /// danbooru.tsv 都不认识 —— 全是被当成 tag 提交的整段提示词碎片。译文照常显示、
-/// 照常进本地反查缓存,只是不固化。
+/// 照常进本地反查缓存,并存进本机([TransCacheStore]),下次开机不用再问。
 ///
 /// 命中回填 [cacheTagMeta](transCacheRev 随之自增)后 notifyListeners,编辑器
-/// 刷新注音层/词条栏。离线补全模式不联网(enabled=false 全程 no-op)。
+/// 刷新注音层/词条栏。enabled=false 时全程 no-op。
 class TagTranslationService extends ChangeNotifier {
   TagTranslationService({
     required this.enabled,
     required this.baseUrl,
+    this.saved,
     http.Client? client,
   }) : _client = client ?? http.Client();
 
   final bool enabled;
   final String baseUrl;
+
+  /// 翻出来的译名存一份到本机;null = 不存(测试)。
+  final TransCacheStore? saved;
   final http.Client _client;
 
   static const _timeout = Duration(seconds: 20);
@@ -51,6 +56,10 @@ class TagTranslationService extends ChangeNotifier {
   Timer? _timer;
   bool _busy = false;
   DateTime? _cooldownUntil; // 撞限流(429)后的退避窗口
+
+  /// 上一次问后端没问成(连不上 / 出错 / 限流)。这期间不画加载态,后台照常重试,
+  /// 问成一次就恢复。
+  bool _failing = false;
 
   /// 单个名字的长度上限。
   ///
@@ -70,12 +79,12 @@ class TagTranslationService extends ChangeNotifier {
     );
   }
 
-  /// 这个名字还在等译文:排队中、正在问,或失败后待重试。
-  /// 芯片流据此画加载态 —— **离线补全模式恒 false**,那边根本没人去问,
+  /// 这个名字还在等译文:排队中或正在问。
+  /// 芯片流据此画加载态 —— 后端没问成时恒 false([_failing]),后台重试着,
   /// 挂着加载动画等于骗人;`_asked` 里的也算有定论(含 LLM 答不出的),
   /// 不能一直转下去。
   bool isPending(String name) {
-    if (!enabled || baseUrl.isEmpty) return false;
+    if (!enabled || baseUrl.isEmpty || _failing) return false;
     final k = metaKey(name); // 与反查缓存同一套键,见 [metaKey]
     if (!_worthAsking(k) || _asked.contains(k)) return false;
     return translationOf(k) == null;
@@ -121,15 +130,22 @@ class TagTranslationService extends ChangeNotifier {
       final res = await _translate(batch);
       if (res == null) {
         // 网络失败 / 非 200:整批放回稍后再试。撞限流时 [_translate] 已经把
-        // [_cooldownUntil] 设好,上面那道会拦住下一次。
+        // [_cooldownUntil] 设好,上面那道会拦住下一次。加载态收掉。
         _pending.addAll(batch);
         _arm(const Duration(seconds: 30));
+        if (!_failing) {
+          _failing = true;
+          notifyListeners();
+        }
         return;
       }
+      final recovered = _failing;
+      _failing = false;
 
       var gotAny = false;
       res.hits.forEach((name, zh) {
         cacheTagMeta(name, trans: zh); // 只进本地反查缓存,不回写公共库
+        saved?.put(name, zh);
         _asked.add(name);
         gotAny = true;
       });
@@ -140,7 +156,9 @@ class TagTranslationService extends ChangeNotifier {
       // 有定论就通知,**不只看翻出了什么**:一个都没翻出来时 `_asked` 照样长了,
       // 芯片流的加载态得据此收掉 —— 只在 gotAny 时通知的话,那些「问过但没答案」
       // 的 chip 会一直转到下一次无关重绘。
-      if (gotAny || _asked.length != askedBefore) notifyListeners();
+      if (gotAny || recovered || _asked.length != askedBefore) {
+        notifyListeners();
+      }
     } finally {
       _busy = false;
       if (_pending.isNotEmpty && (_timer == null || !_timer!.isActive)) {
@@ -199,15 +217,14 @@ class TagTranslationService extends ChangeNotifier {
   }
 }
 
-/// 按生效来源 + 后端基址构造;任一变化即重建(与 tagCompletionProvider 同款)。
-/// 不再需要 bot 会话 —— 端点是公开的,回写那一步已取消(见类文档)。
-/// 来源本身就跟着会话走([effectiveCompletionSourceProvider]),登录/登出照样重建。
+/// 按后端基址构造;基址变化即重建(与 tagCompletionProvider 同款)。
+/// 不需要 bot 会话 —— 端点是公开的,回写那一步已取消(见类文档)。
 final tagTranslationServiceProvider = Provider<TagTranslationService>((ref) {
-  final source = ref.watch(effectiveCompletionSourceProvider);
   final base = ref.watch(backendBaseProvider).value ?? '';
   final s = TagTranslationService(
-    enabled: source == CompletionSource.enhanced,
+    enabled: true,
     baseUrl: base,
+    saved: ref.watch(appStoresProvider).transCache,
   );
   ref.onDispose(s.dispose);
   return s;

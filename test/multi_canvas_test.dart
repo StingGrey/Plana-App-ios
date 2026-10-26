@@ -1639,7 +1639,7 @@ void main() {
     await tester.pump(const Duration(seconds: 5));
   });
 
-  testWidgets('画风编辑页推荐参数：没导入只给按钮、不摆参数；导入创作页才列出来，可清除', (tester) async {
+  testWidgets('画风编辑页推荐参数：没导入只给按钮、不摆参数；导入后点开才列全表，可清除', (tester) async {
     widgetCase = true;
     tester.view.physicalSize = const Size(369, 800);
     tester.view.devicePixelRatio = 1;
@@ -1665,8 +1665,6 @@ void main() {
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.text('推荐参数'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('推荐参数'));
-    await tester.pumpAndSettle();
 
     // 空着:只有按钮,创作页的参数一项都不摆出来
     final import = find.widgetWithText(OutlinedButton, '导入创作页');
@@ -1675,21 +1673,18 @@ void main() {
       expect(find.text(t), findsNothing);
     }
     expect(tester.getSize(import).height, greaterThanOrEqualTo(40));
-    expect(tester.getSize(import).width, greaterThan(300));
 
-    await tester.ensureVisible(import);
-    await tester.pumpAndSettle();
     await tester.tap(import);
+    await tester.pumpAndSettle();
+    expect(import, findsNothing);
+    await tester.tap(find.text('推荐参数'));
     await tester.pumpAndSettle();
     for (final t in ['模型', 'NAI 4.5 Full', '步数', '37', 'CFG', '6.5']) {
       expect(find.text(t), findsOneWidget);
     }
     final clear = find.widgetWithText(OutlinedButton, '清除');
-    expect(import, findsOneWidget);
     expect(tester.getSize(clear).height, greaterThanOrEqualTo(40));
 
-    await tester.ensureVisible(clear);
-    await tester.pumpAndSettle();
     await tester.tap(clear);
     await tester.pumpAndSettle();
     expect(find.text('步数'), findsNothing);

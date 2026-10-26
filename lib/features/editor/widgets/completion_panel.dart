@@ -5,7 +5,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/store/ui_prefs.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../generate/widgets/common.dart' show hintSnack;
-import '../data/completion_source.dart';
 import '../data/suggestions.dart';
 import '../data/tag_completion.dart';
 import '../data/tag_translation_service.dart';
@@ -319,11 +318,8 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
     final isWork = s.kind == SuggestionKind.work;
     // 眼睛 = Danbooru Wiki 预览。画师串是自建条目、OC 是本地条目,
     // Danbooru 上没有对应词条,给了按钮点开也是空,所以这两类不出。
-    // 离线词库没有 wiki 数据(fetchWiki 第一行就 return null),给了按钮也是死的。
     final canWiki =
-        (s.kind == SuggestionKind.tag || s.kind == SuggestionKind.character) &&
-        ref.watch(effectiveCompletionSourceProvider) ==
-            CompletionSource.enhanced;
+        s.kind == SuggestionKind.tag || s.kind == SuggestionKind.character;
     final subtitle = _subtitle(s);
     final count = isWork ? null : formatCount(s.count);
     final open = _wikiOpen == s.text;

@@ -7,32 +7,23 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/auth/auth_mode.dart';
 import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
-import '../../core/net/backend_config.dart';
 import '../../core/theme/app_theme.dart';
 import '../generate/widgets/common.dart' show hintSnack;
 import '../../core/util/haptics.dart';
 
 /// Bot 绑定码授权面板(无 Scaffold,可内嵌):
 /// 取 6 位码 → 用户在 QQ 发给 Bot → 本面板轮询 → 存会话并置接入方式。
-///
-/// 授权页与首启欢迎流程共用,避免两处各写一份轮询。
 class BotAuthPanel extends ConsumerStatefulWidget {
-  const BotAuthPanel({super.key, this.onAuthorized, this.compact = false});
+  const BotAuthPanel({super.key, this.onAuthorized});
 
-  /// 授权成功后的收尾(授权页用来 pop;欢迎页原地留着)。
+  /// 授权成功后的收尾(授权页用来 pop)。
   final VoidCallback? onAuthorized;
-
-  /// 内嵌模式:后端地址收进折叠项,文案更短。
-  final bool compact;
 
   @override
   ConsumerState<BotAuthPanel> createState() => _BotAuthPanelState();
 }
 
 class _BotAuthPanelState extends ConsumerState<BotAuthPanel> {
-  final _urlCtrl = TextEditingController();
-  bool _seeded = false;
-
   Timer? _timer;
   String? _code;
   int _secondsLeft = 0;
@@ -42,23 +33,10 @@ class _BotAuthPanelState extends ConsumerState<BotAuthPanel> {
   @override
   void dispose() {
     _timer?.cancel();
-    _urlCtrl.dispose();
     super.dispose();
   }
 
   Future<void> _getCode() async {
-    // 内嵌模式不露地址栏,直接用已存/内置默认后端;自建的去「账号与接入」改
-    final url = widget.compact
-        ? (ref.read(backendBaseProvider).value ?? '')
-        : _urlCtrl.text.trim();
-    if (url.isEmpty) {
-      hintSnack(context, '请先填写后端地址', icon: Icons.error_outline);
-      return;
-    }
-    FocusScope.of(context).unfocus();
-    if (!widget.compact) {
-      await ref.read(backendBaseProvider.notifier).save(url);
-    }
     setState(() => _loading = true);
     try {
       final r = await ref.read(backendClientProvider).authGenerate();
@@ -140,56 +118,11 @@ class _BotAuthPanelState extends ConsumerState<BotAuthPanel> {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    final baseAsync = ref.watch(backendBaseProvider);
-    if (!_seeded && baseAsync.hasValue) {
-      _urlCtrl.text = baseAsync.value ?? '';
-      _seeded = true;
-    }
     final hasCode = _code != null;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // 内嵌模式不露后端地址(走已存/内置默认),只留一句流程说明
-        if (widget.compact && !hasCode) ...[
-          Text(
-            '获取授权码后,复制指令发送给 Bot 即可完成授权',
-            style: context.texts.labelSmall!.copyWith(color: scheme.outline),
-          ),
-          const SizedBox(height: 12),
-        ],
-        if (!widget.compact) ...[
-          Text(
-            '后端地址',
-            style: context.texts.labelLarge!.copyWith(
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 8),
-          TextField(
-            controller: _urlCtrl,
-            enabled: !hasCode,
-            autocorrect: false,
-            enableSuggestions: false,
-            keyboardType: TextInputType.url,
-            style: mono(context, size: 13),
-            decoration: InputDecoration(
-              filled: true,
-              fillColor: scheme.surfaceContainerHigh,
-              hintText: 'http://192.168.x.x:8765',
-              hintStyle: TextStyle(color: scheme.outline),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide.none,
-              ),
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 14,
-                vertical: 12,
-              ),
-            ),
-          ),
-          const SizedBox(height: 14),
-        ],
         if (!hasCode)
           FilledButton(
             onPressed: _loading ? null : _getCode,

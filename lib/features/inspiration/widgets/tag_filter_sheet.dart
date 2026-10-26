@@ -4,7 +4,7 @@ import '../../../core/theme/app_theme.dart';
 import '../artist_models.dart';
 import '../tag_models.dart';
 
-/// 灵感页搜索框右侧那个漏斗的弹层:作者 + 适用模型两个维度。
+/// 灵感页搜索框右侧那个漏斗的弹层:作者 + 适用模型两个筛选维度,外加排序。
 ///
 /// 两者正交(「小明发的 + 标了 NAI 5 的」),所以合成一张表而不是各开一个入口。
 /// 表内**左右切维、不上下堆**:两维各自都是一列长名单,叠起来第二节永远被顶在
@@ -57,8 +57,8 @@ List<TagAuthor> collectTagAuthors(
   return out;
 }
 
-/// 一次筛选的两个维度。null = 该维度不筛。
-typedef TagFilters = ({String? author, String? model});
+/// 一次筛选的两个维度(null = 该维度不筛)与排序档。
+typedef TagFilters = ({String? author, String? model, TagSort sort});
 
 /// 返回新的筛选值;点外面关掉返回 null(= 什么都不改)。
 Future<TagFilters?> showTagFilterSheet(
@@ -66,12 +66,19 @@ Future<TagFilters?> showTagFilterSheet(
   required List<TagAuthor> authors,
   required TagFilters current,
   required bool hasModels,
+  required List<TagSort> sorts,
+  required TagSort defaultSort,
 }) => showModalBottomSheet<TagFilters>(
   context: context,
   isScrollControlled: true,
   useSafeArea: true,
-  builder: (_) =>
-      _FilterSheet(authors: authors, current: current, hasModels: hasModels),
+  builder: (_) => _FilterSheet(
+    authors: authors,
+    current: current,
+    hasModels: hasModels,
+    sorts: sorts,
+    defaultSort: defaultSort,
+  ),
 );
 
 class _FilterSheet extends StatefulWidget {
@@ -79,11 +86,15 @@ class _FilterSheet extends StatefulWidget {
     required this.authors,
     required this.current,
     required this.hasModels,
+    required this.sorts,
+    required this.defaultSort,
   });
 
   final List<TagAuthor> authors;
   final TagFilters current;
   final bool hasModels;
+  final List<TagSort> sorts;
+  final TagSort defaultSort;
 
   @override
   State<_FilterSheet> createState() => _FilterSheetState();
@@ -93,10 +104,13 @@ class _FilterSheetState extends State<_FilterSheet> {
   final _input = TextEditingController();
   String _q = '';
 
-  /// 当前在看哪一维:0=作者,1=适用模型。开局落在已经筛着的那一维,
-  /// 「刚才筛的是什么」不用自己去翻。
-  late int _dim = widget.current.author == null && widget.current.model != null
+  /// 当前在看哪一维:0=作者,1=适用模型,2=排序。开局落在已经改过的那一维。
+  late int _dim = widget.current.author != null
+      ? 0
+      : widget.current.model != null
       ? 1
+      : widget.current.sort != widget.defaultSort
+      ? 2
       : 0;
 
   @override
@@ -118,7 +132,7 @@ class _FilterSheetState extends State<_FilterSheet> {
   /// (常见情形是只筛一个,别为了少见的组合让每次都多一次点)。
   ///
   /// 参数三态:不传 = 这一维不动;[_Clear] = 清掉;字符串 = 换成它。
-  void _apply({Object? author, Object? model}) {
+  void _apply({Object? author, Object? model, TagSort? sort}) {
     String? pick(Object? v, String? cur) => switch (v) {
       null => cur,
       _Clear() => null,
@@ -127,6 +141,7 @@ class _FilterSheetState extends State<_FilterSheet> {
     Navigator.pop(context, (
       author: pick(author, widget.current.author),
       model: pick(model, widget.current.model),
+      sort: sort ?? widget.current.sort,
     ));
   }
 
@@ -134,7 +149,9 @@ class _FilterSheetState extends State<_FilterSheet> {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final texts = context.texts;
-    final dirty = widget.current.author != null || widget.current.model != null;
+    final sorted = widget.current.sort != widget.defaultSort;
+    final dirty =
+        widget.current.author != null || widget.current.model != null || sorted;
     final byAuthor = _dim == 0;
     return Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
@@ -161,27 +178,33 @@ class _FilterSheetState extends State<_FilterSheet> {
                 const Spacer(),
                 TextButton(
                   onPressed: dirty
-                      ? () =>
-                            Navigator.pop(context, (author: null, model: null))
+                      ? () => Navigator.pop(context, (
+                          author: null,
+                          model: null,
+                          sort: widget.defaultSort,
+                        ))
                       : null,
                   child: const Text('重置'),
                 ),
               ],
             ),
           ),
-          // 两维**并排切换**,不上下堆:各自都是一列长名单,叠起来的话下面那节
-          // 会被列表挤到屏外,键盘一顶更看不见。只有一维时不出这一行。
-          if (widget.hasModels)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(18, 0, 18, 8),
-              child: Row(
-                children: [
-                  _dimTab(context, 0, '作者', widget.current.author != null),
+          // 各维**并排切换**,不上下堆:各自都是一列长名单,叠起来的话下面那节
+          // 会被列表挤到屏外,键盘一顶更看不见。
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 0, 18, 8),
+            child: Row(
+              children: [
+                _dimTab(context, 0, '作者', widget.current.author != null),
+                if (widget.hasModels) ...[
                   const SizedBox(width: 8),
                   _dimTab(context, 1, '适用模型', widget.current.model != null),
                 ],
-              ),
+                const SizedBox(width: 8),
+                _dimTab(context, 2, '排序', sorted),
+              ],
             ),
+          ),
           if (byAuthor)
             Padding(
               padding: const EdgeInsets.fromLTRB(18, 0, 18, 4),
@@ -215,7 +238,11 @@ class _FilterSheetState extends State<_FilterSheet> {
               child: ListView(
                 shrinkWrap: true,
                 padding: EdgeInsets.zero,
-                children: byAuthor ? _authorRows(context) : _modelRows(context),
+                children: switch (_dim) {
+                  0 => _authorRows(context),
+                  1 => _modelRows(context),
+                  _ => _sortRows(context),
+                },
               ),
             ),
           ),
@@ -311,6 +338,16 @@ class _FilterSheetState extends State<_FilterSheet> {
         label: e.$2,
         selected: widget.current.model == e.$1,
         onTap: () => _apply(model: e.$1 ?? const _Clear()),
+      ),
+  ];
+
+  List<Widget> _sortRows(BuildContext context) => [
+    for (final s in widget.sorts)
+      _row(
+        context,
+        label: s.label,
+        selected: widget.current.sort == s,
+        onTap: () => _apply(sort: s),
       ),
   ];
 

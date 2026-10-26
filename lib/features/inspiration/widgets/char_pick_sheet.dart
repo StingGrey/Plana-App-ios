@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/auth/bot_session_store.dart';
+import '../../../core/store/ui_prefs.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/ui/selection_bar.dart';
 import '../../generate/widgets/common.dart' show hintSnack;
@@ -15,6 +16,7 @@ import '../codex/codex_sheets.dart' show showCodexDetailSheet;
 import '../public_tags.dart';
 import '../tag_library.dart';
 import '../tag_models.dart';
+import 'category_tabs.dart';
 import 'tag_card.dart';
 import 'tag_filter_chips.dart';
 import 'tag_sheets.dart';
@@ -28,18 +30,24 @@ typedef LibraryPick = ({PickedChar? tag, CodexFavorite? codex});
 /// 灵感库面板选中的全部,按勾选的先后(跨分类、跨标签库与法典)。
 typedef LibraryPicks = List<LibraryPick>;
 
-/// 创作页灵感库面板给哪几类标签库,顺序同灵感页(法典另算);「其他」不放。
-/// 「存到灵感库」也只给这几类,存进「其他」在面板里就选不到了。
-const kPanelTagCats = [
-  TagCategory.character,
-  TagCategory.artist,
-  TagCategory.scene,
+/// 创作页灵感库面板给哪几类标签库(法典另算):灵感页页签里除「其他」以外的
+/// 全部分类,含自定义类别,顺序同灵感页。「存到灵感库」也只给这几类,存进
+/// 「其他」在面板里就选不到了。
+List<TagCategory> panelTagCats(TagLibraryState lib) => [
+  for (final k in lib.visibleTabKeys)
+    if (k != kCodexTabKey && k != 'other') ?tagCategoryByWebId(k),
 ];
 
-/// 从灵感角色库选角色 —— 角色卡的头像、角色卡头的「角色库」共用。
-/// 形态照相册「移动到」那张面板:标题 + 封面卡网格,卡片就是灵感页那种竖版封面卡。
-///
-/// 仅展示「我的」角色，带用户标签筛选。
+/// 面板的页:[panelTagCats],[codex] 时再加法典收藏(按它在灵感页页签里的位置)。
+List<String> _panelKeys(TagLibraryState lib, {required bool codex}) => [
+  for (final k in lib.visibleTabKeys)
+    if (k != 'other' &&
+        (k == kCodexTabKey ? codex : tagCategoryByWebId(k) != null))
+      k,
+];
+
+/// 从灵感库选角色 —— 角色卡的头像、角色卡头的「角色库」共用。版式同灵感库面板
+/// (页签 + 每类一页),页同面板但不列法典收藏,默认落在角色页;只列「我的」。
 /// [max] 为 1:点一张即选定并关闭,卡上不画选择圈(给单张角色卡换人)。
 /// 大于 1:点卡勾选,底栏「加入角色」确认,最多 [max] 个。取消返回 null。
 Future<List<PickedChar>?> showCharPickSheet(
@@ -80,15 +88,34 @@ class _PickSheet extends ConsumerStatefulWidget {
 class _PickSheetState extends ConsumerState<_PickSheet> {
   static const _pad = 12.0, _gap = 8.0;
 
-  /// 灵感库面板上次停在哪一类(进程内记着,下次打开接着看);null = 法典收藏。
-  static TagCategory? _lastCat = TagCategory.artist;
+  /// 上次停在哪一页记在偏好里:灵感库面板与选角色各记各的。
+  String get _prefKey => widget.library ? 'libraryPick' : 'charPick';
 
-  /// 当前分类;null = 法典收藏(只有灵感库面板有)。
-  late TagCategory? _cat = widget.library ? _lastCat : TagCategory.character;
+  /// 打开时落在哪一页(webId / [kCodexTabKey]):上次停的那页,没有就是
+  /// 灵感库面板落画风、选角色落角色。
+  late final String _startKey =
+      ref.read(uiPrefsProvider).lastPages[_prefKey] ??
+      (widget.library ? 'artist-style' : 'character');
 
-  final _searchCtrl = TextEditingController();
-  String _search = '';
-  String? _filter;
+  /// 面板的页;选角色不列法典收藏(那边只认标签库条目)。
+  List<String> _keys(TagLibraryState lib) =>
+      _panelKeys(lib, codex: widget.library);
+
+  /// 面板每类一页,左右滑切换;顶栏页签跟着翻页位置走。
+  PageController? _pc;
+  final _pagePos = ValueNotifier<double>(0);
+
+  /// 每页各记各的搜索与标签筛选(键同页:webId / [kCodexTabKey])。
+  final _searchCtrls = <String, TextEditingController>{};
+  final _filters = <String, String?>{};
+
+  TextEditingController _ctrlOf(String key) =>
+      _searchCtrls[key] ??= TextEditingController();
+
+  String _queryOf(String key) =>
+      _searchCtrls[key]?.text.trim().toLowerCase() ?? '';
+
+  static String _keyOf(TagCategory c) => tagCategoryDef(c).webId;
 
   /// 已勾选的,插入序即勾选顺序(也就是加进去的顺序)。标签库条目的键带分类
   /// (各类 id 各自发号),法典收藏的键同收藏夹([CodexFavorite.key])。
@@ -102,19 +129,12 @@ class _PickSheetState extends ConsumerState<_PickSheet> {
 
   @override
   void dispose() {
-    _searchCtrl.dispose();
+    for (final c in _searchCtrls.values) {
+      c.dispose();
+    }
+    _pc?.dispose();
+    _pagePos.dispose();
     super.dispose();
-  }
-
-  void _switch(TagCategory? cat) {
-    if (cat == _cat) return;
-    setState(() {
-      _cat = cat;
-      _lastCat = cat;
-      _searchCtrl.clear();
-      _search = '';
-      _filter = null;
-    });
   }
 
   bool _roomFull() {
@@ -164,7 +184,7 @@ class _PickSheetState extends ConsumerState<_PickSheet> {
   }
 
   String? _validFilter(TagCategory cat, TagLibraryState lib) {
-    final filter = _filter;
+    final filter = _filters[_keyOf(cat)];
     if (filter == null || filter == TagFilterChips.favorites) return filter;
     return lib.knownTags(cat).contains(filter) ? filter : null;
   }
@@ -176,7 +196,7 @@ class _PickSheetState extends ConsumerState<_PickSheet> {
     TagLibraryState lib,
     List<TagEntry>? pub,
   ) {
-    final q = _search.trim().toLowerCase();
+    final q = _queryOf(_keyOf(cat));
     final filter = _validFilter(cat, lib);
     final list = [
       for (final e in mergeMineTags(
@@ -204,9 +224,7 @@ class _PickSheetState extends ConsumerState<_PickSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = context.scheme;
     final lib = ref.watch(tagLibraryProvider).value ?? const TagLibraryState();
-    final cat = _cat;
     return FractionallySizedBox(
       heightFactor: .85,
       child: Padding(
@@ -216,48 +234,9 @@ class _PickSheetState extends ConsumerState<_PickSheet> {
         ),
         child: Column(
           children: [
-            Padding(
-              padding: widget.library
-                  ? const EdgeInsets.fromLTRB(_pad, 0, _pad, 10)
-                  : const EdgeInsets.fromLTRB(20, 4, 20, 10),
-              child: widget.library
-                  ? _catTabs()
-                  : Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text('选择角色', style: context.texts.titleLarge),
-                    ),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: _pad),
-              child: TextField(
-                controller: _searchCtrl,
-                onChanged: (v) => setState(() => _search = v),
-                decoration: InputDecoration(
-                  isDense: true,
-                  hintText: cat == null
-                      ? '搜索标题 / 提示词…'
-                      : tagCategoryDef(cat).searchHint,
-                  prefixIcon: const Icon(Icons.search, size: 20),
-                  filled: true,
-                  fillColor: scheme.surfaceContainerHigh,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
-                  ),
-                  contentPadding: const EdgeInsets.symmetric(vertical: 8),
-                ),
-              ),
-            ),
-            const SizedBox(height: 8),
-            if (cat != null)
-              TagFilterChips(
-                tags: lib.knownTags(cat),
-                filter: _validFilter(cat, lib),
-                onChanged: (filter) => setState(() => _filter = filter),
-                onManageTags: () => showTagPoolSheet(context, ref, cat),
-                edge: _pad,
-              ),
-            Expanded(child: cat == null ? _codexGrid() : _tagGrid(cat, lib)),
+            _tabs(lib),
+            const SizedBox(height: 6),
+            Expanded(child: _pages(lib)),
             if (_multi)
               SelectionBar(
                 visible: _count > 0,
@@ -282,21 +261,104 @@ class _PickSheetState extends ConsumerState<_PickSheet> {
     );
   }
 
-  /// 分类横排:角色、画风、场景 + 法典(只列收藏),某类勾了几个跟在名字后面。
-  /// 「其他」不放进来。
-  Widget _catTabs() {
-    final cats = kPanelTagCats;
-    int pickedIn(TagCategory c) =>
-        _picks.values.where((p) => p.tag?.entry.category == c).length;
-    final cat = _cat;
-    return _CatSegTabs(
-      labels: [for (final c in cats) tagCategoryDef(c).label, '法典'],
-      counts: [
-        for (final c in cats) pickedIn(c),
-        _picks.values.where((p) => p.codex != null).length,
+  int _indexIn(List<String> keys) {
+    final i = keys.indexOf(_startKey);
+    return i < 0 ? 0 : i;
+  }
+
+  PageController _controller(List<String> keys) {
+    if (_pc == null) {
+      final i = _indexIn(keys);
+      _pc = PageController(initialPage: i)
+        ..addListener(() {
+          final p = _pc?.page;
+          if (p != null) _pagePos.value = p;
+        });
+      _pagePos.value = i.toDouble();
+    }
+    return _pc!;
+  }
+
+  /// 页签:同灵感页顶栏那条;某类勾了几个跟在名字后面。
+  Widget _tabs(TagLibraryState lib) {
+    final keys = _keys(lib);
+    final pc = _controller(keys);
+    int pickedIn(String k) => k == kCodexTabKey
+        ? _picks.values.where((p) => p.codex != null).length
+        : _picks.values
+              .where((p) => p.tag != null && _keyOf(p.tag!.entry.category) == k)
+              .length;
+    String label(String k) {
+      final name = k == kCodexTabKey
+          ? codexTabLabel()
+          : tagCategoryDef(tagCategoryByWebId(k)!).label;
+      final n = pickedIn(k);
+      return n > 0 ? '$name $n' : name;
+    }
+
+    return CategoryTabs(
+      labels: [for (final k in keys) label(k)],
+      index: _indexIn(keys),
+      position: _pagePos,
+      // 同灵感页顶栏的胶囊 + 白底滑块
+      capsule: true,
+      leftPad: _pad,
+      rightPad: _pad,
+      onTap: (i) =>
+          pc.animateToPage(i, duration: Motion.medium, curve: Motion.standard),
+    );
+  }
+
+  Widget _pages(TagLibraryState lib) {
+    final keys = _keys(lib);
+    return PageView.builder(
+      controller: _controller(keys),
+      itemCount: keys.length,
+      onPageChanged: (i) =>
+          ref.read(uiPrefsProvider.notifier).setLastPage(_prefKey, keys[i]),
+      itemBuilder: (context, i) => _page(keys[i], lib),
+    );
+  }
+
+  /// 一页:搜索 + 标签筛选(法典收藏没有)+ 网格。
+  Widget _page(String key, TagLibraryState lib) {
+    final scheme = context.scheme;
+    final cat = key == kCodexTabKey ? null : tagCategoryByWebId(key);
+    return Column(
+      key: ValueKey(key),
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: _pad),
+          child: TextField(
+            controller: _ctrlOf(key),
+            onChanged: (_) => setState(() {}),
+            decoration: InputDecoration(
+              isDense: true,
+              hintText: cat == null
+                  ? '搜索标题 / 提示词…'
+                  : tagCategoryDef(cat).searchHint,
+              prefixIcon: const Icon(Icons.search, size: 20),
+              filled: true,
+              fillColor: scheme.surfaceContainerHigh,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide.none,
+              ),
+              contentPadding: const EdgeInsets.symmetric(vertical: 8),
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        if (cat != null)
+          TagFilterChips(
+            tags: lib.knownTags(cat),
+            filter: _validFilter(cat, lib),
+            onChanged: (filter) => setState(() => _filters[key] = filter),
+            onManageTags: () => showTagPoolSheet(context, ref, cat),
+            edge: _pad,
+          ),
+        Expanded(child: cat == null ? _codexGrid() : _tagGrid(cat, lib)),
       ],
-      index: cat == null ? cats.length : cats.indexOf(cat),
-      onTap: (i) => _switch(i < cats.length ? cats[i] : null),
     );
   }
 
@@ -308,7 +370,7 @@ class _PickSheetState extends ConsumerState<_PickSheet> {
     if (list.isEmpty) {
       return _empty(
         def.icon,
-        _search.trim().isEmpty && _validFilter(cat, lib) == null
+        _queryOf(_keyOf(cat)).isEmpty && _validFilter(cat, lib) == null
             ? '还没有${def.label}'
             : '没有匹配的${def.label}',
       );
@@ -353,7 +415,7 @@ class _PickSheetState extends ConsumerState<_PickSheet> {
     final favs = ref.watch(codexFavoritesProvider).value ?? const [];
     final index = ref.watch(codexIndexProvider).value ?? const <CodexMeta>[];
     final media = ref.watch(codexMediaProvider).value ?? CodexMedia.fallback;
-    final q = _search.trim().toLowerCase();
+    final q = _queryOf(kCodexTabKey);
     bool has(String s) => s.toLowerCase().contains(q);
     final list = [
       for (final f in favs)
@@ -480,114 +542,6 @@ class _PickSheetState extends ConsumerState<_PickSheet> {
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-/// 分类分段:照「我的 / 公共库」那条(底色、滑块、字色都同 [ScopeSegTabs]),
-/// 几段等宽,整段任意位置可点。
-class _CatSegTabs extends StatelessWidget {
-  const _CatSegTabs({
-    required this.labels,
-    required this.counts,
-    required this.index,
-    required this.onTap,
-  });
-
-  final List<String> labels;
-
-  /// 每段已勾的个数,0 不显示。
-  final List<int> counts;
-  final int index;
-  final ValueChanged<int> onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = context.scheme;
-    return SizedBox(
-      height: 42,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: scheme.surfaceContainerHigh,
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: LayoutBuilder(
-          builder: (context, c) {
-            final segW = c.maxWidth / labels.length;
-            return Stack(
-              children: [
-                AnimatedPositioned(
-                  duration: Motion.medium,
-                  curve: Motion.emphasized,
-                  top: 3,
-                  bottom: 3,
-                  left: 3 + index * segW,
-                  width: segW - 6,
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: scheme.surface,
-                      borderRadius: BorderRadius.circular(9),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: .06),
-                          blurRadius: 4,
-                          offset: const Offset(0, 1),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                // 铺满整条:不 fill 的话这排只有字那么高、贴在顶上,点分段下半截
-                // 也切不过去
-                Positioned.fill(
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      for (var i = 0; i < labels.length; i++)
-                        Expanded(
-                          child: Semantics(
-                            button: true,
-                            selected: i == index,
-                            child: GestureDetector(
-                              behavior: HitTestBehavior.opaque,
-                              onTap: () => onTap(i),
-                              child: Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  AnimatedDefaultTextStyle(
-                                    duration: Motion.fast,
-                                    style: context.texts.labelLarge!.copyWith(
-                                      fontWeight: FontWeight.w700,
-                                      color: i == index
-                                          ? scheme.primary
-                                          : scheme.onSurfaceVariant,
-                                    ),
-                                    child: Text(labels[i]),
-                                  ),
-                                  if (counts[i] > 0) ...[
-                                    const SizedBox(width: 4),
-                                    Text(
-                                      '${counts[i]}',
-                                      style: mono(
-                                        context,
-                                        size: 11,
-                                        weight: FontWeight.w700,
-                                      ).copyWith(color: scheme.primary),
-                                    ),
-                                  ],
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              ],
-            );
-          },
-        ),
       ),
     );
   }

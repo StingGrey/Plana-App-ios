@@ -92,22 +92,7 @@ Future<EncodedState> encodeGenerateState(
     if (s.negativePromptRaw.isNotEmpty)
       'negativePromptRaw': s.negativePromptRaw,
     // 主提示词分区:没分区就不写(生成快照里已拼进 prompt,也不会带这个键)
-    if (s.sections.isNotEmpty)
-      'sections': [
-        for (final x in s.sections)
-          x.isMain
-              ? {'id': x.id, 'name': x.name, if (!x.enabled) 'enabled': false}
-              : {
-                  'id': x.id,
-                  'name': x.name,
-                  'positive': x.positive,
-                  'negative': x.negative,
-                  if (x.positiveRaw.isNotEmpty) 'positiveRaw': x.positiveRaw,
-                  if (x.negativeRaw.isNotEmpty) 'negativeRaw': x.negativeRaw,
-                  if (!x.enabled) 'enabled': false,
-                  if (x.artist) 'artist': true,
-                },
-      ],
+    if (s.sections.isNotEmpty) 'sections': encodeSections(s.sections),
     'characters': [
       for (final c in s.characters)
         {
@@ -561,7 +546,7 @@ Future<GenerateState> decodeGenerateState(
     negativePromptRaw: j['negativePromptRaw'] is String
         ? j['negativePromptRaw'] as String
         : '',
-    sections: _decodeSections(j['sections']),
+    sections: decodeSections(j['sections']),
     characters: characters,
     vibes: vibes,
     charRefs: charRefs,
@@ -625,7 +610,23 @@ List<ActiveLora> _decodeLoras(Object? raw) {
   ];
 }
 
-List<PromptSection> _decodeSections(Object? raw) {
+List<Map<String, dynamic>> encodeSections(List<PromptSection> sections) => [
+  for (final x in sections)
+    x.isMain
+        ? {'id': x.id, 'name': x.name, if (!x.enabled) 'enabled': false}
+        : {
+            'id': x.id,
+            'name': x.name,
+            'positive': x.positive,
+            'negative': x.negative,
+            if (x.positiveRaw.isNotEmpty) 'positiveRaw': x.positiveRaw,
+            if (x.negativeRaw.isNotEmpty) 'negativeRaw': x.negativeRaw,
+            if (!x.enabled) 'enabled': false,
+            if (x.artist) 'artist': true,
+          },
+];
+
+List<PromptSection> decodeSections(Object? raw) {
   if (raw is! List) return const [];
   String str(Object? v) => v is String ? v : '';
   final out = <PromptSection>[];

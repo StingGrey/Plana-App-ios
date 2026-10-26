@@ -999,44 +999,6 @@ class CivitaiLoraInfo {
   );
 }
 
-/// 一次自然语言补强的产出(`POST /api/agent/web/anima-nl`)。
-/// [text] 是要追加到正向词末尾的一整段英文(服务端已压平换行、剥掉引号/列表号,
-/// 并清掉会破坏提示词结构的 `<<` `>>` `~`);[noteZh] 只给用户看,不进提示词。
-class AnimaNlResult {
-  const AnimaNlResult({this.text = '', this.noteZh = ''});
-
-  final String text;
-  final String noteZh;
-
-  Map<String, dynamic> toJson() => {'text': text, 'note_zh': noteZh};
-
-  factory AnimaNlResult.fromJson(Map<String, dynamic> j) => AnimaNlResult(
-    text: j['text']?.toString().trim() ?? '',
-    noteZh: j['note_zh']?.toString().trim() ?? '',
-  );
-}
-
-/// 一次提示词整理的产出(`POST /api/agent/web/krea-prompt`)。
-///
-/// ⚠ 与 [AnimaNlResult] 形状相同、语义相反,别混用:
-///   anima  tag 是骨架、句子是补充 → [AnimaNlResult.text] **追加**到正向词末尾
-///   krea   整条 prompt 就是一段自然语言 → 这里的 [text] 是**整条新的正向词**,
-///          整段替换原文(追加只会得到两段互相打架的描述)
-/// [noteZh] 只给用户看,不进提示词。
-class KreaPromptResult {
-  const KreaPromptResult({this.text = '', this.noteZh = ''});
-
-  final String text;
-  final String noteZh;
-
-  Map<String, dynamic> toJson() => {'text': text, 'note_zh': noteZh};
-
-  factory KreaPromptResult.fromJson(Map<String, dynamic> j) => KreaPromptResult(
-    text: j['text']?.toString().trim() ?? '',
-    noteZh: j['note_zh']?.toString().trim() ?? '',
-  );
-}
-
 /// AI 助手产出的一个分角色分区(`characters[i]`)。
 ///
 /// [position] 是站位坐标串 `"x,y"`(两个 0~1 四位小数,**y 向下增大**),与
@@ -1411,10 +1373,7 @@ class BackendClient {
     final j = await _postJson('/user/quota/relay', {
       'enabled': enabled,
     }, sessionId);
-    return (
-      enabled: j['enabled'] == true,
-      available: j['available'] != false,
-    );
+    return (enabled: j['enabled'] == true, available: j['available'] != false);
   }
 
   // ── 出图租卡(anima / krea2 付费档)──────────────────────────────
@@ -1809,9 +1768,15 @@ class BackendClient {
 
   /// 拉取个人 Tag 云备份(登录:Bearer 头)。web 端备份可能内嵌 base64
   /// 预览,体积达数十 MB,超时放宽到 60s。
-  /// → (四类条目原始 JSON, 更新时间秒, 各类计数)。从未备份过时四类为空数组。
+  /// → (四类条目原始 JSON, 自定义类别块, 更新时间秒, 各类计数)。从未备份过时
+  /// 四类为空数组;没存过自定义类别时 custom 为 null。
   Future<
-    ({Map<String, dynamic> categories, int updatedAt, Map<String, int> counts})
+    ({
+      Map<String, dynamic> categories,
+      Map<String, dynamic>? custom,
+      int updatedAt,
+      Map<String, int> counts,
+    })
   >
   getTagBackup(String sessionId) async {
     final j = await _getJson(
@@ -1824,6 +1789,9 @@ class BackendClient {
       categories: j['categories'] is Map<String, dynamic>
           ? j['categories'] as Map<String, dynamic>
           : const <String, dynamic>{},
+      custom: j['custom'] is Map<String, dynamic>
+          ? j['custom'] as Map<String, dynamic>
+          : null,
       updatedAt: (j['updated_at'] as num?)?.toInt() ?? 0,
       counts: {
         if (rawCounts is Map)
@@ -1853,14 +1821,16 @@ class BackendClient {
     } catch (_) {}
   }
 
-  /// 上传个人 Tag 云备份(整体覆盖;⚠️ 该端点鉴权走 body 里的 session_id)。
+  /// 上传个人 Tag 云备份(四类与自定义类别整体覆盖;⚠️ 该端点鉴权走 body 里的
+  /// session_id)。
   Future<void> uploadTagBackup({
     required String sessionId,
     required Map<String, List<Map<String, dynamic>>> categories,
+    required Map<String, dynamic> custom,
   }) async {
     await _postJson(
       '/user-tag-backup',
-      {'session_id': sessionId, 'categories': categories},
+      {'session_id': sessionId, 'categories': categories, 'custom': custom},
       sessionId,
       const Duration(seconds: 30),
     );
@@ -2506,64 +2476,6 @@ class BackendClient {
       sessionId,
     );
     return (ok: j['ok'] == true, message: j['message']?.toString() ?? '');
-  }
-
-  /// 自然语言补强(anima 专属;登录:Bearer 头)。读当前正向词,产出可追加到
-  /// 其末尾的英文句子 —— anima 是 tag + 自然语言混训,句子负责空间关系/构图/
-  /// 光影/动作因果。一次 LLM 往返、非流式。
-  ///
-  /// [mode] 只接受 `characters`(多角色区分)/ `enhance`(整体补强);
-  /// [positive] 须是剥净仅编辑期语法的定稿(app 里即 `GenerateState.prompt`),
-  /// 空则服务端 400。[loras] 形如 `[{name, trigger_words}]`,仅作角色识别线索。
-  ///
-  /// 超时给 60s:服务端自己 45s 掐(504 带人话 detail),本地先断就只剩
-  /// 「连接后端超时」这句没信息量的兜底。
-  Future<AnimaNlResult> animaNl({
-    required String sessionId,
-    required String mode,
-    required String positive,
-    String extra = '',
-    String existingNl = '',
-    List<Map<String, dynamic>> loras = const [],
-  }) async {
-    final j = await _postJson(
-      '/agent/web/anima-nl',
-      {
-        'mode': mode,
-        'positive': positive,
-        'extra': extra,
-        'existing_nl': existingNl,
-        'loras': loras,
-      },
-      sessionId,
-      const Duration(seconds: 60),
-    );
-    return AnimaNlResult.fromJson(j);
-  }
-
-  /// 提示词整理(krea 专属;登录:Bearer 头)。读当前正向词,产出**整条新的**
-  /// 正向词 —— k2 用 Qwen3-VL 做文本编码器,吃的是连贯自然语言,不吃 tag 串。
-  ///
-  /// [mode] 只接受 `rewrite`(tag 串 → 完整语句)/ `enrich`(不改主体,补光线、
-  /// 材质、镜头与氛围);[positive] 须是剥净仅编辑期语法的定稿,空则服务端 400。
-  /// [loras] 形如 `[{name, trigger_words}]` —— 触发短语是权重开关,服务端会
-  /// 要求原样保留进结果。**只管正向**,排除内容不在本模块职责内(故无该字段)。
-  ///
-  /// 超时同 [animaNl] 给 60s:服务端自己 45s 掐(504 带人话 detail)。
-  Future<KreaPromptResult> kreaPrompt({
-    required String sessionId,
-    required String mode,
-    required String positive,
-    String extra = '',
-    List<Map<String, dynamic>> loras = const [],
-  }) async {
-    final j = await _postJson(
-      '/agent/web/krea-prompt',
-      {'mode': mode, 'positive': positive, 'extra': extra, 'loras': loras},
-      sessionId,
-      const Duration(seconds: 60),
-    );
-    return KreaPromptResult.fromJson(j);
   }
 
   /// AI 助手可选的 LLM 渠道 + 服务端当前默认(`MODEL_CHOICES` 原样下发)。

@@ -3,7 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:plana_app/core/store/app_stores.dart';
-import 'package:plana_app/features/editor/data/completion_source.dart';
+import 'package:plana_app/features/editor/data/tag_translation_service.dart';
 import 'package:plana_app/features/editor/editor_page.dart';
 import 'package:plana_app/features/editor/widgets/tag_panel.dart';
 import 'package:plana_app/features/editor/widgets/editor_bottom_bar.dart';
@@ -15,9 +15,12 @@ void main() {
     final container = ProviderContainer(
       overrides: [
         appStoresProvider.overrideWithValue(AppStores.ephemeral()),
-        effectiveCompletionSourceProvider.overrideWithValue(
-          CompletionSource.danbooru,
-        ),
+        // 测试里不连后端:注音翻译通道关掉,不然 400 之后会挂一个 30 秒的重试计时器
+        tagTranslationServiceProvider.overrideWith((ref) {
+          final service = TagTranslationService(enabled: false, baseUrl: '');
+          ref.onDispose(service.dispose);
+          return service;
+        }),
       ],
     );
     addTearDown(container.dispose);
@@ -55,9 +58,12 @@ void main() {
     final container = ProviderContainer(
       overrides: [
         appStoresProvider.overrideWithValue(AppStores.ephemeral()),
-        effectiveCompletionSourceProvider.overrideWithValue(
-          CompletionSource.danbooru,
-        ),
+        // 测试里不连后端:注音翻译通道关掉,不然 400 之后会挂一个 30 秒的重试计时器
+        tagTranslationServiceProvider.overrideWith((ref) {
+          final service = TagTranslationService(enabled: false, baseUrl: '');
+          ref.onDispose(service.dispose);
+          return service;
+        }),
       ],
     );
     addTearDown(container.dispose);

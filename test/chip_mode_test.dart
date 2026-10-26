@@ -14,6 +14,33 @@ Tok _tok(String text, String name) =>
     parseToks(text).firstWhere((t) => t.name == name);
 
 void main() {
+  // 空框退格删最后一枚(见 editor_page 的 _chipBackspace)。芯片流没有光标,
+  // 标签也不是输入框里的字符,退格落不到它们身上 —— 这条口径就是那一下的定义。
+  group('退格删末枚', () {
+    int lastIdx(String t) => topLevelUnits(t, const {}).length - 1;
+    String back(String t) => deleteUnits(t, const {}, {lastIdx(t)}).$1;
+
+    test('逐枚删,前面的原样留着', () {
+      expect(back('a, b, c'), 'a, b');
+      expect(back(back('a, b, c')), 'a');
+      expect(back(back(back('a, b, c'))), '');
+    });
+
+    test('权重记号跟着自己那枚一起走,不留半截', () {
+      expect(parseToks(back('a, {b}, 1.3::c::')).map((t) => t.name), [
+        'a',
+        'b',
+      ]);
+      expect(back('a, {b}, 1.3::c::').contains('::'), isFalse);
+    });
+
+    // 换行是用户分的段。删掉段里最后一枚,那个换行要留着 —— 否则下一枚
+    // 输入又被拼回上一段,用户排的版被一次退格抹平(与 appendUnit 同一口径)。
+    test('用户的换行分段活下来', () {
+      expect(back('a, b\nc'), 'a, b\n');
+    });
+  });
+
   // ⊕ 画在哪儿、以及面板上那颗「移动」能不能点,读的都是这一份判据。
   // 两处各写各的迟早出现「按钮亮着但一个 ⊕ 都没有」。
   group('chipValidGaps:哪些落点是有意义的', () {
@@ -234,11 +261,10 @@ void main() {
     });
   });
 
-  // 组记号(`1.3::` 与收尾的 `::`)落在词条 seg **之外**,槽位法只搬各单元
-  // 自己那一格 —— 于是壳子原地不动,谁滑进来谁接管加权。这是选中整组之后
-  // 唯一说不通的一种结果,所以整组搬动单开一条路;只挑组里几枚则维持原样。
-  group('整组搬动带着权重走', () {
-    String mv(String t, Set<int> sel, int to) => moveUnits(t, const {}, sel, to);
+  // 组记号(`1.3::` 与收尾的 `::`)落在词条 seg 之外,搬动时跟着组员走。
+  group('搬动时权重组记号跟着组员走', () {
+    String mv(String t, Set<int> sel, int to) =>
+        moveUnits(t, const {}, sel, to);
 
     test('选中整组搬到末尾:记号跟着走,不留下来吞别的词', () {
       expect(mv('1.3::a, b::, c, d', {0, 1}, 4), 'c, d, 1.3::a, b::');
@@ -256,13 +282,33 @@ void main() {
       expect(mv('x, 1.3::a, b::, y', {1, 2}, 0), '1.3::a, b::, x, y');
     });
 
-    // 手动只点了组里的一枚 —— 按用户口径维持老行为:把这枚拿出去,
-    // 壳子留在原地(后一枚补进来接管加权)。
-    test('只挑组里一枚:仍是老口径,组留在原地', () {
+    test('只挑组里一枚搬出去:这枚不带权重,组收边,不吞后一枚', () {
       expect(
         mv('1.3::empty eyes, panting::, hello', {0}, 3),
-        '1.3::panting, hello::, empty eyes',
+        '1.3::panting::, hello, empty eyes',
       );
+    });
+
+    test('组外一枚搬进两枚组员之间:入组,原组员一个不少', () {
+      expect(mv('a, 1.3::b, c::, d', {0}, 2), '1.3::b, a, c::, d');
+      expect(mv('a, 1.3::b, c::, d', {3}, 2), 'a, 1.3::b, d, c::');
+      expect(mv('{a, b}, c, d', {3}, 1), '{a, d, b}, c');
+    });
+
+    test('组外一枚搬到组的首尾边上:落在组外', () {
+      expect(mv('1.3::b, c::, d', {2}, 0), 'd, 1.3::b, c::');
+      expect(mv('a, 1.3::b, c::, d', {3}, 1), 'a, d, 1.3::b, c::');
+    });
+
+    test('组员搬进另一个组:离开原组,进新组', () {
+      expect(
+        mv('1.3::a, b::, 0.8::c, d::', {0}, 3),
+        '1.3::b::, 0.8::c, a, d::',
+      );
+    });
+
+    test('没收口的组:搬到它后面的词补上收口,不被吞进去', () {
+      expect(mv('x, 1.2::a, b', {0}, 3), '1.2::a, b::, x');
     });
 
     test('组内换位不受影响', () {

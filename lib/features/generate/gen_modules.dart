@@ -25,10 +25,8 @@ enum GenModule {
   img2img,
   lora,
   hires,
-  animaNl,
   kreaStyleRef,
   kreaLora,
-  kreaPrompt,
 }
 
 /// 注册表条目:图标与名称同主页卡片,管理页与卡片一眼对上。
@@ -71,12 +69,6 @@ const kGenModuleDefs = <GenModuleDef>[
   ),
   GenModuleDef(GenModule.img2img, Icons.image_outlined, '图生图'),
   GenModuleDef(
-    GenModule.animaNl,
-    Icons.format_align_left,
-    '自然语言',
-    provider: GenProvider.anima,
-  ),
-  GenModuleDef(
     GenModule.lora,
     Icons.auto_awesome_outlined,
     'LoRA',
@@ -92,16 +84,6 @@ const kGenModuleDefs = <GenModuleDef>[
     GenModule.kreaStyleRef,
     Icons.palette_outlined,
     '风格参考',
-    provider: GenProvider.krea,
-  ),
-  // 与 anima 的 animaNl **同名同图标**(对用户而言就是同一件事:让 AI 写自然
-  // 语言),但内部行为相反,改代码时别混:
-  //   animaNl     tag 是骨架、句子是补充 → 结果**追加**到正向词末尾(插入 / 移出)
-  //   kreaPrompt  整条 prompt 就是一段自然语言 → 结果**替换**原文(替换 / 还原)
-  GenModuleDef(
-    GenModule.kreaPrompt,
-    Icons.format_align_left,
-    '自然语言',
     provider: GenProvider.krea,
   ),
   // krea 的 LoRA 单开一个 key(不复用 [GenModule.lora]):启用位是按 key 全局
@@ -130,14 +112,10 @@ const kDefaultOrderByProvider = <GenProvider, List<GenModule>>{
     GenModule.charRef,
     GenModule.img2img,
   ],
-  GenProvider.anima: [GenModule.animaNl, GenModule.lora, GenModule.hires],
+  GenProvider.anima: [GenModule.lora, GenModule.hires],
   // LoRA 在上:挂 LoRA 是每次出图都要过一眼的常规动作,风格参考是偶尔才用的
   // 附加项(还只有 Turbo 档好使),常用的放手边。
-  GenProvider.krea: [
-    GenModule.kreaLora,
-    GenModule.kreaPrompt,
-    GenModule.kreaStyleRef,
-  ],
+  GenProvider.krea: [GenModule.kreaLora, GenModule.kreaStyleRef],
 };
 
 class GenModuleSettings {
@@ -273,9 +251,6 @@ GenerateState stripHiddenModules(GenerateState s, GenModuleSettings ms) {
   if (!on(GenModule.kreaStyleRef) && out.kreaStyleRefs.isNotEmpty) {
     out = out.copyWith(kreaStyleRefs: const []);
   }
-  // 两张自然语言卡(animaNl / kreaPrompt)都没有可剥的数据:产出的文字一旦被
-  // 写进/替换进正向词,那之后就是提示词本身(换个模型照样发)。模块隐藏只是收走
-  // 卡片,不该反手改用户的词。
   // hires 没有独立数据,「剥离」= 关掉开关(配置本身留着,模块恢复即回来)
   if (!on(GenModule.hires) && out.params.hires.enabled) {
     out = out.copyWith(

@@ -3,22 +3,28 @@ import 'package:flutter/material.dart';
 import '../../../core/theme/app_theme.dart';
 
 /// 「我的 / 公共库」分段:滑动指示器 + 渐变标签(随 [controller] 的动画走),
-/// 整段任意位置可点。灵感页与选角色面板共用。
+/// 整段任意位置可点。[compact] 是搜索框旁的窄版:不带图标、不写条数。
 class ScopeSegTabs extends StatelessWidget {
   const ScopeSegTabs({
     super.key,
     required this.controller,
     required this.mineCount,
+    this.publicCount,
+    this.compact = false,
   });
 
   final TabController controller;
   final int mineCount;
 
+  /// 公共库条数;null = 还没拉到,不显示。
+  final int? publicCount;
+  final bool compact;
+
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     return SizedBox(
-      height: 42,
+      height: compact ? 40 : 42,
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: scheme.surfaceContainerHigh,
@@ -63,10 +69,18 @@ class ScopeSegTabs extends StatelessWidget {
                                 context,
                                 0,
                                 Icons.bookmark_outline,
-                                '我的 · $mineCount',
+                                compact ? '我的' : '我的 · $mineCount',
                                 t,
                               ),
-                              _label(context, 1, Icons.public, '公共库', t),
+                              _label(context, 1, Icons.public, switch ((
+                                compact,
+                                publicCount,
+                              )) {
+                                (true, final int n) => '公共 $n',
+                                (true, null) => '公共',
+                                (false, final int n) => '公共库 · $n',
+                                (false, null) => '公共库',
+                              }, t),
                             ],
                           ),
                         ],
@@ -111,11 +125,16 @@ class ScopeSegTabs extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(icon, size: 15, color: color),
-          const SizedBox(width: 6),
+          if (!compact) ...[
+            Icon(icon, size: 15, color: color),
+            const SizedBox(width: 6),
+          ],
           Text(
             label,
+            maxLines: 1,
+            softWrap: false,
             style: context.texts.labelLarge!.copyWith(
+              fontSize: compact ? 14 : null,
               fontWeight: FontWeight.w700,
               color: color,
             ),

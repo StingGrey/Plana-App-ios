@@ -323,7 +323,11 @@ class _ModuleRow extends StatelessWidget {
               child: SizedBox(
                 width: 30,
                 height: 40,
-                child: Icon(Icons.reorder, size: 20, color: scheme.outline),
+                child: Icon(
+                  Icons.drag_indicator,
+                  size: 20,
+                  color: scheme.onSurfaceVariant,
+                ),
               ),
             ),
             const SizedBox(width: 8),

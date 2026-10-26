@@ -1216,9 +1216,7 @@ enum Panel {
   i2i,
   lora,
   hires,
-  animaNl,
   kreaStyleRef,
-  kreaPrompt,
 }
 
 /// 没选过预设时用的那一档:新用户的第一张画布、存档里没记的,同 web 默认档。

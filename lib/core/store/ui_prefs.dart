@@ -36,6 +36,7 @@ class UiPrefs {
     this.cardUnderscore = true,
     this.cardAddSection = true,
     this.inspirationReplace = false,
+    this.lastPages = const {},
   });
 
   /// 统计页的时间范围(`today` / `week` / `month`)。**统计页与平台页共用一个**
@@ -93,6 +94,10 @@ class UiPrefs {
   /// 清的范围同提示词卡头「清空」:主体正向 + 分区;负面照旧追加。
   final bool inspirationReplace;
 
+  /// 分页面板上次停在哪一页:键是哪个面板(灵感页 / 灵感库面板 / 选角色),
+  /// 值是那一页的键(分类 webId,法典是 `codex`)。
+  final Map<String, String> lastPages;
+
   UiPrefs copyWith({
     String? statsRange,
     int? toolsTab,
@@ -112,6 +117,7 @@ class UiPrefs {
     bool? cardUnderscore,
     bool? cardAddSection,
     bool? inspirationReplace,
+    Map<String, String>? lastPages,
   }) => UiPrefs(
     statsRange: statsRange ?? this.statsRange,
     toolsTab: toolsTab ?? this.toolsTab,
@@ -135,6 +141,7 @@ class UiPrefs {
     cardUnderscore: cardUnderscore ?? this.cardUnderscore,
     cardAddSection: cardAddSection ?? this.cardAddSection,
     inspirationReplace: inspirationReplace ?? this.inspirationReplace,
+    lastPages: lastPages ?? this.lastPages,
   );
 
   Map<String, dynamic> toJson() => {
@@ -156,6 +163,7 @@ class UiPrefs {
     'cardUnderscore': cardUnderscore,
     'cardAddSection': cardAddSection,
     'inspirationReplace': inspirationReplace,
+    'lastPages': lastPages,
   };
 
   /// 每一项各自兜底:某一项是垃圾值不该连累其余项(整份丢掉的话,用户会看到
@@ -218,6 +226,12 @@ class UiPrefs {
         ? j['cardAddSection'] as bool
         : true,
     inspirationReplace: j['inspirationReplace'] == true,
+    lastPages: {
+      if (j['lastPages'] case final Map m)
+        for (final e in m.entries)
+          if (e.key is String && e.value is String)
+            e.key as String: e.value as String,
+    },
   );
 }
 
@@ -253,5 +267,11 @@ class UiPrefsNotifier extends Notifier<UiPrefs> {
           .read(prefsStoreProvider)
           .write(key: _key, value: jsonEncode(next.toJson()));
     } catch (_) {} // 写失败只影响下次恢复
+  }
+
+  /// 记下分页面板 [panel] 停在了哪一页。
+  void setLastPage(String panel, String page) {
+    if (state.lastPages[panel] == page) return;
+    patch((p) => p.copyWith(lastPages: {...p.lastPages, panel: page}));
   }
 }

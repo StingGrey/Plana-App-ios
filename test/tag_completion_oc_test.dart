@@ -2,13 +2,13 @@
 // 公共库的接在后面(底行写作者昵称,查不到昵称写归属 id,连归属都没有写「公共库」)。
 // 公共库里本地已经有的那份(收藏 / 发布的副本,或同名)只出本地的。
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:plana_app/features/editor/data/artist_oc_library.dart';
-import 'package:plana_app/features/editor/data/completion_source.dart';
 import 'package:plana_app/features/editor/data/local_tag_db.dart';
 import 'package:plana_app/features/editor/data/tag_completion.dart';
 import 'package:plana_app/features/inspiration/tag_models.dart';
@@ -89,7 +89,6 @@ final _local = [
 ];
 
 TagCompletion _completion({String? session}) => TagCompletion(
-  source: CompletionSource.enhanced,
   baseUrl: _base,
   localDb: LocalTagDb(),
   artistOcLib: ArtistOcLibrary(_base, session, _client),
@@ -98,6 +97,8 @@ TagCompletion _completion({String? session}) => TagCompletion(
 );
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized(); // 离线词库从 asset 读
+
   test('本地库排前、底行写「本地库」;公共库底行写作者', () async {
     final ocs = (await _completion(session: 'sid').query('雪')).ocs;
     expect(ocs.map((s) => s.text), ['雪莉', '初雪', '冬雪', '雪兔', '雪梅', '雪花']);
@@ -121,5 +122,33 @@ void main() {
   test('没登录拿不到公共库,本地库照样补', () async {
     final ocs = (await _completion().query('雪')).ocs;
     expect(ocs.map((s) => s.text), ['雪莉', '初雪', '冬雪']);
+  });
+
+  test('后端连不上:本地库的角色中英文都照样补', () async {
+    final down = MockClient(
+      (req) async => throw const SocketException('network down'),
+    );
+    final tc = TagCompletion(
+      baseUrl: _base,
+      localDb: LocalTagDb(),
+      artistOcLib: ArtistOcLibrary(_base, 'sid', down),
+      localOcs: Future.value([
+        ..._local,
+        TagEntry(
+          id: 'character_5',
+          category: TagCategory.character,
+          name: 'Kimono Girl',
+          positive: 'kimono girl tags',
+          origin: TagOrigin.local,
+        ),
+      ]),
+      client: down,
+    );
+    final zh = await tc.query('雪');
+    expect(zh.ocs.map((s) => s.text), ['雪莉', '初雪', '冬雪']);
+    expect(zh.ocs.map((s) => s.source).toSet(), {'本地库'});
+    final en = await tc.query('kimono');
+    expect(en.ocs.map((s) => s.text), ['Kimono Girl']);
+    expect(en.tags.map((s) => s.text), contains('kimono'));
   });
 }
