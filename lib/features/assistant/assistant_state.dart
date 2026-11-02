@@ -691,6 +691,27 @@ class AssistantNotifier extends Notifier<AssistantState> {
     } catch (_) {
       custom = null;
     }
+    // 前置提示词排在规则最前面。走服务端时它只能跟着规则主体一起发:用的是默认规则
+    // 又写了前置词,就把默认那份取来一起发 —— 不发规则,服务端用它自己那份,前置词没处放。
+    final prefix = assistantSettingsOf(ref).prefixPrompt.trim();
+    final sendRules = endpoint != null || custom != null || prefix.isNotEmpty;
+    // 直连没有外壳,规则直接当系统提示:在用的预设(没自定义就是服务端默认那份)
+    // 挂上 app 的工具层;走服务端时服务端换掉的是整段规则主体,工具层不挂的话
+    // 它自己那份工具说明也跟着被换没了
+    final rules = sendRules
+        ? withPrefix(
+            withToolLayer(
+              custom ??
+                  await defaultRules(family, backendBase: base, sessionId: sid),
+              await appToolLayer(),
+            ),
+            prefix,
+          )
+        : const <PresetRule>[];
+    // 服务端那条整份超了上限会整条拒收,先在这儿拦下,报得清楚些
+    final rulesError = endpoint == null && sendRules
+        ? rulesLimitError(rules)
+        : null;
     // 模式靠预设里那一段:在用的预设没写就什么都不加 —— 比如 NAI5 的对话里选了漫画,
     // 创作页又换成了 4.5,而 4.5 的预设里没有漫画段。消息上照旧记着用户选的那个。
     // 「无」不用查:走服务端又没自定义规则时,这一查就是白取一份默认规则。
@@ -710,6 +731,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
       ..._modelSnapshot(endpoint),
       'image_model': imageModel,
       'rules': '${family.name} · ${custom == null ? '默认' : '自定义'}',
+      if (prefix.isNotEmpty) 'prefix_prompt_chars': prefix.length,
       'mode': effective.name,
       'mode_keys': modeKeys,
       'no_draw': noDraw,
@@ -721,20 +743,19 @@ class AssistantNotifier extends Notifier<AssistantState> {
       'with_canvas': canvas,
       if (image != null) 'image_bytes': image.length,
     });
-    final stream = endpoint != null
+    final stream = rulesError != null
+        ? Stream<AgentEvent>.error(
+            BackendException('规则加上前置提示词超出上限:$rulesError,把前置提示词删短一些'),
+          )
+        : endpoint != null
         ? streamDirectPrompt(
             endpoint: endpoint,
             backendBase: base,
             sessionId: sid,
             userRequest: trimmed,
             image: image,
-            // 直连没有外壳,规则直接当系统提示:在用的预设(没自定义就是服务端默认那份)
-            // 挂上 app 的工具层,再补上出图格式 —— 这两样后端那条由服务端自己发
-            rules: withToolLayer(
-              custom ??
-                  await defaultRules(family, backendBase: base, sessionId: sid),
-              await appToolLayer(),
-            ),
+            rules: rules,
+            // 出图格式后端那条由服务端自己发,直连得自己补上
             outputFormat: await appOutputFormat(),
             // 直连没有独立的「当前画面」通道,画布当一段文本发过去
             canvasBlock: canvas ? _canvasBlock(g) : '',
@@ -770,14 +791,8 @@ class AssistantNotifier extends Notifier<AssistantState> {
             // 出处断在那儿。账本由服务端算、客户端存(这条链路没有服务端会话)。
             resources: latestResources(state.msgs),
             libraryScope: libraryScopeWire(scope),
-            // 没自定义就不发,服务端用它自己那份(自带工具说明,永远是最新的);
-            // 自定义的预设只讲写提示词,挂上 app 的工具层再发 —— 服务端换掉的是
-            // 整段规则主体,不挂的话它自己那份工具说明也跟着被换没了
-            presetRules: [
-              if (custom != null)
-                for (final r in withToolLayer(custom, await appToolLayer()))
-                  r.toJson(),
-            ],
+            // 没自定义、也没写前置词就不发,服务端用它自己那份(自带工具说明,永远是最新的)
+            presetRules: [for (final r in rules) r.toJson()],
             modes: modeKeys,
             onRequest: (body) => trace.request = body,
             onEvent: trace.event,

@@ -111,6 +111,7 @@ class AssistantSettings {
     this.historyTurns = historyTurnsDefault,
     this.stream = true,
     this.importTo = SectionImport.main,
+    this.prefixPrompt = '',
   });
 
   /// 上下文轮数的默认值、可调范围与步长。
@@ -203,6 +204,11 @@ class AssistantSettings {
   /// 导入 / 直接生成时提议写进主提示词的方式(见 [SectionImport])。
   final SectionImport importTo;
 
+  /// 用户自己写给 AI 的前置提示词,放在规则最前面(见 `withPrefix`)。空 = 不加。
+  ///
+  /// 写给的是**写提示词的那个 AI**,不是出图模型 —— 出图那头的固定片段是固定词库。
+  final String prefixPrompt;
+
   AssistantSettings copyWith({
     bool? autoGenerate,
     bool? inlineImage,
@@ -216,6 +222,7 @@ class AssistantSettings {
     int? historyTurns,
     bool? stream,
     SectionImport? importTo,
+    String? prefixPrompt,
   }) => AssistantSettings(
     autoGenerate: autoGenerate ?? this.autoGenerate,
     inlineImage: inlineImage ?? this.inlineImage,
@@ -229,6 +236,7 @@ class AssistantSettings {
     historyTurns: historyTurns ?? this.historyTurns,
     stream: stream ?? this.stream,
     importTo: importTo ?? this.importTo,
+    prefixPrompt: prefixPrompt ?? this.prefixPrompt,
   );
 
   Map<String, dynamic> toJson() => {
@@ -244,6 +252,7 @@ class AssistantSettings {
     'historyTurns': historyTurns,
     'stream': stream,
     'importTo': importTo.name,
+    'prefixPrompt': prefixPrompt,
   };
 
   factory AssistantSettings.fromJson(Map<String, dynamic> j) =>
@@ -265,6 +274,10 @@ class AssistantSettings {
         importTo:
             SectionImport.values.asNameMap()[j['importTo']] ??
             SectionImport.main,
+        prefixPrompt: switch (j['prefixPrompt']) {
+          final String v => v,
+          _ => '',
+        },
         introVersion: switch (j['introVersion']) {
           final num v => v.toInt(),
           _ => 0,

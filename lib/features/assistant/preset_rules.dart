@@ -255,6 +255,20 @@ List<PresetRule> withToolLayer(List<PresetRule> rules, String toolLayer) {
   return [...body]..insert(i + 1, layer);
 }
 
+/// 用户前置提示词那一段的段名。
+const kPrefixRuleName = 'user_prefix';
+
+/// 把用户的前置提示词(助手设置里那一项)放到规则最前面,空的原样返回。
+///
+/// 自定义接口那条规则就是系统提示,这一段就是模型读到的第一段;走服务端时外壳的
+/// 开头还在它前面,它排在规则主体的第一段。不随模式变、用户不改就逐字不变,
+/// 放在最前面也不会打断后面的前缀缓存。
+List<PresetRule> withPrefix(List<PresetRule> rules, String prefix) {
+  final text = prefix.trim();
+  if (text.isEmpty) return rules;
+  return [PresetRule(name: kPrefixRuleName, content: text), ...rules];
+}
+
 String? _toolLayerCache;
 String? _outputFormatCache;
 

@@ -19,6 +19,7 @@ import '../agent_model.dart'
     show assistantBotAuthorizedProvider, assistantEndpointProvider;
 import '../assistant_settings.dart';
 import '../assistant_state.dart';
+import '../prefix_prompt_page.dart';
 import '../preset_rules.dart';
 import '../rules_page.dart';
 
@@ -165,6 +166,18 @@ class _SettingsSheet extends ConsumerWidget {
             value: _rulesValue(ref),
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute<void>(builder: (_) => const RulesPresetPage()),
+            ),
+          ),
+          SettingNavRow(
+            icon: Icons.vertical_align_top,
+            title: '前置提示词',
+            desc: '写给 AI 的话,放在规则最前面',
+            value: switch (s.prefixPrompt.trim().length) {
+              0 => '未设置',
+              final n => '$n 字',
+            },
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const PrefixPromptPage()),
             ),
           ),
           settingSection(context, '调试'),
