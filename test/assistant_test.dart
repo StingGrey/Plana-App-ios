@@ -2091,7 +2091,11 @@ void main() {
             'data': 'QUJD',
           },
         },
-        {'type': 'text', 'text': '画个芙兰'},
+        {
+          'type': 'text',
+          'text': '画个芙兰',
+          'cache_control': {'type': 'ephemeral'},
+        },
       ]);
     });
 
@@ -2114,9 +2118,10 @@ void main() {
           {'text': '画个芙兰'},
         ],
       );
+      // Claude 最后两条挂了缓存标记(见 claude_cache_test),更早的仍是字符串
       expect(
-        (body(AgentApiFormat.anthropic, msgs())['messages'] as List).last,
-        {'role': 'user', 'content': '画个芙兰'},
+        (body(AgentApiFormat.anthropic, msgs())['messages'] as List).first,
+        {'role': 'user', 'content': '上一轮'},
       );
     });
 

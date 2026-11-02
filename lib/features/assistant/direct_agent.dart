@@ -1157,25 +1157,16 @@ String _flatText(Object? v) => switch (v) {
         'max_tokens': _claudeLegacy.hasMatch(e.model)
             ? 4096 + _anthropicBudget(think)
             : 16000,
-        'system': system,
+        // 系统提示整段一个缓存点:规则、工具层、出图格式几千上万字,模式不变就逐字不变
+        if (system.isNotEmpty)
+          'system': [
+            {'type': 'text', 'text': system, 'cache_control': _claudeCache},
+          ],
         'messages': [
-          for (final m in msgs)
+          for (final (i, m) in msgs.indexed)
             {
               'role': m.role,
-              'content': switch (m.image) {
-                final i? => [
-                  {
-                    'type': 'image',
-                    'source': {
-                      'type': 'base64',
-                      'media_type': i.mime,
-                      'data': i.data,
-                    },
-                  },
-                  if (m.content.isNotEmpty) {'type': 'text', 'text': m.content},
-                ],
-                null => m.content,
-              },
+              'content': _claudeContent(m, cache: i >= msgs.length - 2),
             },
         ],
         if (stream) 'stream': true,
@@ -1183,6 +1174,31 @@ String _flatText(Object? v) => switch (v) {
       },
     ),
   };
+}
+
+/// Claude 的缓存标记。Anthropic 不标就不缓存,每一跳都按全价重算整段系统提示和历史;
+/// OpenAI、Gemini 按前缀自动缓存,不用标。默认 5 分钟,读一次续一次。
+const _claudeCache = {'type': 'ephemeral'};
+
+/// Claude 一条消息的 content。[cache] = 挂缓存标记,只给最后两条:
+///   · 最后一条是这一跳新加的,下一跳(查完资料回来)从它接着读;
+///   · 倒数第二条在每轮第一跳是历史的最后一条 —— 本轮那条用户消息带着画布和资料块,
+///     下一轮回带时只剩原话,对不上;历史末尾这个点下一轮还在,从这儿读。
+/// 一共三个缓存点,上限是四个。标记只能挂在块上,所以带标记的纯文字也得换成分段数组。
+Object _claudeContent(DirectMsg m, {required bool cache}) {
+  if (!cache && m.image == null) return m.content;
+  final blocks = <Map<String, dynamic>>[
+    if (m.image case final i?)
+      {
+        'type': 'image',
+        'source': {'type': 'base64', 'media_type': i.mime, 'data': i.data},
+      },
+    if (m.content.isNotEmpty) {'type': 'text', 'text': m.content},
+  ];
+  // 又没字又没图:挂不了(Claude 拒空 text 块),原样发
+  if (blocks.isEmpty) return m.content;
+  if (cache) blocks.last['cache_control'] = _claudeCache;
+  return blocks;
 }
 
 /// Anthropic 老模型的思考预算(token)。0 = 不开。下限是它自己规定的 1024。
