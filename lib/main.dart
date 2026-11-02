@@ -22,6 +22,7 @@ import 'features/profile/account_page.dart';
 import 'features/shell/app_shell.dart';
 import 'features/editor/data/local_tag_db.dart';
 import 'features/cloud_sync/cloud_sync_state.dart';
+import 'l10n/l10n.dart';
 
 final _inputFocusGuard = InputFocusGuard();
 
@@ -130,9 +131,18 @@ class _PlanaAppState extends ConsumerState<PlanaApp> {
       navigatorKey: _navigatorKey,
       title: kAppName,
       debugShowCheckedModeBanner: false,
-      theme: AppTheme.light(ts.seed.color),
-      darkTheme: AppTheme.dark(ts.seed.color),
+      theme: switch (ts.floatAccent) {
+        final a? => AppTheme.float(Brightness.light, a),
+        null => AppTheme.light(ts.seed.color),
+      },
+      darkTheme: switch (ts.floatAccent) {
+        final a? => AppTheme.float(Brightness.dark, a),
+        null => AppTheme.dark(ts.seed.color),
+      },
       themeMode: ts.mode,
+      locale: ts.locale,
+      supportedLocales: kSupportedLocales,
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
       navigatorObservers: [_inputFocusGuard],
       // 一层 builder 里办两件事:三键导航机上整个应用让出系统导航栏(见
       // [NavBarGuard]),以及在最上层盖拖放导入浮层(桌面端拖文件进来时)。

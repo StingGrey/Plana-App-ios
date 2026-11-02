@@ -1769,7 +1769,9 @@ class _EditorPageState extends ConsumerState<EditorPage>
             }
           },
           child: Scaffold(
+            // 底边安全区由底栏自己垫,底栏的底色才能铺到屏幕底
             body: SafeArea(
+              bottom: false,
               child: LayoutBuilder(
                 builder: (context, constraints) => Column(
                   children: [

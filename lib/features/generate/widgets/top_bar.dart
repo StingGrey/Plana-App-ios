@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/auth/auth_mode.dart';
 import '../../../core/auth/bot_session_store.dart';
+import '../../../core/theme/app_skin.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/util/haptics.dart';
 import '../canvas_state.dart';
@@ -16,6 +17,7 @@ import 'canvas_picker.dart';
 import 'common.dart' show hintSnack;
 import 'rental_panel.dart';
 import 'top_bar_status.dart' show topBarTextWidth;
+import '../../../l10n/l10n.dart';
 
 /// 单行顶栏：画布、模型和资源均裸显示。
 class GenerateTopBar extends ConsumerWidget {
@@ -239,7 +241,7 @@ class _ModelSheetState extends State<_ModelSheet>
               child: Row(
                 children: [
                   Text(
-                    '模型',
+                    context.l10n.model,
                     style: context.texts.titleMedium!.copyWith(
                       fontWeight: FontWeight.w700,
                     ),
@@ -379,7 +381,7 @@ class _AuthModeChip extends ConsumerWidget {
 
     // Material 在外、菜单按钮在内:水波纹才会被裁成胶囊,而不是方角糊出来。
     return Material(
-      color: scheme.surfaceContainerHigh,
+      color: context.pageControlFill,
       borderRadius: BorderRadius.circular(_height / 2),
       clipBehavior: Clip.antiAlias,
       child: PopupMenuButton<AuthMode>(

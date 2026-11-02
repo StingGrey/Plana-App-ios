@@ -11,8 +11,10 @@ import '../../shell/shell_state.dart';
 import '../canvas_state.dart';
 import '../generate_state.dart';
 import '../models.dart';
+import '../nai_request.dart' show inpaintStrengthSupported;
 import 'common.dart';
 import 'section_card.dart';
+import '../../../l10n/l10n.dart';
 
 /// 选图设为图生图底图:解码尺寸 → 64 对齐/像素封顶改写生成分辨率 →
 /// 写入状态并展开图生图面板;分辨率有变时提示一声。
@@ -98,7 +100,7 @@ class _Img2ImgCardState extends ConsumerState<Img2ImgCard> {
 
     return SectionCard(
       icon: Icons.image_outlined,
-      title: '图生图',
+      title: context.l10n.img2img,
       reorderIndex: widget.reorderIndex,
       badge: hasImage ? const CountBadge('1') : null,
       actions: [
@@ -178,7 +180,7 @@ class _Img2ImgCardState extends ConsumerState<Img2ImgCard> {
                       child: Column(
                         children: [
                           ParamSlider(
-                            label: '强度 Strength',
+                            label: context.l10n.paramStrength,
                             help: Help.img2imgStrength,
                             value: cfg.strength,
                             min: 0.01, // 对齐 web:0 对 img2img 无效
@@ -189,7 +191,7 @@ class _Img2ImgCardState extends ConsumerState<Img2ImgCard> {
                           ),
                           const SizedBox(height: 6),
                           ParamSlider(
-                            label: '噪声 Noise',
+                            label: context.l10n.paramNoise,
                             help: Help.img2imgNoise,
                             value: cfg.noise,
                             max: 0.99, // 对齐 web(min 0 可)
@@ -202,7 +204,7 @@ class _Img2ImgCardState extends ConsumerState<Img2ImgCard> {
                   ],
                 ),
                 const SizedBox(height: 8),
-                const InfoNote('底图按当前分辨率裁剪填充;强度越低越接近原图。点缩略图可涂遮罩改成重绘。'),
+                const InfoNote('底图按当前分辨率裁剪填充。点缩略图可涂遮罩改成重绘。'),
               ],
             ),
     );
@@ -219,15 +221,17 @@ class _Img2ImgCardState extends ConsumerState<Img2ImgCard> {
     bool expanded,
   ) {
     final scheme = context.scheme;
+    final model = state.params.model;
+    final strengthOk = inpaintStrengthSupported(model);
     return SectionCard(
       icon: Icons.brush_outlined,
-      title: '重绘',
+      title: context.l10n.inpaint,
       reorderIndex: widget.reorderIndex,
       badge: CountBadge('${state.params.width}×${state.params.height}'),
       actions: [
         RoundIconBtn(
           Icons.delete_outline,
-          tooltip: '移除遮罩',
+          tooltip: context.l10n.removeMask,
           color: scheme.error,
           onTap: notifier.clearInpaint,
         ),
@@ -297,14 +301,17 @@ class _Img2ImgCardState extends ConsumerState<Img2ImgCard> {
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: ParamSlider(
-                  label: '强度 Strength',
-                  help: Help.img2imgStrength,
-                  value: job.strength,
-                  min: 0.01,
-                  max: 0.99,
-                  divisions: 98,
-                  onChanged: notifier.updateInpaintStrength,
+                child: LockedParam(
+                  hint: strengthOk ? null : '${modelName(model)} 不支持「重绘强度」',
+                  child: ParamSlider(
+                    label: context.l10n.paramStrength,
+                    help: Help.img2imgStrength,
+                    value: strengthOk ? job.strength : 1,
+                    min: 0.01,
+                    max: 1,
+                    divisions: 99,
+                    onChanged: notifier.updateInpaintStrength,
+                  ),
                 ),
               ),
             ],

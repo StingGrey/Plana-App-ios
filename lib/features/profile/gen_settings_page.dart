@@ -5,6 +5,7 @@ import '../../core/store/ui_prefs.dart';
 
 import '../../core/platform/platform_support.dart';
 import '../../core/store/gen_settings.dart';
+import '../../core/theme/app_skin.dart';
 import '../../core/theme/app_theme.dart';
 import '../gallery/save_settings.dart';
 import '../generate/gen_modules.dart';
@@ -263,7 +264,7 @@ class _ModulesCard extends ConsumerWidget {
           physics: const NeverScrollableScrollPhysics(),
           buildDefaultDragHandles: false,
           proxyDecorator: (child, index, animation) => Material(
-            color: scheme.surfaceContainerHigh,
+            color: context.raisedFill(scheme.surfaceContainerHigh),
             borderRadius: BorderRadius.circular(12),
             elevation: 3,
             child: child,

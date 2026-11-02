@@ -657,7 +657,8 @@ class GenerationNotifier extends Notifier<GenPool> {
     final client = ref.read(naiClientProvider(run.base));
 
     // 走流式还是一次性,整单开头定一次:中途设置变了不该让这一单换端点。
-    final streaming = _streamGen;
+    // 接口没有逐步预览(OpenAI 兼容)时按一次性走,进度条显示不确定态。
+    final streaming = _streamGen && client.streams;
 
     final abort = run.abort;
 
@@ -700,6 +701,7 @@ class GenerationNotifier extends Notifier<GenPool> {
           presetId: preset.presetId,
           qualityToggle: preset.qualityToggle,
           straightAlpha: _straightAlpha,
+          thirdParty: run.base.isNotEmpty,
           vibes: [
             for (final v in prepared)
               (encoded: v.encoded, strength: v.strength),
@@ -866,7 +868,7 @@ class GenerationNotifier extends Notifier<GenPool> {
             isOpus: isOpus,
             sendW: s.params.width,
             sendH: s.params.height,
-            strength: job.strength,
+            strength: effectiveInpaintStrength(s.params.model, job.strength),
             v5Charged: v5Charged,
           )
         : estimateCost(s, isOpus: isOpus, v5Charged: v5Charged);

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/theme/app_skin.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/theme_settings.dart';
 import '../../../core/util/nai_tokenizer.dart';
@@ -16,6 +17,7 @@ import 'common.dart';
 import 'position_grid_dialog.dart';
 import 'prompt_card.dart' show negativePreview;
 import 'section_card.dart';
+import '../../../l10n/l10n.dart';
 
 /// 角色面板:沿用创作页的容器与公共按钮,预览比例与灵感角色库一致。
 /// 点头像换角色、点名称改名;删除直接放在卡上,长按整卡仍可排序。
@@ -41,7 +43,7 @@ class CharacterCard extends ConsumerWidget {
 
     return SectionCard(
       icon: Icons.group_outlined,
-      title: '角色',
+      title: context.l10n.characters,
       reorderIndex: reorderIndex,
       badge: CountBadge('$active / $cap', error: active > cap),
       actions: [
@@ -64,7 +66,7 @@ class CharacterCard extends ConsumerWidget {
         RoundIconBtn(
           Icons.add,
           size: actionSize,
-          tooltip: '添加角色',
+          tooltip: context.l10n.addCharacter,
           color: canAdd ? null : scheme.outline,
           onTap: canAdd ? notifier.addCharacter : null,
         ),
@@ -78,23 +80,29 @@ class CharacterCard extends ConsumerWidget {
       chevronPlaceholder: chars.isEmpty,
       body: chars.isEmpty
           ? null
-          // 长按卡片拖动排序。删除只走行内按钮(删了给撤销条),不做横滑删除
-          // —— 横滑一下就抹掉整份角色配置(提示词/站位/开关),太容易误触。
-          : ReorderableListView(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              proxyDecorator: dragProxy,
-              onReorderStart: dragStartHaptic,
-              onReorderEnd: dragEndHaptic,
-              onReorderItem: notifier.reorderCharacters,
-              children: [
-                for (var i = 0; i < chars.length; i++)
-                  Padding(
-                    key: ValueKey('char${chars[i].id}'),
-                    padding: EdgeInsets.only(top: i > 0 ? 9 : 0),
-                    child: _CharacterTile(char: chars[i], index: i),
-                  ),
-              ],
+          // 增删角色时高度平滑过渡(第一个由卡片展开动画负责)
+          : AnimatedSize(
+              duration: Motion.medium,
+              curve: Motion.emphasized,
+              alignment: Alignment.topCenter,
+              // 长按卡片拖动排序。删除只走行内按钮(删了给撤销条),不做横滑删除
+              // —— 横滑一下就抹掉整份角色配置(提示词/站位/开关),太容易误触。
+              child: ReorderableListView(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                proxyDecorator: dragProxy,
+                onReorderStart: dragStartHaptic,
+                onReorderEnd: dragEndHaptic,
+                onReorderItem: notifier.reorderCharacters,
+                children: [
+                  for (var i = 0; i < chars.length; i++)
+                    Padding(
+                      key: ValueKey('char${chars[i].id}'),
+                      padding: EdgeInsets.only(top: i > 0 ? 9 : 0),
+                      child: _CharacterTile(char: chars[i], index: i),
+                    ),
+                ],
+              ),
             ),
     );
   }
@@ -311,9 +319,12 @@ class _CharacterTile extends ConsumerWidget {
         ),
       ),
     );
+    // 浮卡样式下角色块是凹槽灰,块里的圆钮反用卡片白
+    final btnFill = context.skin.float ? scheme.surfaceContainerLow : null;
     final toggleBtn = RoundIconBtn(
       Icons.power_settings_new,
       size: controlSize,
+      background: btnFill,
       color: enabled ? scheme.primary : scheme.outline,
       onTap: () => notifier.updateCharacter(char.id, enabled: !enabled),
       tooltip: enabled ? '停用(保留配置)' : '启用',
@@ -321,6 +332,7 @@ class _CharacterTile extends ConsumerWidget {
     final deleteBtn = RoundIconBtn(
       Icons.delete_outline,
       size: controlSize,
+      background: btnFill,
       color: scheme.error,
       onTap: () => _remove(context, ref),
       tooltip: '删除角色',
@@ -436,6 +448,7 @@ class _CharacterTile extends ConsumerWidget {
                         RoundIconBtn(
                           Icons.location_on_outlined,
                           size: controlSize,
+                          background: btnFill,
                           color: posColor,
                           onTap: openPosition,
                           tooltip: positionTip,
@@ -473,6 +486,7 @@ class _CharacterTile extends ConsumerWidget {
                               RoundIconBtn(
                                 Icons.location_on_outlined,
                                 size: controlSize,
+                                background: btnFill,
                                 color: posColor,
                                 onTap: openPosition,
                                 tooltip: positionTip,
@@ -494,7 +508,9 @@ class _CharacterTile extends ConsumerWidget {
                               const SizedBox(width: 4),
                               Expanded(
                                 child: Text(
-                                  autoPos ? '自动定位' : positionLabel,
+                                  autoPos
+                                      ? context.l10n.aiChoicePosition
+                                      : positionLabel,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: context.texts.bodySmall!.copyWith(
@@ -539,7 +555,9 @@ class _PositionChip extends StatelessWidget {
     final scheme = context.scheme;
     final filled = enabled && !auto;
     return Material(
-      color: filled ? scheme.primaryContainer : Colors.transparent,
+      color: filled
+          ? context.solidFill(scheme.primaryContainer)
+          : Colors.transparent,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(6),
         side: filled
@@ -552,12 +570,12 @@ class _PositionChip extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
           child: Text(
-            auto ? '自动' : label,
+            auto ? context.l10n.aiChoice : label,
             maxLines: 1,
             style: context.texts.labelMedium!.copyWith(
               fontWeight: FontWeight.w600,
               color: filled
-                  ? scheme.onPrimaryContainer
+                  ? context.onSolidFill(scheme.onPrimaryContainer)
                   : enabled
                   ? scheme.onSurfaceVariant
                   : scheme.outline,
@@ -598,7 +616,9 @@ class _Avatar extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final slot = ColoredBox(
-      color: scheme.surfaceContainerHighest,
+      color: context.skin.float
+          ? scheme.surfaceContainerLow
+          : scheme.surfaceContainerHighest,
       child: Center(
         child: Icon(
           Icons.person_search_outlined,

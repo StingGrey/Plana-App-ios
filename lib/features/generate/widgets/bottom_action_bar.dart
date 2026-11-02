@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/net/anlas_provider.dart';
 import '../../../core/store/ui_prefs.dart';
+import '../../../core/theme/app_skin.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/ui/param_input.dart';
 import '../../../core/util/haptics.dart';
@@ -15,11 +16,14 @@ import '../loop_controller.dart';
 import '../models.dart'
     show
         GenParams,
+        GenProvider,
         isNai5MediumModel,
         kBatchMax,
         kNai5MediumSteps,
         modelName,
+        providerOfModel,
         stepsRangeOf;
+import '../nai_request.dart' show effectiveInpaintStrength;
 import '../vibe_encoder.dart';
 import '../../import/import_panel.dart';
 import 'advanced_sheet.dart';
@@ -27,6 +31,7 @@ import 'common.dart' show hintSnack, sharedAxisRoute;
 import 'loop_sheet.dart';
 import '../queue_management_page.dart';
 import 'resolution_sheet.dart';
+import '../../../l10n/l10n.dart';
 
 /// 吸底栏上方那一处浮动控件,现在是**谁开着**。
 ///
@@ -138,7 +143,10 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
                 isOpus: isOpus,
                 sendW: sent.params.width,
                 sendH: sent.params.height,
-                strength: job.strength,
+                strength: effectiveInpaintStrength(
+                  sent.params.model,
+                  job.strength,
+                ),
                 v5Charged: v5Charged,
               )
             : estimateCost(sent, isOpus: isOpus, v5Charged: v5Charged)) +
@@ -146,174 +154,178 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
     // 按**会发出去**的那份参数判(见 sentParamsProvider)
     final batchable = sent.params.batchable;
 
-    return Material(
-      color: scheme.surfaceContainer,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 8, 14, 9),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // 两种排法,按有没有「张数」分:
-            //  · anima / krea 四颗 —— 均分。左边挤成一堆的话 Spacer 被压没,
-            //    张数会和「高级」贴在一起;
-            //  · NAI 三颗 —— 还是「左边一串 + 高级钉右边」。三颗均分会把步数
-            //    甩到正中间,中间那片空白比贴在一起更晃眼。
-            Row(
-              mainAxisAlignment: batchable
-                  ? MainAxisAlignment.spaceBetween
-                  : MainAxisAlignment.start,
-              children: [
-                _ReadoutChip(
-                  caption: '尺寸',
-                  value: '${p.width}×${p.height}',
-                  onTap: () => showResolutionSheet(context),
-                ),
-                if (!batchable) const SizedBox(width: 8),
-                const _StepsChip(),
-                // 张数只有 anima / krea 有(NAI 那条路一单一张)。**不给它常驻
-                // 一个位置**:NAI 下摆个恒为 1、点了还得解释「这个模型不支持」
-                // 的读数,只是白占那条本来就挤的行。
-                if (batchable) const _BatchChip() else const Spacer(),
-                _ReadoutChip(
-                  icon: Icons.tune,
-                  value: '高级',
-                  valueMuted: true,
-                  onTap: () => showAdvancedSheet(context),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                // 「生成」左边那三颗各自可藏(生成设置里开关,见 UiPrefs.barImport)。
-                // NSFW 是开关不是动作,不给藏 —— 藏起来还开着,就成了看不见的状态。
-                //
-                // 导入图片:选相册图 → 解析元数据/用作参考的全屏导入面板
-                if (bar.import) ...[
-                  _SideButton(
-                    tooltip: '导入图片',
-                    onTap: () => openImportPanel(context),
-                    child: Icon(Icons.input, size: 22, color: scheme.primary),
+    // 浮卡样式:白底,和底栏连成一块
+    return Docked(
+      child: Material(
+        color: context.raisedFill(scheme.surfaceContainer),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 8, 14, 9),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // 两种排法,按有没有「张数」分:
+              //  · anima / krea 四颗 —— 均分。左边挤成一堆的话 Spacer 被压没,
+              //    张数会和「高级」贴在一起;
+              //  · NAI 三颗 —— 还是「左边一串 + 高级钉右边」。三颗均分会把步数
+              //    甩到正中间,中间那片空白比贴在一起更晃眼。
+              Row(
+                mainAxisAlignment: batchable
+                    ? MainAxisAlignment.spaceBetween
+                    : MainAxisAlignment.start,
+                children: [
+                  _ReadoutChip(
+                    caption: context.l10n.size,
+                    value: '${p.width}×${p.height}',
+                    onTap: () => showResolutionSheet(context),
                   ),
-                  const SizedBox(width: 9),
+                  if (!batchable) const SizedBox(width: 8),
+                  const _StepsChip(),
+                  // 张数只有 anima / krea 有(NAI 那条路一单一张)。**不给它常驻
+                  // 一个位置**:NAI 下摆个恒为 1、点了还得解释「这个模型不支持」
+                  // 的读数,只是白占那条本来就挤的行。
+                  if (batchable) const _BatchChip() else const Spacer(),
+                  _ReadoutChip(
+                    icon: Icons.tune,
+                    value: context.l10n.advanced,
+                    valueMuted: true,
+                    onTap: () => showAdvancedSheet(context),
+                  ),
                 ],
-                // 循环伴钮:进循环面板(选张数并开始);运行中高亮,面板里可停
-                if (bar.loop)
-                  _SideButton(
-                    tooltip: '循环生成',
-                    active: loop.active,
-                    onTap: () => showLoopSheet(context),
-                    child: Icon(
-                      Icons.autorenew,
-                      size: 22,
-                      color: loop.active
-                          ? scheme.onPrimaryContainer
-                          : scheme.primary,
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  // 「生成」左边那三颗各自可藏(生成设置里开关,见 UiPrefs.barImport)。
+                  // NSFW 是开关不是动作,不给藏 —— 藏起来还开着,就成了看不见的状态。
+                  //
+                  // 导入图片:选相册图 → 解析元数据/用作参考的全屏导入面板
+                  if (bar.import) ...[
+                    _SideButton(
+                      tooltip: context.l10n.importImage,
+                      onTap: () => openImportPanel(context),
+                      child: Icon(Icons.input, size: 22, color: scheme.primary),
                     ),
-                  ),
-                // 队列那颗没有描边,自带的留白就是间距;它藏了才补上
-                if (bar.loop && !bar.queue) const SizedBox(width: 9),
-                // 队列按钮:点按把当前参数快照加入队列,长按打开管理页。
-                // 生成中的任务与排队快照是两套状态,这里不复用循环按钮,避免用户
-                // 误把「之后继续出图」和「保存一份任务」混为一件事。
-                if (bar.queue) ...[
-                  Tooltip(
-                    message: '加入生成队列',
-                    child: SizedBox(
-                      width: 52,
-                      height: 52,
-                      child: Material(
-                        color: Colors.transparent,
-                        borderRadius: BorderRadius.circular(16),
-                        child: InkWell(
+                    const SizedBox(width: 9),
+                  ],
+                  // 循环伴钮:进循环面板(选张数并开始);运行中高亮,面板里可停
+                  if (bar.loop)
+                    _SideButton(
+                      tooltip: '循环生成',
+                      active: loop.active,
+                      onTap: () => showLoopSheet(context),
+                      child: Icon(
+                        Icons.autorenew,
+                        size: 22,
+                        color: loop.active
+                            ? context.onSolidFill(scheme.onPrimaryContainer)
+                            : scheme.primary,
+                      ),
+                    ),
+                  // 队列那颗没有描边,自带的留白就是间距;它藏了才补上
+                  if (bar.loop && !bar.queue) const SizedBox(width: 9),
+                  // 队列按钮:点按把当前参数快照加入队列,长按打开管理页。
+                  // 生成中的任务与排队快照是两套状态,这里不复用循环按钮,避免用户
+                  // 误把「之后继续出图」和「保存一份任务」混为一件事。
+                  if (bar.queue) ...[
+                    Tooltip(
+                      message: '加入生成队列',
+                      child: SizedBox(
+                        width: 52,
+                        height: 52,
+                        child: Material(
+                          color: Colors.transparent,
                           borderRadius: BorderRadius.circular(16),
-                          onTap: () {
-                            final ok = ref
-                                .read(genQueueProvider.notifier)
-                                .enqueue();
-                            if (!ok) {
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(16),
+                            onTap: () {
+                              final ok = ref
+                                  .read(genQueueProvider.notifier)
+                                  .enqueue();
+                              if (!ok) {
+                                hintSnack(
+                                  context,
+                                  '队列最多保留 ${GenQueueNotifier.cap} 项',
+                                  icon: Icons.block_outlined,
+                                );
+                                return;
+                              }
                               hintSnack(
                                 context,
-                                '队列最多保留 ${GenQueueNotifier.cap} 项',
-                                icon: Icons.block_outlined,
+                                '已加入生成队列',
+                                icon: Icons.playlist_add_check,
                               );
-                              return;
-                            }
-                            hintSnack(
-                              context,
-                              '已加入生成队列',
-                              icon: Icons.playlist_add_check,
-                            );
-                          },
-                          onLongPress: () => Navigator.of(
-                            context,
-                          ).push(sharedAxisRoute(const QueueManagementPage())),
-                          child: Center(
-                            child: Icon(
-                              Icons.queue_play_next_outlined,
-                              size: 22,
-                              color: scheme.primary,
+                            },
+                            onLongPress: () => Navigator.of(context).push(
+                              sharedAxisRoute(const QueueManagementPage()),
                             ),
+                            child: Center(
+                              child: Icon(
+                                Icons.queue_play_next_outlined,
+                                size: 22,
+                                color: scheme.primary,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 9),
+                  ],
+                  // NSFW:开着时出图在预设前缀与主提示词之间夹一个 nsfw(见 withNsfwTag)
+                  _SideButton(
+                    tooltip: state.nsfw ? 'NSFW 已开:预设后自动加 nsfw' : 'NSFW 已关',
+                    active: state.nsfw,
+                    onTap: () {
+                      Haptics.selection();
+                      ref.read(generateProvider.notifier).setNsfw(!state.nsfw);
+                    },
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 6),
+                      // 大字号下宁可缩小也不换行
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          'NSFW',
+                          maxLines: 1,
+                          style: context.texts.labelMedium!.copyWith(
+                            fontWeight: FontWeight.w800,
+                            color: state.nsfw
+                                ? context.onSolidFill(scheme.onPrimaryContainer)
+                                : scheme.primary,
                           ),
                         ),
                       ),
                     ),
                   ),
                   const SizedBox(width: 9),
-                ],
-                // NSFW:开着时出图在预设前缀与主提示词之间夹一个 nsfw(见 withNsfwTag)
-                _SideButton(
-                  tooltip: state.nsfw ? 'NSFW 已开:预设后自动加 nsfw' : 'NSFW 已关',
-                  active: state.nsfw,
-                  onTap: () {
-                    Haptics.selection();
-                    ref.read(generateProvider.notifier).setNsfw(!state.nsfw);
-                  },
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 6),
-                    // 大字号下宁可缩小也不换行
-                    child: FittedBox(
-                      fit: BoxFit.scaleDown,
-                      child: Text(
-                        'NSFW',
-                        maxLines: 1,
-                        style: context.texts.labelMedium!.copyWith(
-                          fontWeight: FontWeight.w800,
-                          color: state.nsfw
-                              ? scheme.onPrimaryContainer
-                              : scheme.primary,
-                        ),
-                      ),
+                  // 生成主按钮。**并行之后它一直是「生成」**:再点就是再投一条。
+                  // 有任务在跑时按钮**内部**右侧长出一段停止区(带进度环)——
+                  // 创作页看不见图库的任务卡,没它就整页看不到进度、也没处取消。
+                  Expanded(
+                    child: _GenerateButton(
+                      cost: totalCost,
+                      onGenerate: () {
+                        _hintDisabledVibes(context, ref);
+                        ref.read(generationProvider.notifier).generate();
+                      },
+                      progress: pool.busy ? gen.progress : null,
+                      runningCount: pool.busy ? pool.jobs.length : 0,
+                      stopIcon: loop.active && !loop.stopping
+                          ? Icons.stop_rounded
+                          : Icons.close_rounded,
+                      // 循环:第一次点=软停(本张跑完后停),**再点一次=强制取消**。
+                      // 软停后绝不能变成 null —— 那会在当前张卡住时(断网最常见)
+                      // 关掉唯一的退路,只能干等超时。实测反馈。
+                      onStop: loop.active && !loop.stopping
+                          ? () => ref.read(loopStatusProvider.notifier).stop()
+                          : () =>
+                                ref.read(generationProvider.notifier).cancel(),
                     ),
                   ),
-                ),
-                const SizedBox(width: 9),
-                // 生成主按钮。**并行之后它一直是「生成」**:再点就是再投一条。
-                // 有任务在跑时按钮**内部**右侧长出一段停止区(带进度环)——
-                // 创作页看不见图库的任务卡,没它就整页看不到进度、也没处取消。
-                Expanded(
-                  child: _GenerateButton(
-                    cost: totalCost,
-                    onGenerate: () {
-                      _hintDisabledVibes(context, ref);
-                      ref.read(generationProvider.notifier).generate();
-                    },
-                    progress: pool.busy ? gen.progress : null,
-                    runningCount: pool.busy ? pool.jobs.length : 0,
-                    stopIcon: loop.active && !loop.stopping
-                        ? Icons.stop_rounded
-                        : Icons.close_rounded,
-                    // 循环:第一次点=软停(本张跑完后停),**再点一次=强制取消**。
-                    // 软停后绝不能变成 null —— 那会在当前张卡住时(断网最常见)
-                    // 关掉唯一的退路,只能干等超时。实测反馈。
-                    onStop: loop.active && !loop.stopping
-                        ? () => ref.read(loopStatusProvider.notifier).stop()
-                        : () => ref.read(generationProvider.notifier).cancel(),
-                  ),
-                ),
-              ],
-            ),
-          ],
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -345,7 +357,9 @@ class _SideButton extends StatelessWidget {
         width: 52,
         height: 52,
         decoration: BoxDecoration(
-          color: active ? scheme.primaryContainer : Colors.transparent,
+          color: active
+              ? context.solidFill(scheme.primaryContainer)
+              : Colors.transparent,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
             color: active
@@ -457,7 +471,7 @@ class _GenerateButton extends StatelessWidget {
                           if (inner.maxWidth >= _kLabelMinW) ...[
                             const SizedBox(width: 8),
                             Text(
-                              '生成',
+                              context.l10n.generate,
                               maxLines: 1,
                               style: context.texts.titleMedium!.copyWith(
                                 fontWeight: FontWeight.w700,
@@ -712,7 +726,7 @@ class _StepsChip extends ConsumerWidget {
     final pill = ref.watch(floatingPillProvider);
     final open = pill.isOpen(FloatingPill.steps);
     return _ReadoutChip(
-      caption: '步数',
+      caption: context.l10n.steps,
       value: '${(open ? pill.draft?.round() : null) ?? committed}',
       valueMuted: locked,
       active: open,
@@ -749,7 +763,7 @@ class _BatchChip extends ConsumerWidget {
     // 选 4 出 1 张且没有任何提示,那种不一致最难查。
     final locked = p.effectiveBatch != p.batchCount;
     return _ReadoutChip(
-      caption: '张数',
+      caption: context.l10n.imageCount,
       value: '${p.effectiveBatch}',
       // 锁着时把读数压灰(和「高级」那颗同一种「这不是可调的数」的说法),
       // 不加锁形图标:那会让这一格忽宽忽窄,整行跟着抖。为什么是 1,点一下才说。
@@ -841,20 +855,7 @@ class _PillShell extends StatelessWidget {
       child: Container(
         height: 48,
         padding: const EdgeInsets.symmetric(horizontal: 14),
-        decoration: BoxDecoration(
-          color: scheme.surface.withValues(alpha: .85),
-          borderRadius: BorderRadius.circular(24),
-          border: Border.all(
-            color: scheme.outlineVariant.withValues(alpha: .7),
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: .14),
-              blurRadius: 12,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
+        decoration: context.floatingPill(24),
         child: Row(
           children: [
             Text(
@@ -879,7 +880,7 @@ class _BatchPickerPill extends ConsumerWidget {
     final scheme = context.scheme;
     final cur = ref.watch(sentParamsProvider).batchCount.clamp(1, kBatchMax);
     return _PillShell(
-      label: '张数',
+      label: context.l10n.imageCount,
       child: Padding(
         padding: const EdgeInsets.only(left: 12),
         child: Container(
@@ -981,8 +982,15 @@ class _StepsSliderPill extends ConsumerWidget {
         (ref.watch(floatingPillProvider.select((x) => x.draft))?.round() ??
                 committed)
             .clamp(min, max);
+    final nai = ref.watch(
+      generateProvider.select(
+        (s) => providerOfModel(s.params.model) == GenProvider.nai,
+      ),
+    );
+    // NAI 离 28 不到一格就吸到 28
+    double snap(double v) => nai && (v - 28).abs() < 1 ? 28 : v.roundToDouble();
     return _PillShell(
-      label: '步数',
+      label: context.l10n.steps,
       child: Row(
         children: [
           Expanded(
@@ -996,15 +1004,17 @@ class _StepsSliderPill extends ConsumerWidget {
                   max: max.toDouble(),
                   // 不传 divisions:离散 Slider 会用 75ms 曲线把滑块吸到刻度,
                   // 拖起来黏手。步长(整数)就地取整。
-                  onChanged: (v) => ref
-                      .read(floatingPillProvider.notifier)
-                      .drag(v.roundToDouble()),
+                  onChanged: (v) {
+                    final next = snap(v);
+                    if (nai && next == 28 && steps != 28) Haptics.selection();
+                    ref.read(floatingPillProvider.notifier).drag(next);
+                  },
                   // 松手才写回全局:先提交再清草稿,同一帧生效,不会闪回旧值
                   onChangeEnd: (v) {
                     final p = ref.read(generateProvider).params;
                     ref
                         .read(generateProvider.notifier)
-                        .applyParams(p.withActiveSteps(v.round()));
+                        .applyParams(p.withActiveSteps(snap(v).round()));
                     ref.read(floatingPillProvider.notifier).endDrag();
                   },
                 ),
@@ -1022,7 +1032,7 @@ class _StepsSliderPill extends ConsumerWidget {
               final p = ref.read(generateProvider).params;
               final v = await showParamInput(
                 context,
-                title: '步数 Steps',
+                title: context.l10n.paramSteps,
                 value: steps.toDouble(),
                 min: min.toDouble(),
                 max: max.toDouble(),

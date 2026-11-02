@@ -12,6 +12,8 @@
 [![iOS](https://img.shields.io/badge/iOS-16%2B%20beta-000000?logo=apple&logoColor=white)](IOS_PORT.md)
 [![Flutter](https://img.shields.io/badge/built%20with-Flutter-02569B?logo=flutter&logoColor=white)](https://flutter.dev)
 
+**简体中文** · [English](README.en.md)
+
 </div>
 
 ---

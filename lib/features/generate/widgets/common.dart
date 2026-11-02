@@ -136,6 +136,7 @@ class ParamSlider extends StatelessWidget {
     this.trailing,
     this.dense = false,
     this.help,
+    this.snapTo,
   });
 
   final String label;
@@ -159,8 +160,18 @@ class ParamSlider extends StatelessWidget {
   /// 给上则参数说明:标签变成可点的「标签 + 问号」。
   final ParamHelp? help;
 
-  double _snap(double v) =>
-      quantizeToDivisions(v, min: min, max: max, divisions: divisions);
+  /// 拖动吸附点:离它不到一格就落在它上面。
+  final double? snapTo;
+
+  double _snap(double v) {
+    final s = snapTo;
+    if (s != null &&
+        divisions != null &&
+        (v - s).abs() < (max - min) / divisions!) {
+      return s;
+    }
+    return quantizeToDivisions(v, min: min, max: max, divisions: divisions);
+  }
 
   /// 读数框弹出手输。拖动是 onChanged 一路走到 onChangeEnd,手输也照这条路
   /// 发一遍(两个回调都发):LiveParamSlider 那种「拖动本地、松手提交」的
@@ -821,6 +832,26 @@ void dropFocusSoon() {
 }
 
 // ---- 顶部悬浮提示(全 app 统一;替代底部 SnackBar) ----
+
+/// 当前型号不可调的参数:照常显示实际生效值、压暗、不接手势,点一下弹 [hint]。
+/// hint 为 null = 可调,原样返回。
+class LockedParam extends StatelessWidget {
+  const LockedParam({super.key, required this.hint, required this.child});
+
+  final String? hint;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final h = hint;
+    if (h == null) return child;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => hintSnack(context, h),
+      child: IgnorePointer(child: Opacity(opacity: .45, child: child)),
+    );
+  }
+}
 
 OverlayEntry? _activeToast;
 

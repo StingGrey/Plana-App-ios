@@ -39,6 +39,15 @@ String inpaintModelId(String modelId) {
   return '$modelId-inpainting';
 }
 
+/// 该型号能否调重绘强度(官方能力表 inpaintImg2ImgStrength)。V5 Full Medium 不能;
+/// V5 Curated 重绘走 4.5 Curated Inpainting,能。
+bool inpaintStrengthSupported(String displayModel) =>
+    !isNai5MediumModel(displayModel);
+
+/// 重绘实际生效的强度:不能调强度的型号恒为 1。
+double effectiveInpaintStrength(String displayModel, double strength) =>
+    inpaintStrengthSupported(displayModel) ? strength : 1;
+
 /// 该 **API 模型 id** 是否支持透明输出(官方能力表 transparency)。只有 V5 有。
 ///
 /// 注意这个能力**不控制**要不要透明 —— 透明由提示词里的 `transparent background`
@@ -137,6 +146,9 @@ Map<String, double> _center(String? pos) {
   /// 透明图的 alpha 编码约定(true=直通 Straight / false=预乘 Premultiplied)。
   /// 官方默认直通,见生成设置里的同名开关。
   bool straightAlpha = true,
+
+  /// 这把 Key 走的是第三方地址(`NaiKey.endpoint` 非空)。
+  bool thirdParty = false,
   List<EncodedVibe> vibes = const [],
   Img2ImgRef? img2img,
   List<CharRefPayload> charRefs = const [],
@@ -198,7 +210,9 @@ Map<String, double> _center(String? pos) {
       : s.prompt;
 
   // 档位提示:官方导入这张图时靠它决定「先试哪个档去把预设文本剥回去」。
+  // 官方前端不分模型都发;三方中转对非 V5 带这两个字段会直接拒,那时不发。
   final tagHints = promptPresetTagHints(presetId);
+  final sendTagHints = !thirdParty || sendModel.startsWith('nai-diffusion-5');
 
   // 透明背景:由提示词里的 `transparent background` 触发,不是开关。
   // straight_alpha 跟官方一样「只要模型支持就无条件发」—— 它只是 alpha 的编码
@@ -218,8 +232,10 @@ Map<String, double> _center(String? pos) {
     // 预设正/负前缀已在 controller 拼进 s
     'ucPreset': ucPresetValue(presetId, sendModel),
     'qualityToggle': qualityToggle ?? builtinPresetHasPositive(presetId),
-    'tag_hint_qt': tagHints.qt,
-    'tag_hint_uc_preset': tagHints.ucPreset,
+    if (sendTagHints) ...{
+      'tag_hint_qt': tagHints.qt,
+      'tag_hint_uc_preset': tagHints.ucPreset,
+    },
     // Max ✨ 放大重绘:只有为真时才发。非 Max 路径带一个 false 会让官方按普通
     // img2img 处理,而这字段对老模型本就无意义,干脆不发。
     if (img2img?.upscaledEnhance == true) 'upscaled_enhance': true,
@@ -331,9 +347,16 @@ Map<String, double> _center(String? pos) {
   // 重绘(infill):底图+黑白 mask(白=重绘),模型换 -inpainting;
   // 与图生图互斥且优先(对齐 web 后端 convert_web_params_to_stream)。
   if (inpaint != null) {
+    // 强度写进 inpaintImg2ImgStrength,不是 1 时另带 img2img 块(对齐官方);
+    // strength 发同一个值。
+    final strength = effectiveInpaintStrength(p.model, inpaint.strength);
     params['image'] = base64Encode(inpaint.image);
     params['mask'] = base64Encode(inpaint.mask);
-    params['strength'] = inpaint.strength;
+    params['strength'] = strength;
+    params['inpaintImg2ImgStrength'] = strength;
+    if (strength != 1) {
+      params['img2img'] = {'strength': strength, 'color_correct': true};
+    }
     params['noise'] = 0;
     params['extra_noise_seed'] = seed;
   } else if (img2img != null) {

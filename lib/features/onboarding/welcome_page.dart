@@ -12,11 +12,15 @@ import '../../core/net/nai_client.dart';
 import '../../core/net/nai_endpoint.dart';
 import '../../core/net/nai_proxy.dart';
 import '../../core/platform/platform_support.dart';
+import '../../core/store/app_stores.dart';
 import '../../core/store/gen_settings.dart';
+import '../../core/theme/app_skin.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/theme_settings.dart';
+import '../../core/ui/theme_swatches.dart';
 import '../profile/widgets/credential_login_sheet.dart';
 import '../profile/widgets/token_status.dart';
+import '../shell/float_theme_intro.dart';
 import '../../core/util/haptics.dart';
 
 /// 首启欢迎流程:欢迎 → 外观 → 接入 → 通知 → 完成,共 5 页。
@@ -51,6 +55,7 @@ class _WelcomePageState extends ConsumerState<WelcomePage> {
   void initState() {
     super.initState();
     _pager.addListener(_onScroll);
+    markFloatThemeIntroSeen(ref.read(prefsStoreProvider));
   }
 
   void _onScroll() {
@@ -255,10 +260,14 @@ class _Step extends StatelessWidget {
                 width: 68,
                 height: 68,
                 decoration: BoxDecoration(
-                  color: scheme.primaryContainer,
+                  color: context.solidFill(scheme.primaryContainer),
                   shape: BoxShape.circle,
                 ),
-                child: Icon(icon, size: 32, color: scheme.onPrimaryContainer),
+                child: Icon(
+                  icon,
+                  size: 32,
+                  color: context.onSolidFill(scheme.onPrimaryContainer),
+                ),
               ),
             ),
             const SizedBox(height: 20),
@@ -416,7 +425,6 @@ class _AppearanceStep extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final ts = ref.watch(themeSettingsProvider);
     final notifier = ref.read(themeSettingsProvider.notifier);
-    final scheme = context.scheme;
     return _Step(
       active: active,
       icon: Icons.color_lens_outlined,
@@ -435,56 +443,17 @@ class _AppearanceStep extends ConsumerWidget {
               onSelectionChanged: (s) =>
                   notifier.patch((x) => x.copyWith(mode: s.first)),
               showSelectedIcon: false,
+              // 直接压在页面上:浮卡样式未选段用白底
+              style: context.skin.float
+                  ? SegmentedButton.styleFrom(
+                      backgroundColor: context.pageControlFill,
+                      selectedBackgroundColor: context.scheme.primary,
+                    )
+                  : null,
             ),
           ),
           const SizedBox(height: 24),
-          Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            alignment: WrapAlignment.center,
-            children: [
-              for (final s in themeSeeds)
-                InkWell(
-                  onTap: () =>
-                      notifier.patch((x) => x.copyWith(seedKey: s.key)),
-                  customBorder: const CircleBorder(),
-                  child: AnimatedContainer(
-                    duration: Motion.fast,
-                    width: 42,
-                    height: 42,
-                    padding: const EdgeInsets.all(3),
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        width: 2,
-                        color: s.key == ts.seed.key
-                            ? scheme.onSurface
-                            : Colors.transparent,
-                      ),
-                    ),
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: s.color,
-                        shape: BoxShape.circle,
-                      ),
-                      child: s.key == ts.seed.key
-                          ? Icon(
-                              Icons.check,
-                              size: 17,
-                              color:
-                                  ThemeData.estimateBrightnessForColor(
-                                        s.color,
-                                      ) ==
-                                      Brightness.dark
-                                  ? Colors.white
-                                  : Colors.black87,
-                            )
-                          : null,
-                    ),
-                  ),
-                ),
-            ],
-          ),
+          const ThemeSwatches(size: 42, alignment: WrapAlignment.center),
         ],
       ),
     );
@@ -510,6 +479,9 @@ class _AccessStepState extends ConsumerState<_AccessStep> {
 
   /// 直连卡里选的是第三方接口(地址跟这把令牌一起存,见 [NaiKey.endpoint])。
   bool _third = false;
+
+  /// 第三方接口的请求格式。
+  NaiApiFormat _format = NaiApiFormat.nai;
 
   /// 第三方地址填得不成形时的当场提示(官方那一路没有这一栏)。
   String? _urlError;
@@ -614,7 +586,7 @@ class _AccessStepState extends ConsumerState<_AccessStep> {
     if (t.isEmpty) return;
     // 第三方:地址跟这把 key 绑成一把存下。形态不对当场挡下;通不通不在这里探
     // —— 中转站多半没开 GET,探测失败反而拦住能用的地址。
-    final url = _third ? normalizeNaiBase(_urlCtrl.text) : '';
+    final url = _third ? naiEndpointFor(_urlCtrl.text, _format) : '';
     if (_third && (url.isEmpty || !naiBaseLooksValid(url))) {
       setState(() => _urlError = '请填 http:// 或 https:// 开头的接口地址');
       return;
@@ -690,11 +662,34 @@ class _AccessStepState extends ConsumerState<_AccessStep> {
               child: _third
                   ? Padding(
                       padding: const EdgeInsets.fromLTRB(0, 9, 0, 9),
-                      child: Text(
-                        '兼容 NovelAI 接口的中转站或自建反代',
-                        style: context.texts.labelSmall!.copyWith(
-                          color: scheme.outline,
-                        ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          SegmentedButton<NaiApiFormat>(
+                            segments: [
+                              for (final f in NaiApiFormat.values)
+                                ButtonSegment(value: f, label: Text(f.label)),
+                            ],
+                            selected: {_format},
+                            showSelectedIcon: false,
+                            style: SegmentedButton.styleFrom(
+                              visualDensity: VisualDensity.compact,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              textStyle: context.texts.labelMedium,
+                            ),
+                            onSelectionChanged: (v) {
+                              setState(() => _format = v.first);
+                              Haptics.selection();
+                            },
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            _format.hint,
+                            style: context.texts.labelSmall!.copyWith(
+                              color: scheme.outline,
+                            ),
+                          ),
+                        ],
                       ),
                     )
                   : Padding(
@@ -748,7 +743,9 @@ class _AccessStepState extends ConsumerState<_AccessStep> {
                         style: mono(context, size: 12),
                         decoration: _fieldDec(
                           scheme,
-                          'https://example.com',
+                          _format == NaiApiFormat.openai
+                              ? 'https://example.com/v1'
+                              : 'https://example.com',
                           suffix: IconButton(
                             onPressed: () => _paste(_urlCtrl),
                             icon: const Icon(Icons.content_paste, size: 18),
@@ -863,10 +860,17 @@ class _AccessCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
+    final float = context.skin.float;
+    // 浮卡样式:白卡描发丝边
     return Container(
       decoration: BoxDecoration(
+        color: float ? scheme.surfaceContainerLow : null,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(width: 1.5, color: scheme.outlineVariant),
+        border: switch (context.skin.edge) {
+          final edge? => Border.all(color: edge),
+          null when float => null,
+          null => Border.all(width: 1.5, color: scheme.outlineVariant),
+        },
       ),
       padding: const EdgeInsets.fromLTRB(13, 12, 13, 13),
       child: Column(
@@ -940,13 +944,13 @@ class _DoneStep extends StatelessWidget {
               width: 108,
               height: 108,
               decoration: BoxDecoration(
-                color: scheme.primaryContainer,
+                color: context.solidFill(scheme.primaryContainer),
                 shape: BoxShape.circle,
               ),
               child: Icon(
                 Icons.check_rounded,
                 size: 58,
-                color: scheme.onPrimaryContainer,
+                color: context.onSolidFill(scheme.onPrimaryContainer),
               ),
             ),
           ),

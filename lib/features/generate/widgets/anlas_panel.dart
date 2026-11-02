@@ -290,8 +290,9 @@ class _AnlasSheetState extends ConsumerState<_AnlasSheet> {
     final bot = ref.watch(authModeProvider).value == AuthMode.bot;
     final quota = bot ? ref.watch(naiQuotaProvider).asData?.value : null;
     final wallet = bot ? ref.watch(walletSummaryProvider).value : null;
-    // 共享号停用:额度卡换成中转开关,点数和额度那几行都不摆
+    // 共享号停用:额度卡换成中转开关,额度那几行不摆,点数报自己的
     final relay = quota != null && quota.relayOnly;
+    final points = wallet?.pointsTenths;
 
     return SafeArea(
       child: SingleChildScrollView(
@@ -363,10 +364,11 @@ class _AnlasSheetState extends ConsumerState<_AnlasSheet> {
               '订阅档位',
               bot ? 'Bot 授权' : (sub == null ? '—' : naiTierName(sub.tier)),
             ),
-            if (!relay) ...[
-              _divider(context),
+            _divider(context),
+            if (relay)
+              _row(context, '点数', points == null ? '—' : _fmtPct(points / 10))
+            else
               _row(context, 'Anlas 点数', sub == null ? '—' : fmtAnlas(sub)),
-            ],
             if (relay)
               ...const <Widget>[]
             else if (bot) ...[
@@ -566,7 +568,9 @@ class _RelayRowState extends ConsumerState<_RelayRow> {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final q = widget.quota;
-    String yuan(double v) => '¥${v.toStringAsFixed(2)}';
+    // 不足 1 分的到厘
+    String yuan(double v) =>
+        '¥${v.toStringAsFixed(3).replaceFirst(RegExp(r'0$'), '')}';
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(4, 5, 4, 11),

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/platform/platform_support.dart';
+import '../../core/theme/app_skin.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/ui/scroll_memory.dart';
 import '../generate/preset_manage_page.dart';
@@ -80,6 +81,7 @@ class ProfilePage extends ConsumerWidget {
               children: [
                 _EntryCard(
                   icon: Icons.manage_accounts_outlined,
+                  filledIcon: Icons.manage_accounts,
                   title: '账号与接入',
                   subtitle: 'Token 与 Bot 授权',
                   onTap: () => push(const AccountPage()),
@@ -87,6 +89,7 @@ class ProfilePage extends ConsumerWidget {
                 const SizedBox(height: 10),
                 _EntryCard(
                   icon: Icons.photo_library_outlined,
+                  filledIcon: Icons.photo_library,
                   title: '本地图库',
                   subtitle: '历史记录与外部图片 · 搜索元数据 · 分类与集合',
                   onTap: () => push(const LocalGalleryPage()),
@@ -94,6 +97,7 @@ class ProfilePage extends ConsumerWidget {
                 const SizedBox(height: 10),
                 _EntryCard(
                   icon: Icons.queue_outlined,
+                  filledIcon: Icons.queue,
                   title: '生成队列',
                   subtitle: '批量任务 · 暂停继续 · 失败重试',
                   onTap: () => push(const QueueManagementPage()),
@@ -101,6 +105,7 @@ class ProfilePage extends ConsumerWidget {
                 const SizedBox(height: 10),
                 _EntryCard(
                   icon: Icons.style_outlined,
+                  filledIcon: Icons.style,
                   title: 'Vibe 资源库',
                   subtitle: '导入、收藏、编码与批量导出',
                   onTap: () => push(const VibeLibraryPage()),
@@ -108,6 +113,7 @@ class ProfilePage extends ConsumerWidget {
                 const SizedBox(height: 10),
                 _EntryCard(
                   icon: Icons.face_retouching_natural,
+                  filledIcon: Icons.face_retouching_natural,
                   title: '角色参考图库',
                   subtitle: '保存常用角色参考图',
                   onTap: () => push(const CharLibraryPage()),
@@ -115,6 +121,7 @@ class ProfilePage extends ConsumerWidget {
                 const SizedBox(height: 10),
                 _EntryCard(
                   icon: Icons.query_stats,
+                  filledIcon: Icons.query_stats,
                   title: '统计',
                   subtitle: '用量 · 钱包 · 全平台统计',
                   onTap: () => push(const StatsPage()),
@@ -122,6 +129,7 @@ class ProfilePage extends ConsumerWidget {
                 const SizedBox(height: 10),
                 _EntryCard(
                   icon: Icons.push_pin_outlined,
+                  filledIcon: Icons.push_pin,
                   title: '固定词库',
                   subtitle: '自动拼入正向或负向提示词',
                   onTap: () => push(const FixedTagsPage()),
@@ -129,6 +137,7 @@ class ProfilePage extends ConsumerWidget {
                 const SizedBox(height: 10),
                 _EntryCard(
                   icon: Icons.center_focus_strong,
+                  filledIcon: Icons.center_focus_strong,
                   title: '精准参考库',
                   subtitle: '保存类型、强度与保真度设置',
                   onTap: () => push(const PreciseRefLibraryPage()),
@@ -136,6 +145,7 @@ class ProfilePage extends ConsumerWidget {
                 const SizedBox(height: 10),
                 _EntryCard(
                   icon: Icons.bookmark_outline,
+                  filledIcon: Icons.bookmark,
                   title: '提示词预设',
                   subtitle: '正负面提示词模板',
                   onTap: () => push(const PromptPresetManagePage()),
@@ -143,6 +153,7 @@ class ProfilePage extends ConsumerWidget {
                 const SizedBox(height: 10),
                 _EntryCard(
                   icon: Icons.tune,
+                  filledIcon: Icons.tune,
                   title: '生成设置',
                   subtitle: '自动重试 · 功能模块 · 默认保存',
                   onTap: () => push(const GenSettingsPage()),
@@ -150,6 +161,7 @@ class ProfilePage extends ConsumerWidget {
                 const SizedBox(height: 10),
                 _EntryCard(
                   icon: Icons.handyman_outlined,
+                  filledIcon: Icons.handyman,
                   title: '工具箱',
                   subtitle: '权重转换 · 图片元数据',
                   onTap: () => push(const ToolsPage()),
@@ -157,6 +169,7 @@ class ProfilePage extends ConsumerWidget {
                 const SizedBox(height: 10),
                 _EntryCard(
                   icon: Icons.shuffle_rounded,
+                  filledIcon: Icons.shuffle_rounded,
                   title: '图片混淆',
                   subtitle: 'Gilbert 曲线混淆与解混淆',
                   onTap: () => push(const ImageScramblePage()),
@@ -164,6 +177,7 @@ class ProfilePage extends ConsumerWidget {
                 const SizedBox(height: 10),
                 _EntryCard(
                   icon: Icons.color_lens_outlined,
+                  filledIcon: Icons.color_lens,
                   title: '外观与触感',
                   subtitle: '主题配色 · 振动反馈',
                   onTap: () => push(const AppearancePage()),
@@ -175,6 +189,7 @@ class ProfilePage extends ConsumerWidget {
                 ],
                 _EntryCard(
                   icon: Icons.storage,
+                  filledIcon: Icons.storage,
                   title: '存储管理',
                   subtitle: '空间占用与清理',
                   onTap: () => push(const StoragePage()),
@@ -200,6 +215,7 @@ class _CloudSyncEntry extends ConsumerWidget {
     final s = ref.watch(cloudSyncProvider);
     return _EntryCard(
       icon: Icons.cloud_sync_outlined,
+      filledIcon: Icons.cloud_sync,
       title: 'iCloud 同步',
       subtitle: cloudSyncProgressText(s) ?? '作品备份到 iCloud Drive · 多设备互通',
       busy: s.running,
@@ -212,6 +228,7 @@ class _CloudSyncEntry extends ConsumerWidget {
 class _EntryCard extends StatelessWidget {
   const _EntryCard({
     required this.icon,
+    required this.filledIcon,
     required this.title,
     required this.subtitle,
     required this.onTap,
@@ -220,6 +237,9 @@ class _EntryCard extends StatelessWidget {
   });
 
   final IconData icon;
+
+  /// 浮卡样式下用的实心图标
+  final IconData filledIcon;
   final String title;
   final String subtitle;
   final VoidCallback onTap;
@@ -231,51 +251,64 @@ class _EntryCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    return Material(
-      color: scheme.surfaceContainerLow,
-      borderRadius: BorderRadius.circular(16),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 15, 11, 15),
-          child: Row(
-            children: [
-              Icon(icon, size: 24, color: scheme.onSurfaceVariant),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: context.texts.bodyLarge!.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      subtitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: context.texts.bodySmall!.copyWith(
-                        color: scheme.onSurfaceVariant,
-                      ),
-                    ),
-                    if (busy) ...[
-                      const SizedBox(height: 6),
-                      LinearProgressIndicator(
-                        value: progress,
-                        minHeight: 3,
-                        borderRadius: BorderRadius.circular(2),
-                      ),
-                    ],
-                  ],
+    return Lifted(
+      radius: BorderRadius.circular(16),
+      child: Material(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(16),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 15, 11, 15),
+            child: Row(
+              children: [
+                // 浮卡样式用实心主色图标
+                SizedBox.square(
+                  dimension: 32,
+                  child: Icon(
+                    context.skin.float ? filledIcon : icon,
+                    size: 28,
+                    color: context.skin.float
+                        ? scheme.primary
+                        : scheme.onSurfaceVariant,
+                  ),
                 ),
-              ),
-              const SizedBox(width: 4),
-              Icon(Icons.chevron_right, size: 20, color: scheme.outline),
-            ],
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: context.texts.bodyLarge!.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: context.texts.bodySmall!.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                      if (busy) ...[
+                        const SizedBox(height: 6),
+                        LinearProgressIndicator(
+                          value: progress,
+                          minHeight: 3,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Icon(Icons.chevron_right, size: 20, color: scheme.outline),
+              ],
+            ),
           ),
         ),
       ),
@@ -299,7 +332,7 @@ class _HeaderBtn extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     return Material(
-      color: scheme.surfaceContainerHigh,
+      color: context.pageControlFill,
       borderRadius: BorderRadius.circular(16),
       clipBehavior: Clip.antiAlias,
       child: InkWell(

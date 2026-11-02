@@ -213,6 +213,102 @@ void main() {
     });
   });
 
+  // 官方前端不分模型都发 tag_hint_qt / tag_hint_uc_preset;三方中转对非 V5 会拒。
+  group('档位提示字段', () {
+    Map<String, dynamic> direct(GenerateState s, {bool thirdParty = false}) =>
+        buildNaiPayload(
+              s,
+              presetId: 'light',
+              thirdParty: thirdParty,
+            ).body['parameters']
+            as Map<String, dynamic>;
+
+    test('官方地址:4.5 也照发', () {
+      final p = direct(_state('NAI 4.5 Full'));
+      expect(p['tag_hint_qt'], 1);
+      expect(p['tag_hint_uc_preset'], 3);
+    });
+
+    test('三方地址:非 V5 不发,V5 照发', () {
+      final legacy = direct(_state('NAI 4.5 Full'), thirdParty: true);
+      expect(legacy.containsKey('tag_hint_qt'), isFalse);
+      expect(legacy.containsKey('tag_hint_uc_preset'), isFalse);
+      final v5 = direct(_state('NAI 5.0 Full'), thirdParty: true);
+      expect(v5.containsKey('tag_hint_qt'), isTrue);
+      expect(v5.containsKey('tag_hint_uc_preset'), isTrue);
+    });
+
+    test('三方地址:V5 Curated 重绘回退到 4.5 → 不发', () {
+      final bytes = Uint8List.fromList([1, 2, 3]);
+      final s = _state('NAI 5.0 Curated').copyWith(
+        inpaint: InpaintJob(image: bytes, mask: bytes, strength: 0.7),
+      );
+      expect(direct(s, thirdParty: true).containsKey('tag_hint_qt'), isFalse);
+    });
+  });
+
+  group('重绘强度', () {
+    final bytes = Uint8List.fromList([1, 2, 3]);
+    Map<String, dynamic> infill(String model, double strength) =>
+        buildNaiPayload(
+              _state(model).copyWith(
+                inpaint: InpaintJob(
+                  image: bytes,
+                  mask: bytes,
+                  strength: strength,
+                ),
+              ),
+              presetId: 'none',
+            ).body['parameters']
+            as Map<String, dynamic>;
+
+    test('不是 1:两个字段同值,带 img2img 块', () {
+      final p = infill('NAI 4.5 Full', .5);
+      expect(p['inpaintImg2ImgStrength'], .5);
+      expect(p['strength'], .5);
+      expect(p['img2img'], {'strength': .5, 'color_correct': true});
+    });
+
+    test('等于 1:不带 img2img 块', () {
+      final p = infill('NAI 4.5 Full', 1);
+      expect(p['inpaintImg2ImgStrength'], 1);
+      expect(p['strength'], 1);
+      expect(p.containsKey('img2img'), isFalse);
+    });
+
+    test('V5 Full Medium 不能调:恒发 1', () {
+      expect(inpaintStrengthSupported('NAI 5.0 Full Medium'), isFalse);
+      final p = infill('NAI 5.0 Full Medium', .5);
+      expect(p['inpaintImg2ImgStrength'], 1);
+      expect(p['strength'], 1);
+      expect(p.containsKey('img2img'), isFalse);
+    });
+
+    test('V5 Curated 回退 4.5 重绘模型,强度照发', () {
+      final p = infill('NAI 5.0 Curated', .5);
+      expect(p['inpaintImg2ImgStrength'], .5);
+      expect(p['img2img'], {'strength': .5, 'color_correct': true});
+    });
+
+    test('图生图不受影响', () {
+      final p =
+          buildNaiPayload(
+                _state('NAI 4.5 Full'),
+                presetId: 'none',
+                img2img: (
+                  image: 'x',
+                  strength: .7,
+                  noise: 0,
+                  upscaledEnhance: false,
+                ),
+              ).body['parameters']
+              as Map<String, dynamic>;
+      expect(p['strength'], .7);
+      expect(p['inpaintImg2ImgStrength'], 1);
+      expect(p.containsKey('img2img'), isFalse);
+    });
+  });
+
   // V5 的 Source 串里**不写 Full / Curated**,只有权重 hash。按字面找 curated
   // 永远不成立 —— 那样写会把每一张 V5 图都认成 Full(本仓 2026-08-24 前就是)。
   group('naiSourceIsV5Full:V5 认 hash 不认字面', () {

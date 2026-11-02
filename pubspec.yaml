@@ -24,7 +24,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # 改这里必须同步改 lib/core/app_info.dart 的 kAppVersion / kAppBuild
 # (test/app_info_test.dart 会钉住,对不上直接红)。
 # GitHub 上打的 tag 用 `v1.0.0` —— 检查更新按语义化版本比 tag 与本机 versionName。
-version: 1.2.2+22
+version: 1.2.3+23
 
 environment:
   sdk: ^3.12.2
@@ -40,6 +40,7 @@ dependencies:
     sdk: flutter
   flutter_localizations:
     sdk: flutter
+  intl: any
 
   flutter_riverpod: ^3.3.2
   animations: ^2.2.0
@@ -64,6 +65,7 @@ dependencies:
   # AI 助手规则文件的导入导出。写法与服务端预设 yaml 一致,两边的段能直接互相复制。
   yaml: ^3.1.3
   flutter_onnxruntime: ^1.8.4
+  material_symbols_icons: ^4.2960.0
 
 dev_dependencies:
   flutter_test:
@@ -109,6 +111,9 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  # 界面文案翻译:lib/l10n/*.arb → app_localizations*.dart(flutter gen-l10n)
+  generate: true
 
   # 超分模型**不在这里** —— 它们首次使用时从 Upscayl 官方仓下载
   # (见 lib/features/gallery/upscale_model_store.dart)。内置会让 APK

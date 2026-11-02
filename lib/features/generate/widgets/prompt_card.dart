@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/store/ui_prefs.dart';
+import '../../../core/theme/app_skin.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../fixed_tags/fixed_tags.dart';
 import '../../fixed_tags/fixed_tags_page.dart';
@@ -25,6 +26,7 @@ import '../prompt_sections.dart';
 import '../style_recipes.dart';
 import 'common.dart';
 import 'section_save.dart';
+import '../../../l10n/l10n.dart';
 
 /// 提示词卡:正/负面可独立展开,分区支持多选、排序及批量操作。
 /// 卡头保留固定词库和下划线替换入口。
@@ -137,328 +139,340 @@ class _PromptCardState extends ConsumerState<PromptCard> {
       ),
     );
 
-    return Material(
-      color: scheme.surfaceContainerLow,
-      borderRadius: BorderRadius.circular(16),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Padding(
-            padding: EdgeInsets.fromLTRB(selecting ? 9 : 15, 8, 13, 4),
-            child: selecting
-                ? _selectHeader(context, sections, state.prompt, actionSize)
-                : Row(
-                    children: [
-                      Icon(
-                        Icons.subject,
-                        size: 20,
-                        color: scheme.onSurfaceVariant,
-                      ),
-                      const SizedBox(width: 9),
-                      // 标题与读数共用动作按钮之外的剩余宽度(同 SectionCard:标题吃
-                      // 省略号,右侧点击区保持完整)。合起来后卡头按钮变多(清空 /
-                      // 灵感库 / 固定词库 / 下划线 / 添加分区 / chevron),369dp 窄屏与
-                      // 平板左栏(约 340dp)放不下时,读数整组按比例缩小。
-                      Expanded(
-                        child: Row(
-                          children: [
-                            Flexible(
-                              child: Text(
-                                '提示词',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: context.texts.bodyLarge!.copyWith(
-                                  fontWeight: FontWeight.w600,
+    return Lifted(
+      radius: BorderRadius.circular(16),
+      child: Material(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(16),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: EdgeInsets.fromLTRB(selecting ? 9 : 15, 8, 13, 4),
+              child: selecting
+                  ? _selectHeader(context, sections, state.prompt, actionSize)
+                  : Row(
+                      children: [
+                        const SkinIcon(Icons.subject),
+                        const SizedBox(width: 9),
+                        // 标题与读数共用动作按钮之外的剩余宽度(同 SectionCard:标题吃
+                        // 省略号,右侧点击区保持完整)。合起来后卡头按钮变多(清空 /
+                        // 灵感库 / 固定词库 / 下划线 / 添加分区 / chevron),369dp 窄屏与
+                        // 平板左栏(约 340dp)放不下时,读数整组按比例缩小。
+                        Expanded(
+                          child: Row(
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  context.l10n.prompt,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: context.texts.bodyLarge!.copyWith(
+                                    fontWeight: FontWeight.w600,
+                                  ),
                                 ),
                               ),
-                            ),
-                            const SizedBox(width: 9),
-                            Flexible(
-                              child: FittedBox(
-                                fit: BoxFit.scaleDown,
-                                alignment: Alignment.centerLeft,
-                                child: Row(
-                                  children: [
-                                    Text(
-                                      '$promptTokens',
-                                      style:
-                                          mono(
-                                            context,
-                                            size: 12,
-                                            weight: FontWeight.w700,
-                                          ).copyWith(
-                                            color: over
-                                                ? scheme.error
-                                                : scheme.onSurface,
-                                          ),
-                                    ),
-                                    Text(
-                                      ' / $limit',
-                                      style: mono(
-                                        context,
-                                        size: 12,
-                                        weight: FontWeight.w500,
-                                      ).copyWith(color: scheme.outline),
-                                    ),
-                                  ],
+                              const SizedBox(width: 9),
+                              Flexible(
+                                child: FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  alignment: Alignment.centerLeft,
+                                  child: Row(
+                                    children: [
+                                      Text(
+                                        '$promptTokens',
+                                        style:
+                                            mono(
+                                              context,
+                                              size: 12,
+                                              weight: FontWeight.w700,
+                                            ).copyWith(
+                                              color: over
+                                                  ? scheme.error
+                                                  : scheme.onSurface,
+                                            ),
+                                      ),
+                                      Text(
+                                        ' / $limit',
+                                        style: mono(
+                                          context,
+                                          size: 12,
+                                          weight: FontWeight.w500,
+                                        ).copyWith(color: scheme.outline),
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      // 没东西可清就不给(同角色卡:没有角色时不出清空)
-                      if (state.prompt.trim().isNotEmpty ||
-                          sections.isNotEmpty) ...[
-                        RoundIconBtn(
-                          Icons.delete_sweep_outlined,
-                          size: actionSize,
-                          tooltip: sections.isEmpty ? '清空正向提示词' : '清空提示词和分区',
-                          color: scheme.onSurfaceVariant,
-                          onTap: () => _clearPositive(context, ref),
+                            ],
+                          ),
                         ),
                         const SizedBox(width: 6),
-                      ],
-                      // 与角色卡头「角色库」同一枚图标、同一个位置
-                      if (btn.library) ...[
-                        RoundIconBtn(
-                          Icons.grid_view,
-                          size: actionSize,
-                          tooltip: '灵感库',
-                          color: scheme.onSurfaceVariant,
-                          onTap: () => _importFromLibrary(context, ref),
-                        ),
-                        const SizedBox(width: 6),
-                      ],
-                      // 与「灵感库」并列的固定词库入口(本地功能)
-                      if (btn.fixed) ...[
-                        RoundIconBtn(
-                          Icons.push_pin_outlined,
-                          size: actionSize,
-                          tooltip: '固定词库',
-                          color: scheme.onSurfaceVariant,
-                          onTap: () =>
-                              Navigator.of(context)
-                                  .push(sharedAxisRoute(const FixedTagsPage())),
-                        ),
-                        const SizedBox(width: 6),
-                      ],
-                      if (btn.underscore) ...[
-                        RoundIconBtn(
-                          Icons.space_bar_outlined,
-                          size: actionSize,
-                          tooltip: '下划线替换为空格',
-                          color: scheme.onSurfaceVariant,
-                          onTap: () {
-                            final oldPositive = state.prompt;
-                            final oldNegative = state.negativePrompt;
-                            final positive = replacePromptUnderscores(
-                              oldPositive,
-                            );
-                            final negative = replacePromptUnderscores(
-                              oldNegative,
-                            );
-                            if (positive == oldPositive &&
-                                negative == oldNegative) {
-                              return;
-                            }
-                            final count =
-                                '_'.allMatches(oldPositive).length +
-                                '_'.allMatches(oldNegative).length;
-                            notifier.setPrompts(
-                              positive: positive,
-                              negative: negative,
-                            );
-                            hintSnack(
+                        // 没东西可清就不给(同角色卡:没有角色时不出清空)
+                        if (state.prompt.trim().isNotEmpty ||
+                            sections.isNotEmpty) ...[
+                          RoundIconBtn(
+                            Icons.delete_sweep_outlined,
+                            size: actionSize,
+                            tooltip: sections.isEmpty ? '清空正向提示词' : '清空提示词和分区',
+                            color: scheme.onSurfaceVariant,
+                            onTap: () => _clearPositive(context, ref),
+                          ),
+                          const SizedBox(width: 6),
+                        ],
+                        // 与角色卡头「角色库」同一枚图标、同一个位置
+                        if (btn.library) ...[
+                          RoundIconBtn(
+                            Icons.grid_view,
+                            size: actionSize,
+                            tooltip: '灵感库',
+                            color: scheme.onSurfaceVariant,
+                            onTap: () => _importFromLibrary(context, ref),
+                          ),
+                          const SizedBox(width: 6),
+                        ],
+                        // 与「灵感库」并列的固定词库入口(本地功能)
+                        if (btn.fixed) ...[
+                          RoundIconBtn(
+                            Icons.push_pin_outlined,
+                            size: actionSize,
+                            tooltip: '固定词库',
+                            color: scheme.onSurfaceVariant,
+                            onTap: () => Navigator.of(
                               context,
-                              '已将 $count 个下划线替换为空格',
-                              icon: Icons.space_bar_outlined,
-                              actionLabel: '撤销',
-                              onAction: () => notifier.setPrompts(
-                                positive: oldPositive,
-                                negative: oldNegative,
-                              ),
-                            );
-                          },
-                        ),
-                        const SizedBox(width: 6),
-                      ],
-                      if (btn.section) ...[
-                        RoundIconBtn(
-                          Icons.add,
-                          size: actionSize,
-                          tooltip: '添加分区',
-                          onTap: notifier.addSection,
-                        ),
-                        const SizedBox(width: 6),
-                      ],
-                      Tooltip(
-                        message: _positiveExpanded ? '收起正面提示词' : '展开正面提示词',
-                        child: InkResponse(
-                          key: const ValueKey('positive_expand_button'),
-                          radius: 22,
-                          onTap: () => setState(
-                            () => _positiveExpanded = !_positiveExpanded,
+                            ).push(sharedAxisRoute(const FixedTagsPage())),
                           ),
-                          child: SizedBox.square(
-                            dimension: 36,
-                            child: AnimatedRotation(
-                              turns: _positiveExpanded ? .5 : 0,
-                              duration: Motion.medium,
-                              curve: Motion.emphasized,
-                              child: Icon(
-                                Icons.expand_more,
-                                size: 22,
-                                color: scheme.outline,
+                          const SizedBox(width: 6),
+                        ],
+                        if (btn.underscore) ...[
+                          RoundIconBtn(
+                            Icons.space_bar_outlined,
+                            size: actionSize,
+                            tooltip: '下划线替换为空格',
+                            color: scheme.onSurfaceVariant,
+                            onTap: () {
+                              final oldPositive = state.prompt;
+                              final oldNegative = state.negativePrompt;
+                              final positive = replacePromptUnderscores(
+                                oldPositive,
+                              );
+                              final negative = replacePromptUnderscores(
+                                oldNegative,
+                              );
+                              if (positive == oldPositive &&
+                                  negative == oldNegative) {
+                                return;
+                              }
+                              final count =
+                                  '_'.allMatches(oldPositive).length +
+                                  '_'.allMatches(oldNegative).length;
+                              notifier.setPrompts(
+                                positive: positive,
+                                negative: negative,
+                              );
+                              hintSnack(
+                                context,
+                                '已将 $count 个下划线替换为空格',
+                                icon: Icons.space_bar_outlined,
+                                actionLabel: '撤销',
+                                onAction: () => notifier.setPrompts(
+                                  positive: oldPositive,
+                                  negative: oldNegative,
+                                ),
+                              );
+                            },
+                          ),
+                          const SizedBox(width: 6),
+                        ],
+                        if (btn.section) ...[
+                          RoundIconBtn(
+                            Icons.add,
+                            size: actionSize,
+                            tooltip: '添加分区',
+                            onTap: notifier.addSection,
+                          ),
+                          const SizedBox(width: 6),
+                        ],
+                        Tooltip(
+                          message: _positiveExpanded ? '收起正面提示词' : '展开正面提示词',
+                          child: InkResponse(
+                            key: const ValueKey('positive_expand_button'),
+                            radius: 22,
+                            onTap: () => setState(
+                              () => _positiveExpanded = !_positiveExpanded,
+                            ),
+                            child: SizedBox.square(
+                              dimension: 36,
+                              child: AnimatedRotation(
+                                turns: _positiveExpanded ? .5 : 0,
+                                duration: Motion.medium,
+                                curve: Motion.emphasized,
+                                child: Icon(
+                                  Icons.expand_more,
+                                  size: 22,
+                                  color: scheme.outline,
+                                ),
                               ),
                             ),
                           ),
                         ),
-                      ),
-                    ],
-                  ),
-          ),
-          // token 用量进度条
-          Padding(
-            padding: const EdgeInsets.fromLTRB(15, 0, 15, 2),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(2),
-              child: TweenAnimationBuilder<double>(
-                tween: Tween(begin: ratio, end: ratio),
-                duration: Motion.medium,
-                builder: (_, v, _) => LinearProgressIndicator(
-                  value: v,
-                  minHeight: 3,
-                  backgroundColor: scheme.surfaceContainerHighest,
-                  color: barColor,
-                ),
-              ),
+                      ],
+                    ),
             ),
-          ),
-          // 正面正文:没分区是两行段落预览,分了区就一格一行。
-          ExpandBody(
-            expanded: _positiveExpanded,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                if (sections.isEmpty)
-                  InkWell(
-                    onTap: () => _openEditor(context, positive: true),
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(15, 12, 15, 10),
-                      child: Text(
-                        state.prompt.isEmpty ? '点击编辑正面提示词…' : state.prompt,
-                        style: context.texts.bodyLarge!.copyWith(
-                          height: 1.5,
-                          color: state.prompt.isEmpty
-                              ? scheme.outline
-                              : scheme.onSurface,
-                        ),
-                      ),
-                    ),
-                  )
-                else
-                  Padding(
-                    padding: const EdgeInsets.only(top: 6),
-                    child: _SectionRows(
-                      selecting: selecting,
-                      picked: _picked,
-                      onToggle: _togglePick,
-                      onHold: _enterSelect,
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          // 负面标题与正面展开体同级,收起正面时仍可独立操作。
-          Padding(
-            padding: const EdgeInsets.fromLTRB(15, 6, 9, 0),
-            child: Row(
-              children: [
-                Icon(Icons.block, size: 17, color: scheme.error),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(8),
-                    onTap: () => _openEditor(context, positive: false),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      child: Text(
-                        // 收起时只报前 3 个 tag 与 +N 溢出,展开才给全文
-                        _negativeExpanded
-                            ? (state.negativePrompt.isEmpty
-                                  ? '点击编辑负面提示词…'
-                                  : state.negativePrompt)
-                            : switch (negativePreview(state.negativePrompt)) {
-                                '' => '点击编辑负面提示词…',
-                                final s => s,
-                              },
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: context.texts.bodyMedium!.copyWith(
-                          color: scheme.error,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  '$negTokens',
-                  style: mono(
-                    context,
-                    size: 13,
-                    weight: FontWeight.w500,
-                  ).copyWith(color: scheme.outline),
-                ),
-                const SizedBox(width: 2),
-                Tooltip(
-                  message: _negativeExpanded ? '收起负面提示词' : '展开负面提示词',
-                  child: InkResponse(
-                    key: const ValueKey('negative_expand_button'),
-                    radius: 20,
-                    onTap: () =>
-                        setState(() => _negativeExpanded = !_negativeExpanded),
-                    child: SizedBox.square(
-                      dimension: 36,
-                      child: AnimatedRotation(
-                        turns: _negativeExpanded ? .5 : 0,
-                        duration: Motion.medium,
-                        curve: Motion.emphasized,
-                        child: Icon(
-                          Icons.expand_more,
-                          size: 21,
-                          color: scheme.outline,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          ExpandBody(
-            expanded: _negativeExpanded,
-            child: InkWell(
-              onTap: () => _openEditor(context, positive: false),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(15, 2, 15, 14),
-                child: Text(
-                  state.negativePrompt.isEmpty
-                      ? '点击编辑负面提示词…'
-                      : state.negativePrompt,
-                  style: context.texts.bodyMedium!.copyWith(
-                    height: 1.5,
-                    color: scheme.error,
+            // token 用量进度条
+            Padding(
+              padding: const EdgeInsets.fromLTRB(15, 0, 15, 2),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(2),
+                child: TweenAnimationBuilder<double>(
+                  tween: Tween(begin: ratio, end: ratio),
+                  duration: Motion.medium,
+                  builder: (_, v, _) => LinearProgressIndicator(
+                    value: v,
+                    minHeight: 3,
+                    backgroundColor: scheme.surfaceContainerHighest,
+                    color: barColor,
                   ),
                 ),
               ),
             ),
-          ),
-        ],
+            // 正面正文:没分区是两行段落预览,分了区就一格一行。
+            ExpandBody(
+              expanded: _positiveExpanded,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // 段落预览 / 分区行切换与增删分区时,高度平滑过渡
+                  AnimatedSize(
+                    duration: Motion.medium,
+                    curve: Motion.emphasized,
+                    alignment: Alignment.topCenter,
+                    child: sections.isEmpty
+                        ? InkWell(
+                            onTap: () => _openEditor(context, positive: true),
+                            child: Padding(
+                              padding: const EdgeInsets.fromLTRB(
+                                15,
+                                12,
+                                15,
+                                10,
+                              ),
+                              child: Text(
+                                state.prompt.isEmpty
+                                    ? '点击编辑正面提示词…'
+                                    : state.prompt,
+                                style: context.texts.bodyLarge!.copyWith(
+                                  height: 1.5,
+                                  color: state.prompt.isEmpty
+                                      ? scheme.outline
+                                      : scheme.onSurface,
+                                ),
+                              ),
+                            ),
+                          )
+                        : Padding(
+                            padding: const EdgeInsets.only(top: 6),
+                            child: _SectionRows(
+                              selecting: selecting,
+                              picked: _picked,
+                              onToggle: _togglePick,
+                              onHold: _enterSelect,
+                            ),
+                          ),
+                  ),
+                ],
+              ),
+            ),
+            // 负面标题与正面展开体同级,收起正面时仍可独立操作。
+            Padding(
+              padding: const EdgeInsets.fromLTRB(15, 6, 9, 0),
+              child: Row(
+                children: [
+                  Icon(Icons.block, size: 17, color: scheme.error),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: () => _openEditor(context, positive: false),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        child: Text(
+                          // 收起时只报前 3 个 tag 与 +N 溢出,展开才给全文
+                          _negativeExpanded
+                              ? (state.negativePrompt.isEmpty
+                                    ? '点击编辑负面提示词…'
+                                    : state.negativePrompt)
+                              : switch (negativePreview(state.negativePrompt)) {
+                                  '' => '点击编辑负面提示词…',
+                                  final s => s,
+                                },
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: context.texts.bodyMedium!.copyWith(
+                            color: scheme.error,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    '$negTokens',
+                    style: mono(
+                      context,
+                      size: 13,
+                      weight: FontWeight.w500,
+                    ).copyWith(color: scheme.outline),
+                  ),
+                  const SizedBox(width: 2),
+                  Tooltip(
+                    message: _negativeExpanded ? '收起负面提示词' : '展开负面提示词',
+                    child: InkResponse(
+                      key: const ValueKey('negative_expand_button'),
+                      radius: 20,
+                      onTap: () => setState(
+                        () => _negativeExpanded = !_negativeExpanded,
+                      ),
+                      child: SizedBox.square(
+                        dimension: 36,
+                        child: AnimatedRotation(
+                          turns: _negativeExpanded ? .5 : 0,
+                          duration: Motion.medium,
+                          curve: Motion.emphasized,
+                          child: Icon(
+                            Icons.expand_more,
+                            size: 21,
+                            color: scheme.outline,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            ExpandBody(
+              expanded: _negativeExpanded,
+              child: InkWell(
+                onTap: () => _openEditor(context, positive: false),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(15, 2, 15, 14),
+                  child: Text(
+                    state.negativePrompt.isEmpty
+                        ? '点击编辑负面提示词…'
+                        : state.negativePrompt,
+                    style: context.texts.bodyMedium!.copyWith(
+                      height: 1.5,
+                      color: scheme.error,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1060,7 +1074,9 @@ class _NameChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     return Material(
-      color: enabled ? scheme.primaryContainer : Colors.transparent,
+      color: enabled
+          ? context.solidFill(scheme.primaryContainer)
+          : Colors.transparent,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(6),
         side: enabled
@@ -1080,7 +1096,9 @@ class _NameChip extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: context.texts.labelMedium!.copyWith(
                 fontWeight: FontWeight.w600,
-                color: enabled ? scheme.onPrimaryContainer : scheme.outline,
+                color: enabled
+                    ? context.onSolidFill(scheme.onPrimaryContainer)
+                    : scheme.outline,
               ),
             ),
           ),

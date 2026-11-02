@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
 import '../../core/store/ui_prefs.dart';
+import '../../core/theme/app_skin.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/ui/fast_scroll_handle.dart';
 import '../../core/ui/lift_menu.dart';
@@ -930,7 +931,7 @@ class _CategoryPageState extends ConsumerState<_CategoryPage>
                         minHeight: 40,
                       ),
                       filled: true,
-                      fillColor: scheme.surfaceContainerHigh,
+                      fillColor: context.pageControlFill,
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
                         borderSide: BorderSide.none,
@@ -1339,7 +1340,11 @@ class _CategoryPageState extends ConsumerState<_CategoryPage>
           ),
           if (action != null) ...[
             const SizedBox(height: 10),
-            FilledButton.tonal(onPressed: action.$2, child: Text(action.$1)),
+            FilledButton.tonal(
+              onPressed: action.$2,
+              style: context.pageTonalStyle,
+              child: Text(action.$1),
+            ),
           ],
         ],
       ),
@@ -1767,7 +1772,7 @@ class _SkeletonGridState extends State<_SkeletonGrid>
           ).animate(CurvedAnimation(parent: _c, curve: Curves.easeInOut)),
           child: DecoratedBox(
             decoration: BoxDecoration(
-              color: scheme.surfaceContainerHighest,
+              color: context.raisedFill(scheme.surfaceContainerHighest),
               borderRadius: BorderRadius.circular(16),
             ),
           ),
@@ -1874,7 +1879,7 @@ class _LetterRailState extends State<_LetterRail>
                           height: slot * n + vPad,
                           alignment: Alignment.center,
                           decoration: BoxDecoration(
-                            color: scheme.surfaceContainerHigh.withValues(
+                            color: context.pageControlFill.withValues(
                               alpha: .55 + .41 * r,
                             ),
                             borderRadius: BorderRadius.circular(_railW / 2),

@@ -11,6 +11,7 @@ import '../../core/auth/auth_mode.dart';
 import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
 import '../../core/net/remote_image.dart';
+import '../../core/theme/app_skin.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/util/image_ops.dart';
 import '../../core/util/image_pick.dart';
@@ -35,6 +36,7 @@ import 'import_category.dart';
 import 'import_prefs.dart';
 import 'metadata_detail_page.dart';
 import '../../core/util/haptics.dart';
+import '../../l10n/l10n.dart';
 
 /// 后台 isolate 算图片内容哈希。
 String _sha256Hex(Uint8List bytes) => sha256.convert(bytes).toString();
@@ -1207,7 +1209,9 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
           icon: const Icon(Icons.close),
           onPressed: () => Navigator.of(context).pop(),
         ),
-        title: Text(_reverseTags != null ? 'AI 反推结果' : '导入图片'),
+        title: Text(
+          _reverseTags != null ? 'AI 反推结果' : context.l10n.importImage,
+        ),
         centerTitle: true,
         actions: _reverseTags != null
             ? null
@@ -1253,7 +1257,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
         _fixedRow(
           scheme,
           icon: Icons.notes,
-          title: '正向提示词',
+          title: context.l10n.positivePrompt,
           preview: tags,
           checked: _useReverse,
           onTap: () => setState(() => _useReverse = !_useReverse),
@@ -1299,7 +1303,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
                     ),
                   ),
                   const SizedBox(height: 14),
-                  _useAsRow(scheme, reverse: false),
+                  _useAsRow(scheme, reverse: false, onPage: true),
                 ],
               ),
             ),
@@ -1341,7 +1345,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
           _fixedRow(
             scheme,
             icon: Icons.notes,
-            title: '正向提示词',
+            title: context.l10n.positivePrompt,
             preview: m.prompt,
             checked: _usePrompt,
             onTap: () => setState(() => _usePrompt = !_usePrompt),
@@ -1353,7 +1357,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
           _fixedRow(
             scheme,
             icon: Icons.block,
-            title: '负向提示词',
+            title: context.l10n.negativePrompt,
             preview: m.negativePrompt,
             checked: _useNegative,
             onTap: () => setState(() => _useNegative = !_useNegative),
@@ -1463,8 +1467,9 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     return Container(
       padding: const EdgeInsets.fromLTRB(13, 11, 13, 11),
       decoration: BoxDecoration(
-        color: scheme.surfaceContainerHigh,
+        color: context.raisedFill(scheme.surfaceContainerHigh),
         borderRadius: BorderRadius.circular(14),
+        border: context.edgeBorder,
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1518,8 +1523,8 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
         ? scheme.onSurfaceVariant.withValues(alpha: .5)
         : scheme.onSurface;
     return Material(
-      color: scheme.surfaceContainer,
-      borderRadius: BorderRadius.circular(16),
+      color: context.raisedFill(scheme.surfaceContainer),
+      shape: _cardShape(),
       clipBehavior: Clip.antiAlias,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1667,8 +1672,8 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   /// 自动转换提示词格式开关。
   Widget _convertRow(ColorScheme scheme) {
     return Material(
-      color: scheme.surfaceContainer,
-      borderRadius: BorderRadius.circular(16),
+      color: context.raisedFill(scheme.surfaceContainer),
+      shape: _cardShape(),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: () => setState(() => _convertPrompt = !_convertPrompt),
@@ -1919,8 +1924,9 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     return Container(
       padding: const EdgeInsets.all(13),
       decoration: BoxDecoration(
-        color: scheme.surfaceContainer,
+        color: context.raisedFill(scheme.surfaceContainer),
         borderRadius: BorderRadius.circular(16),
+        border: context.edgeBorder,
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
@@ -2039,8 +2045,8 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     // 与创作页 SectionCard 同一套手势分工:**整行点 = 展开/收起**,尾部
     // chevron 只是指示器(不接手势),勾选交给独立点击域的勾选框。
     return Material(
-      color: scheme.surfaceContainer,
-      borderRadius: BorderRadius.circular(16),
+      color: context.raisedFill(scheme.surfaceContainer),
+      shape: _cardShape(),
       clipBehavior: Clip.antiAlias,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2156,7 +2162,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
       scheme,
       icon: Icons.group,
       iconColor: scheme.tertiary,
-      title: '角色提示词',
+      title: context.l10n.characterPrompts,
       count: '${_charChecked.length}/$total',
       allOn: allOn,
       onToggleAll: () => setState(() {
@@ -2401,7 +2407,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      e.label,
+                      _settingLabel(context.l10n, e.label),
                       style: TextStyle(fontSize: 10, color: scheme.outline),
                     ),
                     const SizedBox(height: 2),
@@ -2454,6 +2460,15 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   }
 
   // ---- 通用小部件 ----
+
+  /// 页面上各张卡的外形:16 圆角,浮卡样式描发丝边。
+  ShapeBorder _cardShape() => RoundedRectangleBorder(
+    borderRadius: BorderRadius.circular(16),
+    side: switch (context.skin.edge) {
+      final edge? => BorderSide(color: edge),
+      null => BorderSide.none,
+    },
+  );
 
   /// 复制按钮。整行 / 整格的点击是展开或勾选,复制单独一颗,自带点击域不抢它们。
   Widget _copyButton(
@@ -2533,8 +2548,9 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   }) {
     return Container(
       decoration: BoxDecoration(
-        color: scheme.surfaceContainer,
+        color: context.raisedFill(scheme.surfaceContainer),
         borderRadius: BorderRadius.circular(16),
+        border: context.edgeBorder,
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(
@@ -2659,50 +2675,61 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   Widget _bottomBar(ColorScheme scheme) {
     final reverse = _reverseTags != null;
     final showCta = reverse || _meta != null;
-    return SafeArea(
-      top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 9, 14, 10),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _useAsRow(scheme, reverse: reverse),
-            if (showCta) ...[
-              const SizedBox(height: 10),
-              SizedBox(
-                height: 54,
-                width: double.infinity,
-                child: FilledButton.icon(
-                  onPressed: reverse
-                      ? (_useReverse ? _importReverse : null)
-                      : (_hasAnySelection ? _import : null),
-                  icon: const Icon(Icons.download, size: 22),
-                  label: const Text(
-                    '导入所选内容',
-                    style: TextStyle(
-                      fontSize: 15.5,
-                      fontWeight: FontWeight.w700,
+    return Docked(
+      child: ColoredBox(
+        color: context.raisedFill(Colors.transparent),
+        child: SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(14, 9, 14, 10),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _useAsRow(scheme, reverse: reverse),
+                if (showCta) ...[
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    height: 54,
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: reverse
+                          ? (_useReverse ? _importReverse : null)
+                          : (_hasAnySelection ? _import : null),
+                      icon: const Icon(Icons.download, size: 22),
+                      label: const Text(
+                        '导入所选内容',
+                        style: TextStyle(
+                          fontSize: 15.5,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
                     ),
                   ),
-                ),
-              ),
-            ],
-          ],
+                ],
+              ],
+            ),
+          ),
         ),
       ),
     );
   }
 
   /// 四个「用作」按钮一行(反推结果页不重复提供「反推」)。
-  Widget _useAsRow(ColorScheme scheme, {required bool reverse}) {
+  /// [onPage]:直接压在页面上(不在底栏里)。
+  Widget _useAsRow(
+    ColorScheme scheme, {
+    required bool reverse,
+    bool onPage = false,
+  }) {
     return Row(
       children: [
         _useAsBtn(
           scheme,
           Icons.image_outlined,
-          '图生图',
+          context.l10n.img2img,
           _useAsImg2img,
           blocked: _moduleBlocked(GenModule.img2img),
+          onPage: onPage,
         ),
         const SizedBox(width: 8),
         _useAsBtn(
@@ -2711,6 +2738,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
           'Vibe',
           _useAsVibe,
           blocked: _moduleBlocked(GenModule.vibe),
+          onPage: onPage,
         ),
         const SizedBox(width: 8),
         _useAsBtn(
@@ -2719,12 +2747,13 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
           '参考',
           _useAsCharRef,
           blocked: _moduleBlocked(GenModule.charRef),
+          onPage: onPage,
         ),
         if (!reverse) ...[
           const SizedBox(width: 8),
           // 反推走 Bot 的 tagger 服务,产出只是一串提示词,跟当前出图模型
           // 没有关系 —— 不跟着上面三个一起禁。
-          _useAsBtn(scheme, Icons.auto_awesome, '反推', _reverse),
+          _useAsBtn(scheme, Icons.auto_awesome, '反推', _reverse, onPage: onPage),
         ],
       ],
     );
@@ -2736,39 +2765,46 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     String label,
     VoidCallback onTap, {
     String? blocked,
+    bool onPage = false,
   }) {
     final off = blocked != null;
     return Expanded(
-      child: Material(
-        color: scheme.surfaceContainerHigh,
-        borderRadius: BorderRadius.circular(13),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          // 禁用态不做成死按钮 —— 格子太小塞不下原因,点一下用提示条讲清楚,
-          // 比一个按下去毫无反应的灰按钮好懂。
-          onTap: off
-              ? () => hintSnack(context, blocked, icon: Icons.block)
-              : onTap,
-          child: SizedBox(
-            height: 58,
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(
-                  icon,
-                  size: 22,
-                  color: off ? scheme.outline : scheme.primary,
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                    color: off ? scheme.outline : scheme.onSurface,
+      child: Lifted(
+        radius: onPage ? BorderRadius.circular(13) : null,
+        enabled: onPage,
+        child: Material(
+          color: onPage
+              ? context.raisedFill(scheme.surfaceContainerHigh)
+              : scheme.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(13),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            // 禁用态不做成死按钮 —— 格子太小塞不下原因,点一下用提示条讲清楚,
+            // 比一个按下去毫无反应的灰按钮好懂。
+            onTap: off
+                ? () => hintSnack(context, blocked, icon: Icons.block)
+                : onTap,
+            child: SizedBox(
+              height: 58,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    icon,
+                    size: 22,
+                    color: off ? scheme.outline : scheme.primary,
                   ),
-                ),
-              ],
+                  const SizedBox(height: 4),
+                  Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: off ? scheme.outline : scheme.onSurface,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -2821,6 +2857,20 @@ class _RawEntry extends StatelessWidget {
     );
   }
 }
+
+/// 设置项的显示名。label 同时是记勾选的存档键,只在显示时换成译文。
+String _settingLabel(AppLocalizations l, String label) => switch (label) {
+  '模型' => l.model,
+  '分辨率' => l.resolution,
+  'Steps' => l.importSteps,
+  'CFG' => l.importCfg,
+  'CFG Rescale' => l.cfgRescale,
+  'Variety+' => l.varietyPlus,
+  'Sampler' => l.importSampler,
+  'Scheduler' => l.importScheduler,
+  'Seed' => l.importSeed,
+  _ => label,
+};
 
 class _SettingSpec {
   _SettingSpec(
@@ -3058,9 +3108,12 @@ class _ReverseDialogState extends ConsumerState<_ReverseDialog> {
 
   Widget _modelOption(ColorScheme scheme, int index, String name, String desc) {
     final selected = _model == index;
+    final solid = selected && context.skin.float;
     return Material(
       color: selected
-          ? scheme.primaryContainer.withValues(alpha: .35)
+          ? (solid
+                ? scheme.primary
+                : scheme.primaryContainer.withValues(alpha: .35))
           : scheme.surfaceContainerHigh,
       borderRadius: BorderRadius.circular(12),
       clipBehavior: Clip.antiAlias,
@@ -3075,7 +3128,9 @@ class _ReverseDialogState extends ConsumerState<_ReverseDialog> {
                     ? Icons.radio_button_checked
                     : Icons.radio_button_unchecked,
                 size: 20,
-                color: selected ? scheme.primary : scheme.outline,
+                color: selected
+                    ? (solid ? scheme.onPrimary : scheme.primary)
+                    : scheme.outline,
               ),
               const SizedBox(width: 11),
               Expanded(
@@ -3086,6 +3141,7 @@ class _ReverseDialogState extends ConsumerState<_ReverseDialog> {
                       name,
                       style: context.texts.bodyMedium!.copyWith(
                         fontWeight: FontWeight.w600,
+                        color: solid ? scheme.onPrimary : null,
                       ),
                     ),
                     const SizedBox(height: 2),
@@ -3093,7 +3149,9 @@ class _ReverseDialogState extends ConsumerState<_ReverseDialog> {
                       desc,
                       style: TextStyle(
                         fontSize: 11,
-                        color: scheme.onSurfaceVariant,
+                        color: solid
+                            ? scheme.onPrimary.withValues(alpha: .8)
+                            : scheme.onSurfaceVariant,
                       ),
                     ),
                   ],

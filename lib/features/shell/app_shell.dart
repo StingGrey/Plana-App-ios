@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:material_symbols_icons/symbols.dart';
 
 import '../../core/auth/bot_session_store.dart';
 import '../../core/auth/nai_credential_login.dart';
@@ -10,6 +11,7 @@ import '../../core/net/backend_config.dart';
 import '../../core/platform/platform_support.dart';
 import '../../core/store/app_stores.dart';
 import '../../core/store/prefs_store.dart';
+import '../../core/theme/app_skin.dart';
 import '../../core/theme/app_theme.dart';
 import '../assistant/assistant_page.dart';
 import '../cloud_sync/cloud_sync_progress.dart' show CloudSyncTabIcon;
@@ -25,6 +27,7 @@ import '../inpaint/inpaint_overlay.dart' show inpaintSessionProvider;
 import '../profile/profile_page.dart';
 import '../update/update_service.dart';
 import '../update/update_sheet.dart' show showUpdateSheet;
+import 'float_theme_intro.dart';
 import 'shell_state.dart';
 
 /// 全局骨架:5 tab 底部导航 + PageView 切页。
@@ -62,7 +65,7 @@ class _AppShellState extends ConsumerState<AppShell> {
     ProfilePage(),
   ];
 
-  Timer? _updateTimer;
+  Timer? _promptTimer;
   bool? _reportedTabletMode;
 
   void _reportTabletMode(bool value) {
@@ -85,22 +88,24 @@ class _AppShellState extends ConsumerState<AppShell> {
     ref.read(backendBaseProvider);
     // 账号密码登录的 JWT 临期静默换新(非该来源的令牌自动跳过)。
     ref.read(naiTokenAutoRefreshProvider);
-    _scheduleAutoCheck();
+    _schedulePrompts();
   }
 
-  /// 冷启动静默查一次更新(24h 节流)。
+  /// 冷启动的两个弹窗:浮卡介绍(只弹一次)、静默查更新(24h 节流),
+  /// 前一个关掉再弹下一个。
   ///
-  /// 延后 3 秒:启动那几帧要留给首页和鉴权预热,更新弹层不是急事。计时器**必须
+  /// 延后 3 秒:启动那几帧要留给首页和鉴权预热,弹窗不是急事。计时器**必须
   /// 存下来并在 dispose 取消** —— 裸 `Future.delayed` 在页面提前销毁后照样会醒,
   /// 属于真实泄漏(widget 冒烟测试会直接报 pending timer)。
-  void _scheduleAutoCheck() {
-    if (!supportsGithubReleaseUpdate) return;
+  void _schedulePrompts() {
     final prefs = ref.read(prefsStoreProvider);
-    if (!shouldAutoCheck(prefs)) return;
-    _updateTimer = Timer(
-      const Duration(seconds: 3),
-      () => _autoCheckUpdate(prefs),
-    );
+    final intro = needsFloatThemeIntro(prefs);
+    final check = supportsGithubReleaseUpdate && shouldAutoCheck(prefs);
+    if (!intro && !check) return;
+    _promptTimer = Timer(const Duration(seconds: 3), () async {
+      if (intro && mounted) await showFloatThemeIntro(context, ref);
+      if (check) await _autoCheckUpdate(prefs);
+    });
   }
 
   /// **只在真有新版时弹**,查不到/网络不通一律无声吞掉 —— 用户没主动要求检查,
@@ -124,7 +129,7 @@ class _AppShellState extends ConsumerState<AppShell> {
 
   @override
   void dispose() {
-    _updateTimer?.cancel();
+    _promptTimer?.cancel();
     _pc.dispose();
     super.dispose();
   }
@@ -245,28 +250,64 @@ class _AppShellState extends ConsumerState<AppShell> {
                     ref.read(shellIndexProvider.notifier).select(i),
                 destinations: const [
                   NavigationRailDestination(
-                    icon: Icon(Icons.draw_outlined),
-                    selectedIcon: Icon(Icons.draw),
+                    icon: _NavIcon(Icons.draw_outlined, Symbols.draw_rounded),
+                    selectedIcon: _NavIcon(
+                      Icons.draw,
+                      Symbols.draw_rounded,
+                      selected: true,
+                    ),
                     label: Text('创作'),
                   ),
                   NavigationRailDestination(
-                    icon: Icon(Icons.photo_library_outlined),
-                    selectedIcon: Icon(Icons.photo_library),
+                    icon: _NavIcon(
+                      Icons.photo_library_outlined,
+                      Symbols.photo_library_rounded,
+                    ),
+                    selectedIcon: _NavIcon(
+                      Icons.photo_library,
+                      Symbols.photo_library_rounded,
+                      selected: true,
+                    ),
                     label: Text('图库'),
                   ),
                   NavigationRailDestination(
-                    icon: Icon(Icons.auto_awesome_outlined),
-                    selectedIcon: Icon(Icons.auto_awesome),
+                    icon: _NavIcon(
+                      Icons.auto_awesome_outlined,
+                      Symbols.auto_awesome_rounded,
+                    ),
+                    selectedIcon: _NavIcon(
+                      Icons.auto_awesome,
+                      Symbols.auto_awesome_rounded,
+                      selected: true,
+                    ),
                     label: Text('AI'),
                   ),
                   NavigationRailDestination(
-                    icon: Icon(Icons.lightbulb_outline),
-                    selectedIcon: Icon(Icons.lightbulb),
+                    icon: _NavIcon(
+                      Icons.lightbulb_outline,
+                      Symbols.lightbulb_rounded,
+                    ),
+                    selectedIcon: _NavIcon(
+                      Icons.lightbulb,
+                      Symbols.lightbulb_rounded,
+                      selected: true,
+                    ),
                     label: Text('灵感'),
                   ),
                   NavigationRailDestination(
-                    icon: CloudSyncTabIcon(child: Icon(Icons.person_outline)),
-                    selectedIcon: CloudSyncTabIcon(child: Icon(Icons.person)),
+                    icon: CloudSyncTabIcon(
+                      child: _NavIcon(
+                        Icons.person_outline,
+                        Symbols.person_rounded,
+                      ),
+                    ),
+                    selectedIcon: CloudSyncTabIcon(
+                      child: _NavIcon(
+                        Icons.person,
+                        Symbols.person_rounded,
+                        selected: true,
+                      ),
+                    ),
                     label: Text('我的'),
                   ),
                 ],
@@ -285,39 +326,79 @@ class _AppShellState extends ConsumerState<AppShell> {
 
     return Scaffold(
       body: SafeArea(bottom: false, child: pageView),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: index,
-        // 重绘编辑中也允许点按切页(图库页 keep-alive,回来面板还在);
-        // 仅横滑仍锁(防抢涂抹手势)。
-        onDestinationSelected: (i) =>
-            ref.read(shellIndexProvider.notifier).select(i),
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.draw_outlined),
-            selectedIcon: Icon(Icons.draw),
-            label: '创作',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.photo_library_outlined),
-            selectedIcon: Icon(Icons.photo_library),
-            label: '图库',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.auto_awesome_outlined),
-            selectedIcon: Icon(Icons.auto_awesome),
-            label: 'AI',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.lightbulb_outline),
-            selectedIcon: Icon(Icons.lightbulb),
-            label: '灵感',
-          ),
-          NavigationDestination(
-            icon: CloudSyncTabIcon(child: Icon(Icons.person_outline)),
-            selectedIcon: CloudSyncTabIcon(child: Icon(Icons.person)),
-            label: '我的',
-          ),
-        ],
+      bottomNavigationBar: _NavDock(
+        // 创作页的吸底栏、图库的胶片条、AI 页的输入区自带顶边,和底栏连成一块
+        plain:
+            index == kTabCreate ||
+            index == kTabGallery ||
+            index == kTabAssistant,
+        child: NavigationBar(
+          selectedIndex: index,
+          // 重绘编辑中也允许点按切页(图库页 keep-alive,回来面板还在);
+          // 仅横滑仍锁(防抢涂抹手势)。
+          onDestinationSelected: (i) =>
+              ref.read(shellIndexProvider.notifier).select(i),
+          destinations: const [
+            NavigationDestination(
+              icon: _NavIcon(Icons.draw_outlined, Symbols.draw_rounded),
+              selectedIcon: _NavIcon(
+                Icons.draw,
+                Symbols.draw_rounded,
+                selected: true,
+              ),
+              label: '创作',
+            ),
+            NavigationDestination(
+              icon: _NavIcon(
+                Icons.photo_library_outlined,
+                Symbols.photo_library_rounded,
+              ),
+              selectedIcon: _NavIcon(
+                Icons.photo_library,
+                Symbols.photo_library_rounded,
+                selected: true,
+              ),
+              label: '图库',
+            ),
+            NavigationDestination(
+              icon: _NavIcon(
+                Icons.auto_awesome_outlined,
+                Symbols.auto_awesome_rounded,
+              ),
+              selectedIcon: _NavIcon(
+                Icons.auto_awesome,
+                Symbols.auto_awesome_rounded,
+                selected: true,
+              ),
+              label: 'AI',
+            ),
+            NavigationDestination(
+              icon: _NavIcon(
+                Icons.lightbulb_outline,
+                Symbols.lightbulb_rounded,
+              ),
+              selectedIcon: _NavIcon(
+                Icons.lightbulb,
+                Symbols.lightbulb_rounded,
+                selected: true,
+              ),
+              label: '灵感',
+            ),
+            NavigationDestination(
+              icon: CloudSyncTabIcon(
+                child: _NavIcon(Icons.person_outline, Symbols.person_rounded),
+              ),
+              selectedIcon: CloudSyncTabIcon(
+                child: _NavIcon(
+                  Icons.person,
+                  Symbols.person_rounded,
+                  selected: true,
+                ),
+              ),
+              label: '我的',
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -413,4 +494,29 @@ class _TabletWorkspaceState extends ConsumerState<_TabletWorkspace> {
       },
     );
   }
+}
+
+/// 底栏图标。浮卡样式用 Material Symbols 圆角图标:未选中描线、选中填充。
+class _NavIcon extends StatelessWidget {
+  const _NavIcon(this.standard, this.symbol, {this.selected = false});
+
+  final IconData standard;
+  final IconData symbol;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) => context.skin.float
+      ? Icon(symbol, fill: selected ? 1 : 0, weight: 500)
+      : Icon(standard);
+}
+
+/// 浮卡样式下底栏顶边的细边;其余主题原样返回。
+class _NavDock extends StatelessWidget {
+  const _NavDock({required this.plain, required this.child});
+
+  final bool plain;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => plain ? child : Docked(child: child);
 }

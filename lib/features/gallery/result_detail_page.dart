@@ -7,13 +7,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/store/app_stores.dart';
 import '../../core/theme/app_theme.dart';
 import '../generate/generate_state.dart';
-import '../generate/models.dart' show GenerateState;
+import '../generate/models.dart' show CharRefMode, GenerateState;
 import '../shell/shell_state.dart';
 
 import '../generate/widgets/common.dart' show hintSnack, sharedAxisRoute;
 import '../import/import_panel.dart';
 import '../inspiration/prompt_library_save.dart';
 import 'models.dart';
+import '../../l10n/l10n.dart';
 
 /// Detail view for a generated result, including its exact generation snapshot.
 class ResultDetailPage extends ConsumerStatefulWidget {
@@ -212,7 +213,11 @@ class _ResultDetailPageState extends ConsumerState<ResultDetailPage> {
       const SizedBox(height: 14),
       _resourceSection('角色参考 (${input.charRefs.length})', [
         for (final reference in input.charRefs)
-          '${reference.name.isEmpty ? '参考图' : reference.name} · ${reference.mode.label}',
+          '${reference.name.isEmpty ? '参考图' : reference.name} · ${switch (reference.mode) {
+            CharRefMode.character => context.l10n.refCharacter,
+            CharRefMode.style => context.l10n.refStyle,
+            CharRefMode.both => context.l10n.refCharacterStyle,
+          }}',
       ], scheme),
     ],
   ];
