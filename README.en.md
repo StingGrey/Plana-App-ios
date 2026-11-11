@@ -12,7 +12,7 @@
 [![iOS](https://img.shields.io/badge/iOS-16%2B%20beta-000000?logo=apple&logoColor=white)](IOS_PORT.md)
 [![Flutter](https://img.shields.io/badge/built%20with-Flutter-02569B?logo=flutter&logoColor=white)](https://flutter.dev)
 
-[![Download latest APK](https://img.shields.io/github/v/release/mc5024/Plana-App?label=Download%20APK&style=for-the-badge&logo=android&logoColor=white&color=3ddc84)](https://github.com/mc5024/Plana-App/releases/latest)
+[![Download latest IPA](https://img.shields.io/github/v/release/StingGrey/Plana-App-ios?label=Download%20IPA&style=for-the-badge&logo=apple&logoColor=white&color=000000)](https://github.com/StingGrey/Plana-App-ios/releases/latest)
 
 [简体中文](README.md) · **English**
 
