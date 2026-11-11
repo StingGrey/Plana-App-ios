@@ -353,12 +353,8 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
           // 保持预览与最终入库结果一致。
           _ZoomableImage(
             bytes: gen.pasteUnder ?? gen.preview ?? selBytes ?? _lastShown,
-            width: gen.pasteUnder != null
-                ? (selected?.width ?? gen.width)
-                : gen.width,
-            height: gen.pasteUnder != null
-                ? (selected?.height ?? gen.height)
-                : gen.height,
+            width: gen.pasteSize?.w ?? gen.width,
+            height: gen.pasteSize?.h ?? gen.height,
             overlay: gen.pasteUnder == null ? null : gen.preview,
             overlayAt: gen.pasteAt,
           ),

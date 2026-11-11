@@ -161,3 +161,99 @@ Future<Uint8List> writeCustomMetadataPng(
     ..writeBytes(compressed);
   return encodePngFromRgba(writer.data, w, h);
 }
+
+/// 在 PNG 里写一个未压缩的 iTXt 块(UTF-8),同名的先去掉;插在 IEND 前,
+/// 其余块与像素原样。不是 PNG / 数据不完整抛 [FormatException]。
+Uint8List withPngITxt(Uint8List png, String keyword, String text) {
+  const sig = [137, 80, 78, 71, 13, 10, 26, 10];
+  if (png.length < 8 ||
+      Iterable<int>.generate(8).any((i) => png[i] != sig[i])) {
+    throw const FormatException('不是 PNG');
+  }
+  final key = latin1.encode(keyword);
+  final payload = BytesBuilder(copy: false)
+    ..add(key)
+    ..add(const [0, 0, 0, 0, 0]) // 关键字结尾、不压缩、压缩方法、空语言标签、空译名
+    ..add(utf8.encode(text));
+  final body = payload.takeBytes();
+  final chunk = Uint8List(body.length + 12);
+  final cd = ByteData.sublistView(chunk);
+  cd.setUint32(0, body.length);
+  chunk.setRange(4, 8, 'iTXt'.codeUnits);
+  chunk.setRange(8, 8 + body.length, body);
+  cd.setUint32(
+    chunk.length - 4,
+    getCrc32(Uint8List.sublistView(chunk, 4, chunk.length - 4)),
+  );
+
+  final data = ByteData.sublistView(png);
+  final out = BytesBuilder(copy: false)..add(sig);
+  var offset = 8;
+  while (offset + 12 <= png.length) {
+    final size = data.getUint32(offset);
+    final end = offset + size + 12;
+    if (end > png.length) throw const FormatException('PNG 数据不完整');
+    final type = String.fromCharCodes(png, offset + 4, offset + 8);
+    final raw = Uint8List.sublistView(png, offset, end);
+    if (type == 'IEND') {
+      out
+        ..add(chunk)
+        ..add(raw);
+      if (end < png.length) out.add(Uint8List.sublistView(png, end));
+      return out.takeBytes();
+    }
+    final same =
+        type == 'iTXt' &&
+        size > key.length &&
+        png[offset + 8 + key.length] == 0 &&
+        Iterable<int>.generate(
+          key.length,
+        ).every((i) => png[offset + 8 + i] == key[i]);
+    if (!same) out.add(raw);
+    offset = end;
+  }
+  throw const FormatException('PNG 数据不完整');
+}
+
+/// 把 [from] 的文本块(tEXt / iTXt / zTXt)原样插到 [to] 的 IEND 前。
+/// 任一边不是完整的 PNG、或 [from] 没有文本块时原样返回 [to]。
+Uint8List withPngTextFrom(Uint8List to, Uint8List from) {
+  const textTypes = {'tEXt', 'iTXt', 'zTXt'};
+  final texts = <Uint8List>[];
+  Uint8List? head, tail; // [to] 在 IEND 前 / 从 IEND 起的两段
+  for (final (png, collect) in [(from, true), (to, false)]) {
+    const sig = [137, 80, 78, 71, 13, 10, 26, 10];
+    if (png.length < 8 ||
+        Iterable<int>.generate(8).any((i) => png[i] != sig[i])) {
+      return to;
+    }
+    final data = ByteData.sublistView(png);
+    var offset = 8;
+    var found = false;
+    while (offset + 12 <= png.length) {
+      final end = offset + data.getUint32(offset) + 12;
+      if (end > png.length) return to;
+      final type = String.fromCharCodes(png, offset + 4, offset + 8);
+      if (type == 'IEND') {
+        found = true;
+        if (!collect) {
+          head = Uint8List.sublistView(png, 0, offset);
+          tail = Uint8List.sublistView(png, offset);
+        }
+        break;
+      }
+      if (collect && textTypes.contains(type)) {
+        texts.add(Uint8List.sublistView(png, offset, end));
+      }
+      offset = end;
+    }
+    if (!found) return to;
+    if (collect && texts.isEmpty) return to;
+  }
+  final out = BytesBuilder(copy: false)..add(head!);
+  for (final t in texts) {
+    out.add(t);
+  }
+  out.add(tail!);
+  return out.takeBytes();
+}

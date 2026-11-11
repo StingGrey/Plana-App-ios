@@ -11,6 +11,7 @@ import 'core/store/app_stores.dart';
 import 'core/store/gen_settings.dart';
 import 'core/theme/app_theme.dart';
 import 'core/theme/theme_settings.dart';
+import 'core/ui/ime_shift_select.dart';
 import 'core/ui/input_focus_guard.dart';
 import 'core/ui/nav_bar_guard.dart';
 import 'core/util/haptics.dart';
@@ -144,16 +145,19 @@ class _PlanaAppState extends ConsumerState<PlanaApp> {
       supportedLocales: kSupportedLocales,
       localizationsDelegates: AppLocalizations.localizationsDelegates,
       navigatorObservers: [_inputFocusGuard],
-      // 一层 builder 里办两件事:三键导航机上整个应用让出系统导航栏(见
+      // 一层 builder 里办三件事:输入法选择模式下方向键扩选(见
+      // [ImeShiftSelect])、三键导航机上整个应用让出系统导航栏(见
       // [NavBarGuard]),以及在最上层盖拖放导入浮层(桌面端拖文件进来时)。
-      builder: (context, child) => NavBarGuard(
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            child ?? const SizedBox.shrink(),
-            if (_dropState != DropImportState.idle)
-              _DropImportOverlay(state: _dropState),
-          ],
+      builder: (context, child) => ImeShiftSelect(
+        child: NavBarGuard(
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              child ?? const SizedBox.shrink(),
+              if (_dropState != DropImportState.idle)
+                _DropImportOverlay(state: _dropState),
+            ],
+          ),
         ),
       ),
       home: const _AuthGate(),

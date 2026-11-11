@@ -64,6 +64,7 @@ class GenStatus {
     this.note,
     this.pasteUnder,
     this.pasteAt,
+    this.pasteSize,
   });
 
   final bool busy;
@@ -82,6 +83,7 @@ class GenStatus {
   /// 局部重绘的预览底与贴回位置(见 [GenJob.pasteUnder])。
   final Uint8List? pasteUnder;
   final ({int x, int y, int w, int h})? pasteAt;
+  final ({int w, int h})? pasteSize;
 
   /// 进度未知阶段的状态文案(bot 排队「排队中 · 第 N 位」等),
   /// 画布进度胶囊优先显示;null 时显「准备中」。
@@ -134,6 +136,14 @@ enum GenOutcome {
 bool isNai5QuotaBlock(String msg) =>
     msg.contains('NAI5') && (msg.contains('额度') || msg.contains('资格'));
 
+/// 收到的「成图」尺寸对不上发送尺寸,其实是预览帧。
+class _PreviewOnly implements Exception {
+  const _PreviewOnly();
+
+  @override
+  String toString() => '没收到成图,只拿到了预览帧';
+}
+
 /// 服务端明确拒收的状态码:请求没被受理,重试不花钱。
 /// 401 令牌无效 · 402 点数不足 · 404/405 端点不可用 · 429 限流。
 bool _rejectedOutright(int? status) =>
@@ -181,6 +191,7 @@ GenStatus _statusOf(GenJob j) => GenStatus(
   note: j.note,
   pasteUnder: j.pasteUnder,
   pasteAt: j.pasteAt,
+  pasteSize: j.pasteSize,
 );
 
 /// 同时**在跑**的任务数上限。
@@ -241,6 +252,7 @@ class GenerationNotifier extends Notifier<GenPool> {
   final _runs = <String, _JobRun>{}; // 每条任务的运行时,键同 GenJob.id
   var _seq = 0; // 提交序号,只增
   int _focusRevision = 0;
+  var _streamMisses = 0; // 直连流式结束却没收到终图的次数(本次启动内)
 
   // ---- 并发闸门 ----
   // 槽位用**下标**而不是计数:直连模式下「第 i 个槽」就是「第 i 把 Key」,
@@ -488,7 +500,11 @@ class GenerationNotifier extends Notifier<GenPool> {
       }
       // Anima / Krea 走服务端 Modal 后端,直连 token 模式没有服务器会话,无从代理。
       if (!isBot) {
-        return _reject('$modalName 仅 Bot 授权模式可用,请在「我的」页切换接入方式');
+        return _reject(
+          ref.read(botSessionProvider).value == null
+              ? '$modalName 暂未开放'
+              : '$modalName 仅 Bot 账户可用,请切换生成方式',
+        );
       }
     }
 
@@ -496,6 +512,12 @@ class GenerationNotifier extends Notifier<GenPool> {
     final firstOfBatch = state.jobs.isEmpty;
 
     // 挂占位卡:等位/拼载荷都可能要几秒,这段时间也得让用户看见任务已受理。
+    // 局部重绘:流帧只是那块裁切区,画布要拿整张原图垫底才看得出在改哪儿。
+    // 原图尺寸缺失(老存档)时不垫 —— 按别的尺寸排版会把流帧贴歪。
+    final paste = s.inpaint?.paste;
+    final under = paste != null && paste.outW > 0 && paste.outH > 0
+        ? paste
+        : null;
     final job = GenJob(
       galleryTarget: galleryTarget ?? ref.read(gallerySaveTargetProvider),
       id: 'job${_seq++}',
@@ -507,12 +529,16 @@ class GenerationNotifier extends Notifier<GenPool> {
       total: s.params.activeSteps,
       // 已经有别的在跑 → 这条多半要等位,先说清楚是在等而不是在准备
       note: state.jobs.isEmpty ? null : '等待中',
-      // 局部重绘:流帧只是那块裁切区,画布要拿整张原图垫底才看得出在改哪儿。
-      pasteUnder: s.inpaint?.paste?.original,
-      pasteAt: switch (s.inpaint?.paste) {
-        final p? => (x: p.sendX, y: p.sendY, w: p.tightW, h: p.tightH),
-        _ => null,
-      },
+      pasteUnder: under?.original,
+      pasteAt: under == null
+          ? null
+          : (
+              x: under.sendX,
+              y: under.sendY,
+              w: s.params.width,
+              h: s.params.height,
+            ),
+      pasteSize: under == null ? null : (w: under.outW, h: under.outH),
     );
     // 同步回调要在挂卡之后立刻发生:AI 助手拿它跟住这一单画逐帧预览。
     onJob?.call(job.id);
@@ -658,7 +684,8 @@ class GenerationNotifier extends Notifier<GenPool> {
 
     // 走流式还是一次性,整单开头定一次:中途设置变了不该让这一单换端点。
     // 接口没有逐步预览(OpenAI 兼容)时按一次性走,进度条显示不确定态。
-    final streaming = _streamGen && client.streams;
+    // 流里缺终图累计满 3 次,之后都走一次性端点(同官方)。
+    final streaming = _streamGen && client.streams && _streamMisses < 3;
 
     final abort = run.abort;
 
@@ -718,7 +745,6 @@ class GenerationNotifier extends Notifier<GenPool> {
             body: built.body,
             abort: abort,
           )) {
-            last = f.bytes;
             final step = f.isFinal ? total : (f.step ?? 0);
             _patch(
               jobId,
@@ -731,7 +757,15 @@ class GenerationNotifier extends Notifier<GenPool> {
               ),
             );
             _pushProgress();
-            if (f.isFinal) break;
+            if (f.isFinal) {
+              last = f.bytes;
+              break;
+            }
+          }
+          // 流结束却没有终图:预览帧只有成图约 1/8 大,不能拿来顶替
+          if (last == null) {
+            if (!abort.aborted) _streamMisses++;
+            throw NaiException('没收到成图,只拿到了预览帧');
           }
         } else {
           // 关了流式:整张画完才回来,期间没有步数 —— 置 step 0 走不确定进度条
@@ -755,7 +789,6 @@ class GenerationNotifier extends Notifier<GenPool> {
           // 那也不能入库:任务卡此刻已在等这个返回值才肯消失。
           if (abort.aborted) return _cancelled(jobId);
         }
-        if (last == null) throw NaiException('未收到图片数据');
         await finish(last, built.seed);
         return GenOutcome.ok;
       } on NaiException catch (e) {
@@ -1080,7 +1113,7 @@ class GenerationNotifier extends Notifier<GenPool> {
       return _fail(jobId, '读取授权信息失败:$e', GenOutcome.notCharged);
     }
     if (session == null) {
-      return _fail(jobId, '尚未 Bot 授权,请在「我的」页完成授权', GenOutcome.notCharged);
+      return _fail(jobId, '暂未开放', GenOutcome.notCharged);
     }
     if (base.isEmpty) {
       return _fail(jobId, '未配置后端地址,请在「我的」页或授权页填写', GenOutcome.notCharged);
@@ -1341,7 +1374,7 @@ class GenerationNotifier extends Notifier<GenPool> {
     );
   }
 
-  /// 结果入库(直连/bot 共用):局部重绘先把结果贴回原图,
+  /// 结果入库(直连/bot 共用):重绘先把成图混回原图,
   /// 重绘任务统一打「重绘」角标;快照原样入库供「重新生成」复现。
   /// 一次采样的产出入库。[batch] 是这一批的全部 PNG —— anima / krea 的
   /// `batch_size` 让一次采样出 N 张(NAI 那条路恒为 1)。
@@ -1356,6 +1389,7 @@ class GenerationNotifier extends Notifier<GenPool> {
     required String jobId,
   }) async {
     if (batch.isEmpty) return;
+    if (s.inpaint != null) await _expectSendSize(s, batch.first);
     // 画布正跟着这条 → 出图后把画布交给成图;跟着别的(或在看历史)→ 只前插、
     // **不夺焦点**。并行之后这条最要紧:后台某一张出完就把你正看着的画面换掉,
     // 比不显示还糟。
@@ -1415,6 +1449,13 @@ class GenerationNotifier extends Notifier<GenPool> {
     }
   }
 
+  /// 重绘的成图必须和发送尺寸一致。对不上 = 服务端拿预览帧(约 1/8 大)顶了成图,
+  /// 贴回去只会在框角留一小块缩略图。
+  Future<void> _expectSendSize(GenerateState s, Uint8List bytes) async {
+    final size = pngSizeOf(bytes) ?? await decodeImageSize(bytes);
+    if (size != (s.params.width, s.params.height)) throw const _PreviewOnly();
+  }
+
   /// 出的图记进发起那张画布的历史;那张画布已经删了就不记。
   void _recordHistory(CanvasOrigin origin, List<String> ids) {
     if (ref.read(canvasWorkspaceProvider).find(origin.canvasId) == null) return;
@@ -1440,24 +1481,22 @@ class GenerationNotifier extends Notifier<GenPool> {
     var out = bytes;
     var w = s.params.width;
     var h = s.params.height;
-    final paste = job?.paste;
-    if (paste != null) {
+    if (job != null) {
+      // 局部重绘混回原图的发送框;整图 / 扩图混回发出去的那张底图
+      final paste = job.paste;
       try {
-        out = await pasteBack(
-          original: paste.original,
+        final r = await blendInpaintResult(
+          base: paste?.original ?? job.image,
           patch: bytes,
-          send: (x: paste.sendX, y: paste.sendY, w: w, h: h),
-          tight: (
-            x: paste.tightX,
-            y: paste.tightY,
-            w: paste.tightW,
-            h: paste.tightH,
-          ),
+          mask: job.mask,
+          x: paste?.sendX ?? 0,
+          y: paste?.sendY ?? 0,
         );
-        w = paste.outW;
-        h = paste.outH;
+        out = r.png;
+        w = r.width;
+        h = r.height;
       } catch (e) {
-        logd('[gen] pasteBack failed: $e'); // 贴回失败退化为子图入库
+        logd('[gen] inpaint blend failed: $e'); // 混合失败退化为成图原样入库
       }
     } else if (pngSizeOf(bytes) case (final pw, final ph)) {
       // 按成图实际尺寸记:Max 放大重绘、Anima 重绘放大的出图都比请求宽高大

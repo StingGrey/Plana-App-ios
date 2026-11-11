@@ -263,7 +263,7 @@ class InpaintJob {
 
   final double strength;
 
-  /// 局部重绘的贴回信息;null = 整图(结果直接入库)。
+  /// 局部重绘的贴回信息;null = 整图 / 扩图(成图混回 [image])。
   final InpaintPaste? paste;
 
   /// 底图在图库里的 id;回编辑器时用它认「是不是同一张图」。
@@ -303,7 +303,7 @@ class InpaintJob {
   return w > 0 && h > 0 ? (w, h) : null;
 }
 
-/// 局部重绘贴回:结果(发送框尺寸)中 tight 区域贴回原图对应位置。
+/// 局部重绘贴回:成图(发送框尺寸)按羽化遮罩混回原图的发送框位置。
 class InpaintPaste {
   const InpaintPaste({
     required this.original,
@@ -323,7 +323,7 @@ class InpaintPaste {
   /// 发送框原点(相对原图;发送框尺寸即快照 params.width/height)。
   final int sendX, sendY;
 
-  /// 贴回的紧凑区域(相对原图)。
+  /// 紧凑区域(相对原图)。编辑器里恒等于发送框;贴回只看发送框与遮罩。
   final int tightX, tightY, tightW, tightH;
 
   /// 入库尺寸(=原图尺寸)。
@@ -1228,6 +1228,7 @@ class GenerateState {
     this.promptRaw = '',
     this.negativePromptRaw = '',
     this.sections = const [],
+    this.composedSections = const [],
     required this.characters,
     required this.vibes,
     required this.charRefs,
@@ -1281,6 +1282,10 @@ class GenerateState {
   /// 也能删(正向随之清空),这时列表里就没有它。
   /// 只活在创作页:生成快照里已拼进 [prompt](见 composeSections)。
   final List<PromptSection> sections;
+
+  /// 生成快照里拼进 [prompt] 的那几格(只留进了载荷的,主体的词也写在行里,
+  /// 见 composeSections)。不发给 NAI、不落盘,入库时写进 PNG(见 section_layout.dart)。
+  final List<PromptSection> composedSections;
 
   final List<CharacterPrompt> characters;
   final List<VibeItem> vibes;
@@ -1347,6 +1352,7 @@ class GenerateState {
     String? promptRaw,
     String? negativePromptRaw,
     List<PromptSection>? sections,
+    List<PromptSection>? composedSections,
     List<CharacterPrompt>? characters,
     List<VibeItem>? vibes,
     List<CharRefItem>? charRefs,
@@ -1368,6 +1374,7 @@ class GenerateState {
       promptRaw: promptRaw ?? this.promptRaw,
       negativePromptRaw: negativePromptRaw ?? this.negativePromptRaw,
       sections: sections ?? this.sections,
+      composedSections: composedSections ?? this.composedSections,
       characters: characters ?? this.characters,
       vibes: vibes ?? this.vibes,
       charRefs: charRefs ?? this.charRefs,

@@ -8,6 +8,8 @@ import 'nai_request.dart'
     show
         CharRefPayload,
         Img2ImgRef,
+        centerInSendBox,
+        effectiveInpaintStrength,
         naiModelId,
         naiSamplerId,
         naiSupportsTransparency,
@@ -49,16 +51,28 @@ Map<String, dynamic> buildBotParams(
       .where((c) => c.enabled && c.positive.trim().isNotEmpty)
       .toList();
 
+  // 局部重绘只发裁切那块:站位换算进发送框(同直连),以自由坐标串发 ——
+  // 非 V5 由服务端吸附到格心。
+  final crop = s.inpaint?.paste;
+  String sendPosition(String? pos) {
+    final v = resolveCharacterCenter(pos);
+    if (crop == null || v == null) return pos ?? '';
+    final m = centerInSendBox(v, crop, sendW: p.width, sendH: p.height);
+    return positionOfCenter(m.x, m.y)!;
+  }
+
+  final positions = [for (final c in chars) sendPosition(c.position)];
+
   // autoText / 档位提示:与直连线同一套(见 nai_request)。后端把 tagHint* 原样
   // 转成 payload 的 tag_hint_qt / tag_hint_uc_preset。
   final promptText = isV5
       ? applyAutoText(
           s.prompt,
           characters: [
-            for (final c in chars)
+            for (var i = 0; i < chars.length; i++)
               AutoTextChar(
-                prompt: c.positive,
-                center: switch (resolveCharacterCenter(c.position)) {
+                prompt: chars[i].positive,
+                center: switch (resolveCharacterCenter(positions[i])) {
                   final v? => (x: v.x, y: v.y),
                   _ => null,
                 },
@@ -103,12 +117,12 @@ Map<String, dynamic> buildBotParams(
     'normalizeVibeStrength': p.normalizeVibe,
     'model': model, // 后端接受 API 内部名,直接透传
     'characterPrompts': [
-      for (final c in chars)
+      for (var i = 0; i < chars.length; i++)
         {
           'enabled': true,
-          'positive': c.positive.trim(),
-          'negative': c.negative.trim(),
-          'position': c.position ?? '',
+          'positive': chars[i].positive.trim(),
+          'negative': chars[i].negative.trim(),
+          'position': positions[i],
         },
     ],
     // 角色定位:AI 自选 / 用我摆的位置(官方 use_coords,默认 false)。
@@ -134,11 +148,16 @@ Map<String, dynamic> buildBotParams(
   // 与图生图互斥且优先(对齐后端 convert_web_params_to_stream 的处理顺序)。
   final inpaint = s.inpaint;
   if (inpaint != null) {
+    final strength = effectiveInpaintStrength(p.model, inpaint.strength);
     params['inpaint'] = {
       'imageBase64': base64Encode(inpaint.image),
       'maskBase64': base64Encode(inpaint.mask),
-      'strength': inpaint.strength,
+      'strength': strength,
+      // 同直连:按官方格式发重绘强度(inpaintImg2ImgStrength,不是 1 时带 img2img 块)
+      'img2imgStrength': strength,
       'noise': 0,
+      // 同直连:服务端不叠原图,成图回来按羽化遮罩混回
+      'addOriginalImage': false,
     };
   } else if (img2img != null) {
     // 图生图

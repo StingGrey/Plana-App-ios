@@ -12,6 +12,8 @@
 [![iOS](https://img.shields.io/badge/iOS-16%2B%20beta-000000?logo=apple&logoColor=white)](IOS_PORT.md)
 [![Flutter](https://img.shields.io/badge/built%20with-Flutter-02569B?logo=flutter&logoColor=white)](https://flutter.dev)
 
+[![下载最新版 APK](https://img.shields.io/github/v/release/mc5024/Plana-App?label=%E4%B8%8B%E8%BD%BD%20APK&style=for-the-badge&logo=android&logoColor=white&color=3ddc84)](https://github.com/mc5024/Plana-App/releases/latest)
+
 **简体中文** · [English](README.en.md)
 
 </div>

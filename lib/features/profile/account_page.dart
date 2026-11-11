@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/auth/auth_mode.dart';
 import '../../core/auth/bot_session_store.dart';
 import '../../core/auth/nai_keys.dart';
+import '../../core/net/backend_client.dart';
 import '../../core/net/nai_client.dart';
 import '../../core/net/nai_key_status.dart';
 import '../../core/net/nai_proxy.dart';
@@ -12,6 +13,7 @@ import '../../core/theme/app_theme.dart';
 import '../generate/widgets/common.dart'
     show confirmDialog, hintSnack, sharedAxisRoute;
 import '../stats/stats_providers.dart' show fmtInt;
+import 'api_keys_page.dart';
 import 'bot_auth_panel.dart';
 import 'token_manage_page.dart';
 import '../../core/util/haptics.dart';
@@ -25,6 +27,26 @@ class AccountPage extends ConsumerStatefulWidget {
 }
 
 class _AccountPageState extends ConsumerState<AccountPage> {
+  @override
+  void initState() {
+    super.initState();
+    _syncBotExpiry();
+  }
+
+  /// 后端会话随使用滑动续期,进页时取一次最新过期时间写回本地。
+  Future<void> _syncBotExpiry() async {
+    final sid = (await ref.read(botSessionProvider.future))?.sessionId;
+    if (sid == null || !mounted) return;
+    try {
+      final v = await ref.read(backendClientProvider).validate(sid);
+      if (!mounted || !v.valid) return;
+      if (ref.read(botSessionProvider).value?.sessionId != sid) return;
+      await ref
+          .read(botSessionProvider.notifier)
+          .touch(expiresAtMs: v.expiresAtMs, botUserId: v.botUserId);
+    } catch (_) {}
+  }
+
   void _openTokens() =>
       Navigator.of(context).push(sharedAxisRoute(const TokenManagePage()));
 
@@ -86,7 +108,52 @@ class _AccountPageState extends ConsumerState<AccountPage> {
           ),
           const SizedBox(height: 12),
           _BotCard(session: session, onRevoke: _revokeBot),
+          // 密钥挂在 Bot 账户上(费用走钱包),没授权就没有可管的
+          if (session != null) ...[
+            const SizedBox(height: 12),
+            _ApiKeysEntry(
+              onTap: () => Navigator.of(
+                context,
+              ).push(sharedAxisRoute(const ApiKeysPage())),
+            ),
+          ],
         ],
+      ),
+    );
+  }
+}
+
+/// API 密钥入口(Bot):用自己的 NovelAI 客户端拿 Bot 账户出图,管理在二级页。
+class _ApiKeysEntry extends StatelessWidget {
+  const _ApiKeysEntry({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return Lifted(
+      radius: BorderRadius.circular(16),
+      child: Material(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(16),
+        clipBehavior: Clip.antiAlias,
+        child: ListTile(
+          onTap: onTap,
+          contentPadding: const EdgeInsets.fromLTRB(16, 2, 12, 2),
+          leading: Icon(Icons.key_outlined, color: scheme.onSurfaceVariant),
+          title: Text(
+            'API 密钥',
+            style: context.texts.bodyMedium!.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          subtitle: Text(
+            '用自己的 NovelAI 客户端出图,费用从钱包扣',
+            style: context.texts.labelSmall!.copyWith(color: scheme.outline),
+          ),
+          trailing: Icon(Icons.chevron_right, color: scheme.outline),
+        ),
       ),
     );
   }

@@ -269,11 +269,45 @@ void main() {
       expect(p['img2img'], {'strength': .5, 'color_correct': true});
     });
 
+    test('重绘不让服务端叠原图,文生图照旧', () {
+      expect(infill('NAI 4.5 Full', 1)['add_original_image'], isFalse);
+      final p =
+          buildNaiPayload(
+                _state('NAI 4.5 Full'),
+                presetId: 'none',
+              ).body['parameters']
+              as Map<String, dynamic>;
+      expect(p['add_original_image'], isTrue);
+    });
+
     test('等于 1:不带 img2img 块', () {
       final p = infill('NAI 4.5 Full', 1);
       expect(p['inpaintImg2ImgStrength'], 1);
       expect(p['strength'], 1);
       expect(p.containsKey('img2img'), isFalse);
+    });
+
+    test('bot 线:强度另按官方格式发一份,不能调的型号发 1', () {
+      Map<String, dynamic> bot(String model, double strength) =>
+          buildBotParams(
+                _state(model).copyWith(
+                  inpaint: InpaintJob(
+                    image: bytes,
+                    mask: bytes,
+                    strength: strength,
+                  ),
+                ),
+                seed: 1,
+                presetId: 'none',
+              )['inpaint']
+              as Map<String, dynamic>;
+      final b = bot('NAI 4.5 Full', .5);
+      expect(b['strength'], .5);
+      expect(b['img2imgStrength'], .5);
+      expect(b['addOriginalImage'], isFalse);
+      final m = bot('NAI 5.0 Full Medium', .5);
+      expect(m['strength'], 1);
+      expect(m['img2imgStrength'], 1);
     });
 
     test('V5 Full Medium 不能调:恒发 1', () {
@@ -564,6 +598,92 @@ void main() {
             {'x': 0.9, 'y': 0.9},
           ]);
         }
+      });
+    });
+
+    // 原图 2048×1536,发送框 (1024,512) 1024²:B3(0.3,0.5) 在框左边外 → 夹到 x=0;
+    // (0.85,0.55) 落在框里 (0.7,0.325)。
+    group('局部重绘:坐标换算进发送框', () {
+      GenerateState cropped(String model) => _state(model).copyWith(
+        characters: const [
+          CharacterPrompt(id: 'a', name: 'a', positive: 'x', position: 'B3'),
+          CharacterPrompt(
+            id: 'b',
+            name: 'b',
+            positive: 'y',
+            position: '0.8500,0.5500',
+          ),
+        ],
+        params: _state(
+          model,
+        ).params.copyWith(width: 1024, height: 1024, useCoords: true),
+        inpaint: InpaintJob(
+          image: Uint8List.fromList(const [1]),
+          mask: Uint8List.fromList(const [2]),
+          strength: 1,
+          paste: InpaintPaste(
+            original: Uint8List.fromList(const [3]),
+            sendX: 1024,
+            sendY: 512,
+            tightX: 1024,
+            tightY: 512,
+            tightW: 1024,
+            tightH: 1024,
+            outW: 2048,
+            outH: 1536,
+          ),
+        ),
+      );
+
+      List<Map> centersOf(Map<String, dynamic> body) => [
+        for (final c in capCenters(body)) (c['centers'] as List).single as Map,
+      ];
+
+      test('V5 直连:换算后的自由坐标', () {
+        final cs = centersOf(
+          buildNaiPayload(cropped('NAI 5.0 Full'), presetId: 'none').body,
+        );
+        expect(cs[0]['x'], 0.0);
+        expect(cs[0]['y'], closeTo(0.25, 1e-9));
+        expect(cs[1]['x'], closeTo(0.7, 1e-9));
+        expect(cs[1]['y'], closeTo(0.325, 1e-9));
+      });
+
+      test('V4.5 直连:换算后再吸附格心', () {
+        final cs = centersOf(
+          buildNaiPayload(cropped('NAI 4.5 Full'), presetId: 'none').body,
+        );
+        expect(cs, [
+          {'x': 0.1, 'y': 0.3},
+          {'x': 0.7, 'y': 0.3},
+        ]);
+      });
+
+      test('bot 线:换算后以自由坐标串发', () {
+        final cps =
+            buildBotParams(
+                  cropped('NAI 4.5 Full'),
+                  seed: 1,
+                  presetId: 'none',
+                )['characterPrompts']
+                as List;
+        expect(
+          [for (final c in cps) (c as Map)['position']],
+          ['0.0000,0.2500', '0.7000,0.3250'],
+        );
+      });
+
+      test('整图重绘不换算', () {
+        final s = cropped('NAI 5.0 Full');
+        final whole = s.copyWith(
+          inpaint: InpaintJob(
+            image: s.inpaint!.image,
+            mask: s.inpaint!.mask,
+            strength: 1,
+          ),
+        );
+        final cs = centersOf(buildNaiPayload(whole, presetId: 'none').body);
+        expect(cs[0], {'x': 0.3, 'y': 0.5});
       });
     });
 
