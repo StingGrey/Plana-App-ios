@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
+import 'package:plana_app/core/util/image_ops.dart';
 import 'package:plana_app/core/util/png_meta.dart';
 import 'package:plana_app/features/inpaint/inpaint_ops.dart';
 
@@ -87,6 +88,70 @@ void main() {
     });
   });
 
+  testWidgets('局部框放大发送:成图缩回框里再混回', (tester) async {
+    await tester.runAsync(() async {
+      // 原图 512² 蓝;框 (128,128) 128²,按 256² 发;遮罩涂发送图正中 [104,152)²
+      final mask = img.Image(width: 256, height: 256, numChannels: 3)
+        ..clear(img.ColorRgb8(0, 0, 0));
+      img.fillRect(
+        mask,
+        x1: 104,
+        y1: 104,
+        x2: 151,
+        y2: 151,
+        color: img.ColorRgb8(255, 255, 255),
+      );
+      final r = await blendInpaintResult(
+        base: solidPng(512, 512, 0, 0, 255),
+        patch: solidPng(256, 256, 255, 0, 0),
+        mask: Uint8List.fromList(img.encodePng(mask)),
+        x: 128,
+        y: 128,
+        regionW: 128,
+        regionH: 128,
+      );
+      expect((r.width, r.height), (512, 512));
+      final out = img.decodePng(r.png)!;
+      expect(px(out, 128 + 64, 128 + 64), (255, 0, 0)); // 框中心 = 发送图中心
+      expect(px(out, 128 + 129, 128 + 64), (0, 0, 255)); // 框外紧挨着也不动
+      expect(px(out, 128 + 1, 128 + 1), (0, 0, 255));
+    });
+  });
+
+  testWidgets('放大发送的遮罩:按发送网格逐格取原图的格', (tester) async {
+    await tester.runAsync(() async {
+      // 原图 512²,涂格 (20,20) = [160,168)²;框 (128,128) 128² 放大到 256²
+      final g = MaskGrid(512, 512)..cells[20 * 64 + 20] = 1;
+      final png = await maskToPng(
+        g,
+        region: (x: 128, y: 128, w: 128, h: 128),
+        outW: 256,
+        outH: 256,
+      );
+      final m = img.decodePng(png)!;
+      expect((m.width, m.height), (256, 256));
+      // 原图 [160,168) → 框内 [32,40) → ×2 = [64,80),正好两个发送格
+      expect(px(m, 64, 64).$1, 255);
+      expect(px(m, 79, 79).$1, 255);
+      expect(px(m, 63, 70).$1, 0);
+      expect(px(m, 80, 70).$1, 0);
+    });
+  });
+
+  testWidgets('裁切可缩放到发送尺寸', (tester) async {
+    await tester.runAsync(() async {
+      final png = await cropPng(
+        solidPng(512, 512, 10, 20, 30),
+        (x: 64, y: 64, w: 128, h: 128),
+        outW: 256,
+        outH: 256,
+      );
+      final c = img.decodePng(png)!;
+      expect((c.width, c.height), (256, 256));
+      expect(px(c, 128, 128), (10, 20, 30));
+    });
+  });
+
   testWidgets('成图与遮罩尺寸不符直接报错', (tester) async {
     await tester.runAsync(() async {
       await expectLater(
@@ -97,6 +162,29 @@ void main() {
         ),
         throwsStateError,
       );
+    });
+  });
+
+  test('NAI 收的格式只认 PNG / JPEG / WebP', () {
+    final im = img.Image(width: 8, height: 8, numChannels: 3);
+    expect(isNaiImageFormat(Uint8List.fromList(img.encodePng(im))), isTrue);
+    expect(isNaiImageFormat(Uint8List.fromList(img.encodeJpg(im))), isTrue);
+    final webp = Uint8List(16)
+      ..setRange(0, 4, 'RIFF'.codeUnits)
+      ..setRange(8, 12, 'WEBP'.codeUnits);
+    expect(isNaiImageFormat(webp), isTrue);
+    expect(isNaiImageFormat(Uint8List.fromList(img.encodeBmp(im))), isFalse);
+    expect(isNaiImageFormat(Uint8List.fromList(img.encodeGif(im))), isFalse);
+    expect(isNaiImageFormat(Uint8List(0)), isFalse);
+  });
+
+  testWidgets('别的格式转成 PNG,像素不变', (tester) async {
+    await tester.runAsync(() async {
+      final im = img.Image(width: 8, height: 8, numChannels: 3)
+        ..clear(img.ColorRgb8(10, 200, 30));
+      final png = await ensurePng(Uint8List.fromList(img.encodeBmp(im)));
+      expect(isNaiImageFormat(png), isTrue);
+      expect(px(img.decodePng(png)!, 3, 3), (10, 200, 30));
     });
   });
 

@@ -487,7 +487,7 @@ class GenerationNotifier extends Notifier<GenPool> {
     // 面板发起(using == null)按模块配置剥离隐藏模块的数据;
     // 快照复跑(图库重新生成等)忠实执行,不受当前模块配置影响。
     // 快照在这一刻定死:之后随便改编辑器都不影响已提交的这条。
-    final GenerateState s = using ?? _panelJob();
+    final GenerateState s = withoutInpaintVibes(using ?? _panelJob());
 
     final isBot = ref.read(authModeProvider).value == AuthMode.bot;
 
@@ -530,14 +530,7 @@ class GenerationNotifier extends Notifier<GenPool> {
       // 已经有别的在跑 → 这条多半要等位,先说清楚是在等而不是在准备
       note: state.jobs.isEmpty ? null : '等待中',
       pasteUnder: under?.original,
-      pasteAt: under == null
-          ? null
-          : (
-              x: under.sendX,
-              y: under.sendY,
-              w: s.params.width,
-              h: s.params.height,
-            ),
+      pasteAt: under?.region,
       pasteSize: under == null ? null : (w: under.outW, h: under.outH),
     );
     // 同步回调要在挂卡之后立刻发生:AI 助手拿它跟住这一单画逐帧预览。
@@ -1489,8 +1482,10 @@ class GenerationNotifier extends Notifier<GenPool> {
           base: paste?.original ?? job.image,
           patch: bytes,
           mask: job.mask,
-          x: paste?.sendX ?? 0,
-          y: paste?.sendY ?? 0,
+          x: paste?.region.x ?? 0,
+          y: paste?.region.y ?? 0,
+          regionW: paste?.region.w,
+          regionH: paste?.region.h,
         );
         out = r.png;
         w = r.width;

@@ -26,6 +26,7 @@ import 'censor_infer.dart';
 import 'censor_ops.dart';
 import 'inpaint_ops.dart';
 import '../../core/util/haptics.dart';
+import '../../core/util/image_ops.dart' show ensurePng, isNaiImageFormat;
 import '../../l10n/l10n.dart';
 
 /// 内容层功能色(画在图片上,与 app 主题无关):
@@ -322,15 +323,16 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     if (job!.sourceId != widget.session.sourceId) return;
     if (!grid.decodeInto(data)) return;
     IntRect? box;
-    final paste = job.paste;
-    if (_mode == _Mode.paint && paste != null) {
-      if (job.sendSize case (final w, final h)
-          when paste.sendX >= 0 &&
-              paste.sendY >= 0 &&
-              paste.sendX + w <= img.width &&
-              paste.sendY + h <= img.height) {
-        box = (x: paste.sendX, y: paste.sendY, w: w, h: h);
-      }
+    final r = job.paste?.region;
+    if (_mode == _Mode.paint &&
+        r != null &&
+        r.x >= 0 &&
+        r.y >= 0 &&
+        r.w > 0 &&
+        r.h > 0 &&
+        r.x + r.w <= img.width &&
+        r.y + r.h <= img.height) {
+      box = r;
     }
     setState(() {
       _rev++;
@@ -923,8 +925,6 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
           // 图没扩成功时(用户又退回来)还能接着用。
           grid: _grid?.encode(),
         ),
-        width: tw,
-        height: th,
       );
     } finally {
       if (mounted) setState(() => _firing = false);
@@ -935,23 +935,17 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   /// (对齐官网)。流式预览也跟着回到图库画布那一份,不再自己画一套。
   ///
   /// 存完直接跳创作页:主生成按钮在那儿,留在图库等于让人自己去找。
-  void _saveInto(InpaintJob job, {required int width, required int height}) {
-    // 存入会顶掉图生图底图、改分辨率:提示条上给「撤销」,整份放回存入之前
+  void _saveInto(InpaintJob job) {
+    // 存入会顶掉图生图底图:提示条上给「撤销」,整份放回存入之前
     final before = ref.read(generateProvider);
     final canvasId = ref.read(canvasWorkspaceProvider).activeId;
     final canvases = ref.read(canvasWorkspaceProvider.notifier);
-    ref
-        .read(generateProvider.notifier)
-        .setInpaint(job, width: width, height: height);
+    ref.read(generateProvider.notifier).setInpaint(job);
     Haptics.medium();
-    // 遮罩会改写生成分辨率(局部发裁切区、扩图发垫大后的画布),和图生图选底图
-    // 一个道理 —— 变了就说一声,免得回到创作页看见分辨率莫名其妙换了。
-    final resized =
-        before.params.width != width || before.params.height != height;
     hintSnack(
       context,
-      resized ? '分辨率已按重绘范围调整为 $width×$height' : '已存入重绘',
-      icon: resized ? Icons.aspect_ratio : Icons.brush,
+      '已存入重绘',
+      icon: Icons.brush,
       actionLabel: '撤销',
       onAction: () => canvases.undoWrite(before, canvasId),
     );
@@ -1300,8 +1294,10 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
       hintSnack(context, '黄框外还有涂抹,拉大黄框或分两次重绘', icon: Icons.crop);
       return;
     }
-    final sw = send?.w ?? img.width;
-    final sh = send?.h ?? img.height;
+    // 局部框放大到约 100 万像素再发(同官方),成图回来再缩回框里
+    final out = send == null ? null : focusSendSize(send.w, send.h);
+    final sw = out?.w ?? img.width;
+    final sh = out?.h ?? img.height;
     if (sw * sh > _maxSendPixels) {
       hintSnack(
         context,
@@ -1321,8 +1317,8 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
       final Uint8List mask;
       InpaintPaste? paste;
       if (send != null) {
-        image = await cropPng(_currentBytes, send);
-        mask = await maskToPng(grid, region: send);
+        image = await cropPng(_currentBytes, send, outW: sw, outH: sh);
+        mask = await maskToPng(grid, region: send, outW: sw, outH: sh);
         paste = InpaintPaste(
           original: _currentBytes,
           sendX: send.x,
@@ -1335,7 +1331,10 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
           outH: img.height,
         );
       } else {
-        image = _currentBytes;
+        // NAI 只收 PNG / JPEG / WebP,别的格式(HEIC、AVIF…)先转成 PNG
+        image = isNaiImageFormat(_currentBytes)
+            ? _currentBytes
+            : await ensurePng(_currentBytes);
         mask = await maskToPng(grid);
       }
       if (!mounted) return;
@@ -1348,8 +1347,6 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
           sourceId: widget.session.sourceId,
           grid: grid.encode(),
         ),
-        width: sw,
-        height: sh,
       );
     } finally {
       if (mounted) setState(() => _firing = false);
