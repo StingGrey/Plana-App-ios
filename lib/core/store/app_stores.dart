@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 
-import '../../features/assistant/session_store.dart';
+import '../../features/assistant/application/session_repository.dart';
 import '../../features/editor/data/trans_cache_store.dart';
 import '../../features/gallery/gallery_store.dart';
 import '../../features/gallery/albums/album_store.dart';
@@ -32,7 +32,10 @@ class AppStores {
     this.albums,
     this.history,
     this.transCache,
+    this._root,
   );
+
+  final Directory _root;
 
   final BlobStore blobs;
   final WorkspaceStore workspace;
@@ -44,8 +47,8 @@ class AppStores {
   /// 画布历史,见 [CanvasHistoryStore]。
   final CanvasHistoryStore history;
 
-  /// AI 助手的对话存档,见 [AssistantStore]。
-  final AssistantStore assistant;
+  /// AI 助手的对话存档,见 [SessionRepository]。
+  final SessionRepository assistant;
 
   /// 非机密设置(主题/生成参数/编辑器…),见 [PrefsStore]。
   final PrefsStore prefs;
@@ -66,11 +69,12 @@ class AppStores {
       gallery,
       LocalGalleryStore(root, historyStore: gallery),
       KeyLedgerStore(root),
-      AssistantStore(blobs, root),
+      SessionRepository(blobs, root),
       PrefsStore.emptyForTest(root),
       AlbumStore(root),
       CanvasHistoryStore(workspace, root),
       TransCacheStore(root),
+      root,
     );
   }
 
@@ -95,29 +99,29 @@ class AppStores {
     final localGallery = LocalGalleryStore(root, historyStore: gallery);
     final albums = AlbumStore(root);
     final ledger = KeyLedgerStore(root);
-    final assistant = AssistantStore(blobs, root);
+    final assistant = SessionRepository(blobs, root);
     final transCache = TransCacheStore(root);
     try {
       await blobs.ensureReady();
     } catch (_) {}
     // 设置先于其余项:主题要在首帧前拿到,且它一次读全,后面各模块都走内存
     final prefs = await PrefsStore.open(root);
-    await workspace.load();
-    await gallery.load();
-    try {
-      await localGallery.load();
-    } catch (_) {
-      // A missing/unsupported local-gallery directory must not block startup.
-    }
-    await albums.load(
-      liveImages: {
-        for (final r in gallery.initialResults) r.id,
-        for (final t in gallery.initialTrash) t.image.id,
-      },
-    );
-    await ledger.load();
-    await assistant.load();
-    await transCache.load();
+    await Future.wait([
+      workspace.load(),
+      gallery.load().then(
+        (_) => albums.load(
+          liveImages: {
+            for (final r in gallery.initialResults) r.id,
+            for (final t in gallery.initialTrash) t.image.id,
+          },
+        ),
+      ),
+      // 本地图库目录缺失/不支持时不能卡住启动
+      localGallery.load().catchError((_) {}),
+      ledger.load(),
+      assistant.load(),
+      transCache.load(),
+    ]);
     return AppStores._(
       blobs,
       workspace,
@@ -129,6 +133,7 @@ class AppStores {
       albums,
       CanvasHistoryStore(workspace, root),
       transCache,
+      root,
     );
   }
 
@@ -143,7 +148,7 @@ class AppStores {
   }
 
   /// 启动后台维护(避开首帧,延迟几秒):清选图器缓存垃圾 + 远端图缓存裁剪
-  /// + blob GC。
+  /// + 清空图库的残留 + blob GC(隔 [_gcEvery] 才跑一次)。
   void postBootMaintenance() {
     final bootedAt = DateTime.now();
     Future<void>(() async {
@@ -151,9 +156,11 @@ class AppStores {
       await sweepPickerCache();
       await RemoteImageStore.trim();
       await clearRetiredRoleLexicon();
+      await gallery.sweepCleared();
       try {
         final canvases = workspace.initialCanvases?.canvases ?? const [];
         await history.removeOrphans({for (final c in canvases) c.id}, bootedAt);
+        if (!await _gcDue(bootedAt)) return;
         final live = <String>{
           ...await workspace.liveRefs(),
           ...await gallery.liveRefs(),
@@ -161,8 +168,23 @@ class AppStores {
           ...await history.liveRefs(),
         };
         await blobs.gc(live);
+        await _gcStamp.writeAsString('${bootedAt.millisecondsSinceEpoch}');
       } catch (_) {}
     });
+  }
+
+  static const _gcEvery = Duration(days: 3);
+
+  File get _gcStamp => File('${_root.path}/blob_gc_at');
+
+  Future<bool> _gcDue(DateTime now) async {
+    try {
+      if (!await _gcStamp.exists()) return true;
+      final at = int.tryParse((await _gcStamp.readAsString()).trim()) ?? 0;
+      return now.millisecondsSinceEpoch - at >= _gcEvery.inMilliseconds;
+    } catch (_) {
+      return true;
+    }
   }
 }
 

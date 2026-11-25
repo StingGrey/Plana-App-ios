@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plana_app/core/auth/bot_session_store.dart';
 import 'package:plana_app/core/theme/app_theme.dart';
+import 'package:plana_app/core/ui/selection_bar.dart';
 import 'package:plana_app/features/editor/data/tag_translation_service.dart';
 import 'package:plana_app/features/inspiration/codex/codex_card.dart';
 import 'package:plana_app/features/inspiration/codex/codex_favorites.dart';
@@ -66,6 +67,11 @@ class _Session extends BotSessionNotifier {
       const BotSession(sessionId: 'test', botUserId: 'me');
 }
 
+class _CodexIndex extends CodexIndexNotifier {
+  @override
+  Future<List<CodexMeta>> build() async => const [];
+}
+
 class _Favorites extends CodexFavoritesNotifier {
   @override
   Future<List<CodexFavorite>> build() async => [_fav];
@@ -85,7 +91,7 @@ Future<({ProviderContainer c, LibraryPicks? Function() result})> _open(
         publicTagsProvider(cat).overrideWith((_) async => const []),
       tagAuthorNamesProvider.overrideWith((_) async => const {}),
       codexFavoritesProvider.overrideWith(_Favorites.new),
-      codexIndexProvider.overrideWith((_) async => const []),
+      codexIndexProvider.overrideWith(_CodexIndex.new),
       codexMediaProvider.overrideWith((_) async => CodexMedia.fallback),
       tagTranslationServiceProvider.overrideWith((ref) {
         final service = TagTranslationService(enabled: false, baseUrl: '');
@@ -192,7 +198,8 @@ void main() {
     await tester.tap(find.text('取消选择'));
     await tester.pumpAndSettle();
     // 底栏收起;回到画风页,刚才勾的也都放掉了
-    expect(find.text('加入 (3)'), findsNothing);
+    expect(tester.getSize(find.byType(SelectionBar)).height, 0);
+    expect(find.text('加入 (3)').hitTestable(), findsNothing);
     expect(tester.widget<TagCard>(_tagCard('a12')).selected, isFalse);
     expect(tester.widget<TagCard>(_tagCard('b3')).selected, isFalse);
   });

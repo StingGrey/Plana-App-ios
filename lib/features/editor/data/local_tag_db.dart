@@ -34,6 +34,9 @@ class LocalTagDb {
     }
   }();
 
+  /// 索引本身;读不出来是 null。
+  Future<TagIndex?> get index => _ready;
+
   /// 读进索引并装给注音层 / 词条栏的同步反查([translationOf] / [countOf])。
   /// 开机在 runApp 之前调,从第一帧起就查得到。
   Future<void> install() async {
@@ -70,6 +73,10 @@ class LocalTagDb {
     final idx = await _ready;
     return {for (final t in tokens) t: idx?.postCountOf(t) ?? 0};
   }
+
+  /// 分词后的词里词库标成画师的那些。图库按画风归类时拿它数一张图用了几个画师。
+  Future<Set<String>> artistsIn(Iterable<String> tokens) async =>
+      (await _ready)?.artistsIn(tokens) ?? const {};
 }
 
 /// 全局单例。main 里开机就 new 一个、装好再注进来;没注的地方(测试)第一次查询时懒加载。

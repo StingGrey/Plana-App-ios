@@ -306,6 +306,29 @@ class TagIndexSpec {
   }
 }
 
+/// 词库一行的只读视图,见 [TagIndex.rows]。
+class TagRowView {
+  TagRowView._(this._ix, this._row);
+
+  final TagIndex _ix;
+  final int _row;
+
+  int get count => _ix._rowCount(_row);
+
+  /// Danbooru 类目:0 一般 / 1 画师 / 3 作品 / 4 角色 / 5 meta。
+  int get category => _ix._rowCategory(_row);
+
+  /// 标签正名(下划线形式)。
+  String get tag => _ix._str(_row + 2, _ix._u16(_row));
+
+  /// 首段译名;没有是空串。
+  String get zh {
+    final zhAt = _row + 2 + _ix._u16(_row);
+    final len = _ix._u16(zhAt);
+    return len == 0 ? '' : _ix._str(zhAt + 2, len);
+  }
+}
+
 /// 读取端。查询全是同步的,只读字节;注音层 / 词条栏经 [offlineTagMeta] 用它。
 class TagIndex implements OfflineTagMeta {
   TagIndex(ByteData data)
@@ -369,6 +392,31 @@ class TagIndex implements OfflineTagMeta {
     final out = [for (final row in hit) _character(row)];
     out.sort((a, b) => b.count.compareTo(a.count));
     return out;
+  }
+
+  /// 分词集合里词库标成画师(类目 1)的那些词。
+  Set<String> artistsIn(Iterable<String> tokens) => {
+    for (final t in tokens)
+      if (_postRowOf(t) case final row? when _rowCategory(row) == 1) t,
+  };
+
+  int? _postRowOf(String token) {
+    final p = _find(token);
+    if (p < 0) return null;
+    final row = _u32(p + 6);
+    return row == 0 ? null : row;
+  }
+
+  /// 按热度降序逐条给出词库的行。字段用到才解码,扫全库时只解码要比的那一列。
+  Iterable<TagRowView> get rows sync* {
+    var p = _entriesOff;
+    for (var i = 0; i < _entryCount; i++) {
+      final row = p;
+      final zhAt = row + 2 + _u16(row);
+      final aliasAt = zhAt + 2 + _u16(zhAt) + 5;
+      p = aliasAt + 2 + _u16(aliasAt);
+      yield TagRowView._(this, row);
+    }
   }
 
   /// 英文补全,匹配口径同后端 `tag_search/autocomplete.py`(仿 Danbooru tag_query)。
@@ -554,6 +602,11 @@ class TagIndex implements OfflineTagMeta {
   int _rowCount(int row) {
     final zhAt = row + 2 + _u16(row);
     return _u32(zhAt + 2 + _u16(zhAt));
+  }
+
+  int _rowCategory(int row) {
+    final zhAt = row + 2 + _u16(row);
+    return _b[zhAt + 2 + _u16(zhAt) + 4];
   }
 
   CharacterTag _character(int row) {

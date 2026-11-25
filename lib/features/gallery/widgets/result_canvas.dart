@@ -7,9 +7,11 @@ import 'package:gal/gal.dart';
 
 import '../../../core/theme/app_skin.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../../core/ui/labeled_dropdown.dart';
 import '../../../core/ui/param_help.dart';
 import '../../generate/generate_state.dart';
-import '../../generate/gen_modules.dart' show retargetModel;
+import '../../generate/gen_modules.dart';
+import '../../generate/canvas_state.dart';
 import '../../generate/generation_controller.dart';
 import '../../generate/models.dart';
 import '../../generate/cost.dart' show estimateInpaintCost;
@@ -17,6 +19,7 @@ import '../../generate/widgets/common.dart'
     show ParamSlider, hintSnack, sharedAxisRoute;
 import '../../import/import_panel.dart';
 import '../../inpaint/inpaint_overlay.dart';
+import '../../shell/shell_state.dart';
 import '../../../core/net/anlas_provider.dart';
 import '../../../core/store/app_stores.dart';
 import '../../../core/util/haptics.dart';
@@ -31,9 +34,9 @@ import '../phone_gallery_save.dart';
 import '../save_pipeline.dart';
 import '../save_settings.dart';
 import '../upscale_model.dart';
-import '../upscale_nai.dart';
 import 'save_sheet.dart';
 import '../result_detail_page.dart';
+import '../../../l10n/l10n.dart';
 
 /// 持久大图层:有字节 → `Image.memory`(gaplessPlayback);否则画一个目标尺寸的空画框。
 /// 生成/查看全程复用同一个 Image widget,借 gaplessPlayback 桥接逐帧预览与终图,消除切换闪烁。
@@ -122,8 +125,8 @@ class ResultChrome extends StatelessWidget {
   Widget build(BuildContext context) {
     return Stack(
       children: [
-        Positioned(right: 12, bottom: 16, child: _ActionRail(result: result)),
-        const Positioned(left: 12, bottom: 16, child: _SaveAlbumChip()),
+        Positioned(right: 12, bottom: 4, child: _ActionRail(result: result)),
+        const Positioned(left: 12, bottom: 4, child: _SaveAlbumChip()),
       ],
     );
   }
@@ -191,7 +194,8 @@ class ProgressPill extends StatelessWidget {
     if (status.sampling && status.step < status.total) {
       return '${status.step}/${status.total}';
     }
-    return status.note ?? (status.sampling ? '收尾中' : '准备中');
+    return status.note ??
+        (status.sampling ? l10nNow.finishing : l10nNow.preparing);
   }
 
   /// 胶囊那一套配套的数。**别单独动其中一个** —— 它们互相定死了:
@@ -374,26 +378,26 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
     if (widget.horizontal) {
       final buttons = <Widget>[
         _RailButton(
-          label: '重绘',
+          label: context.l10n.inpaint,
           icon: Icons.brush,
           compact: true,
           onTap: () => _inpaint(context, ref),
         ),
         _RailButton(
-          label: '放大',
+          label: context.l10n.upscale,
           icon: Icons.open_in_full,
           compact: true,
           onTap: () => _upscale(context, ref),
         ),
         _RailButton(
-          label: '保存',
-          icon: Icons.download,
+          label: result.saved ? context.l10n.savedLabel : context.l10n.save,
+          icon: result.saved ? Icons.download_done : Icons.download,
           compact: true,
           onTap: () => _download(context, ref),
           onLongPress: () => _openSaveSheet(context, ref),
         ),
         _RailButton(
-          label: '导入',
+          label: context.l10n.importLabel,
           icon: Icons.input,
           compact: true,
           onTap: () => _import(context, ref),
@@ -414,14 +418,14 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
         ),
         if (result.inpaintFrom != null)
           _RailButton(
-            label: '对比',
+            label: context.l10n.compare,
             icon: Icons.compare,
             compact: true,
             onHold: (down) => _compare(context, ref, down),
             onTap: () {},
           ),
         _RailButton(
-          label: '重新生成',
+          label: context.l10n.regenerate,
           icon: Icons.refresh,
           primary: true,
           compact: true,
@@ -471,26 +475,28 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
                     _RailButton(
-                      label: '重绘',
+                      label: context.l10n.inpaint,
                       icon: Icons.brush,
                       onTap: () => _inpaint(context, ref),
                     ),
                     const SizedBox(height: 10),
                     _RailButton(
-                      label: '放大',
+                      label: context.l10n.upscale,
                       icon: Icons.open_in_full,
                       onTap: () => _upscale(context, ref),
                     ),
                     const SizedBox(height: 10),
                     _RailButton(
-                      label: result.saved ? '已保存' : '保存',
+                      label: result.saved
+                          ? context.l10n.savedLabel
+                          : context.l10n.save,
                       icon: result.saved ? Icons.download_done : Icons.download,
                       onTap: () => _download(context, ref),
                       onLongPress: () => _openSaveSheet(context, ref),
                     ),
                     const SizedBox(height: 10),
                     _RailButton(
-                      label: '导入',
+                      label: context.l10n.importLabel,
                       icon: Icons.input,
                       onTap: () => _import(context, ref),
                     ),
@@ -526,7 +532,7 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
               // 只有重绘产物才有「之前」可看;源图被删了也不给(取不到字节)。
               if (result.inpaintFrom != null) ...[
                 _RailButton(
-                  label: '对比',
+                  label: context.l10n.compare,
                   icon: Icons.compare,
                   onHold: (down) => _compare(context, ref, down),
                   onTap: () {},
@@ -534,7 +540,7 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
                 const SizedBox(width: 10),
               ],
               _RailButton(
-                label: '重新生成',
+                label: context.l10n.regenerate,
                 icon: Icons.refresh,
                 primary: true,
                 onTap: () => _regenerate(context, ref),
@@ -600,7 +606,11 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
   /// 排不排得下由池子的上限说了算。
   bool _blockWhileInpainting(BuildContext context, WidgetRef ref) {
     if (!ref.read(inpaintStatusProvider).busy) return false;
-    hintSnack(context, '重绘进行中,请稍候', icon: Icons.hourglass_top);
+    hintSnack(
+      context,
+      context.l10n.inpaintInProgress,
+      icon: Icons.hourglass_top,
+    );
     return true;
   }
 
@@ -617,7 +627,7 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
     if (isModalModel(model)) {
       hintSnack(
         context,
-        '${isKreaModel(model) ? 'Krea 2' : 'Anima'} 模型不支持重绘,请先切回 NovelAI 模型',
+        context.l10n.inpaintNeedNai(isKreaModel(model) ? 'Krea 2' : 'Anima'),
         icon: Icons.block,
       );
       return;
@@ -625,7 +635,7 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
     final bytes = await _bytesOf(ref);
     if (!context.mounted) return;
     if (bytes == null) {
-      hintSnack(context, '此图无像素数据', icon: Icons.error_outline);
+      hintSnack(context, context.l10n.noPixelData, icon: Icons.error_outline);
       return;
     }
     ref
@@ -639,33 +649,27 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
     final bytes = await _bytesOf(ref);
     if (!context.mounted) return;
     if (bytes == null) {
-      hintSnack(context, '此图无像素数据', icon: Icons.error_outline);
+      hintSnack(context, context.l10n.noPixelData, icon: Icons.error_outline);
       return;
     }
     final w = result.width, h = result.height;
     final naiV5Ok = naiV5UpscaleSupportsSize(w, h);
-    // 重绘走生成管线。快照只负责提供**提示词与采样参数**,模型跟着创作页
-    // 当前选的那个走 —— 重绘是一次新的生成,用哪个模型是用户此刻的选择,
-    // 不是这张图当初拿什么出的。倍率表(Max 只有 V5 有)因此也按当前模型算,
-    // 而且 _redraw 会把这个模型真的写进请求里,两边不会错位。
-    final snapshot = result.hasInput ? await _inputOf(ref) : null;
-    if (!context.mounted) return;
-    final curModel = ref.read(generateProvider).params.model;
-    // 换了模型的快照要按新模型的能力面重新裁一遍(V5 没有 Vibe / 角色参考);
-    // 重绘图的快照去掉重绘任务,底图用这张成图
-    final redrawInput = snapshot == null
-        ? null
-        : retargetModel(snapshot, curModel).copyWith(inpaint: null);
-    final scales = redrawInput == null || isModalModel(curModel)
+    // 图生图放大取创作页当前画布(提示词、角色、参考图、采样参数、模型,
+    // 隐藏模块剥掉),底图换成这张、去掉重绘任务。先清 inpaint 再 strip,
+    // 避免画布原本挂着遮罩时误剥 V5 角色参考。倍率表按当前模型算。
+    final redrawInput = stripHiddenModules(
+      ref.read(generateProvider).copyWith(inpaint: null),
+      ref.read(genModulesProvider).value ?? const GenModuleSettings(),
+    );
+    final curModel = redrawInput.params.model;
+    final scales = isModalModel(curModel)
         ? const <EnhanceScale>[]
         : enhanceScaleOptions(w, h, curModel);
-    // 不可用时把**原因**一起算出来:三种原因差得远,看不见的缺席最难查。
-    final redrawWhy = snapshot == null
-        ? '这张图没有参数快照,重绘放大用不了(只有本机生成的图带快照)'
-        : isModalModel(curModel)
-        ? '$curModel 不支持图生图,重绘放大要先切回 NAI 模型'
+    // 不可用时把**原因**一起算出来:看不见的缺席最难查。
+    final redrawWhy = isModalModel(curModel)
+        ? context.l10n.redrawModelUnsupported(curModel)
         : scales.isEmpty
-        ? '源图 $w×$h 已超过 NAI 的总像素上限,重绘放不出任何倍率'
+        ? context.l10n.redrawTooLarge(w, h)
         : null;
 
     // 1. 上次那套参数(不可用的方式/倍率就地回退,免得面板一开就是个死选项)。
@@ -716,117 +720,69 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
     }
     final method = ext == null ? picked.settings.method : UpscaleMethod.naiV5;
 
-    // 重绘放大:走生成管线(画布流式预览),不弹放大对话框
+    // 图生图放大:存进创作页
     if (method == UpscaleMethod.redraw) {
-      await _redraw(context, ref, bytes, picked.settings, redrawInput);
+      _saveRedraw(context, ref, bytes, picked.settings);
       return;
     }
 
-    // 2. 进度对话框:远程一次性调用没有逐步进度,只走阶段文案 + 不确定动画
-    final stage = ValueNotifier<String>('准备…');
+    // 2. 投进出图任务池,和重绘放大一样接管画布。
+    // 沿用原图 seed / 输入参数(快照懒读补齐);外部图没有这两样
+    final gallery = ref.read(galleryProvider.notifier);
+    final seed = ext == null ? result.seed : 0;
+    final input = ext == null ? await _inputOf(ref) : null;
+    if (!context.mounted) return;
     unawaited(
-      showDialog<void>(
-        context: context,
-        barrierDismissible: false,
-        builder: (_) => _UpscaleProgressDialog(method: method, stage: stage),
-      ),
-    );
-
-    // 3. 执行
-    try {
-      final r = await upscaleNai(
-        ref,
-        ext == null ? bytes : await ensurePng(ext.bytes),
-        width: ext?.width ?? w,
-        height: ext?.height ?? h,
-        onStage: (s) => stage.value = s,
-      );
-      final png = r.png;
-      final outW = r.width;
-      final outH = r.height;
-      // 入库:新条目 + 放大角标,沿用原图 seed/输入参数(快照懒读补齐);
-      // 外部图没有这两样
-      final input = ext == null ? await _inputOf(ref) : null;
-      await ref
-          .read(galleryProvider.notifier)
-          .addResultToGallery(
-            target: galleryTarget,
-            canSelect: () =>
-                ref.read(galleryProvider.notifier).selectionRevision ==
-                galleryRevision,
-            bytes: png,
-            width: outW,
-            height: outH,
-            seed: ext == null ? result.seed : 0,
-            badge: ResultBadge.upscaled,
+      ref
+          .read(generationProvider.notifier)
+          .upscale(
+            source: ext?.bytes ?? bytes,
+            width: ext?.width ?? w,
+            height: ext?.height ?? h,
+            galleryTarget: galleryTarget,
+            seed: seed,
             input: input,
-          );
-      unawaited(ref.read(anlasProvider.notifier).refresh());
-      if (context.mounted) Navigator.of(context).pop();
-      if (context.mounted) {
-        hintSnack(
-          context,
-          '${method.label}完成 $outW×$outH,已存入图库',
-          icon: Icons.check_circle_outline,
-        );
-      }
-    } catch (e) {
-      if (context.mounted) Navigator.of(context).pop();
-      if (context.mounted) {
-        hintSnack(context, '超分失败: $e', icon: Icons.error_outline);
-      }
-    } finally {
-      stage.dispose();
-    }
+            canSelect: () => gallery.selectionRevision == galleryRevision,
+          ),
+    );
+    final target = naiV5UpscaleTargetSize(ext?.width ?? w, ext?.height ?? h);
+    hintSnack(
+      context,
+      context.l10n.upscaleStart(target.w, target.h),
+      icon: Icons.blur_on,
+    );
   }
 
-  /// 重绘放大:img2img 重新生成(走生成管线,结果画布流式 + 自动入库)。
-  ///
-  /// 数值倍率是**客户端把目标宽高算好再发**;Max ✨ 档相反 —— 发原图尺寸 +
-  /// `upscaled_enhance`,由服务端放大到总像素上限,所以这里不动 params 的宽高。
-  ///
-  /// [input] 是 _upscale 备好的快照:**模型已经换成创作页当前选的那个**。
-  /// 别在这儿重新读一遍快照 —— 那样又会退回成「按这张图当初的模型跑」,
-  /// 和面板上按当前模型算出来的倍率表对不上。
-  Future<void> _redraw(
+  /// 图生图放大:像重绘一样存进当前画布(图生图卡的放大形态),跳创作页,
+  /// 发车交给主生成按钮。存入顶掉原有底图 / 遮罩,提示条给撤销。
+  void _saveRedraw(
     BuildContext context,
     WidgetRef ref,
     Uint8List bytes,
     UpscaleSettings cfg,
-    GenerateState? input,
-  ) async {
-    final scale = cfg.enhanceScale;
-    if (input == null) {
-      hintSnack(context, '缺少参数快照,无法重绘放大', icon: Icons.error_outline);
-      return;
-    }
-    final isMax = scale.factor == null;
-    final target = enhanceTargetSize(result.width, result.height, scale);
-    final t = isMax
-        ? (w: result.width, h: result.height)
-        : img2imgResolution(target.w, target.h);
-    unawaited(
-      ref
-          .read(generationProvider.notifier)
-          .generate(
-            using: input.copyWith(
-              img2img: Img2ImgConfig(
-                image: bytes,
-                strength: cfg.strength,
-                noise: cfg.noise,
-                upscaledEnhance: isMax,
-              ),
-              params: input.params.copyWith(width: t.w, height: t.h, seed: ''),
-            ),
-          ),
-    );
+  ) {
+    final before = ref.read(generateProvider);
+    final canvasId = ref.read(canvasWorkspaceProvider).activeId;
+    final canvases = ref.read(canvasWorkspaceProvider.notifier);
+    ref
+        .read(generateProvider.notifier)
+        .setImg2ImgUpscale(
+          image: bytes,
+          srcW: result.width,
+          srcH: result.height,
+          scale: cfg.enhanceScale,
+          strength: cfg.strength,
+          noise: cfg.noise,
+        );
+    Haptics.medium();
     hintSnack(
       context,
-      isMax
-          ? '开始 Max 重绘 ≈${target.w}×${target.h} · ${modelName(input.params.model)}'
-          : '开始 ${scale.label} 重绘 ${t.w}×${t.h} · ${modelName(input.params.model)}',
+      context.l10n.savedToImg2ImgUpscale,
       icon: Icons.auto_fix_high,
+      actionLabel: context.l10n.undo,
+      onAction: () => canvases.undoWrite(before, canvasId),
     );
+    ref.read(shellIndexProvider.notifier).select(kTabCreate);
   }
 
   /// 导入:当前图送进导入面板(解析内嵌元数据 / 用作参考),与创作页入口同一面板。
@@ -834,7 +790,11 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
     final bytes = await _bytesOf(ref);
     if (!context.mounted) return;
     if (bytes == null) {
-      hintSnack(context, '图片尚未就绪', icon: Icons.hourglass_empty);
+      hintSnack(
+        context,
+        context.l10n.imageNotReady,
+        icon: Icons.hourglass_empty,
+      );
       return;
     }
     unawaited(
@@ -892,7 +852,11 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
       final ok = await Gal.hasAccess() || await Gal.requestAccess();
       if (!ok) {
         if (context.mounted) {
-          hintSnack(context, '未获相册权限', icon: Icons.error_outline);
+          hintSnack(
+            context,
+            context.l10n.noPhotoPermission,
+            icon: Icons.error_outline,
+          );
         }
         return;
       }
@@ -906,15 +870,23 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
       );
       gallery.markSaved([result.id]);
       if (context.mounted) {
-        hintSnack(context, '已保存到相册', icon: Icons.check_circle_outline);
+        hintSnack(
+          context,
+          context.l10n.savedToPhotos1,
+          icon: Icons.check_circle_outline,
+        );
       }
     } on GalException catch (_) {
       if (context.mounted) {
-        hintSnack(context, '保存失败', icon: Icons.error_outline);
+        hintSnack(context, context.l10n.saveFailed, icon: Icons.error_outline);
       }
     } catch (e) {
       if (context.mounted) {
-        hintSnack(context, '保存失败: $e', icon: Icons.error_outline);
+        hintSnack(
+          context,
+          context.l10n.saveFailedSpace('$e'),
+          icon: Icons.error_outline,
+        );
       }
     }
   }
@@ -924,7 +896,11 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
     final bytes = await _bytesOf(ref);
     if (!context.mounted) return;
     if (bytes == null) {
-      hintSnack(context, '图片尚未就绪', icon: Icons.hourglass_empty);
+      hintSnack(
+        context,
+        context.l10n.imageNotReady,
+        icon: Icons.hourglass_empty,
+      );
       return;
     }
     await showSaveSheet(context, bytes: bytes, image: result);
@@ -935,7 +911,11 @@ class _ActionRailState extends ConsumerState<_ActionRail> {
     final input = await _inputOf(ref);
     if (!context.mounted) return;
     if (input == null) {
-      hintSnack(context, '缺少参数快照,无法重新生成', icon: Icons.error_outline);
+      hintSnack(
+        context,
+        context.l10n.regenNoSnapshot,
+        icon: Icons.error_outline,
+      );
       return;
     }
     unawaited(
@@ -964,29 +944,27 @@ class _RailHandle extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    return Lifted(
-      radius: BorderRadius.circular(14),
-      child: Material(
-        color: _glass(context),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(14),
-          side: _glassEdge(context),
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: onTap,
-          child: SizedBox(
-            width: 48,
-            height: 28,
-            child: AnimatedRotation(
-              duration: Motion.medium,
-              curve: Motion.standard,
-              turns: collapsed ? 0 : .5,
-              child: Icon(
-                Icons.keyboard_arrow_up_rounded,
-                size: 22,
-                color: scheme.onSurface,
-              ),
+    final radius = BorderRadius.circular(14);
+    return Material(
+      color: _railFill(context),
+      shape: RoundedRectangleBorder(
+        borderRadius: radius,
+        side: _railEdge(context),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: SizedBox(
+          width: 48,
+          height: 28,
+          child: AnimatedRotation(
+            duration: Motion.medium,
+            curve: Motion.standard,
+            turns: collapsed ? 0 : .5,
+            child: Icon(
+              Icons.keyboard_arrow_up_rounded,
+              size: 22,
+              color: scheme.onSurface,
             ),
           ),
         ),
@@ -995,8 +973,7 @@ class _RailHandle extends StatelessWidget {
   }
 }
 
-/// 画布上浮层控件共用的半透明底与细描边(操作轨、收起把手、「保存到」胶囊)。
-/// 浮卡样式改成实底白、不画描边,阴影由 [Lifted] 给。
+/// 「保存到」胶囊的底色与细描边。浮卡样式是实底白、不画描边,发丝边由 [Lifted] 给。
 Color _glass(BuildContext context) => context.skin.float
     ? context.scheme.surfaceContainerLow
     : context.scheme.surface.withValues(alpha: .84);
@@ -1004,9 +981,11 @@ BorderSide _glassEdge(BuildContext context) => context.skin.float
     ? BorderSide.none
     : BorderSide(color: context.scheme.outlineVariant.withValues(alpha: .5));
 
-/// 次要圆钮在浮卡样式下描发丝边;主按钮自带投影。
-Widget _lift(bool primary, Widget child) =>
-    primary ? child : Lifted(child: child);
+/// 右侧操作轨的半透明底与细描边,各主题一致(浮卡样式也不换实底)。
+Color _railFill(BuildContext context) =>
+    context.scheme.surface.withValues(alpha: .84);
+BorderSide _railEdge(BuildContext context) =>
+    BorderSide(color: context.scheme.outlineVariant.withValues(alpha: .5));
 
 class _RailButton extends StatelessWidget {
   const _RailButton({
@@ -1033,38 +1012,34 @@ class _RailButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final double d = compact ? 48 : (primary ? 58 : 48);
-    // 次要按钮与左下「保存到」胶囊同一种半透明底 + 细描边,压在图上不显得
-    // 一坨灰;不给阴影 —— 半透明底会把底下的阴影透出来,发脏。主按钮照旧实心。
-    final Color circleColor = primary ? scheme.primary : _glass(context);
+    // 次要按钮是半透明底 + 细描边;不给阴影 —— 半透明底会把底下的阴影透出来,
+    // 发脏。主按钮照旧实心。
     final Color iconColor = primary ? scheme.onPrimary : scheme.onSurface;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        _lift(
-          primary,
-          Material(
-            color: circleColor,
-            shape: primary
-                ? const CircleBorder()
-                : CircleBorder(side: _glassEdge(context)),
-            elevation: primary ? 3 : 0,
-            shadowColor: scheme.shadow,
-            clipBehavior: Clip.antiAlias,
-            child: InkWell(
-              onTap: onTap,
-              onLongPress: onLongPress,
-              // 按住类动作走 highlight 回调:onTapDown/Up 收不到「手指划走」,
-              // 划出去之后图就一直糊在那儿了。
-              onHighlightChanged: onHold,
-              child: SizedBox(
-                width: d,
-                height: d,
-                child: Icon(
-                  icon,
-                  size: compact ? 22 : (primary ? 27 : 22),
-                  color: iconColor,
-                ),
+        Material(
+          color: primary ? scheme.primary : _railFill(context),
+          shape: primary
+              ? const CircleBorder()
+              : CircleBorder(side: _railEdge(context)),
+          elevation: primary ? 3 : 0,
+          shadowColor: scheme.shadow,
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: onTap,
+            onLongPress: onLongPress,
+            // 按住类动作走 highlight 回调:onTapDown/Up 收不到「手指划走」,
+            // 划出去之后图就一直糊在那儿了。
+            onHighlightChanged: onHold,
+            child: SizedBox(
+              width: d,
+              height: d,
+              child: Icon(
+                icon,
+                size: compact ? 22 : (primary ? 27 : 22),
+                color: iconColor,
               ),
             ),
           ),
@@ -1073,7 +1048,7 @@ class _RailButton extends StatelessWidget {
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
           decoration: BoxDecoration(
-            color: _glass(context),
+            color: _railFill(context),
             borderRadius: BorderRadius.circular(6),
           ),
           child: Text(
@@ -1162,7 +1137,7 @@ class _SaveAlbumChip extends ConsumerWidget {
                 ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 160),
                   child: Text(
-                    '保存到 $name',
+                    context.l10n.saveToNamed(name),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: context.texts.labelLarge?.copyWith(
@@ -1216,8 +1191,8 @@ class _UpscalePanel extends ConsumerStatefulWidget {
 
   final List<EnhanceScale> redrawScales;
 
-  /// 这张图的参数快照 —— 重绘走它,点数也按它估(null = 不能重绘)。
-  final GenerateState? redrawInput;
+  /// 当前画布(底图待换成这张)—— 图生图放大走它,点数也按它估。
+  final GenerateState redrawInput;
 
   final int width;
   final int height;
@@ -1266,7 +1241,13 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
       if (!mounted) return;
       setState(() => _ext = _ExternalImage(file.baseName, file.bytes, w, h));
     } catch (_) {
-      if (mounted) hintSnack(context, '无法读取这张图片', icon: Icons.error_outline);
+      if (mounted) {
+        hintSnack(
+          context,
+          context.l10n.cantReadImage,
+          icon: Icons.error_outline,
+        );
+      }
     } finally {
       if (mounted) setState(() => _importing = false);
     }
@@ -1307,45 +1288,42 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
 
   /// 图生图放大的点数。借 [estimateInpaintCost] —— 它就是「同一套生成公式,
   /// 但像素按发送尺寸算、再按强度折算」,正好是重绘放大要的那个口径;
-  /// 快照里的 Vibe / 角色参考附加费也照收(那些确实会跟着一起发出去)。
+  /// 画布里的 Vibe / 角色参考附加费也照收(那些确实会跟着一起发出去)。
   int? _redrawCost() {
-    final input = widget.redrawInput;
-    if (input == null) return null;
     final t = _target;
     return estimateInpaintCost(
-      input,
+      widget.redrawInput,
       isOpus: ref.read(anlasProvider).value?.isOpus ?? false,
       sendW: t.w,
       sendH: t.h,
       strength: _s.strength,
       v5Charged: ref.read(v5ChargedProvider),
+      inpaint: false,
     );
   }
 
   /// 超分那一句话说明(含价钱);尺寸不受理时说清为什么。
   String get _upscaleNote => _upscaleOk
-      ? 'V5 扩散超分 · 固定 2× · ${naiV5UpscalePrice(_w, _h)} 点'
-      : '源图 $_w×$_h 超过 3,145,728 像素,超分不受理';
+      ? context.l10n.upscaleNote(naiV5UpscalePrice(_w, _h) ?? 0)
+      : context.l10n.upscaleTooLarge(_w, _h);
 
   /// 当前倍率档在干什么。Max 档的尺寸是服务端定的,这里只能给估值。
   String get _scaleNote => switch (_s.enhanceScale) {
-    EnhanceScale.x1 => '同尺寸重新生成,只精修细节、不放大',
-    EnhanceScale.max => '发原图尺寸,由 NovelAI 放到最大后重绘',
-    final s => '以 ${s.label} 分辨率重新生成,画面会变',
+    EnhanceScale.x1 => context.l10n.scaleNoteX1,
+    EnhanceScale.max => context.l10n.scaleNoteMax,
+    final s => context.l10n.scaleNoteScale(s.label),
   };
 
   /// Max 档为什么没出现。**看不见的缺席最难查** —— 两个条件各有各的说法,
   /// 不写出来用户只会以为功能坏了。都满足时返回 null(那时它就在列表里)。
   String? get _maxMissingWhy {
     if (widget.redrawScales.contains(EnhanceScale.max)) return null;
-    final model = widget.redrawInput?.params.model;
-    if (model == null) return null;
+    final model = widget.redrawInput.params.model;
     if (!isNai5Model(model)) {
-      return 'Max 档只有 V5 有;当前模型是 ${modelName(model)},重绘也按它跑';
+      return context.l10n.maxOnlyV5(modelName(model));
     }
     // 官方阈值:源图像素要小于 0.8×上限才提供 Max
-    return 'Max 档要求源图小于 2,516,582 像素,'
-        '这张 ${widget.width}×${widget.height} 太大了';
+    return context.l10n.maxTooLarge(widget.width, widget.height);
   }
 
   @override
@@ -1371,7 +1349,7 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
                   ),
                   const SizedBox(width: 8),
                   Text(
-                    '放大',
+                    context.l10n.upscale,
                     style: context.texts.titleMedium!.copyWith(
                       fontWeight: FontWeight.w700,
                     ),
@@ -1395,7 +1373,7 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
                       Icons.add_photo_alternate_outlined,
                       size: 18,
                     ),
-                    label: const Text('导入图片'),
+                    label: Text(context.l10n.importImage),
                   ),
                 ],
               ),
@@ -1457,7 +1435,7 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
           onPressed: () => setState(() => _ext = null),
           icon: const Icon(Icons.close_rounded, size: 20),
           color: scheme.onSurfaceVariant,
-          tooltip: '取消',
+          tooltip: context.l10n.cancel,
         ),
       ],
     );
@@ -1470,12 +1448,12 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
       segments: [
         ButtonSegment(
           value: false,
-          label: const Text('超分辨率'),
+          label: Text(context.l10n.upscaleResolution),
           enabled: _upscaleOk,
         ),
         ButtonSegment(
           value: true,
-          label: const Text('图生图放大'),
+          label: Text(context.l10n.img2imgUpscale),
           enabled: widget.redrawWhy == null,
         ),
       ],
@@ -1508,9 +1486,8 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
       Row(
         children: [
           Expanded(
-            child: _dropdown<EnhanceScale>(
-              scheme,
-              label: '倍率',
+            child: LabeledDropdown<EnhanceScale>(
+              label: context.l10n.scaleLabel,
               value: _s.enhanceScale,
               items: [
                 for (final s in widget.redrawScales) (value: s, text: s.label),
@@ -1521,16 +1498,18 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
           ),
           const SizedBox(width: 10),
           Expanded(
-            child: _dropdown<int>(
-              scheme,
-              label: '档位',
+            child: LabeledDropdown<int>(
+              label: context.l10n.magnitudeLabel,
               value: mag,
               items: [
                 for (var i = 0; i < kMagnitudePresets.length; i++)
-                  (value: i, text: '档 ${kMagnitudePresets[i].label}'),
+                  (
+                    value: i,
+                    text: context.l10n.magnitudeN(kMagnitudePresets[i].label),
+                  ),
                 // 两个滑杆微调过之后就不在任何一档上 —— 列一个占位项,
                 // 否则 DropdownButton 的 value 不在 items 里会直接抛。
-                if (mag < 0) (value: -1, text: '自定义'),
+                if (mag < 0) (value: -1, text: context.l10n.sizeCustom),
               ],
               onChanged: (i) {
                 if (i < 0) return;
@@ -1554,7 +1533,7 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
       ],
       const SizedBox(height: 6),
       ParamSlider(
-        label: '强度 Strength',
+        label: context.l10n.strengthStrength,
         help: Help.img2imgStrength,
         value: _s.strength,
         min: kStrengthMin,
@@ -1565,7 +1544,7 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
         onChanged: (v) => _set(_s.copyWith(strength: v)),
       ),
       ParamSlider(
-        label: '噪声 Noise',
+        label: context.l10n.noiseNoise,
         help: Help.img2imgNoise,
         value: _s.noise,
         max: kNoiseMax,
@@ -1582,42 +1561,6 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
     child: Text(
       text,
       style: context.texts.labelSmall!.copyWith(color: scheme.outline),
-    ),
-  );
-
-  /// 带前置标签的紧凑下拉(与高级设置里预设那一栏同款外壳)。
-  Widget _dropdown<T>(
-    ColorScheme scheme, {
-    required String label,
-    required T value,
-    required List<({T value, String text})> items,
-    required ValueChanged<T> onChanged,
-  }) => InputDecorator(
-    decoration: InputDecoration(
-      labelText: label,
-      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-      isDense: true,
-      contentPadding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
-    ),
-    child: DropdownButton<T>(
-      value: value,
-      isExpanded: true,
-      isDense: true,
-      underline: const SizedBox.shrink(),
-      borderRadius: BorderRadius.circular(12),
-      style: context.texts.bodyMedium!.copyWith(color: scheme.onSurface),
-      items: [
-        for (final e in items)
-          DropdownMenuItem(
-            value: e.value,
-            child: Text(e.text, maxLines: 1, overflow: TextOverflow.ellipsis),
-          ),
-      ],
-      onChanged: (v) {
-        if (v == null) return;
-        Haptics.selection();
-        onChanged(v);
-      },
     ),
   );
 
@@ -1649,9 +1592,9 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
               size: 18,
             ),
             const SizedBox(width: 7),
-            const Text(
-              '开始放大',
-              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+            Text(
+              _isRedraw ? context.l10n.addToCreate : context.l10n.startUpscale,
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
             ),
             const SizedBox(width: 8),
             Text(
@@ -1689,56 +1632,4 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
 
   TextStyle _pill(Color fg) =>
       TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: fg);
-}
-
-/// 超分进度对话框。三条路都是远程一次性调用,拿不到逐步进度 ——
-/// 只有阶段文案 + 不确定动画。
-class _UpscaleProgressDialog extends StatelessWidget {
-  const _UpscaleProgressDialog({required this.method, required this.stage});
-
-  final UpscaleMethod method;
-  final ValueNotifier<String> stage;
-
-  IconData get _icon => switch (method) {
-    UpscaleMethod.naiV5 => Icons.blur_on,
-    UpscaleMethod.redraw => Icons.auto_fix_high,
-  };
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = context.scheme;
-    return AlertDialog(
-      title: Row(
-        children: [
-          Icon(_icon, size: 20, color: scheme.primary),
-          const SizedBox(width: 8),
-          Text(
-            '${method.label} · ${method.badge}',
-            style: const TextStyle(fontSize: 16),
-          ),
-        ],
-      ),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          ValueListenableBuilder<String>(
-            valueListenable: stage,
-            builder: (_, s, _) => Text(
-              s,
-              style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
-            ),
-          ),
-          const SizedBox(height: 16),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(4),
-            child: LinearProgressIndicator(
-              minHeight: 8,
-              backgroundColor: scheme.surfaceContainerHighest,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 }

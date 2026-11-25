@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart' show compute;
 import 'package:image/image.dart' as img;
 
 import 'transparency.dart' show rgbaHasAlpha;
+import 'webp_to_png.dart' show isWebp, webpToPng;
 
 /// 解码图片像素尺寸 (宽, 高)。
 Future<(int, int)> decodeImageSize(Uint8List bytes) async {
@@ -32,7 +33,8 @@ bool isNaiImageFormat(Uint8List b) {
       (at(0, 'RIFF'.codeUnits) && at(8, 'WEBP'.codeUnits));
 }
 
-/// 转成 PNG:本来就是 PNG 的原样返回,其余格式(JPEG / WebP 等)解码后重编码。
+/// 转成 PNG:本来就是 PNG 的原样返回;WebP 无损还原(像素 / alpha 隐写 / 参数都在,
+/// 见 webp_to_png);其余格式(JPEG 等)解码后重编码。
 Future<Uint8List> ensurePng(Uint8List src) async {
   const sig = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
   var isPng = src.length >= sig.length;
@@ -40,6 +42,11 @@ Future<Uint8List> ensurePng(Uint8List src) async {
     isPng = src[i] == sig[i];
   }
   if (isPng) return src;
+  if (isWebp(src)) {
+    try {
+      return await compute(webpToPng, src);
+    } catch (_) {} // 有损 / 动图之类 webpToPng 解不了的,走下面通用那条
+  }
   final codec = await ui.instantiateImageCodec(src);
   final frame = await codec.getNextFrame();
   final img = frame.image;
@@ -266,4 +273,199 @@ Future<Uint8List> crResizePng(Uint8List src) async {
   out.dispose();
   picture.dispose();
   return data!.buffer.asUint8List();
+}
+
+/// V5 精确参考官方 97 档分辨率桶表 (宽, 高)。
+const kV5CrBuckets = <(int, int)>[
+  (256, 4096),
+  (256, 4032),
+  (256, 3968),
+  (256, 3904),
+  (256, 3840),
+  (256, 3776),
+  (256, 3712),
+  (256, 3648),
+  (256, 3584),
+  (256, 3520),
+  (256, 3456),
+  (256, 3392),
+  (256, 3328),
+  (320, 3264),
+  (320, 3200),
+  (320, 3136),
+  (320, 3072),
+  (320, 3008),
+  (320, 2944),
+  (320, 2880),
+  (320, 2816),
+  (320, 2752),
+  (384, 2688),
+  (384, 2624),
+  (384, 2560),
+  (384, 2496),
+  (384, 2432),
+  (384, 2368),
+  (448, 2304),
+  (448, 2240),
+  (448, 2176),
+  (448, 2112),
+  (512, 2048),
+  (512, 1984),
+  (512, 1920),
+  (512, 1856),
+  (576, 1792),
+  (576, 1728),
+  (576, 1664),
+  (640, 1600),
+  (640, 1536),
+  (704, 1472),
+  (704, 1408),
+  (768, 1344),
+  (768, 1280),
+  (832, 1216),
+  (896, 1152),
+  (960, 1088),
+  (1024, 1024),
+  (1088, 960),
+  (1152, 896),
+  (1216, 832),
+  (1280, 768),
+  (1344, 768),
+  (1408, 704),
+  (1472, 704),
+  (1536, 640),
+  (1600, 640),
+  (1664, 576),
+  (1728, 576),
+  (1792, 576),
+  (1856, 512),
+  (1920, 512),
+  (1984, 512),
+  (2048, 512),
+  (2112, 448),
+  (2176, 448),
+  (2240, 448),
+  (2304, 448),
+  (2368, 384),
+  (2432, 384),
+  (2496, 384),
+  (2560, 384),
+  (2624, 384),
+  (2688, 384),
+  (2752, 320),
+  (2816, 320),
+  (2880, 320),
+  (2944, 320),
+  (3008, 320),
+  (3072, 320),
+  (3136, 320),
+  (3200, 320),
+  (3264, 320),
+  (3328, 256),
+  (3392, 256),
+  (3456, 256),
+  (3520, 256),
+  (3584, 256),
+  (3648, 256),
+  (3712, 256),
+  (3776, 256),
+  (3840, 256),
+  (3904, 256),
+  (3968, 256),
+  (4032, 256),
+  (4096, 256),
+];
+
+/// V5 精确参考选桶:按对数宽高比距离最小匹配 [kV5CrBuckets]。
+({int w, int h}) pickV5CrBucket(int width, int height) {
+  final targetLog = math.log(math.max(width, 1) / math.max(height, 1));
+  var best = kV5CrBuckets.first;
+  var bestDiff = double.infinity;
+  for (final b in kV5CrBuckets) {
+    final diff = (targetLog - math.log(b.$1 / b.$2)).abs();
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = b;
+    }
+  }
+  return (w: best.$1, h: best.$2);
+}
+
+/// V5 精确参考 Cover 裁切参数(纯计算,供 [crBucketResizePng] 与单测共用)。
+///
+/// 对齐 `floor(x + 0.5)` 取整与整数居中裁切偏移 `((resize - bucket) ~/ 2)`。
+({int bucketW, int bucketH, int resizeW, int resizeH, int left, int top})
+v5CrBucketLayout(int width, int height) {
+  final w = math.max(width, 1);
+  final h = math.max(height, 1);
+  final bucket = pickV5CrBucket(w, h);
+  final bw = bucket.w;
+  final bh = bucket.h;
+  if (w == bw && h == bh) {
+    return (
+      bucketW: bw,
+      bucketH: bh,
+      resizeW: bw,
+      resizeH: bh,
+      left: 0,
+      top: 0,
+    );
+  }
+  final scale = math.max(bw / w, bh / h);
+  final resizeW = math.max((w * scale + 0.5).floor(), bw);
+  final resizeH = math.max((h * scale + 0.5).floor(), bh);
+  final left = (resizeW - bw) ~/ 2;
+  final top = (resizeH - bh) ~/ 2;
+  return (
+    bucketW: bw,
+    bucketH: bh,
+    resizeW: resizeW,
+    resizeH: resizeH,
+    left: left,
+    top: top,
+  );
+}
+
+/// V5 精确参考(PR)预处理:按 [kV5CrBuckets] 97 档桶表 Cover 居中裁切输出 PNG
+/// (不填黑底,保留透明通道)。源图尺寸恰好命中目标桶时直接走 [ensurePng] 不重绘。
+Future<Uint8List> crBucketResizePng(Uint8List src) async {
+  final codec = await ui.instantiateImageCodec(src);
+  final frame = await codec.getNextFrame();
+  final image = frame.image;
+  try {
+    final layout = v5CrBucketLayout(image.width, image.height);
+    if (image.width == layout.bucketW && image.height == layout.bucketH) {
+      return ensurePng(src);
+    }
+    final bw = layout.bucketW;
+    final bh = layout.bucketH;
+    final recorder = ui.PictureRecorder();
+    final canvas = ui.Canvas(
+      recorder,
+      ui.Rect.fromLTWH(0, 0, bw.toDouble(), bh.toDouble()),
+    );
+    canvas.drawImageRect(
+      image,
+      ui.Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+      ui.Rect.fromLTWH(
+        -layout.left.toDouble(),
+        -layout.top.toDouble(),
+        layout.resizeW.toDouble(),
+        layout.resizeH.toDouble(),
+      ),
+      ui.Paint()..filterQuality = ui.FilterQuality.high,
+    );
+    final picture = recorder.endRecording();
+    final out = await picture.toImage(bw, bh);
+    try {
+      final data = await out.toByteData(format: ui.ImageByteFormat.png);
+      if (data == null) throw StateError('PNG 编码失败');
+      return data.buffer.asUint8List();
+    } finally {
+      out.dispose();
+      picture.dispose();
+    }
+  } finally {
+    image.dispose();
+  }
 }

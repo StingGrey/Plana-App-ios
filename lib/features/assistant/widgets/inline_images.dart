@@ -11,6 +11,10 @@
 /// 不闪一下斜纹。
 ///
 /// 图**始终在图库里**,库里删掉的直接不画,不留一格破图 —— 最新那张删了就往前找一张。
+///
+/// 选着图像模型时出的图也画在这个框里;重新生成时没有逐帧预览和进度,只走一条细条,
+/// 没出成的原因写在框下面,带「重试」。一轮出了几张的,框里左右滑着看这一批
+/// ([AssistantMsg.imageBatch]),右上角标第几张。
 library;
 
 import 'dart:math' as math;
@@ -19,16 +23,21 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/store/app_stores.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../../core/util/haptics.dart';
+import '../../../core/util/image_pick.dart' show PickedImage;
 import '../../gallery/gallery_state.dart'
     show galleryImageProvider, galleryProvider, galleryThumbProvider;
 import '../../gallery/models.dart' show ResultImage;
 import '../../generate/gen_jobs.dart' show GenJob;
 import '../../generate/generation_controller.dart' show generationProvider;
-import '../../generate/widgets/common.dart' show StripeThumb;
+import '../../generate/widgets/common.dart' show StripeThumb, hintSnack;
 import '../../shell/shell_state.dart';
-import '../assistant_models.dart';
-import '../assistant_state.dart';
+import '../domain/conversation.dart';
+import '../application/assistant_controller.dart';
+import '../application/draft_images.dart';
+import '../../../l10n/l10n.dart';
 
 /// 单张最高多少。宽度撑满对话区,超过这个高度的竖图按高度回算宽度 ——
 /// 不封顶的话一张 832×1216 能吃掉一整屏,往下翻不到按钮。
@@ -44,22 +53,34 @@ class InlineImages extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final jobId = ref.watch(assistantProvider.select((s) => s.jobs[msg.id]));
+    final drawing = ref.watch(
+      assistantProvider.select((s) => s.imageRuns.contains(msg.id)),
+    );
+    final error = ref.watch(
+      assistantProvider.select((s) => s.imageErrors[msg.id]),
+    );
     GenJob? job;
     if (jobId != null) {
       for (final j in ref.watch(generationProvider).jobs) {
         if (j.id == jobId) job = j;
       }
     }
-    // 这条消息出过的图里,还在库里的最新那张
-    ResultImage? latest;
+    // 最近一批里还在库里的;一张都不在了就往前找还在的最新那张
+    var shown = const <ResultImage>[];
     if (msg.imageIds.isNotEmpty) {
       final all = ref.watch(galleryProvider).results;
-      for (final id in msg.imageIds.reversed) {
-        latest = all.where((r) => r.id == id).firstOrNull;
-        if (latest != null) break;
+      ResultImage? find(String id) => all.where((r) => r.id == id).firstOrNull;
+      final ids = msg.imageIds;
+      final tail = ids.length - msg.imageBatch.clamp(0, ids.length);
+      shown = [for (final id in ids.skip(tail)) ?find(id)];
+      for (final id in ids.take(tail).toList().reversed) {
+        if (shown.isNotEmpty) break;
+        if (find(id) case final r?) shown = [r];
       }
     }
+    final latest = shown.firstOrNull;
     final running = job;
+    final hasFrame = running != null || drawing || latest != null;
 
     // 开始出图、出完、失败时这一块的高度会变:让它长出来 / 收回去,不一下子顶开。
     // 没东西时也留着这层(零高),否则第一张出现时没有「从零长」的起点。
@@ -67,33 +88,49 @@ class InlineImages extends ConsumerWidget {
       duration: Motion.medium,
       curve: Motion.emphasized,
       alignment: Alignment.topLeft,
-      child: running == null && latest == null
+      child: !hasFrame && error == null
           ? const SizedBox(width: double.infinity)
           : Padding(
               padding: const EdgeInsets.only(top: 10),
-              child: LayoutBuilder(
-                // 「正在出」和「出好的」在同一个框里交叉淡入。两张尺寸可能不同:
-                // 叠在左上角,长短交给外面那层 AnimatedSize,别居中了左右晃一下
-                builder: (context, box) => AnimatedSwitcher(
-                  duration: Motion.medium,
-                  layoutBuilder: (current, previous) => Stack(
-                    alignment: Alignment.topLeft,
-                    children: [...previous, ?current],
-                  ),
-                  child: running != null
-                      ? _Running(
-                          key: ValueKey('running:${running.id}'),
-                          job: running,
-                          under: latest,
-                          maxW: box.maxWidth,
-                        )
-                      : _Done(
-                          key: ValueKey(latest!.id),
-                          msgId: msg.id,
-                          result: latest,
-                          maxW: box.maxWidth,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (hasFrame)
+                    LayoutBuilder(
+                      // 「正在出」和「出好的」在同一个框里交叉淡入。两张尺寸可能不同:
+                      // 叠在左上角,长短交给外面那层 AnimatedSize,别居中了左右晃一下
+                      builder: (context, box) => AnimatedSwitcher(
+                        duration: Motion.medium,
+                        layoutBuilder: (current, previous) => Stack(
+                          alignment: Alignment.topLeft,
+                          children: [...previous, ?current],
                         ),
-                ),
+                        child: running != null
+                            ? _Running(
+                                key: ValueKey('running:${running.id}'),
+                                job: running,
+                                under: latest,
+                                maxW: box.maxWidth,
+                              )
+                            : drawing
+                            ? _Drawing(
+                                key: const ValueKey('drawing'),
+                                under: latest,
+                                maxW: box.maxWidth,
+                              )
+                            : _Done(
+                                key: ValueKey(shown.map((r) => r.id).join(',')),
+                                msgId: msg.id,
+                                results: shown,
+                                maxW: box.maxWidth,
+                                imageGen: msg.imageGen != null,
+                              ),
+                      ),
+                    ),
+                  if (error != null)
+                    _GenError(msgId: msg.id, error: error, below: hasFrame),
+                ],
               ),
             ),
     );
@@ -133,37 +170,102 @@ Uint8List? _bytesOf(WidgetRef ref, ResultImage r) =>
     ref.watch(galleryImageProvider(r.id)).value ??
     ref.watch(galleryThumbProvider(r.id)).value;
 
-class _Done extends ConsumerWidget {
+/// 出好的图。一批几张的左右滑,框按第一张的尺寸;「引用」引的是正看着的那张。
+class _Done extends StatefulWidget {
   const _Done({
     super.key,
     required this.msgId,
-    required this.result,
+    required this.results,
     required this.maxW,
+    this.imageGen = false,
   });
 
   final String msgId;
-  final ResultImage result;
+  final List<ResultImage> results;
   final double maxW;
+
+  /// 这张是图像模型出的:「重新生成」再调一次图像模型。
+  final bool imageGen;
+
+  @override
+  State<_Done> createState() => _DoneState();
+}
+
+class _DoneState extends State<_Done> {
+  var _page = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    final results = widget.results;
+    final page = math.min(_page, results.length - 1);
+    final first = results.first;
+    final size = _box(first.width, first.height, widget.maxW);
+    final many = results.length > 1;
+    return _frame(context, size, [
+      if (many)
+        PageView(
+          onPageChanged: (i) => setState(() => _page = i),
+          children: [for (final r in results) _Shot(result: r, size: size)],
+        )
+      else
+        _Shot(result: first, size: size),
+      if (many)
+        Positioned(
+          top: 10,
+          right: 10,
+          child: IgnorePointer(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: .55),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                '${page + 1}/${results.length}',
+                style: context.texts.labelSmall!.copyWith(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ),
+        ),
+      // 跑着的时候框里换成了进度,这颗跟着一起不在 —— 同一条消息连投两单,
+      // 进度条只跟得住一单。
+      Positioned(
+        right: 10,
+        bottom: 10,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _QuoteButton(result: results[page]),
+            const SizedBox(width: 8),
+            _AgainButton(msgId: widget.msgId, imageGen: widget.imageGen),
+          ],
+        ),
+      ),
+    ]);
+  }
+}
+
+/// 框里的一张,点开切去图库看大图 —— 放大、超分、存盘那些都在那边。
+class _Shot extends ConsumerWidget {
+  const _Shot({required this.result, required this.size});
+
+  final ResultImage result;
+  final Size size;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final size = _box(result.width, result.height, maxW);
     final bytes = _bytesOf(ref, result);
     return GestureDetector(
-      // 点开切去图库看大图 —— 放大、超分、存盘那些都在那边。
       onTap: () {
         ref.read(galleryProvider.notifier).select(result.id);
         ref.read(shellIndexProvider.notifier).select(kTabGallery);
       },
-      child: _frame(context, size, [
-        if (bytes != null)
-          _Bitmap(bytes: bytes, size: size)
-        else
-          StripeThumb(width: size.width, height: size.height, radius: 0),
-        // 跑着的时候框里换成了进度,这颗跟着一起不在 —— 同一条消息连投两单,
-        // 进度条只跟得住一单。
-        Positioned(right: 10, bottom: 10, child: _AgainButton(msgId: msgId)),
-      ]),
+      child: bytes != null
+          ? _Bitmap(bytes: bytes, size: size)
+          : StripeThumb(width: size.width, height: size.height, radius: 0),
     );
   }
 }
@@ -256,18 +358,109 @@ class _Running extends ConsumerWidget {
   }
 }
 
-/// 浮在图右下角的「重新生成」。
-///
-/// 摆图里而不是图下面:一颗按钮单独占一行,而它跟这张图是绑死的 —— 浮进去
-/// 既省一行,也说清楚了「重出的是这张」。底色带半透明,压在深色浅色图上都看得见。
-/// 48 见方:它压在一整张可点的图上,点偏了就被带去图库。
-class _AgainButton extends ConsumerWidget {
-  const _AgainButton({required this.msgId});
+/// 图像模型在重新生成:没有逐帧预览也没有进度,只走一条不确定的细条。
+/// 垫着上一张(压暗);上一张在图库里删了就是方框斜纹。
+class _Drawing extends ConsumerWidget {
+  const _Drawing({super.key, required this.maxW, this.under});
 
-  final String msgId;
+  final double maxW;
+  final ResultImage? under;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final last = under;
+    final (w, h) = last != null ? (last.width, last.height) : (1, 1);
+    final size = _box(w, h, maxW);
+    final lastBytes = last == null ? null : _bytesOf(ref, last);
+    return _frame(context, size, [
+      if (lastBytes != null) ...[
+        _Bitmap(bytes: lastBytes, size: size),
+        ColoredBox(color: Colors.black.withValues(alpha: .35)),
+      ] else
+        StripeThumb(width: size.width, height: size.height, radius: 0),
+      Positioned(
+        left: 0,
+        right: 0,
+        bottom: 0,
+        child: SizedBox(
+          height: 4,
+          child: LinearProgressIndicator(
+            backgroundColor: Colors.black.withValues(alpha: .25),
+            valueColor: AlwaysStoppedAnimation(context.scheme.primary),
+          ),
+        ),
+      ),
+    ]);
+  }
+}
+
+/// 图像模型没出成:原因原样写出来(审核拒、额度用完这些只有原话说得清),旁边一颗「重试」。
+class _GenError extends ConsumerWidget {
+  const _GenError({
+    required this.msgId,
+    required this.error,
+    required this.below,
+  });
+
+  final String msgId;
+  final String error;
+
+  /// 挂在图框下面。
+  final bool below;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final scheme = context.scheme;
+    return Padding(
+      padding: EdgeInsets.only(top: below ? 6 : 0),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 10),
+            child: Icon(Icons.error_outline, size: 16, color: scheme.error),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                error,
+                maxLines: 4,
+                overflow: TextOverflow.ellipsis,
+                style: context.texts.labelMedium!.copyWith(color: scheme.error),
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: () =>
+                ref.read(assistantProvider.notifier).generateImage(msgId),
+            child: Text(context.l10n.retry),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 浮在图右下角的一颗圆按钮。
+///
+/// 摆图里而不是图下面:单独占一行太费地方,而它跟这张图是绑死的 —— 浮进去
+/// 既省一行,也说清楚了「对的是这张」。底色带半透明,压在深色浅色图上都看得见。
+/// 48 见方:它压在一整张可点的图上,点偏了就被带去图库。
+class _ImageAction extends StatelessWidget {
+  const _ImageAction({
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
     final scheme = context.scheme;
     return Material(
       color: scheme.surface.withValues(alpha: .88),
@@ -275,15 +468,66 @@ class _AgainButton extends ConsumerWidget {
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         // 图本体点了是去图库,这颗要吃掉自己的点击,别顺着漏下去
-        onTap: () => ref.read(assistantProvider.notifier).generateFrom(msgId),
+        onTap: onTap,
         child: Tooltip(
-          message: '重新生成',
+          message: tooltip,
           child: Padding(
             padding: const EdgeInsets.all(12),
-            child: Icon(Icons.refresh, size: 24, color: scheme.primary),
+            child: Icon(icon, size: 24, color: scheme.primary),
           ),
         ),
       ),
+    );
+  }
+}
+
+/// 「引用」:把这张图加进输入框的附图,接着改或者拿去问。满了说一句。
+class _QuoteButton extends ConsumerWidget {
+  const _QuoteButton({required this.result});
+
+  final ResultImage result;
+
+  Future<void> _quote(BuildContext context, WidgetRef ref) async {
+    final bytes =
+        result.bytes ??
+        await ref.read(appStoresProvider).gallery.readImage(result.id);
+    if (bytes == null || !context.mounted) return;
+    final added = ref.read(draftImagesProvider.notifier).add([
+      PickedImage('image', bytes),
+    ]);
+    if (added > 0) {
+      Haptics.selection();
+    } else {
+      hintSnack(
+        context,
+        context.l10n.imagesMax(kMaxAttach),
+        icon: Icons.image_outlined,
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) => _ImageAction(
+    icon: Icons.format_quote,
+    tooltip: context.l10n.quoteImage,
+    onTap: () => _quote(context, ref),
+  );
+}
+
+/// 「重新生成」:图像模型出的再调一次图像模型,NAI 的照这条提议再出一张。
+class _AgainButton extends ConsumerWidget {
+  const _AgainButton({required this.msgId, this.imageGen = false});
+
+  final String msgId;
+  final bool imageGen;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final n = ref.read(assistantProvider.notifier);
+    return _ImageAction(
+      icon: Icons.refresh,
+      tooltip: context.l10n.regenerate,
+      onTap: () => imageGen ? n.generateImage(msgId) : n.generateFrom(msgId),
     );
   }
 }

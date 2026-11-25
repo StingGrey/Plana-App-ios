@@ -7,8 +7,8 @@
 ///     ├ Tag 百科  halo
 ///     └ 画风库  wlop
 ///
-/// **服务端回的结果计数不显示**。那串「OC 0 个 + 通用 3/12 个 = 3 个」摆在行尾
-/// 试过一版,又长又没用 —— 用户要的是「查了什么」,不是「命中几条」。计数留在
+/// **工具回的结果计数不显示**。计数摆在行尾试过一版,又长又没用 ——
+/// 用户要的是「查了什么」,不是「命中几条」。计数留在
 /// [ToolTrace.summary] 里当完成信号(圆点亮不亮),不占版面。
 ///
 /// 查询词是从 `tool_call` 的参数里挑的([toolSubject]),以前直接丢掉了。
@@ -21,7 +21,7 @@ library;
 import 'package:flutter/material.dart';
 
 import '../../../core/theme/app_theme.dart';
-import '../assistant_models.dart';
+import '../domain/conversation.dart';
 
 /// 一行文字的行高倍数。**量圆点位置和排文字用的是同一个常数** ——
 /// 分开写的话改了一处另一处就错位,而错位只有一两个像素,肉眼要盯着看才发现。

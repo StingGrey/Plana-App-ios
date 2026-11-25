@@ -4,8 +4,11 @@ import 'package:flutter/material.dart' show IconData, Icons;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/store/app_stores.dart';
+import '../gallery/upscale_model.dart'
+    show effectiveEnhanceScale, img2imgUpscaleSendSize;
 import 'models.dart';
 import 'prompt_sections.dart';
+import '../../l10n/l10n.dart';
 
 export 'models.dart'
     show GenProvider, isAnimaModel, providerLabel, providerOfModel;
@@ -225,12 +228,14 @@ GenerateState stripHiddenModules(GenerateState s, GenModuleSettings ms) {
   if (!on(GenModule.character) && out.characters.isNotEmpty) {
     out = out.copyWith(characters: const []);
   }
-  // 角色槽位按模型截断(nai5 攒的 20 张切回 V4 只有前 6 张进载荷):超出的
-  // 发给 NAI 是未定义行为。截前 N 张与卡片顺序一致,卡头徽章同步标红,
-  // token 读数(countedCharacters)也走同一口径 —— 读数与载荷不许分叉。
-  final charCap = maxCharactersOf(model);
-  if (on(GenModule.character) && out.characters.length > charCap) {
-    out = out.copyWith(characters: out.characters.take(charCap).toList());
+  // 角色按模型上限收口,只数启用的(见 _withinCharCap):超出的发给 NAI 是
+  // 未定义行为。卡头徽章同步标红,token 读数(countedCharacters)也走同一口径
+  // —— 读数与载荷不许分叉。
+  if (on(GenModule.character)) {
+    final capped = _withinCharCap(out.characters, model);
+    if (!identical(capped, out.characters)) {
+      out = out.copyWith(characters: capped);
+    }
   }
   if (!on(GenModule.vibe) && out.vibes.isNotEmpty) {
     out = out.copyWith(vibes: const []);
@@ -245,6 +250,7 @@ GenerateState stripHiddenModules(GenerateState s, GenModuleSettings ms) {
     if (out.inpaint != null) out = out.copyWith(inpaint: null);
   }
   out = withoutInpaintVibes(out);
+  out = withoutInpaintCharRefs(out);
   // LoRA 挂载列表两个父类共用一份,但启用位分两个 key —— 按当前模型那个判。
   if (!on(loraModuleOf(model)) && out.loras.isNotEmpty) {
     out = out.copyWith(loras: const []);
@@ -262,9 +268,23 @@ GenerateState stripHiddenModules(GenerateState s, GenModuleSettings ms) {
   }
   // 重绘按它自己那块的尺寸发(局部是裁切区、扩图是垫大后的整张):存入后再改
   // 尺寸,画布那个尺寸就不是这块的了。请求、贴回、估价都读这份快照的宽高。
-  if (out.inpaint?.sendSize case (final w, final h)
-      when w != out.params.width || h != out.params.height) {
-    out = out.copyWith(params: out.params.copyWith(width: w, height: h));
+  if (out.inpaint?.sendSize case (
+    final w,
+    final h,
+  ) when w != out.params.width || h != out.params.height) {
+    out = out.copyWith(
+      params: out.params.copyWith(width: w, height: h),
+    );
+  }
+  // 图生图放大同理:按倍率算出的发送尺寸换进快照,Max 档带 upscaled_enhance
+  final i2i = out.img2img;
+  if (i2i?.upscale case final u? when i2i!.image != null) {
+    final scale = effectiveEnhanceScale(u, model);
+    final t = img2imgUpscaleSendSize(scale, u.srcW, u.srcH);
+    out = out.copyWith(
+      img2img: i2i.copyWith(upscaledEnhance: scale.factor == null),
+      params: out.params.copyWith(width: t.w, height: t.h),
+    );
   }
   return out;
 }
@@ -274,11 +294,21 @@ GenerateState stripHiddenModules(GenerateState s, GenModuleSettings ms) {
 GenerateState withoutInpaintVibes(GenerateState s) =>
     s.inpaint != null && s.vibes.isNotEmpty ? s.copyWith(vibes: const []) : s;
 
+/// 重绘不支持角色参考的模型(如 V5)剥离快照中的角色参考。
+/// 画布里的角色参考原样留着,去掉遮罩就照常发。
+GenerateState withoutInpaintCharRefs(GenerateState s) =>
+    s.inpaint != null &&
+        !crSupportsInpainting(s.params.model) &&
+        s.charRefs.isNotEmpty
+    ? s.copyWith(charRefs: const [])
+    : s;
+
 /// 把快照适配到**另一个模型**:只按型号能力剥,不看用户的模块显隐。
 ///
 /// 换模型重跑会碰到这件事(图库的「重绘放大」用创作页当前的模型跑一张老图):
-/// 4.5 的快照带着 Vibe / 角色参考,换到 V5 就得整组去掉 —— V5 不支持它们,
-/// 发过去是未定义行为,费用还会白算一笔。角色数上限同理(V5 32 / 其余 6)。
+/// 4.5 的快照带着 Vibe,换到 V5 就得整组去掉;4.5 切到 Medium 等不支持角色参考
+/// 的型号则剥掉角色参考 —— 发过去是未定义行为,费用还会白算一笔。角色数上限同理
+/// (V5 32 / 其余 6)。
 ///
 /// **刻意不复用 [stripHiddenModules]**:那个还会按用户当前的模块显隐剥,而快照
 /// 该忠实执行自己的内容;更要命的是它会把 img2img 一起剥掉 —— 重绘放大的底图
@@ -291,11 +321,26 @@ GenerateState retargetModel(GenerateState s, String model) {
   if (!crSupportsModel(model) && out.charRefs.isNotEmpty) {
     out = out.copyWith(charRefs: const []);
   }
-  final cap = maxCharactersOf(model);
-  if (out.characters.length > cap) {
-    out = out.copyWith(characters: out.characters.take(cap).toList());
+  out = withoutInpaintCharRefs(out);
+  final capped = _withinCharCap(out.characters, model);
+  if (!identical(capped, out.characters)) {
+    out = out.copyWith(characters: capped);
   }
   return out;
+}
+
+/// 启用数超出模型上限时,去掉排在后面的那几张启用卡;停用的不占额度,原样留着。
+List<CharacterPrompt> _withinCharCap(
+  List<CharacterPrompt> chars,
+  String model,
+) {
+  final cap = maxCharactersOf(model);
+  if (chars.where((c) => c.enabled).length <= cap) return chars;
+  var kept = 0;
+  return [
+    for (final c in chars)
+      if (!c.enabled || ++kept <= cap) c,
+  ];
 }
 
 /// 真正会进载荷、因而该计入 token 读数的角色串。
@@ -309,11 +354,11 @@ GenerateState retargetModel(GenerateState s, String model) {
 /// 角色切回去还是关着,anima 下被杀进程也不会把启用位丢掉。
 List<CharacterPrompt> countedCharacters(GenerateState s, GenModuleSettings ms) {
   if (!ms.isVisibleFor(GenModule.character, s.params.model)) return const [];
-  // take:槽位外的角色不进载荷(见 stripHiddenModules),读数也不许算它们。
-  return [
-    for (final c in s.characters.take(maxCharactersOf(s.params.model)))
-      if (c.enabled) c,
-  ];
+  // take:超出上限的启用卡不进载荷(见 stripHiddenModules),读数也不许算它们。
+  return s.characters
+      .where((c) => c.enabled)
+      .take(maxCharactersOf(s.params.model))
+      .toList();
 }
 
 const _key = 'gen_modules';
@@ -350,3 +395,12 @@ class GenModulesNotifier extends AsyncNotifier<GenModuleSettings> {
     } catch (_) {}
   }
 }
+
+/// 模块名按界面语言显示;Bot 专属的几个保持原文。
+String genModuleLabel(AppLocalizations l, GenModuleDef d) => switch (d.key) {
+  GenModule.character => l.characters,
+  GenModule.vibe => l.vibeTransfer,
+  GenModule.charRef => l.preciseReference,
+  GenModule.img2img => l.img2img,
+  _ => d.label,
+};

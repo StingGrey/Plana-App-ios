@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
+import '../../l10n/l10n.dart';
 
 /// 一条可自选的导入内容。
 class ImportOption {
@@ -8,29 +9,37 @@ class ImportOption {
     required this.key,
     required this.label,
     required this.detail,
+    this.size,
     this.conflict = 0,
     this.enabled = true,
     this.note,
+    this.warning,
   });
 
   final String key;
   final String label;
 
-  /// 右侧数据值(如「12 条」)。
+  /// 右侧数据值,短(如「12 条」)。
   final String detail;
 
-  /// 与本地按 id 冲突的条数(>0 时行内标红提示会被覆盖);算不出就留 0。
+  /// 大小之类的第二个数(如「预览 1.25 GB」),放在标签下方那行的最前面。
+  final String? size;
+
+  /// 与本地按 id 冲突的条数(>0 时标签下方标红提示会被覆盖);算不出就留 0。
   final int conflict;
 
-  /// false = 这份文件里没有该类内容,置灰不可选。
+  /// false = 没有该类内容或不能选,置灰。
   final bool enabled;
 
-  /// 该项独有的说明(如「重复图自动跳过」),置于标签下方小字。
+  /// 该项独有的说明(如「重复图自动跳过」),标签下方小字。
   final String? note;
+
+  /// 要用户留意的(如超出额度),标签下方红字。
+  final String? warning;
 }
 
 /// 「自选导入内容」确认层:逐项勾选 + 冲突预览,确认返回选中的 key 集合,
-/// 取消返回 null。
+/// 取消返回 null。[mergeHint] = false 时不显示底部的「按 id 合并」说明。
 ///
 /// 高度自控(内部滚动 + 85% 封顶):默认弹层 9/16 屏高会**静默裁掉**超出部分,
 /// 条目一多或系统字号一大就看不到底下的按钮。
@@ -39,7 +48,8 @@ Future<Set<String>?> showImportPicker(
   required String title,
   String? notice,
   required List<ImportOption> options,
-  String confirmLabel = '导入',
+  String? confirmLabel,
+  bool mergeHint = true,
 }) {
   return showModalBottomSheet<Set<String>>(
     context: context,
@@ -51,9 +61,107 @@ Future<Set<String>?> showImportPicker(
       title: title,
       notice: notice,
       options: options,
-      confirmLabel: confirmLabel,
+      confirmLabel: confirmLabel ?? context.l10n.importLabel,
+      mergeHint: mergeHint,
     ),
   );
+}
+
+/// 一项:勾选框 | 标签 + 下方一行小字(大小、说明;冲突与警告标红)| 右侧条数。
+/// 小字放不下就换行,不挤右侧的数。
+class _OptionRow extends StatelessWidget {
+  const _OptionRow({
+    required this.option,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final ImportOption option;
+  final bool selected;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    final o = option;
+    final dim = !o.enabled;
+    final small = context.texts.bodySmall!.copyWith(height: 1.35);
+    final facts = [?o.size, ?o.note].join(' · ');
+    final warns = [
+      if (o.conflict > 0) context.l10n.overwriteConflicts(o.conflict),
+      ?o.warning,
+    ].join(' · ');
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(4, 8, 14, 8),
+        child: Row(
+          children: [
+            Checkbox(
+              value: selected,
+              onChanged: onTap == null ? null : (_) => onTap!(),
+              visualDensity: VisualDensity.compact,
+            ),
+            const SizedBox(width: 4),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    o.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: context.texts.bodyMedium!.copyWith(
+                      fontWeight: FontWeight.w600,
+                      color: dim ? scheme.outline : null,
+                    ),
+                  ),
+                  if (facts.isNotEmpty || warns.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text.rich(
+                        TextSpan(
+                          children: [
+                            if (facts.isNotEmpty)
+                              TextSpan(
+                                text: facts,
+                                style: TextStyle(color: scheme.outline),
+                              ),
+                            if (facts.isNotEmpty && warns.isNotEmpty)
+                              TextSpan(
+                                text: ' · ',
+                                style: TextStyle(color: scheme.outline),
+                              ),
+                            if (warns.isNotEmpty)
+                              TextSpan(
+                                text: warns,
+                                style: TextStyle(color: scheme.error),
+                              ),
+                          ],
+                        ),
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                        style: small,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            Text(
+              o.detail,
+              style: mono(
+                context,
+                size: 12.5,
+                color: dim ? scheme.outline : scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _ImportPicker extends StatefulWidget {
@@ -61,6 +169,7 @@ class _ImportPicker extends StatefulWidget {
     required this.title,
     required this.options,
     required this.confirmLabel,
+    required this.mergeHint,
     this.notice,
   });
 
@@ -68,6 +177,7 @@ class _ImportPicker extends StatefulWidget {
   final String? notice;
   final List<ImportOption> options;
   final String confirmLabel;
+  final bool mergeHint;
 
   @override
   State<_ImportPicker> createState() => _ImportPickerState();
@@ -143,45 +253,16 @@ class _ImportPickerState extends State<_ImportPicker> {
               padding: const EdgeInsets.symmetric(horizontal: 6),
               children: [
                 for (final o in widget.options)
-                  CheckboxListTile(
-                    dense: true,
-                    value: _sel.contains(o.key),
-                    onChanged: o.enabled
-                        ? (v) => setState(
-                            () => v == true
-                                ? _sel.add(o.key)
-                                : _sel.remove(o.key),
+                  _OptionRow(
+                    option: o,
+                    selected: _sel.contains(o.key),
+                    onTap: o.enabled
+                        ? () => setState(
+                            () => _sel.contains(o.key)
+                                ? _sel.remove(o.key)
+                                : _sel.add(o.key),
                           )
                         : null,
-                    title: Text(
-                      o.label,
-                      style: context.texts.bodyMedium!.copyWith(
-                        color: o.enabled ? null : scheme.outline,
-                      ),
-                    ),
-                    subtitle: switch ((o.conflict, o.note)) {
-                      (0, null) => null,
-                      _ => Text(
-                        [
-                          if (o.conflict > 0) '其中 ${o.conflict} 条覆盖本地同 id',
-                          ?o.note,
-                        ].join(' · '),
-                        maxLines: 2,
-                        style: context.texts.bodySmall!.copyWith(
-                          color: o.conflict > 0 ? scheme.error : scheme.outline,
-                        ),
-                      ),
-                    },
-                    secondary: Text(
-                      o.detail,
-                      style: mono(
-                        context,
-                        size: 12.5,
-                        color: o.enabled
-                            ? scheme.onSurfaceVariant
-                            : scheme.outline,
-                      ),
-                    ),
                   ),
               ],
             ),
@@ -191,16 +272,18 @@ class _ImportPickerState extends State<_ImportPicker> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text(
-                  totalConflict > 0
-                      ? '按 id 合并:同 id 覆盖($totalConflict 条),其余新增;本地独有的条目保留。'
-                      : '按 id 合并:本地已有的条目一个都不会丢。',
-                  style: context.texts.bodySmall!.copyWith(
-                    color: totalConflict > 0 ? scheme.error : scheme.outline,
-                    height: 1.4,
+                if (widget.mergeHint) ...[
+                  Text(
+                    totalConflict > 0
+                        ? context.l10n.mergeWithConflicts(totalConflict)
+                        : context.l10n.mergeNoLoss,
+                    style: context.texts.bodySmall!.copyWith(
+                      color: totalConflict > 0 ? scheme.error : scheme.outline,
+                      height: 1.4,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 10),
+                  const SizedBox(height: 10),
+                ],
                 Row(
                   children: [
                     Expanded(
@@ -209,7 +292,7 @@ class _ImportPickerState extends State<_ImportPicker> {
                         style: OutlinedButton.styleFrom(
                           minimumSize: const Size.fromHeight(46),
                         ),
-                        child: const Text('取消'),
+                        child: Text(context.l10n.cancel),
                       ),
                     ),
                     const SizedBox(width: 10),

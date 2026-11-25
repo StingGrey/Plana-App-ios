@@ -5,11 +5,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
 import '../../../core/net/backend_config.dart';
+import '../../../core/net/backend_http.dart';
 import '../../inspiration/tag_library.dart';
 import '../../inspiration/tag_models.dart';
 import 'artist_oc_library.dart';
 import 'local_tag_db.dart';
 import 'suggestions.dart';
+import '../../../l10n/l10n.dart';
 
 /// Danbooru wiki 预览(增强模式):标题 + 中/英摘要 + 别名。缩略图因 Cloudflare 不取。
 class WikiPreview {
@@ -42,7 +44,7 @@ class TagCompletion {
     required this.artistOcLib,
     this.localOcs,
     http.Client? client,
-  }) : _client = client ?? http.Client();
+  }) : _client = client ?? backendHttpClient();
 
   /// 后端基址,形如 `https://nai.sora214.top`,末尾无斜杠。
   final String baseUrl;
@@ -61,7 +63,7 @@ class TagCompletion {
 
   /// 作品行的附注。本地库退役后拿不到「N 个角色」这个数了(那是遍历全库现算的),
   /// 随机角色改成点骰子时按需拉,见 [randomCharacterOf]。
-  static const _kWorkNote = '点骰子随机抽一个角色';
+  static String get _kWorkNote => l10nNow.workNote;
 
   static const _timeout = Duration(seconds: 12);
   static const _limit = 12;
@@ -310,7 +312,7 @@ class TagCompletion {
         Suggestion(
           text: q,
           kind: SuggestionKind.tag,
-          trans: '翻译为英文',
+          trans: l10nNow.translateToEnglish,
           natural: true,
         ),
       );
@@ -378,10 +380,10 @@ class TagCompletion {
         // ['General','Character'],不写死的话新旧服务端搜出来的东西不一样。
         body: jsonEncode({
           'query': q,
-          'limit': 20,
+          // 取服务端允许的最大值,条数由服务端分数线决定。
+          'limit': 200,
           'show_nsfw': true,
-          // Copyright(作品/出处)是本地角色库退役后作品行的唯一来源;
-          // limit 不能再小 —— 实测搜「咒术回战」时 jujutsu_kaisen 排在第 9 位后。
+          // Copyright(作品/出处)是本地角色库退役后作品行的唯一来源。
           'target_categories': ['General', 'Character', 'Copyright'],
         }),
       ),
@@ -422,6 +424,47 @@ class TagCompletion {
       );
     }
     return out;
+  }
+
+  /// 语义搜角色(AI 助手查角色用):只搜角色类,名字整体查、不拆词 —— 拆开的话
+  /// 「芙兰朵露」会被切成「芙兰 / 朵 / 露」,命中别作品里同名的冷门角色。
+  /// 拿不到返回空表,不抛。
+  Future<List<({String tag, String cnName, int count, String wiki})>>
+  searchCharacters(String query, {int limit = 10}) async {
+    final q = query.trim();
+    if (baseUrl.isEmpty || q.isEmpty) return const [];
+    try {
+      final resp = await _retry(
+        () => _client.post(
+          Uri.parse('$baseUrl/api/tags/search'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'query': q,
+            'limit': limit,
+            'top_k': 50,
+            'show_nsfw': true,
+            'target_categories': ['Character'],
+            'use_segmentation': false,
+          }),
+        ),
+      );
+      if (resp.statusCode != 200) return const [];
+      final body = jsonDecode(utf8.decode(resp.bodyBytes));
+      final results = body is Map ? body['results'] : null;
+      if (results is! List) return const [];
+      return [
+        for (final r in results)
+          if (r is Map && '${r['tag'] ?? ''}'.trim().isNotEmpty)
+            (
+              tag: '${r['tag']}'.trim(),
+              cnName: '${r['cn_name'] ?? ''}'.trim(),
+              count: (r['count'] as num?)?.toInt() ?? 0,
+              wiki: '${r['wiki'] ?? ''}'.trim(),
+            ),
+      ];
+    } catch (_) {
+      return const [];
+    }
   }
 
   /// 解析 Danbooru `autocomplete.json` 数组 → 标签建议(前缀优先 → 热度降序,剔除 <50 冷门)。

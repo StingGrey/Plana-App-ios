@@ -16,15 +16,16 @@ import '../cloud_sync/cloud_sync_progress.dart';
 import '../cloud_sync/cloud_sync_state.dart';
 import '../vibe_library/vibe_library_page.dart';
 import '../generate/widgets/common.dart' show sharedAxisRoute;
-import '../migrate/web_backup_page.dart';
 import '../stats/stats_page.dart';
 import '../tools/image_scramble_page.dart';
 import '../tools/tools_page.dart';
 import 'about_page.dart';
 import 'account_page.dart';
 import 'appearance_page.dart';
+import 'backup_page.dart';
 import 'gen_settings_page.dart';
 import 'storage_page.dart';
+import '../../l10n/l10n.dart';
 
 class ProfilePage extends ConsumerWidget {
   const ProfilePage({super.key});
@@ -45,28 +46,22 @@ class ProfilePage extends ConsumerWidget {
             children: [
               Expanded(
                 child: Text(
-                  '我的',
+                  context.l10n.tabProfile,
                   style: context.texts.headlineSmall!.copyWith(
                     fontWeight: FontWeight.w700,
                   ),
                 ),
               ),
-              // 这两个都不是"设置项",不值得在列表里占一张与存储管理等宽的卡。
-              // 导入备份更是一次性的迁移动作,常驻列表里只会天天碍眼。
-              //
-              // 但只挂两枚裸图标又太哑:info 还算通用,import_export 那枚
-              // 没人猜得出是「把 web 的备份搬进来」。各配两个字。
+              // 这两个都不是"设置项",不在列表里占卡;图标各配两个字。
               _HeaderBtn(
-                icon: Icons.import_export,
-                // 不叫「同步」:这是选文件→预览→落库的单向一次性导入,
-                // 手机这边的改动不会回流,叫同步会让人等一个不存在的回程。
-                label: '导入',
-                onTap: () => push(const WebBackupPage()),
+                icon: Icons.settings_backup_restore,
+                label: context.l10n.backup,
+                onTap: () => push(const BackupPage()),
               ),
               const SizedBox(width: 8),
               _HeaderBtn(
                 icon: Icons.info_outline,
-                label: '关于',
+                label: context.l10n.about,
                 onTap: () => push(const AboutPage()),
               ),
             ],
@@ -82,8 +77,8 @@ class ProfilePage extends ConsumerWidget {
                 _EntryCard(
                   icon: Icons.manage_accounts_outlined,
                   filledIcon: Icons.manage_accounts,
-                  title: '账号与接入',
-                  subtitle: 'Token 与 Bot 授权',
+                  title: context.l10n.accountAccess,
+                  subtitle: context.l10n.accountAccessSub,
                   onTap: () => push(const AccountPage()),
                 ),
                 const SizedBox(height: 10),
@@ -122,8 +117,8 @@ class ProfilePage extends ConsumerWidget {
                 _EntryCard(
                   icon: Icons.query_stats,
                   filledIcon: Icons.query_stats,
-                  title: '统计',
-                  subtitle: '用量 · 钱包 · 全平台统计',
+                  title: context.l10n.stats,
+                  subtitle: context.l10n.statsSub,
                   onTap: () => push(const StatsPage()),
                 ),
                 const SizedBox(height: 10),
@@ -146,24 +141,24 @@ class ProfilePage extends ConsumerWidget {
                 _EntryCard(
                   icon: Icons.bookmark_outline,
                   filledIcon: Icons.bookmark,
-                  title: '提示词预设',
-                  subtitle: '正负面提示词模板',
+                  title: context.l10n.promptPresets,
+                  subtitle: context.l10n.promptPresetsSub,
                   onTap: () => push(const PromptPresetManagePage()),
                 ),
                 const SizedBox(height: 10),
                 _EntryCard(
                   icon: Icons.tune,
                   filledIcon: Icons.tune,
-                  title: '生成设置',
-                  subtitle: '自动重试 · 功能模块 · 默认保存',
+                  title: context.l10n.genSettings,
+                  subtitle: context.l10n.genSettingsSub,
                   onTap: () => push(const GenSettingsPage()),
                 ),
                 const SizedBox(height: 10),
                 _EntryCard(
                   icon: Icons.handyman_outlined,
                   filledIcon: Icons.handyman,
-                  title: '工具箱',
-                  subtitle: '权重转换 · 图片元数据',
+                  title: context.l10n.toolbox,
+                  subtitle: context.l10n.toolboxSub,
                   onTap: () => push(const ToolsPage()),
                 ),
                 const SizedBox(height: 10),
@@ -178,8 +173,8 @@ class ProfilePage extends ConsumerWidget {
                 _EntryCard(
                   icon: Icons.color_lens_outlined,
                   filledIcon: Icons.color_lens,
-                  title: '外观与触感',
-                  subtitle: '主题配色 · 振动反馈',
+                  title: context.l10n.appearanceHaptics,
+                  subtitle: context.l10n.appearanceSub,
                   onTap: () => push(const AppearancePage()),
                 ),
                 const SizedBox(height: 10),
@@ -190,8 +185,8 @@ class ProfilePage extends ConsumerWidget {
                 _EntryCard(
                   icon: Icons.storage,
                   filledIcon: Icons.storage,
-                  title: '存储管理',
-                  subtitle: '空间占用与清理',
+                  title: context.l10n.storage,
+                  subtitle: context.l10n.storageSub,
                   onTap: () => push(const StoragePage()),
                 ),
               ],

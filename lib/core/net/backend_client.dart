@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,6 +9,7 @@ import 'package:http/http.dart' as http;
 
 import '../util/log.dart';
 import 'backend_config.dart';
+import 'backend_http.dart';
 import 'nai_client.dart' show NaiUsage, parseNaiUsage;
 
 /// 后端请求失败(网络/非 2xx/格式)。`message` 为可直接展示的人类可读文案。
@@ -180,37 +182,6 @@ class CloudVibeMeta {
       metaHash: j['meta_hash'] as String?,
     );
   }
-}
-
-/// 备份/恢复操作记录一条(`GET /api/user-vibes/backup-log`)。
-class BackupLogEntry {
-  BackupLogEntry({
-    required this.device,
-    required this.action,
-    required this.time,
-    required this.count,
-    required this.detail,
-  });
-
-  final String device;
-
-  /// `backup` | `restore`
-  final String action;
-
-  /// unix 秒。
-  final int time;
-  final int count;
-  final String detail;
-
-  bool get isBackup => action == 'backup';
-
-  factory BackupLogEntry.fromJson(Map<String, dynamic> j) => BackupLogEntry(
-    device: j['device']?.toString() ?? '未知设备',
-    action: j['action']?.toString() ?? 'backup',
-    time: (j['time'] as num?)?.toInt() ?? 0,
-    count: (j['vibe_count'] as num?)?.toInt() ?? 0,
-    detail: j['detail']?.toString() ?? '',
-  );
 }
 
 /// 公共画师串列表项(`GET /api/artists/list`)。
@@ -1087,111 +1058,35 @@ class CivitaiLoraInfo {
   );
 }
 
-/// AI 助手产出的一个分角色分区(`characters[i]`)。
-///
-/// [position] 是站位坐标串 `"x,y"`(两个 0~1 四位小数,**y 向下增大**),与
-/// `CharacterPrompt.position` 同格式,不用换算。**空串 = AI 没指定**,不是
-/// 「放正中」—— 写回时要继承同位旧角色的站位,否则「让她笑一下」这种无关改动
-/// 都会把用户摆好的构图重排掉。
-class AgentCharacter {
-  const AgentCharacter({
-    required this.name,
-    required this.positive,
-    this.negative = '',
-    this.position = '',
-  });
-
-  final String name;
-  final String positive;
-  final String negative;
-  final String position;
-
-  Map<String, dynamic> toJson() => {
-    'name': name,
-    'positive': positive,
-    'negative': negative,
-    'position': position,
-  };
-
-  factory AgentCharacter.fromJson(Map<String, dynamic> j) => AgentCharacter(
-    name: j['name']?.toString() ?? '',
-    positive: j['positive']?.toString() ?? '',
-    negative: j['negative']?.toString() ?? '',
-    position: j['position']?.toString() ?? '',
-  );
-}
-
-/// AI 助手一轮的终态产出(`POST /api/agent/web/generate-prompt` 的 `final` 事件)。
-///
-/// ⚠ 字段名对不上,别照抄后端:后端那个 `thinking` 装的**不是**模型思考,而是发给
-/// 用户的正文回复(见服务端 `router._chat_output_to_agent_result`);真正的原生思考
-/// 在 `reasoning`。这里把它正名为 [replyText],省得下游每次都要重新踩一遍。
-///
-/// **这条链路没有 `should_draw`** —— 服务端转成本结构时把它连同 `size` 一起丢了。
-/// 所以「这一轮到底改没改画面」只能自己判:没有绘图意图时服务端把 positive /
-/// negative / characters 全留空,故 [hasDraw] 即判据。纯聊天轮据此不写创作页、
-/// 不出结果卡、不点导航角标。
-class AgentResult {
-  const AgentResult({
-    this.replyText = '',
-    this.reasoning = '',
-    this.positive = '',
-    this.negative = '',
-    this.characters = const [],
-    this.resources = const {},
-  });
-
-  /// 发给用户的角色语气正文(后端字段名是 `thinking`)。
-  final String replyText;
-
-  /// 模型原生思考。不进对话历史,只供当轮展示/排查。
-  final String reasoning;
-
-  final String positive;
-  final String negative;
-  final List<AgentCharacter> characters;
-
-  /// 沿用中的资源账本(画师串 / OC):`{kind: {名字: 内容}}`。
-  ///
-  /// 服务端记这本账、按「还在不在这幅画里」筛,但**不存**它 —— 这条链路没有
-  /// 服务端会话。所以账本随结果回来,下一轮原样发回去。
-  ///
-  /// 它解决的是:预匹配逐条消息做,用户这轮没再提「A1」,`[画师串]` 块就不出现,
-  /// 画风的出处断在那儿 —— 下一句「换个姿势」模型就不知道该保留哪串了。
-  final Map<String, Map<String, String>> resources;
-
-  /// 这一轮有没有产出画面改动。见类文档:服务端不下发 `should_draw`。
-  bool get hasDraw => positive.trim().isNotEmpty || characters.isNotEmpty;
-
-  factory AgentResult.fromJson(Map<String, dynamic> j) => AgentResult(
-    replyText: j['thinking']?.toString().trim() ?? '',
-    reasoning: j['reasoning']?.toString().trim() ?? '',
-    positive: j['positive']?.toString() ?? '',
-    negative: j['negative']?.toString() ?? '',
-    characters: [
-      for (final c in (j['characters'] as List? ?? const []))
-        if (c is Map<String, dynamic>) AgentCharacter.fromJson(c),
-    ],
-    resources: {
-      for (final e in (j['resources'] as Map? ?? const {}).entries)
-        if (e.value is Map)
-          '${e.key}': {
-            for (final r in (e.value as Map).entries) '${r.key}': '${r.value}',
-          },
-    },
-  );
-}
-
 /// Plana 后端客户端(当前仅含 bot 授权四端点里 App 要用的三个;
 /// verify 由 Bot 侧调用,App 不实现)。端点契约由后端项目定义,不在本仓库内。
 ///
 /// 全站约定:auth 端点失败也返 200,要看 body 的 verified/valid 字段;
 /// 其余端点非 2xx + `{"detail": ...}`。
+/// 后端支持的较新传法,见 [BackendClient.caps]。
+class BackendCaps {
+  const BackendCaps({this.img2imgFit = false, this.upscaleBinary = false});
+
+  factory BackendCaps.fromJson(Map<String, dynamic> j) => BackendCaps(
+    img2imgFit: j['img2img_fit'] == true,
+    upscaleBinary: j['upscale_binary'] == true,
+  );
+
+  /// 出图请求的 img2img 可以发原图 + `fit: cover`,由后端放大到出图尺寸。
+  final bool img2imgFit;
+
+  /// 有 `/upscale/binary`。
+  final bool upscaleBinary;
+}
+
 class BackendClient {
   BackendClient(this.baseUrl);
 
   /// 形如 `http://host:8765`,末尾无斜杠。
   final String baseUrl;
+
+  /// 首次请求时取定,见 [backendHttpClient]。
+  late final http.Client _http = backendHttpClient();
 
   static const _timeout = Duration(seconds: 15);
 
@@ -1233,6 +1128,16 @@ class BackendClient {
       throw BackendException('无法连接后端,请检查地址与网络');
     }
 
+    // 大响应(整条 vibe、灵感库备份)在后台解析
+    if (resp.statusCode >= 200 &&
+        resp.statusCode < 300 &&
+        resp.bodyBytes.length > 256 * 1024) {
+      try {
+        final j = await _jsonOfBytesInIsolate(resp.bodyBytes);
+        if (j is Map<String, dynamic>) return j;
+      } catch (_) {}
+      throw BackendException('后端返回格式异常');
+    }
     return _decode(resp);
   }
 
@@ -1266,8 +1171,99 @@ class BackendClient {
       logi('[net] POST $path body=${payload.length >> 10}KB');
     }
     return _handle(
-      () => http.post(_u(path), headers: _headers(bearer), body: payload),
+      () => _http.post(_u(path), headers: _headers(bearer), body: payload),
       timeout: _sendTimeout(payload.length, timeout),
+    );
+  }
+
+  /// 没有分片提交入口的后端(旧版),之后直接走 JSON。
+  static final _noMultipart = <String>{};
+
+  /// 按后端地址缓存的 [caps] 结果与过期时刻。
+  static final _caps = <String, (BackendCaps, DateTime)>{};
+
+  /// 后端支持哪些较新的传法(`GET /caps`)。旧后端没有这个地址,当作都不支持。
+  /// 支持的一直记着;不支持或没问到的 10 分钟后再问,后端升级后不用重启 App。
+  Future<BackendCaps> caps() async {
+    final hit = _caps[baseUrl];
+    if (hit != null &&
+        (hit.$1.upscaleBinary || DateTime.now().isBefore(hit.$2))) {
+      return hit.$1;
+    }
+    var c = const BackendCaps();
+    try {
+      c = BackendCaps.fromJson(
+        await _getJson('/caps', null, const Duration(seconds: 8)),
+      );
+    } catch (_) {}
+    _caps[baseUrl] = (c, DateTime.now().add(const Duration(minutes: 10)));
+    return c;
+  }
+
+  static final _b64 = RegExp(r'^[A-Za-z0-9+/]+={0,2}$');
+
+  /// 把 [v] 里的长 base64 串(图片、Vibe 编码)抽进 [parts],原处换成 `@part:名字`。
+  /// 只抽解码再编码逐字一致的串,服务端换回 base64 后和原来一模一样;同一串只抽一份。
+  static Object? _extractParts(
+    Object? v,
+    Map<String, Uint8List> parts,
+    Map<String, String> seen,
+  ) {
+    if (v is String) {
+      if (v.length < 1024 || v.length % 4 != 0 || !_b64.hasMatch(v)) return v;
+      final hit = seen[v];
+      if (hit != null) return '@part:$hit';
+      final bytes = base64Decode(v);
+      if (base64Encode(bytes) != v) return v;
+      final name = 'p${parts.length}';
+      parts[name] = bytes;
+      seen[v] = name;
+      return '@part:$name';
+    }
+    if (v is Map) {
+      return <String, dynamic>{
+        for (final e in v.entries)
+          '${e.key}': _extractParts(e.value, parts, seen),
+      };
+    }
+    if (v is List) return [for (final x in v) _extractParts(x, parts, seen)];
+    return v;
+  }
+
+  Future<Map<String, dynamic>> _postMultipart(
+    String path,
+    Map<String, dynamic> body,
+    Map<String, Uint8List> parts,
+    String? bearer,
+  ) {
+    final req = http.MultipartRequest('POST', _u(path));
+    if (bearer != null) req.headers['Authorization'] = 'Bearer $bearer';
+    var size = 0;
+    parts.forEach((name, bytes) {
+      size += bytes.length;
+      req.files.add(
+        http.MultipartFile.fromBytes(
+          name,
+          bytes,
+          filename: 'blob',
+          contentType: http.MediaType('image', 'png'),
+        ),
+      );
+    });
+    final json = utf8.encode(jsonEncode(body));
+    size += json.length;
+    req.files.add(
+      http.MultipartFile.fromBytes(
+        'request',
+        json,
+        filename: 'blob',
+        contentType: http.MediaType('application', 'json'),
+      ),
+    );
+    if (size > 512 * 1024) logi('[net] POST $path multipart=${size >> 10}KB');
+    return _handle(
+      () async => http.Response.fromStream(await _http.send(req)),
+      timeout: _sendTimeout(size, null),
     );
   }
 
@@ -1276,7 +1272,7 @@ class BackendClient {
     String? bearer,
     Duration? timeout,
   ]) => _handle(
-    () => http.get(_u(path), headers: _headers(bearer)),
+    () => _http.get(_u(path), headers: _headers(bearer)),
     timeout: timeout,
   );
 
@@ -1288,7 +1284,7 @@ class BackendClient {
   ]) {
     final payload = jsonEncode(body ?? const <String, dynamic>{});
     return _handle(
-      () => http.put(_u(path), headers: _headers(bearer), body: payload),
+      () => _http.put(_u(path), headers: _headers(bearer), body: payload),
       timeout: _sendTimeout(payload.length, timeout),
     );
   }
@@ -1326,16 +1322,62 @@ class BackendClient {
   /// 提交 bot 模式生成任务(登录:Bearer 头 + body 里 session_id)。
   /// → (是否受理, task_id?, 文案)。⚠️ 入队失败也返 200 success:false。
   /// 重绘/参考图会往 params 里塞几 MB base64,超时交 [_sendTimeout] 按体积放宽。
+  ///
+  /// 带 [clientRequestId](幂等键)时,连接层出错(没拿到响应)自动重发一次:服务端
+  /// 按键去重,第一次其实已受理也只回同一个 task_id,不会建第二单。
+  ///
+  /// 带图(重绘 / 图生图 / 参考图)时走 `/bot/generate/multipart`,图片作二进制分片,
+  /// 比 base64 少传三分之一。后端没有这个入口(404 / 405)就退回 JSON,并记住这台后端。
   Future<({bool success, String? taskId, String message})> botGenerate({
     required String sessionId,
     required Map<String, dynamic> params,
     String imageBackend = 'novelai',
+    String? clientRequestId,
   }) async {
-    final j = await _postJson('/bot/generate', {
+    final body = {
       'session_id': sessionId,
       'params': params,
       'image_backend': imageBackend,
-    }, sessionId);
+      'client_request_id': ?clientRequestId,
+      // NAI 成图原样(无损 WebP)发过来,streamBotTask 里还原成 PNG;旧后端忽略这个字段
+      'result_format': 'webp',
+    };
+    Future<Map<String, dynamic>> submit() async {
+      if (!_noMultipart.contains(baseUrl)) {
+        final (mpBody, parts) = await _extractPartsInIsolate(body);
+        if (parts.isNotEmpty) {
+          try {
+            return await _postMultipart(
+              '/bot/generate/multipart',
+              mpBody,
+              parts,
+              sessionId,
+            );
+          } on BackendException catch (e) {
+            if (e.status != 404 && e.status != 405) rethrow;
+            _noMultipart.add(baseUrl);
+            logi('[net] 后端没有分片提交入口,改回 JSON');
+          }
+        }
+      }
+      return _postJson('/bot/generate', body, sessionId);
+    }
+
+    final sw = Stopwatch()..start();
+    Map<String, dynamic> j;
+    try {
+      j = await submit();
+    } on BackendException catch (e) {
+      if (clientRequestId == null || e.status != null) rethrow;
+      logi('[net] 提交出图没拿到响应,带同一个幂等键重发: ${e.message}');
+      j = await submit();
+    }
+    final i2i = params['img2img'];
+    final img = i2i is Map ? i2i['imageBase64'] : null;
+    logi(
+      '[net] 提交出图 ${sw.elapsedMilliseconds}ms'
+      '${img is String ? ' · 底图 ${img.length * 3 ~/ 4 ~/ 1024} KiB' : ''}',
+    );
     return (
       success: j['success'] == true,
       taskId: j['task_id'] as String?,
@@ -1361,7 +1403,7 @@ class BackendClient {
     if (baseUrl.isEmpty) throw BackendException('未配置后端地址');
     final http.Response resp;
     try {
-      resp = await http
+      resp = await _http
           .get(Uri.parse('$baseUrl$url'))
           .timeout(const Duration(seconds: 60));
     } on TimeoutException {
@@ -1396,7 +1438,7 @@ class BackendClient {
         // 2026-09-04 起这个端点要鉴权（此前完全敞着，知道 task_id 就能撤别人的任务）。
         // 不带会话会 401 —— 而 401 在这里被当成「没取消成」吞掉，表现是「点了取消
         // 但服务端照常出图」，很难查。所以调用方务必把 sessionId 传进来。
-        () => http.delete(_u('/task/$taskId'), headers: _headers(sessionId)),
+        () => _http.delete(_u('/task/$taskId'), headers: _headers(sessionId)),
       );
       return j['success'] == true;
     } catch (_) {
@@ -1445,6 +1487,9 @@ class BackendClient {
   /// 同一份数据也随 [getAnlas] 顺路回来;单开这条是为了不必为了看池子而去拉点数。
   Future<NaiUsage?> poolUsage() async =>
       parseNaiUsage((await _getJson('/usage'))['usage']);
+
+  /// NovelAI 官方服务状态(`GET /api/nai-status`,公开端点),解析见 `parseNaiStatus`。
+  Future<Map<String, dynamic>> getNaiStatus() => _getJson('/nai-status');
 
   /// 我的 NAI 5 出图额度(`GET /api/user/quota`)。按会话鉴权,**只能查自己**
   /// (user_id 取自会话,传不进去别人的)。
@@ -1577,7 +1622,7 @@ class BackendClient {
     final uri = _u('/vibes/file/${Uri.encodeComponent(filename)}');
     final http.Response resp;
     try {
-      resp = await http
+      resp = await _http
           .get(uri, headers: _headers(sessionId))
           .timeout(const Duration(seconds: 30));
     } on TimeoutException {
@@ -1759,7 +1804,7 @@ class BackendClient {
 
   Future<void> deletePublicOc(String sessionId, String enName) async {
     await _handle(
-      () => http.delete(
+      () => _http.delete(
         _u('/oc/${Uri.encodeComponent(enName)}'),
         headers: _headers(sessionId),
       ),
@@ -1836,7 +1881,7 @@ class BackendClient {
 
   Future<void> deletePublicArtist(String sessionId, String id) async {
     await _handle(
-      () => http.delete(
+      () => _http.delete(
         _u('/artists/${Uri.encodeComponent(id)}'),
         headers: _headers(sessionId),
       ),
@@ -1856,12 +1901,14 @@ class BackendClient {
 
   /// 拉取个人 Tag 云备份(登录:Bearer 头)。web 端备份可能内嵌 base64
   /// 预览,体积达数十 MB,超时放宽到 60s。
-  /// → (四类条目原始 JSON, 自定义类别块, 更新时间秒, 各类计数)。从未备份过时
-  /// 四类为空数组;没存过自定义类别时 custom 为 null。
+  /// → (四类条目原始 JSON, 自定义类别块, 标签池, 法典收藏, 更新时间秒, 各类计数)。
+  /// 从未备份过时四类为空数组;没存过的块为 null。
   Future<
     ({
       Map<String, dynamic> categories,
       Map<String, dynamic>? custom,
+      Map<String, dynamic>? pools,
+      List<dynamic>? codexFavorites,
       int updatedAt,
       Map<String, int> counts,
     })
@@ -1879,6 +1926,12 @@ class BackendClient {
           : const <String, dynamic>{},
       custom: j['custom'] is Map<String, dynamic>
           ? j['custom'] as Map<String, dynamic>
+          : null,
+      pools: j['pools'] is Map<String, dynamic>
+          ? j['pools'] as Map<String, dynamic>
+          : null,
+      codexFavorites: j['codex_favorites'] is List
+          ? j['codex_favorites'] as List
           : null,
       updatedAt: (j['updated_at'] as num?)?.toInt() ?? 0,
       counts: {
@@ -1909,19 +1962,90 @@ class BackendClient {
     } catch (_) {}
   }
 
-  /// 上传个人 Tag 云备份(四类与自定义类别整体覆盖;⚠️ 该端点鉴权走 body 里的
-  /// session_id)。
+  /// 上传个人 Tag 云备份(四类、自定义类别、标签池、法典收藏整体覆盖;⚠️ 该端点
+  /// 鉴权走 body 里的 session_id)。
   Future<void> uploadTagBackup({
     required String sessionId,
     required Map<String, List<Map<String, dynamic>>> categories,
     required Map<String, dynamic> custom,
+    required Map<String, List<String>> pools,
+    required List<Map<String, dynamic>> codexFavorites,
   }) async {
     await _postJson(
       '/user-tag-backup',
-      {'session_id': sessionId, 'categories': categories, 'custom': custom},
+      {
+        'session_id': sessionId,
+        'categories': categories,
+        'custom': custom,
+        'pools': pools,
+        'codex_favorites': codexFavorites,
+      },
       sessionId,
       const Duration(seconds: 30),
     );
+  }
+
+  /// 灵感库预览图上传前核对 → (要上传的哈希, 已用字节, 额度字节)。
+  /// 别人传过的同一张后端直接记到本人名下,不在 missing 里。
+  Future<({List<String> missing, int used, int quota})> checkTagPreviews(
+    String sessionId,
+    List<String> shas,
+  ) async {
+    final j = await _postJson('/user-tag-previews/check', {
+      'shas': shas,
+    }, sessionId);
+    return (
+      missing: [
+        for (final s
+            in (j['missing'] is List ? j['missing'] as List : const []))
+          if (s is String) s,
+      ],
+      used: (j['used'] as num?)?.toInt() ?? 0,
+      quota: (j['quota'] as num?)?.toInt() ?? 0,
+    );
+  }
+
+  /// 上传一张灵感库预览图(请求体是图片原样字节,[sha] 为其 sha256)。超额度时
+  /// 抛 status 413 的 [BackendException]。
+  Future<void> uploadTagPreview(
+    String sessionId,
+    String sha,
+    Uint8List bytes,
+  ) => _handle(
+    () => _http.put(
+      _u('/user-tag-previews/$sha'),
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'Authorization': 'Bearer $sessionId',
+      },
+      body: bytes,
+    ),
+    timeout: _sendTimeout(bytes.length, null),
+  );
+
+  /// 云端预览图的完整地址(不鉴权,哈希即凭证)。
+  String tagPreviewUrl(String sha) => '$baseUrl/api/user-tag-previews/$sha';
+
+  /// 取一张云端预览图。
+  Future<Uint8List> fetchTagPreview(String sha) async {
+    if (baseUrl.isEmpty) throw BackendException('未配置后端地址');
+    final http.Response resp;
+    try {
+      resp = await _http
+          .get(Uri.parse(tagPreviewUrl(sha)))
+          .timeout(const Duration(seconds: 60));
+    } on TimeoutException {
+      throw BackendException('取预览图超时,请检查网络');
+    } catch (_) {
+      throw BackendException('取预览图失败,请检查网络');
+    }
+    if (resp.statusCode < 200 || resp.statusCode >= 300) {
+      throw BackendException(
+        '取预览图失败(${resp.statusCode})',
+        status: resp.statusCode,
+      );
+    }
+    return resp.bodyBytes;
   }
 
   // ── 个人云端 Vibe 库(与 web 桌面端共用一份,按 bot_user_id 存)────────
@@ -2066,30 +2190,16 @@ class BackendClient {
     }, sessionId);
   }
 
-  /// 备份/恢复操作记录(最近 20 条,与 web 共用)。失败给空表,不打扰主流程。
-  Future<List<BackupLogEntry>> getBackupLog(String sessionId) async {
-    try {
-      final j = await _getJson('/user-vibes/backup-log', sessionId);
-      final log = j['log'];
-      if (log is! List) return const [];
-      return [
-        for (final e in log)
-          if (e is Map<String, dynamic>) BackupLogEntry.fromJson(e),
-      ];
-    } catch (_) {
-      return const [];
-    }
-  }
-
   /// NAI 官方超分(bot 模式;登录:Bearer 头)。后端按 [mode] 分流到两个并存的端点:
   ///  - `legacy`(默认):api 子域传统超分,4×,仅 832×1216/1216×832/1024²,固定 7 点
   ///  - `nai5`:image 子域 V5 扩散超分,固定 2×、输入尺寸无白名单,按源图 1–4 点
   ///
-  /// 后端要远程转发 NAI,给足超时(V5 扩散比传统超分慢得多)。
-  /// ⚠️ 失败也返 200,看 success/message。→ (是否成功, 结果图 base64?, 文案)
-  Future<({bool success, String? imageBase64, String message})> upscale({
+  /// 后端要远程转发 NAI,给足超时(V5 扩散比传统超分慢得多)。后端支持时图片双向走
+  /// 二进制(`/upscale/binary`),否则走 JSON base64。
+  /// ⚠️ 失败也返 200,看 success/message。→ (是否成功, 结果图?, 文案)
+  Future<({bool success, Uint8List? image, String message})> upscale({
     required String sessionId,
-    required String imageBase64,
+    required Uint8List image,
     required int width,
     required int height,
     int scale = 4,
@@ -2097,23 +2207,88 @@ class BackendClient {
     String? model,
     double? declaredBlurSigma,
   }) async {
-    final j = await _postJson(
-      '/upscale',
-      {
-        'image': imageBase64,
-        'width': width,
-        'height': height,
-        'scale': scale,
-        'mode': mode,
-        'model': ?model,
-        'declared_blur_sigma': ?declaredBlurSigma,
-      },
-      sessionId,
-      Duration(seconds: mode == 'nai5' ? 300 : 120),
+    final sw = Stopwatch()..start();
+    final fields = <String, dynamic>{
+      'width': width,
+      'height': height,
+      'scale': scale,
+      'mode': mode,
+      'model': ?model,
+      'declared_blur_sigma': ?declaredBlurSigma,
+    };
+    final timeout = Duration(seconds: mode == 'nai5' ? 300 : 120);
+    final binary = (await caps()).upscaleBinary;
+    final ({bool success, Uint8List? image, String message}) r;
+    if (binary) {
+      r = await _upscaleBinary(sessionId, image, fields, timeout);
+    } else {
+      final j = await _postJson(
+        '/upscale',
+        {'image': base64Encode(image), ...fields},
+        sessionId,
+        timeout,
+      );
+      final out = j['image'];
+      r = (
+        success: j['success'] == true,
+        image: out is String && out.isNotEmpty ? base64Decode(out) : null,
+        message: (j['message'] as String?) ?? '',
+      );
+    }
+    logi(
+      '[net] 超分${binary ? '(二进制)' : ''} ${sw.elapsedMilliseconds}ms · '
+      '源图 ${image.length >> 10} KiB · 结果 ${(r.image?.length ?? 0) >> 10} KiB',
     );
+    return r;
+  }
+
+  /// `/upscale/binary`:request 分片是不带图的请求体,image 分片是原图;成功回图片
+  /// 字节,失败回 JSON。
+  Future<({bool success, Uint8List? image, String message})> _upscaleBinary(
+    String sessionId,
+    Uint8List image,
+    Map<String, dynamic> fields,
+    Duration timeout,
+  ) async {
+    if (baseUrl.isEmpty) throw BackendException('未配置后端地址');
+    final req = http.MultipartRequest('POST', _u('/upscale/binary'))
+      ..headers['Authorization'] = 'Bearer $sessionId'
+      ..files.add(
+        http.MultipartFile.fromBytes(
+          'request',
+          utf8.encode(jsonEncode(fields)),
+          filename: 'blob',
+          contentType: http.MediaType('application', 'json'),
+        ),
+      )
+      ..files.add(
+        http.MultipartFile.fromBytes(
+          'image',
+          image,
+          filename: 'blob',
+          contentType: http.MediaType('image', 'png'),
+        ),
+      );
+    final http.Response resp;
+    try {
+      resp = await http.Response.fromStream(
+        await _http.send(req),
+      ).timeout(_sendTimeout(image.length, timeout));
+    } on TimeoutException {
+      throw BackendException('连接后端超时,请检查地址与网络');
+    } catch (_) {
+      throw BackendException('无法连接后端,请检查地址与网络');
+    }
+    final type = resp.headers['content-type'] ?? '';
+    if (resp.statusCode >= 200 &&
+        resp.statusCode < 300 &&
+        type.startsWith('image/')) {
+      return (success: true, image: resp.bodyBytes, message: '');
+    }
+    final j = _decode(resp);
     return (
-      success: j['success'] == true,
-      imageBase64: j['image'] as String?,
+      success: false,
+      image: null,
       message: (j['message'] as String?) ?? '',
     );
   }
@@ -2303,7 +2478,8 @@ class BackendClient {
   /// 撤销一把,立即生效。已经撤销过 / 不是自己的回 404。
   Future<void> revokeApiKey(String sessionId, int id) async {
     await _handle(
-      () => http.delete(_u('/user/api-keys/$id'), headers: _headers(sessionId)),
+      () =>
+          _http.delete(_u('/user/api-keys/$id'), headers: _headers(sessionId)),
     );
   }
 
@@ -2590,6 +2766,10 @@ class BackendClient {
   /// AI 助手可选的 LLM 渠道 + 服务端当前默认(`MODEL_CHOICES` 原样下发)。
   /// 公开端点,不带会话 —— 它只是一张展示用的表,没有用户数据。
   Future<Map<String, dynamic>> agentModels() => _getJson('/agent/models');
+
+  /// AI 助手「生成图片」能用的后端出图渠道。带会话时每条附所在额度池的剩余次数。
+  Future<Map<String, dynamic>> agentImageChannels(String sessionId) =>
+      _getJson('/agent/image/channels', sessionId.isEmpty ? null : sessionId);
 }
 
 /// 用当前后端基址构造 client(基址变更自动重建)。
@@ -2597,3 +2777,16 @@ final backendClientProvider = Provider<BackendClient>((ref) {
   final base = ref.watch(backendBaseProvider).value ?? '';
   return BackendClient(base);
 });
+
+/// 后台 isolate:抽出 [body] 里的长 base64 串(见 [BackendClient._extractParts])。
+Future<(Map<String, dynamic>, Map<String, Uint8List>)> _extractPartsInIsolate(
+  Map<String, dynamic> body,
+) => Isolate.run(() {
+  final parts = <String, Uint8List>{};
+  final mp =
+      BackendClient._extractParts(body, parts, {}) as Map<String, dynamic>;
+  return (mp, parts);
+});
+
+Future<Object?> _jsonOfBytesInIsolate(Uint8List bytes) =>
+    Isolate.run(() => jsonDecode(utf8.decode(bytes)));

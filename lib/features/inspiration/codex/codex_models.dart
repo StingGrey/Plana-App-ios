@@ -7,6 +7,8 @@
 /// 拼错就会整片裂图,故用 [codex_test.dart] 把两模式与编码/版本号钉死。
 library;
 
+import '../../../l10n/l10n.dart';
+
 /// 图床配置(取自原站 data/media.json)。字段缺失时退回已知常量,
 /// 保证即使 media.json 拉不到也能出图。
 class CodexMedia {
@@ -58,10 +60,10 @@ enum CodexType {
   };
 
   String get label => switch (this) {
-    CodexType.codex => '法典',
-    CodexType.string => '词典',
-    CodexType.composition => '构图',
-    CodexType.pack => '合集',
+    CodexType.codex => l10nNow.sectionCodex,
+    CodexType.string => l10nNow.codexTypeDict,
+    CodexType.composition => l10nNow.codexTypeComposition,
+    CodexType.pack => l10nNow.codexTypePack,
     CodexType.unknown => '',
   };
 }
@@ -230,7 +232,9 @@ class CodexCharacter {
       r'^char\s*(\d+(?:\s*-\s*\d+)?)$',
       caseSensitive: false,
     ).firstMatch(label.trim());
-    return m == null ? label : '角色 ${m.group(1)!.replaceAll(' ', '')}';
+    return m == null
+        ? label
+        : l10nNow.charRangeLabel(m.group(1)!.replaceAll(' ', ''));
   }
 
   /// 这段管哪几个角色位(1 起)。`char2-4` → [2,3,4];`char` → [1];认不出 → 空。
@@ -358,6 +362,22 @@ class CodexEntry {
     );
   }
 
+  CodexEntry copyWith({String? title, List<String>? path}) => CodexEntry(
+    id: id,
+    title: title ?? this.title,
+    tags: tags,
+    path: path ?? this.path,
+    image: image,
+    original: original,
+    imageWidth: imageWidth,
+    imageHeight: imageHeight,
+    assetRev: assetRev,
+    assetCodexId: assetCodexId,
+    isNew: isNew,
+    images: images,
+    characters: characters,
+  );
+
   /// 回写(收藏夹存词条快照用)。只落非空字段:收藏文件里几百条,
   /// 每条多带一串 null 白占体积。
   Map<String, dynamic> toJson() => {
@@ -391,6 +411,7 @@ class CodexData {
     required this.meta,
     required this.entries,
     this.tree = const [],
+    this.specimens = const {},
   });
 
   final CodexMeta meta;
@@ -398,6 +419,34 @@ class CodexData {
 
   /// 分类树(顶层节点;app 侧 v1 只用顶层做筛选 chip)。
   final List<CodexNode> tree;
+
+  /// 按画风重排后的单画师词条:词条 id → 所属画师下标与例图优先级(小者优先)。
+  /// 只有挂上画风数据的 v5 画师词典非空,见 `codex_artist_styles.dart`。
+  final Map<String, ({int artist, int rank})> specimens;
+
+  /// 每位画师只留一张卡(取 [list] 里优先级最高的例图,占该画师首次出现的位置);
+  /// 其余词条原样保留。
+  List<CodexEntry> onePerArtist(List<CodexEntry> list) {
+    if (specimens.isEmpty) return list;
+    final best = <int, CodexEntry>{};
+    for (final e in list) {
+      final s = specimens[e.id];
+      if (s == null) continue;
+      final cur = best[s.artist];
+      if (cur == null || s.rank < specimens[cur.id]!.rank) best[s.artist] = e;
+    }
+    final seen = <int>{};
+    final out = <CodexEntry>[];
+    for (final e in list) {
+      final s = specimens[e.id];
+      if (s == null) {
+        out.add(e);
+      } else if (seen.add(s.artist)) {
+        out.add(best[s.artist]!);
+      }
+    }
+    return out;
+  }
 
   /// 分类树:有 tree 用 tree;没有则从词条 path 首级合成扁平树(带计数),
   /// 让每部法典都能走同一套层级筛选。

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart' show IconData, Icons;
 
 import '../../core/util/prompt_tokens.dart';
 import '../editor/editor_models.dart' show foldWrap, outputOf;
+import '../../l10n/l10n.dart';
 
 /// 灵感页(Tag 管理器)数据模型,对齐 web tag-manager 的注册表与条目结构。
 /// 内置四类的 id 沿用 web(character/artist-style/scene/other),云备份四类键
@@ -41,10 +42,10 @@ enum TagCardLayout { portrait, landscape, square, none }
 
 extension TagCardLayoutX on TagCardLayout {
   String get label => switch (this) {
-    TagCardLayout.portrait => '竖图',
-    TagCardLayout.landscape => '横图',
-    TagCardLayout.square => '方图',
-    TagCardLayout.none => '无图',
+    TagCardLayout.portrait => l10nNow.layoutPortrait,
+    TagCardLayout.landscape => l10nNow.layoutLandscape,
+    TagCardLayout.square => l10nNow.layoutSquare,
+    TagCardLayout.none => l10nNow.layoutNoImage,
   };
 
   double get aspect => switch (this) {
@@ -109,7 +110,7 @@ class TagCategoryDef {
     id,
     label,
     kTagCategoryIcons[iconName] ?? Icons.sell_outlined,
-    searchHint: '搜索名称 / 提示词…',
+    searchHint: l10nNow.searchNamePromptHint,
     maxSelectable: 20,
     previewAspect: layout.aspect,
     hasPreview: layout != TagCardLayout.none,
@@ -148,20 +149,21 @@ class TagCategoryDef {
   final TagCardLayout? layout;
 
   /// 换个名字(内置类别改名用),其余不变。
-  TagCategoryDef withLabel(String label) => TagCategoryDef(
-    key,
-    webId,
-    label,
-    icon,
-    searchHint: searchHint,
-    maxSelectable: maxSelectable,
-    previewAspect: previewAspect,
-    hasPreview: hasPreview,
-    hasPublic: hasPublic,
-    alphabetRail: alphabetRail,
-    iconName: iconName,
-    layout: layout,
-  );
+  TagCategoryDef withLabel(String label, {String? searchHint}) =>
+      TagCategoryDef(
+        key,
+        webId,
+        label,
+        icon,
+        searchHint: searchHint ?? this.searchHint,
+        maxSelectable: maxSelectable,
+        previewAspect: previewAspect,
+        hasPreview: hasPreview,
+        hasPublic: hasPublic,
+        alphabetRail: alphabetRail,
+        iconName: iconName,
+        layout: layout,
+      );
 
   Map<String, dynamic> toJson() => {
     'id': webId,
@@ -250,19 +252,38 @@ void syncCustomTagCategories(
 }
 
 /// 法典页签的名字(可改名)。
-String codexTabLabel() => _labels['codex'] ?? '法典';
+String codexTabLabel() => _labels['codex'] ?? builtinCategoryLabel('codex');
+
+/// 内置类别(含法典)没改过名时的名字,按界面语言取。
+String builtinCategoryLabel(String webId) => switch (webId) {
+  'character' => l10nNow.catCharacter,
+  'artist-style' => l10nNow.catStyle,
+  'scene' => l10nNow.catScene,
+  'other' => l10nNow.catOther,
+  'codex' => l10nNow.sectionCodex,
+  _ => webId,
+};
+
+String _builtinSearchHint(String webId) => switch (webId) {
+  'character' => l10nNow.searchCharHint,
+  'artist-style' => l10nNow.searchStyleHint,
+  'scene' => l10nNow.searchSceneHint,
+  _ => l10nNow.searchNamePromptHint,
+};
 
 TagCategoryDef tagCategoryDef(TagCategory c) {
   for (final d in kTagCategoryDefs) {
     if (d.key == c) {
-      final l = _labels[d.webId];
-      return l == null ? d : d.withLabel(l);
+      return d.withLabel(
+        _labels[d.webId] ?? builtinCategoryLabel(d.webId),
+        searchHint: _builtinSearchHint(d.webId),
+      );
     }
   }
   return _customDefs[c.name] ??
       TagCategoryDef.custom(
         id: c.name,
-        label: '未命名',
+        label: l10nNow.untitled,
         iconName: 'Tag',
         layout: TagCardLayout.square,
       );
@@ -276,9 +297,9 @@ enum TagSort { number, time, author }
 
 extension TagSortX on TagSort {
   String get label => switch (this) {
-    TagSort.number => '编号',
-    TagSort.time => '最新',
-    TagSort.author => '作者',
+    TagSort.number => l10nNow.sortNumber,
+    TagSort.time => l10nNow.sortLatest,
+    TagSort.author => l10nNow.sortAuthor,
   };
 }
 
@@ -309,8 +330,8 @@ enum TagOrigin { local, favorited, created }
 
 /// 统一条目模型(web TagFile / ArtistData / OCData / CustomTagData 的归一)。
 /// [extra] 透传 web 备份里 app 不认识的字段(恢复时收下、上传时原样带回),
-/// 避免 app 恢复→再上传的整体覆盖冲掉 web 端数据;体积大的 base64 预览
-/// 除外(解码时即丢弃,上传确认时向用户说明)。
+/// 避免 app 恢复→再上传的整体覆盖冲掉 web 端数据;base64 预览不进 extra
+/// (恢复时由 [TagLibrary.mergeBackup] 落成本机文件)。
 class TagEntry {
   const TagEntry({
     required this.id,
@@ -559,12 +580,12 @@ Map<String, dynamic> buildBackupFile(
   Map<String, dynamic> j,
 ) {
   if (j['identifier'] != kBackupFileIdentifier) {
-    throw const FormatException('不是 Tag 管理器的备份文件');
+    throw FormatException(l10nNow.notTagBackup);
   }
   final cat = j['category'] is String
       ? tagCategoryByWebId(j['category'] as String)
       : null;
-  if (cat == null) throw const FormatException('备份文件的分类无法识别');
+  if (cat == null) throw FormatException(l10nNow.backupCatUnknown);
   return (
     cat: cat,
     items: [
@@ -574,10 +595,28 @@ Map<String, dynamic> buildBackupFile(
   );
 }
 
-/// 备份/发布只带可跨端使用的 http(s) 预览,本机文件路径不外发。
-List<String> portablePreviews(List<String> previews) => [
+/// 云备份里的预览图引用 `/api/user-tag-previews/<sha256>`:相对后端地址,web 同域可直接当图片地址。
+const kPreviewRefPrefix = '/api/user-tag-previews/';
+final _previewRefRe = RegExp(r'/api/user-tag-previews/([0-9a-f]{64})');
+
+/// 预览串里的云端预览哈希(相对引用、补全了后端地址的都认);不是返回 null。
+String? previewRefSha(String p) => _previewRefRe.firstMatch(p)?.group(1);
+
+String previewRef(String sha) => '$kPreviewRefPrefix$sha';
+
+/// 备份带的预览:云端预览一律写成相对引用,其余 http(s) 原样;本机文件按 [refs]
+/// (本机路径 → 引用)换成已上传的,没上传的本机路径不外发。
+List<String> portablePreviews(
+  List<String> previews, [
+  Map<String, String> refs = const {},
+]) => [
   for (final p in previews)
-    if (p.startsWith('http')) p,
+    if (previewRefSha(p) case final String sha)
+      previewRef(sha)
+    else if (p.startsWith('http'))
+      p
+    else if (refs[p] case final String r)
+      r,
 ];
 
 List<String> _strList(Object? v) => v is List
@@ -631,18 +670,30 @@ String appendTagNegatives(
 /// 编号自然序(A1 < A2 < A10,画风列表用):文本段不分大小写比较,
 /// 数字段按数值比较。
 int naturalCompare(String a, String b) {
-  final re = RegExp(r'(\d+|\D+)');
-  final xa = re.allMatches(a.toLowerCase()).map((m) => m[0]!).toList();
-  final xb = re.allMatches(b.toLowerCase()).map((m) => m[0]!).toList();
+  final xa = _naturalKey(a);
+  final xb = _naturalKey(b);
   for (var i = 0; i < xa.length && i < xb.length; i++) {
-    final na = int.tryParse(xa[i]);
-    final nb = int.tryParse(xb[i]);
-    final c = na != null && nb != null
-        ? na.compareTo(nb)
-        : xa[i].compareTo(xb[i]);
+    final (sa, na) = xa[i];
+    final (sb, nb) = xb[i];
+    final c = na != null && nb != null ? na.compareTo(nb) : sa.compareTo(sb);
     if (c != 0) return c;
   }
   return xa.length.compareTo(xb.length);
+}
+
+final _naturalRe = RegExp(r'(\d+|\D+)');
+
+/// 切好的比较键(排序时每个名字要比好多次,切一次记下来)。
+final _naturalKeys = <String, List<(String, int?)>>{};
+
+List<(String, int?)> _naturalKey(String s) {
+  final hit = _naturalKeys[s];
+  if (hit != null) return hit;
+  if (_naturalKeys.length > 20000) _naturalKeys.clear();
+  return _naturalKeys[s] = [
+    for (final m in _naturalRe.allMatches(s.toLowerCase()))
+      (m[0]!, int.tryParse(m[0]!)),
+  ];
 }
 
 /// 画师串「获取编号」:A1..A99 → B1..,取首个空位(gap-filling,
@@ -670,7 +721,11 @@ String letterOfName(String name) {
 
 /// 云备份条目编码:按 web 各分类的本地存储 shape 生成(画师串用 `prompt`,
 /// 角色/场景/其他用 `positive`),extra 打底、本字段覆盖,web 恢复可直读。
-Map<String, dynamic> encodeBackupEntry(TagEntry e) {
+/// [refs] 见 [portablePreviews]。
+Map<String, dynamic> encodeBackupEntry(
+  TagEntry e, {
+  Map<String, String> refs = const {},
+}) {
   final base = Map<String, dynamic>.from(e.extra);
   base['id'] = e.id;
   base['name'] = e.name;
@@ -680,10 +735,12 @@ Map<String, dynamic> encodeBackupEntry(TagEntry e) {
   base['origin'] = e.origin.name;
   if (e.publicId != null) base['publicId'] = e.publicId;
   if (e.tags.isNotEmpty) base['tags'] = e.tags;
+  final previews = portablePreviews(e.previews, refs);
   switch (e.category) {
     case TagCategory.artist:
       base['prompt'] = e.positive;
-      base['previews'] ??= portablePreviews(e.previews);
+      base['previews'] ??= previews;
+      if (e.createdBy != null) base['addedBy'] = e.createdBy;
       // 适用模型、推荐参数以字段为准:有就写,清空了就不带这个键(通用 / 没记)
       if (e.models.isNotEmpty) {
         base['models'] = e.models;
@@ -695,17 +752,24 @@ Map<String, dynamic> encodeBackupEntry(TagEntry e) {
       } else {
         base.remove('recipe');
       }
+    // web 角色 / 场景 / 其他只认单张 `preview`;全部预览另放 `previews`
     case TagCategory.character:
       base['positive'] = e.positive;
       base['aliases'] = e.aliases;
-      base['preview'] ??= portablePreviews(e.previews).firstOrNull ?? '';
+      base['preview'] ??= previews.firstOrNull ?? '';
+      base['previews'] ??= previews;
+      if (e.createdBy != null) base['user'] = e.createdBy;
     case TagCategory.scene || TagCategory.other:
       base['positive'] = e.positive;
       base['subtypeId'] = tagCategoryDef(e.category).webId;
+      if (previews.isNotEmpty) base['preview'] ??= previews.first;
+      base['previews'] ??= previews;
+      if (e.createdBy != null) base['createdBy'] = e.createdBy;
     default:
       base['positive'] = e.positive;
       base['subtypeId'] = e.category.name;
-      base['previews'] ??= portablePreviews(e.previews);
+      base['previews'] ??= previews;
+      if (e.createdBy != null) base['createdBy'] = e.createdBy;
   }
   return base;
 }
@@ -720,7 +784,10 @@ TagEntry? decodeBackupEntry(TagCategory cat, Map<String, dynamic> j) {
 
   final previews = <String>[];
   void addPreview(Object? v) {
-    if (v is String && v.isNotEmpty && !v.startsWith('data:')) {
+    if (v is String &&
+        v.isNotEmpty &&
+        !v.startsWith('data:') &&
+        !previews.contains(v)) {
       previews.add(v);
     }
   }
@@ -754,6 +821,9 @@ TagEntry? decodeBackupEntry(TagCategory cat, Map<String, dynamic> j) {
         'subtypeId',
         'preview',
         'previews',
+        'user',
+        'addedBy',
+        'createdBy',
       }.contains(en.key))
         en.key: en.value,
   };
@@ -778,7 +848,7 @@ TagEntry? decodeBackupEntry(TagCategory cat, Map<String, dynamic> j) {
     },
     previews: previews,
     createdAt: (j['createdAt'] as num?)?.toInt() ?? 0,
-    createdBy: switch (j['user'] ?? j['addedBy']) {
+    createdBy: switch (j['user'] ?? j['addedBy'] ?? j['createdBy']) {
       final String s => s,
       final num n => '$n',
       _ => null,

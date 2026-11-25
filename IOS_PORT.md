@@ -8,7 +8,8 @@
 
 - App 切到后台后继续维持 NovelAI 流式 HTTP 或后端 WebSocket；
 - iOS Live Activity / Dynamic Island；
-- 从 GitHub Release 下载 Android APK 的应用内更新流程。
+- 从 GitHub Release 下载 Android APK 的应用内更新流程；
+- 「我的 → 备份」里的 Google 云端硬盘备份（需要在 Info.plist 配 GIDClientID 与回调 URL scheme，未配置时点连接会闪退；iOS 请用 iCloud 同步）。
 
 当前 iOS 前台版另外提供：本地图库（自动汇总生成历史，也支持照片/Files 导入、元数据搜索、分类、收藏、集合与批量操作）、
 在线画廊（Danbooru / Safebooru / Gelbooru / AI TAG / 法典图鉴）、生成队列管理、生成结果详情、

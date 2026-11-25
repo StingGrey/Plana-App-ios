@@ -1,12 +1,9 @@
-/// 规则预设页:每个模型在用哪一份、导入、导出、编辑、删除。
+/// 规则预设页:一张卡一份预设。
 ///
-/// 一张卡一份预设。默认规则按模型分两张(v4.5 版、v5 版),名称、作者、版本读服务端
-/// 预设顶层的 meta。**点卡片就用这份**,正在用的卡右上角挂一个「使用中」角标。
-/// 每个模型恰好有一张卡在用,默认规则兜底。
-///
-/// 编辑是全文编辑:摊开的就是导出的那份文本,不做逐段的表单 —— 规则文件的写法与
-/// 服务端预设一致,整份摊开最直接,电脑上改好的也能整段贴进来。默认规则的原件在
-/// 服务端,改完另存为一份新预设。
+/// 默认规则按模型分两张(v4.5 版、v5 版),名称、作者、版本读内置那份的 meta。
+/// 点卡进预设页([RulesPresetDetailPage]);卡上直接摆副本、导出、删除。
+/// 卡底下一条分段只显示它支持的模型、哪些在用;启用的模型在预设页里改。
+/// 每个模型恰好有一份在用,默认规则兜底。
 library;
 
 import 'dart:convert';
@@ -15,13 +12,15 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/auth/bot_session_store.dart';
-import '../../core/net/backend_config.dart';
 import '../../core/theme/app_skin.dart';
 import '../../core/theme/app_theme.dart';
-import '../../core/util/haptics.dart';
 import '../generate/widgets/common.dart' show confirmDialog, hintSnack;
-import 'preset_rules.dart';
+import 'presets/default_rules.dart';
+import 'presets/preset_rule.dart';
+import 'presets/rules_file.dart';
+import 'presets/rules_library.dart';
+import 'rules_preset_detail_page.dart';
+import '../../l10n/l10n.dart';
 
 class RulesPresetPage extends ConsumerWidget {
   const RulesPresetPage({super.key});
@@ -31,19 +30,24 @@ class RulesPresetPage extends ConsumerWidget {
     final lib = ref.watch(rulesLibraryProvider).value;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('规则预设'),
+        title: Text(context.l10n.rulePresets),
         actions: [
           IconButton(
-            tooltip: '导入',
+            tooltip: context.l10n.importLabel,
             onPressed: () => _import(context, ref),
             icon: const Icon(Icons.file_open_outlined),
+          ),
+          IconButton(
+            tooltip: context.l10n.newPreset,
+            onPressed: () => _create(context, ref),
+            icon: const Icon(Icons.add),
           ),
         ],
       ),
       body: lib == null
           ? const Center(child: CircularProgressIndicator())
           : ListView(
-              padding: const EdgeInsets.fromLTRB(14, 4, 14, 24),
+              padding: const EdgeInsets.fromLTRB(14, 8, 14, 24),
               children: [
                 for (final p in lib.all)
                   Padding(
@@ -65,26 +69,30 @@ class RulesPresetPage extends ConsumerWidget {
       for (final f in RulesFamily.values)
         if (lib.activeFor(f).id == p.id) f,
     };
-    void onUse(RulesFamily f) {
-      Haptics.selection();
-      ref.read(rulesLibraryProvider.notifier).use(f, p.id);
-    }
+    void open() => Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => p.isDefault
+            ? RulesPresetDetailPage(family: p.models.single)
+            : RulesPresetDetailPage(presetId: p.id),
+      ),
+    );
 
     if (p.isDefault) {
-      // 默认规则只支持一个模型;名称、作者、版本读服务端预设,没取到时用占位值
+      // 默认规则只支持一个模型;名称(带版本)、作者读内置那份,没读到时用占位值
       final f = p.models.single;
       final info = ref.watch(defaultRulesProvider(f)).value;
       return _PresetCard(
-        title: info?.name ?? p.name,
+        title: info?.displayName ?? defaultRulesFallbackName(f),
         subtitle: [
           info?.author ?? p.author,
-          '${info?.version ?? defaultRulesVersionOf(f)} 版',
+          if (info != null) l10nNow.sectionsN(info.rules.length),
         ].where((s) => s.isNotEmpty).join(' · '),
         isDefault: true,
         models: p.models,
         inUse: inUse,
-        onUse: onUse,
-        onEdit: () => _editDefault(context, ref, f),
+        onOpen: open,
+        onCopy: () => _duplicate(context, ref, p),
         onExport: () => _exportDefault(context, ref, f),
       );
     }
@@ -92,13 +100,13 @@ class RulesPresetPage extends ConsumerWidget {
       title: p.name,
       subtitle: [
         if (p.author.isNotEmpty) p.author,
-        '${p.rules.length} 段',
+        l10nNow.sectionsN(p.rules.length),
       ].join(' · '),
       isDefault: false,
       models: p.models,
       inUse: inUse,
-      onUse: onUse,
-      onEdit: () => _edit(context, ref, p),
+      onOpen: open,
+      onCopy: () => _duplicate(context, ref, p),
       onExport: () => _save(
         context,
         name: p.name,
@@ -109,6 +117,43 @@ class RulesPresetPage extends ConsumerWidget {
       ),
       onDelete: () => _delete(context, ref, p),
     );
+  }
+
+  /// 副本:段落、作者、支持的模型照抄,名字后面加「(副本)」,不自动启用。
+  Future<void> _duplicate(
+    BuildContext context,
+    WidgetRef ref,
+    RulesPreset p,
+  ) async {
+    final String base;
+    final String author;
+    final Set<RulesFamily> models;
+    final List<PresetRule> rules;
+    if (p.isDefault) {
+      final f = p.models.single;
+      final d = await bundledDefaultRules(f);
+      base = d.displayName;
+      author = d.author;
+      models = {f};
+      rules = d.rules;
+    } else {
+      base = p.name;
+      author = p.author;
+      models = p.models;
+      rules = p.rules;
+    }
+    final name = (ref.read(rulesLibraryProvider).value ?? const RulesLibrary())
+        .copyNameOf(base);
+    await ref
+        .read(rulesLibraryProvider.notifier)
+        .add(name: name, author: author, models: models, rules: rules);
+    if (context.mounted) {
+      hintSnack(
+        context,
+        context.l10n.savedAsNamed(name),
+        icon: Icons.check_circle_outline,
+      );
+    }
   }
 
   Future<void> _import(BuildContext context, WidgetRef ref) async {
@@ -127,17 +172,28 @@ class RulesPresetPage extends ConsumerWidget {
       hintSnack(context, e.message, icon: Icons.error_outline);
       return;
     } catch (_) {
-      hintSnack(context, '读不了这个文件,请确认是 UTF-8 文本', icon: Icons.error_outline);
+      hintSnack(context, context.l10n.notUtf8, icon: Icons.error_outline);
       return;
     }
 
     // 名字、作者、模型让用户过一眼:服务端预设文件里压根没写这几样,
     // 文件里写了的也可能想改个自己认得出的名字
-    final meta = await showModalBottomSheet<_ImportMeta>(
+    final conditional = file.rules.any((r) => r.when.isNotEmpty);
+    final meta = await showModalBottomSheet<_PresetMeta>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
-      builder: (_) => _ImportSheet(file: file),
+      builder: (_) => _PresetMetaSheet(
+        title: context.l10n.importRulePreset,
+        subtitle: [
+          context.l10n.totalSectionsN(file.rules.length),
+          if (conditional) context.l10n.hasConditional,
+        ].join(' · '),
+        action: context.l10n.importLabel,
+        name: file.name,
+        author: file.author,
+        models: file.models,
+      ),
     );
     if (meta == null || !context.mounted) return;
     await ref
@@ -149,131 +205,67 @@ class RulesPresetPage extends ConsumerWidget {
           rules: file.rules,
         );
     if (context.mounted) {
-      hintSnack(context, '已导入「${meta.name}」', icon: Icons.check_circle_outline);
+      hintSnack(
+        context,
+        context.l10n.importedNamed(meta.name),
+        icon: Icons.check_circle_outline,
+      );
     }
   }
 
-  Future<DefaultRules> _fetchDefault(
-    WidgetRef ref,
-    RulesFamily f, {
-    bool fresh = false,
-  }) async => fetchDefaultRules(
-    f,
-    backendBase: ref.read(backendBaseProvider).value ?? '',
-    sessionId: (await ref.read(botSessionProvider.future))?.sessionId ?? '',
-    fresh: fresh,
-  );
+  /// 新建:填名字、作者、支持的模型,建一份空预设,直接进它的预设页加段落。
+  Future<void> _create(BuildContext context, WidgetRef ref) async {
+    final meta = await showModalBottomSheet<_PresetMeta>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => _PresetMetaSheet(
+        title: context.l10n.newPreset,
+        action: context.l10n.create,
+        models: RulesFamily.values.toSet(),
+      ),
+    );
+    if (meta == null || !context.mounted) return;
+    final id = await ref
+        .read(rulesLibraryProvider.notifier)
+        .add(
+          name: meta.name,
+          author: meta.author,
+          models: meta.models,
+          rules: const [],
+        );
+    if (!context.mounted) return;
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(builder: (_) => RulesPresetDetailPage(presetId: id)),
+    );
+  }
 
-  /// 默认规则导出的是服务端**最新**那份,名字带上版本(「Nyako v5」)——
-  /// 两个版本同名,导进来之后分不出哪张是哪张。
+  /// 默认规则导出时名字用显示名(「Nyako v5」),两份导进来才分得开。
   Future<void> _exportDefault(
     BuildContext context,
     WidgetRef ref,
     RulesFamily f,
   ) async {
     try {
-      final d = await _fetchDefault(ref, f, fresh: true);
+      final d = await bundledDefaultRules(f);
       if (!context.mounted) return;
       await _save(
         context,
-        name: '${d.name} ${d.version}'.trim(),
+        name: d.displayName,
         author: d.author,
         models: {f},
         rules: d.rules,
-        fileName: 'plana-rules-${_safe('${d.name}-${d.version}')}.yaml',
+        fileName: 'plana-rules-${_safe(d.displayName)}.yaml',
       );
     } catch (e) {
       if (context.mounted) {
-        hintSnack(context, '导出失败:$e', icon: Icons.error_outline);
-      }
-    }
-  }
-
-  Future<RulesFile?> _openEditor(
-    BuildContext context, {
-    required String title,
-    required String text,
-  }) => Navigator.push<RulesFile>(
-    context,
-    MaterialPageRoute(
-      builder: (_) => _RulesEditorPage(title: title, text: text),
-    ),
-  );
-
-  /// 全文编辑导入的预设,存回原处。
-  Future<void> _edit(BuildContext context, WidgetRef ref, RulesPreset p) async {
-    final file = await _openEditor(
-      context,
-      title: p.name,
-      text: encodeRulesFile(
-        name: p.name,
-        author: p.author,
-        models: p.models,
-        rules: p.rules,
-      ),
-    );
-    if (file == null) return;
-    await ref
-        .read(rulesLibraryProvider.notifier)
-        .replace(
-          p.id,
-          name: file.name,
-          author: file.author,
-          models: file.models,
-          rules: file.rules,
+        hintSnack(
+          context,
+          context.l10n.exportFailed('$e'),
+          icon: Icons.error_outline,
         );
-    if (context.mounted) {
-      hintSnack(context, '已保存「${file.name}」', icon: Icons.check_circle_outline);
-    }
-  }
-
-  /// 默认规则的原件跟着服务端走,改不了:改完另存为一份新预设。这个模型原先用的是
-  /// 默认规则的,改用新存的这份 —— 点「编辑」是想改自己在用的规则,存完还挂在原件上
-  /// 等于白改。
-  Future<void> _editDefault(
-    BuildContext context,
-    WidgetRef ref,
-    RulesFamily f,
-  ) async {
-    final DefaultRules d;
-    try {
-      // 卡片进页面时刚取过,走缓存就行,不让人干等一趟网络
-      d = await _fetchDefault(ref, f);
-    } catch (e) {
-      if (context.mounted) {
-        hintSnack(context, '读取默认规则失败:$e', icon: Icons.error_outline);
       }
-      return;
-    }
-    if (!context.mounted) return;
-    final name = '${d.name} ${d.version}'.trim();
-    final file = await _openEditor(
-      context,
-      title: name,
-      text: encodeRulesFile(
-        name: name,
-        author: d.author,
-        models: {f},
-        rules: d.rules,
-      ),
-    );
-    if (file == null) return;
-    final wasDefault =
-        ref.read(rulesLibraryProvider).value?.activeFor(f).isDefault ?? false;
-    final n = ref.read(rulesLibraryProvider.notifier);
-    final id = await n.add(
-      name: file.name,
-      author: file.author,
-      models: file.models,
-      rules: file.rules,
-    );
-    if (wasDefault && file.models.contains(f)) await n.use(f, id);
-    if (context.mounted) {
-      hintSnack(
-        context,
-        '已另存为「${file.name}」',
-        icon: Icons.check_circle_outline,
-      );
     }
   }
 
@@ -298,11 +290,19 @@ class RulesPresetPage extends ConsumerWidget {
         ),
       );
       if (path != null && context.mounted) {
-        hintSnack(context, '已导出「$name」', icon: Icons.check_circle_outline);
+        hintSnack(
+          context,
+          context.l10n.exportedNamed(name),
+          icon: Icons.check_circle_outline,
+        );
       }
     } catch (e) {
       if (context.mounted) {
-        hintSnack(context, '导出失败:$e', icon: Icons.error_outline);
+        hintSnack(
+          context,
+          context.l10n.exportFailed('$e'),
+          icon: Icons.error_outline,
+        );
       }
     }
   }
@@ -317,9 +317,9 @@ class RulesPresetPage extends ConsumerWidget {
   ) async {
     final ok = await confirmDialog(
       context,
-      title: '删除预设?',
-      message: '「${p.name}」将被删除,正在使用它的模型改用默认规则。',
-      confirmLabel: '删除',
+      title: context.l10n.deletePresetQ,
+      message: context.l10n.deleteRulePresetBody(p.name),
+      confirmLabel: context.l10n.delete,
     );
     if (!ok) return;
     await ref.read(rulesLibraryProvider.notifier).remove(p.id);
@@ -333,8 +333,8 @@ class _PresetCard extends StatelessWidget {
     required this.isDefault,
     required this.models,
     required this.inUse,
-    required this.onUse,
-    required this.onEdit,
+    required this.onOpen,
+    required this.onCopy,
     required this.onExport,
     this.onDelete,
   });
@@ -348,8 +348,9 @@ class _PresetCard extends StatelessWidget {
 
   /// 正在用这份的模型。
   final Set<RulesFamily> inUse;
-  final ValueChanged<RulesFamily> onUse;
-  final VoidCallback onEdit;
+
+  final VoidCallback onOpen;
+  final VoidCallback onCopy;
   final VoidCallback onExport;
 
   /// 默认规则删不了,传 null。
@@ -358,45 +359,27 @@ class _PresetCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    final allInUse = models.every(inUse.contains);
-    // 支持两个模型、只在其中一个上用着的,角标说清是哪一个;其余只说「使用中」
-    final badge = inUse.isEmpty
-        ? null
-        : allInUse
-        ? '使用中'
-        : '${inUse.map(rulesFamilyLabel).join('、')} 使用中';
-    final notInUse = [
-      for (final f in RulesFamily.values)
-        if (models.contains(f) && !inUse.contains(f)) f,
-    ];
+    Widget btn(IconData icon, String tip, VoidCallback onTap, Color color) =>
+        IconButton(
+          tooltip: tip,
+          visualDensity: VisualDensity.compact,
+          onPressed: onTap,
+          icon: Icon(icon, size: 19, color: color),
+        );
     return Lifted(
       radius: BorderRadius.circular(16),
       child: Material(
         color: scheme.surfaceContainerLow,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: inUse.isNotEmpty
-              ? BorderSide(color: scheme.primary, width: 1.4)
-              : BorderSide.none,
-        ),
+        borderRadius: BorderRadius.circular(16),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
-          // 点卡片 = 支持的模型都改用这份。两个模型想分开用的,点完再点另一个模型
-          // 要用的那张卡(比如它的默认规则),那个模型就换回去了
-          onTap: notInUse.isEmpty
-              ? null
-              : () {
-                  for (final f in notInUse) {
-                    onUse(f);
-                  }
-                },
-          child: Stack(
-            children: [
-              Padding(
-                // 上下对称,标题那两行在卡片里垂直居中。角标是叠在上面的
-                // (Positioned),不占高度;上边距留够了,它压不到标题和右边的按钮
-                padding: const EdgeInsets.fromLTRB(16, 16, 6, 16),
-                child: Row(
+          onTap: onOpen,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 6, 14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
                   children: [
                     Expanded(
                       child: Column(
@@ -414,10 +397,8 @@ class _PresetCard extends StatelessWidget {
                                   ),
                                 ),
                               ),
-                              if (isDefault) const _Tag('默认'),
-                              for (final f in RulesFamily.values)
-                                if (models.contains(f))
-                                  _Tag(rulesFamilyLabel(f)),
+                              if (isDefault)
+                                _Tag(context.l10n.presetGroupDefault),
                             ],
                           ),
                           const SizedBox(height: 3),
@@ -430,65 +411,58 @@ class _PresetCard extends StatelessWidget {
                         ],
                       ),
                     ),
-                    // 与提示词预设页同一排按钮:编辑、导出直接摆出来,不收进菜单
+                    // 副本、导出、删除直接摆出来,不收进菜单
                     const SizedBox(width: 4),
-                    IconButton(
-                      tooltip: '编辑',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: onEdit,
-                      icon: Icon(
-                        Icons.edit_outlined,
-                        size: 19,
-                        color: scheme.onSurfaceVariant,
-                      ),
+                    btn(
+                      Icons.copy_all_outlined,
+                      context.l10n.duplicatePreset,
+                      onCopy,
+                      scheme.onSurfaceVariant,
                     ),
-                    IconButton(
-                      tooltip: '导出',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: onExport,
-                      icon: Icon(
-                        Icons.ios_share,
-                        size: 19,
-                        color: scheme.onSurfaceVariant,
-                      ),
+                    btn(
+                      Icons.ios_share,
+                      context.l10n.export,
+                      onExport,
+                      scheme.onSurfaceVariant,
                     ),
                     if (onDelete != null)
-                      IconButton(
-                        tooltip: '删除',
-                        visualDensity: VisualDensity.compact,
-                        onPressed: onDelete,
-                        icon: Icon(
-                          Icons.delete_outline,
-                          size: 19,
-                          color: scheme.error.withValues(alpha: .85),
-                        ),
+                      btn(
+                        Icons.delete_outline,
+                        context.l10n.delete,
+                        onDelete!,
+                        scheme.error.withValues(alpha: .85),
                       ),
                   ],
                 ),
-              ),
-              if (badge != null)
-                Positioned(
-                  top: 0,
-                  right: 0,
-                  child: Container(
-                    padding: const EdgeInsets.fromLTRB(8, 1, 11, 2),
-                    decoration: BoxDecoration(
-                      color: scheme.primary,
-                      borderRadius: const BorderRadius.only(
-                        bottomLeft: Radius.circular(10),
+                const SizedBox(height: 10),
+                // 只显示:支持的模型一段一个,选中的是在用的。点这里和点卡一样进预设页,
+                // 在那里改启用的模型
+                Padding(
+                  padding: const EdgeInsets.only(right: 10),
+                  child: IgnorePointer(
+                    child: SegmentedButton<RulesFamily>(
+                      multiSelectionEnabled: true,
+                      emptySelectionAllowed: true,
+                      expandedInsets: EdgeInsets.zero,
+                      style: const ButtonStyle(
+                        visualDensity: VisualDensity.compact,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       ),
-                    ),
-                    child: Text(
-                      badge,
-                      style: context.texts.labelSmall!.copyWith(
-                        color: scheme.onPrimary,
-                        height: 1.2,
-                        fontWeight: FontWeight.w700,
-                      ),
+                      segments: [
+                        for (final f in RulesFamily.values)
+                          if (models.contains(f))
+                            ButtonSegment(
+                              value: f,
+                              label: Text(rulesFamilyLabel(f)),
+                            ),
+                      ],
+                      selected: inUse,
+                      onSelectionChanged: (_) {},
                     ),
                   ),
                 ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -522,22 +496,36 @@ class _Tag extends StatelessWidget {
   }
 }
 
-typedef _ImportMeta = ({String name, String author, Set<RulesFamily> models});
+typedef _PresetMeta = ({String name, String author, Set<RulesFamily> models});
 
-/// 导入前过一眼:名字、作者、支持的模型。文件里写了就预先填上。
-class _ImportSheet extends StatefulWidget {
-  const _ImportSheet({required this.file});
+/// 名字、作者、支持的模型:导入前过一眼(文件里写了就预先填上),新建时从这里填起。
+class _PresetMetaSheet extends StatefulWidget {
+  const _PresetMetaSheet({
+    required this.title,
+    required this.action,
+    this.subtitle,
+    this.name = '',
+    this.author = '',
+    this.models = const {},
+  });
 
-  final RulesFile file;
+  final String title;
+
+  /// 底下那颗按钮的字。
+  final String action;
+  final String? subtitle;
+  final String name;
+  final String author;
+  final Set<RulesFamily> models;
 
   @override
-  State<_ImportSheet> createState() => _ImportSheetState();
+  State<_PresetMetaSheet> createState() => _PresetMetaSheetState();
 }
 
-class _ImportSheetState extends State<_ImportSheet> {
-  late final _name = TextEditingController(text: widget.file.name);
-  late final _author = TextEditingController(text: widget.file.author);
-  late final Set<RulesFamily> _models = {...widget.file.models};
+class _PresetMetaSheetState extends State<_PresetMetaSheet> {
+  late final _name = TextEditingController(text: widget.name);
+  late final _author = TextEditingController(text: widget.author);
+  late final Set<RulesFamily> _models = {...widget.models};
 
   @override
   void dispose() {
@@ -551,7 +539,6 @@ class _ImportSheetState extends State<_ImportSheet> {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    final conditional = widget.file.rules.any((r) => r.when.isNotEmpty);
     return Padding(
       padding: EdgeInsets.fromLTRB(
         20,
@@ -564,39 +551,38 @@ class _ImportSheetState extends State<_ImportSheet> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(
-            '导入规则预设',
+            widget.title,
             style: context.texts.titleMedium!.copyWith(
               fontWeight: FontWeight.w700,
             ),
           ),
-          const SizedBox(height: 4),
-          Text(
-            [
-              '共 ${widget.file.rules.length} 段',
-              if (conditional) '含条件段',
-            ].join(' · '),
-            style: context.texts.labelSmall!.copyWith(color: scheme.outline),
-          ),
+          if (widget.subtitle case final s?) ...[
+            const SizedBox(height: 4),
+            Text(
+              s,
+              style: context.texts.labelSmall!.copyWith(color: scheme.outline),
+            ),
+          ],
           const SizedBox(height: 16),
           TextField(
             controller: _name,
             onChanged: (_) => setState(() {}),
-            decoration: const InputDecoration(
-              labelText: '预设名称',
-              border: OutlineInputBorder(),
+            decoration: InputDecoration(
+              labelText: context.l10n.presetName,
+              border: const OutlineInputBorder(),
             ),
           ),
           const SizedBox(height: 12),
           TextField(
             controller: _author,
-            decoration: const InputDecoration(
-              labelText: '作者',
-              border: OutlineInputBorder(),
+            decoration: InputDecoration(
+              labelText: context.l10n.author,
+              border: const OutlineInputBorder(),
             ),
           ),
           const SizedBox(height: 16),
           Text(
-            '支持的模型',
+            context.l10n.supportedModels,
             style: context.texts.labelLarge!.copyWith(
               color: scheme.onSurfaceVariant,
             ),
@@ -623,107 +609,9 @@ class _ImportSheetState extends State<_ImportSheet> {
                     models: {..._models},
                   ))
                 : null,
-            child: const Text('导入'),
+            child: Text(widget.action),
           ),
         ],
-      ),
-    );
-  }
-}
-
-/// 全文编辑:摊开的是导出的那份文本。保存时按导入同一套规矩读回来,读不通就
-/// 原地报错、不关页面;没保存就返回要确认一下,几万字的规则丢了找不回来。
-class _RulesEditorPage extends StatefulWidget {
-  const _RulesEditorPage({required this.title, required this.text});
-
-  final String title;
-  final String text;
-
-  @override
-  State<_RulesEditorPage> createState() => _RulesEditorPageState();
-}
-
-class _RulesEditorPageState extends State<_RulesEditorPage> {
-  late final _ctl = TextEditingController(text: widget.text);
-  var _dirty = false;
-
-  @override
-  void dispose() {
-    _ctl.dispose();
-    super.dispose();
-  }
-
-  void _save() {
-    final RulesFile file;
-    try {
-      file = decodeRulesFile(_ctl.text);
-    } on FormatException catch (e) {
-      hintSnack(context, e.message, icon: Icons.error_outline);
-      return;
-    }
-    // 导入时这两样能在弹层里补,这里没有弹层,文本里就得写全
-    final missing = file.name.isEmpty
-        ? '缺少预设名称(name)'
-        : file.models.isEmpty
-        ? '缺少支持的模型(models 写 nai45、nai5)'
-        : null;
-    if (missing != null) {
-      hintSnack(context, missing, icon: Icons.error_outline);
-      return;
-    }
-    Navigator.pop(context, file);
-  }
-
-  Future<void> _confirmLeave() async {
-    final ok = await confirmDialog(
-      context,
-      title: '放弃修改?',
-      message: '还没保存的改动会丢掉。',
-      confirmLabel: '放弃',
-    );
-    if (ok && mounted) Navigator.pop(context);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return PopScope(
-      canPop: !_dirty,
-      onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) _confirmLeave();
-      },
-      child: Scaffold(
-        appBar: AppBar(
-          title: Text(widget.title),
-          actions: [
-            IconButton(
-              tooltip: '保存',
-              onPressed: _save,
-              icon: const Icon(Icons.check),
-            ),
-          ],
-        ),
-        // 文本直接铺在页面上,不再套一层底色框:整页就是编辑区
-        body: SafeArea(
-          top: false,
-          child: TextField(
-            controller: _ctl,
-            expands: true,
-            maxLines: null,
-            keyboardType: TextInputType.multiline,
-            textAlignVertical: TextAlignVertical.top,
-            // YAML 靠缩进和原样的键名,输入法的自动更正只会帮倒忙
-            autocorrect: false,
-            enableSuggestions: false,
-            style: mono(context, size: 13, weight: FontWeight.w400),
-            onChanged: (_) {
-              if (!_dirty) setState(() => _dirty = true);
-            },
-            decoration: const InputDecoration(
-              border: InputBorder.none,
-              contentPadding: EdgeInsets.fromLTRB(16, 4, 16, 16),
-            ),
-          ),
-        ),
       ),
     );
   }

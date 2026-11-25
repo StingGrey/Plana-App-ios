@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 
 import '../../../core/theme/app_skin.dart';
+import '../../../core/ui/prefix_extent_list.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../generate/gen_jobs.dart' show GenJob;
 import '../../generate/widgets/common.dart' show StripeThumb;
@@ -12,6 +13,7 @@ import 'gallery_grid_sheet.dart';
 import 'result_badge_chip.dart';
 import 'result_thumb.dart';
 import '../../../core/util/haptics.dart';
+import '../../../l10n/l10n.dart';
 
 // ---- 缩略图几何:**渲染与滚动定位共用这一组常数,谁都别再各写一份** ----
 //
@@ -46,7 +48,7 @@ const _bandCount = 3;
 ///
 /// 原来靠长按起手:按住不动到时才拿得起来,所以落点贴着条摆(10)也不怕误触。
 /// 改成直接上滑之后那道门没了,保险只能落在行程上:手指从缩略图中心算起要走
-/// 约 `10(条内衬) + 38(缩略图半高) + 64 ≈ 110` 才碰到分享,是一个明确的
+/// 约 `6(条内衬) + 38(缩略图半高) + 64 ≈ 108` 才碰到分享,是一个明确的
 /// 「往上甩一下」,横滑翻图或点选时的竖向抖动够不着。
 ///
 /// 删除排在**最远**那条(再过两条带加两道缝,约 240):松手早了落在分享或
@@ -178,13 +180,32 @@ class _FilmStripState extends State<FilmStrip>
     return true;
   }
 
+  // 历史图那部分条目按列表对象缓存:任务卡每个进度帧都在变,历史图不变
+  List<ResultImage>? _resultsCached;
+  List<_Entry> _resultEntries = const [];
+  Map<String, int> _resultIndex = const {};
+
+  List<_Entry> _resultEntriesOf() {
+    if (!identical(_resultsCached, widget.results)) {
+      _resultsCached = widget.results;
+      _resultEntries = [
+        for (final r in widget.results)
+          _Entry('r:${r.id}', _thumbSlotW(_resultAspect(r)), result: r),
+      ];
+      _resultIndex = {
+        for (var i = 0; i < _resultEntries.length; i++)
+          _resultEntries[i].key: i,
+      };
+    }
+    return _resultEntries;
+  }
+
   /// 要排的条目:任务在前、历史图在后,影子插回它原来的位置。
   List<_Entry> _entries() {
     final items = [
       for (final j in widget.jobs)
         _Entry('j:${j.id}', _thumbSlotW(_aspectOf(j.width, j.height)), job: j),
-      for (final r in widget.results)
-        _Entry('r:${r.id}', _thumbSlotW(_resultAspect(r)), result: r),
+      ..._resultEntriesOf(),
     ];
     if (_leaving.isEmpty) return items;
     final waiting = <String?, List<_Entry>>{};
@@ -508,12 +529,35 @@ class _FilmStripState extends State<FilmStrip>
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final display = _display = _entries();
-    final index = {for (var i = 0; i < display.length; i++) display[i].key: i};
+    // 没有进出动画时排布就是「任务 + 历史图」,下标直接查缓存
+    final Map<String, int>? fullIndex = _leaving.isEmpty
+        ? null
+        : {for (var i = 0; i < display.length; i++) display[i].key: i};
+    final jobs = widget.jobs.length;
+    int? indexOf(String key) {
+      if (fullIndex != null) return fullIndex[key];
+      if (key.startsWith('j:')) {
+        for (var i = 0; i < jobs; i++) {
+          if (display[i].key == key) return i;
+        }
+        return null;
+      }
+      final i = _resultIndex[key];
+      return i == null ? null : i + jobs;
+    }
+
+    final animating = _entering.isNotEmpty || _leaving.isNotEmpty;
+    final offsets = List<double>.filled(display.length + 1, 0);
+    for (var i = 0; i < display.length; i++) {
+      offsets[i + 1] =
+          offsets[i] +
+          (animating ? _extentOf(display[i]) : display[i].slot + _thumbGap);
+    }
     return Docked(
       child: Material(
         color: context.raisedFill(scheme.surface),
         child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 10),
+          padding: const EdgeInsets.symmetric(vertical: 6),
           child: SizedBox(
             height: _thumbSlotH,
             child: Stack(
@@ -521,62 +565,71 @@ class _FilmStripState extends State<FilmStrip>
                 Positioned.fill(
                   // 每条宽度按公式给定(不靠量):进出后位置立刻是对的,
                   // 补回滚动位置的位移和 _reveal 算的落点才对得上实际布局
-                  child: ListView.builder(
+                  child: CustomScrollView(
                     controller: _sc,
                     scrollDirection: Axis.horizontal,
-                    // 每条的宽里带着后面那道分隔,右边距相应减掉
-                    padding: const EdgeInsets.only(
-                      left: _stripPadH,
-                      right: _stripPadH - _thumbGap,
-                    ),
-                    itemCount: display.length,
-                    itemExtentBuilder: (i, _) =>
-                        i < display.length ? _extentOf(display[i]) : null,
-                    findChildIndexCallback: (key) =>
-                        index[(key as ValueKey<String>).value],
-                    itemBuilder: (context, i) {
-                      final e = display[i];
-                      final job = e.job;
-                      final result = e.result;
-                      final Widget thumb = job != null
-                          ? _GenThumb(
-                              job: job,
-                              active:
-                                  !e.ghost && job.id == widget.selectedJobId,
-                              onTap: () => widget.onSelectJob?.call(job.id),
-                            )
-                          : _FilmThumb(
-                              result: result!,
-                              vacant: e.vacant,
-                              selected:
-                                  !e.ghost &&
-                                  result.id == widget.selectedId &&
-                                  widget.selectedJobId == null,
-                              onTap: () => widget.onSelect(result.id),
-                              onDragStart: () => _showBands(result.id),
-                              onDragEnd: _hideBands,
-                            );
-                      // 进出时按比例裁宽、淡入淡出。结构不随状态变,影子与原条目
-                      // 同一个键,条目内部状态(选中环过渡、拖拽)不会被重建打断
-                      return ClipRect(
-                        key: ValueKey(e.key),
-                        child: Align(
-                          alignment: Alignment.centerLeft,
-                          child: Opacity(
-                            opacity: _factor(e.key).clamp(0.0, 1.0),
-                            child: IgnorePointer(
-                              ignoring: e.ghost,
-                              child: Padding(
-                                padding: const EdgeInsets.only(
-                                  right: _thumbGap,
+                    slivers: [
+                      SliverPadding(
+                        // 每条的宽里带着后面那道分隔,右边距相应减掉
+                        padding: const EdgeInsets.only(
+                          left: _stripPadH,
+                          right: _stripPadH - _thumbGap,
+                        ),
+                        sliver: SliverPrefixExtentList(
+                          offsets: offsets,
+                          delegate: SliverChildBuilderDelegate(
+                            childCount: display.length,
+                            findChildIndexCallback: (key) =>
+                                indexOf((key as ValueKey<String>).value),
+                            (context, i) {
+                              final e = display[i];
+                              final job = e.job;
+                              final result = e.result;
+                              final Widget thumb = job != null
+                                  ? _GenThumb(
+                                      job: job,
+                                      active:
+                                          !e.ghost &&
+                                          job.id == widget.selectedJobId,
+                                      onTap: () =>
+                                          widget.onSelectJob?.call(job.id),
+                                    )
+                                  : _FilmThumb(
+                                      result: result!,
+                                      vacant: e.vacant,
+                                      selected:
+                                          !e.ghost &&
+                                          result.id == widget.selectedId &&
+                                          widget.selectedJobId == null,
+                                      onTap: () => widget.onSelect(result.id),
+                                      onDragStart: () => _showBands(result.id),
+                                      onDragEnd: _hideBands,
+                                    );
+                              // 进出时按比例裁宽、淡入淡出。结构不随状态变,影子与原条目
+                              // 同一个键,条目内部状态(选中环过渡、拖拽)不会被重建打断
+                              return ClipRect(
+                                key: ValueKey(e.key),
+                                child: Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: Opacity(
+                                    opacity: _factor(e.key).clamp(0.0, 1.0),
+                                    child: IgnorePointer(
+                                      ignoring: e.ghost,
+                                      child: Padding(
+                                        padding: const EdgeInsets.only(
+                                          right: _thumbGap,
+                                        ),
+                                        child: thumb,
+                                      ),
+                                    ),
+                                  ),
                                 ),
-                                child: thumb,
-                              ),
-                            ),
+                              );
+                            },
                           ),
                         ),
-                      );
-                    },
+                      ),
+                    ],
                   ),
                 ),
                 // 悬浮「›」展开全部:压在缩略图之上,靠投影拉开层次
@@ -841,7 +894,7 @@ class _FilmThumb extends StatelessWidget {
                 Positioned(
                   left: 4,
                   top: 4,
-                  child: ResultBadgeChip(badge: result.badge),
+                  child: ResultBadgeChip(badge: result.badge, maxWidth: w - 8),
                 ),
               if (result.saved)
                 const Positioned(right: 4, top: 4, child: SavedMark(size: 14)),
@@ -962,8 +1015,8 @@ class _DropBandsState extends State<_DropBands>
             _DropBand(
               icon: Icons.delete_outline,
               activeIcon: Icons.delete_forever,
-              label: '拖到这里删除',
-              activeLabel: '松手删除',
+              label: context.l10n.dropToDelete,
+              activeLabel: context.l10n.releaseToDelete,
               destructive: true,
               onAccept: widget.onDelete,
             ),
@@ -973,16 +1026,20 @@ class _DropBandsState extends State<_DropBands>
               activeIcon: widget.favorite
                   ? Icons.favorite_border
                   : Icons.favorite,
-              label: widget.favorite ? '拖到这里取消收藏' : '拖到这里收藏',
-              activeLabel: widget.favorite ? '松手取消收藏' : '松手收藏',
+              label: widget.favorite
+                  ? context.l10n.dropToUnfav
+                  : context.l10n.dropToFav,
+              activeLabel: widget.favorite
+                  ? context.l10n.releaseToUnfav
+                  : context.l10n.releaseToFav,
               destructive: false,
               onAccept: widget.onFavorite,
             ),
             const SizedBox(height: _bandSpacing),
             _DropBand(
               icon: Icons.ios_share,
-              label: '拖到这里分享',
-              activeLabel: '松手分享',
+              label: context.l10n.dropToShare,
+              activeLabel: context.l10n.releaseToShare,
               destructive: false,
               onAccept: widget.onShare,
             ),

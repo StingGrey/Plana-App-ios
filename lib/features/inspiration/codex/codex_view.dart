@@ -18,6 +18,7 @@ import 'codex_masonry.dart';
 import 'codex_models.dart';
 import 'codex_providers.dart';
 import 'codex_sheets.dart';
+import '../../../l10n/l10n.dart';
 
 /// 法典浏览器:灵感页选中「法典」分类时的正文。
 /// 顶部选法典 + 来源;下面搜索 + 顶级分类筛选 + 双列瀑布流。只读,点词条看详情。
@@ -102,7 +103,7 @@ class _CodexViewState extends ConsumerState<CodexView>
 
   List<CodexEntry> _filtered(CodexData d, CodexBlock block) {
     final q = _search.trim().toLowerCase();
-    return [
+    return d.onePerArtist([
       for (final e in d.entries)
         if (_underCat(e) &&
             !block.hides(e.path) &&
@@ -111,7 +112,18 @@ class _CodexViewState extends ConsumerState<CodexView>
                 e.tags.toLowerCase().contains(q) ||
                 e.characters.any((c) => c.prompt.toLowerCase().contains(q))))
           e,
-    ];
+    ]);
+  }
+
+  /// 分类弹层数条数用的整部词条(一位画师算一条);按法典数据缓存。
+  CodexData? _browseFor;
+  List<CodexEntry> _browse = const [];
+  List<CodexEntry> _browseEntries(CodexData d) {
+    if (!identical(d, _browseFor)) {
+      _browseFor = d;
+      _browse = d.onePerArtist(d.entries);
+    }
+    return _browse;
   }
 
   bool _underCat(CodexEntry e) => codexPathUnder(e.path, _catPath);
@@ -143,10 +155,12 @@ class _CodexViewState extends ConsumerState<CodexView>
     final indexAsync = ref.watch(codexIndexProvider);
     return indexAsync.when(
       loading: () => const Center(child: CircularProgressIndicator()),
-      error: (e, _) =>
-          _error('法典索引加载失败', () => ref.invalidate(codexIndexProvider)),
+      error: (e, _) => _error(
+        context.l10n.codexIndexFailed,
+        () => ref.invalidate(codexIndexProvider),
+      ),
       data: (index) {
-        if (index.isEmpty) return _msg('暂无法典');
+        if (index.isEmpty) return _msg(context.l10n.noCodex);
         final selId = _viewId = _resolveSelectedId(index);
         final meta = index.firstWhere((m) => m.id == selId);
         // 首次进入法典功能:读盘确认为「没读过」时弹一次说明。
@@ -171,11 +185,9 @@ class _CodexViewState extends ConsumerState<CodexView>
       barrierDismissible: false,
       builder: (ctx) => AlertDialog(
         icon: Icon(Icons.menu_book_outlined, color: context.scheme.primary),
-        title: const Text('法典图鉴'),
+        title: Text(context.l10n.codexSource),
         content: SelectableText(
-          '词条与例图数据来自\nhttps://novelai.quicktagcloud.com/\n\n'
-          '本应用仅作展示与检索,内容版权归各法典作者所有。\n\n'
-          '感谢所有法典作者与贡献者的整理分享。',
+          context.l10n.codexAbout,
           style: context.texts.bodyMedium,
         ),
         actions: [
@@ -188,14 +200,14 @@ class _CodexViewState extends ConsumerState<CodexView>
                 mode: LaunchMode.externalApplication,
               );
             },
-            child: const Text('来源与致谢'),
+            child: Text(context.l10n.sourcesThanks),
           ),
           FilledButton(
             onPressed: () {
               ref.read(codexIntroProvider.notifier).ack();
               Navigator.pop(ctx);
             },
-            child: const Text('我知道了'),
+            child: Text(context.l10n.gotIt),
           ),
         ],
       ),
@@ -204,7 +216,10 @@ class _CodexViewState extends ConsumerState<CodexView>
 
   Widget _body(List<CodexMeta> index, CodexMeta meta) {
     final dataAsync = ref.watch(codexDataProvider(meta.id));
+    // 索引后台刷新出新版本时,新数据到手前继续显示旧的
     return dataAsync.when(
+      skipLoadingOnReload: true,
+      skipError: true,
       loading: () => Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -212,7 +227,7 @@ class _CodexViewState extends ConsumerState<CodexView>
             const CircularProgressIndicator(),
             const SizedBox(height: 12),
             Text(
-              '正在载入 ${meta.entryCount} 条词条…',
+              context.l10n.loadingEntries(meta.entryCount),
               style: context.texts.bodySmall!.copyWith(
                 color: context.scheme.onSurfaceVariant,
               ),
@@ -220,8 +235,10 @@ class _CodexViewState extends ConsumerState<CodexView>
           ],
         ),
       ),
-      error: (e, _) =>
-          _error('法典加载失败', () => ref.invalidate(codexDataProvider(meta.id))),
+      error: (e, _) => _error(
+        context.l10n.codexLoadFailed,
+        () => ref.invalidate(codexDataProvider(meta.id)),
+      ),
       data: (d) {
         // 词条到手就把这部的中文对照也拉上:点开详情时表多半已就绪,芯片不用
         // 先出离线词库的译名、再被对照表换一遍字。listen 不 watch —— 表到了
@@ -241,7 +258,11 @@ class _CodexViewState extends ConsumerState<CodexView>
             _filterBar(d, meta, media, entries, block),
             Expanded(
               child: entries.isEmpty
-                  ? _msg(_search.isNotEmpty ? '没有匹配的词条' : '暂无词条')
+                  ? _msg(
+                      _search.isNotEmpty
+                          ? context.l10n.noMatchingEntries
+                          : context.l10n.noEntries,
+                    )
                   : _grid(meta, media, entries),
             ),
           ],
@@ -267,7 +288,7 @@ class _CodexViewState extends ConsumerState<CodexView>
               textAlignVertical: TextAlignVertical.center,
               decoration: InputDecoration(
                 isDense: true,
-                hintText: '搜索标题 / 提示词…',
+                hintText: context.l10n.searchTitlePromptHint,
                 prefixIcon: const Icon(Icons.search, size: 20),
                 prefixIconConstraints: const BoxConstraints(
                   minWidth: 40,
@@ -342,7 +363,7 @@ class _CodexViewState extends ConsumerState<CodexView>
               ),
               const SizedBox(width: 6),
               Text(
-                '收藏',
+                context.l10n.favorites,
                 style: context.texts.labelMedium!.copyWith(
                   fontWeight: FontWeight.w600,
                   color: scheme.onSurfaceVariant,
@@ -367,7 +388,7 @@ class _CodexViewState extends ConsumerState<CodexView>
   Widget _catButton(CodexData d, CodexMeta meta, CodexBlock block) {
     final scheme = context.scheme;
     final on = _catPath.isNotEmpty;
-    final label = on ? _catPath.last : '全部分类';
+    final label = on ? _catPath.last : context.l10n.allCategories;
     return Material(
       color: on ? scheme.primary : context.pageControlFill,
       borderRadius: BorderRadius.circular(20),
@@ -379,7 +400,7 @@ class _CodexViewState extends ConsumerState<CodexView>
             meta.id,
             d.effectiveTree,
             _catPath,
-            d.entries,
+            _browseEntries(d),
           );
           if (picked != null && mounted) setState(() => _catPath = picked);
         },
@@ -456,7 +477,11 @@ class _CodexViewState extends ConsumerState<CodexView>
       child: InkWell(
         onTap: () {
           if (entries.isEmpty) {
-            hintSnack(context, '当前没有可抽的词条', icon: Icons.casino_outlined);
+            hintSnack(
+              context,
+              context.l10n.nothingToDraw,
+              icon: Icons.casino_outlined,
+            );
             return;
           }
           showCodexRandomSheet(context, meta, media, entries);
@@ -473,7 +498,7 @@ class _CodexViewState extends ConsumerState<CodexView>
               ),
               const SizedBox(width: 6),
               Text(
-                '随机',
+                context.l10n.random,
                 style: context.texts.labelMedium!.copyWith(
                   fontWeight: FontWeight.w600,
                   color: scheme.onSurfaceVariant,
@@ -559,7 +584,7 @@ class _CodexViewState extends ConsumerState<CodexView>
           FilledButton.tonal(
             onPressed: onRetry,
             style: context.pageTonalStyle,
-            child: const Text('重试'),
+            child: Text(context.l10n.retry),
           ),
         ],
       ),
@@ -661,7 +686,7 @@ class CodexPickerButton extends ConsumerWidget {
             ),
             const SizedBox(width: 10),
             Text(
-              '${meta.entryCount} 条',
+              context.l10n.itemsN(meta.entryCount),
               style: context.texts.labelMedium!.copyWith(
                 color: scheme.onSurfaceVariant,
               ),

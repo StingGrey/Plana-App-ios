@@ -8,6 +8,7 @@ import '../../generate/models.dart' show tokenLimitOf;
 import '../../generate/prompt_presets.dart';
 import '../../generate/prompt_sections.dart' show mainEnabled, sectionTexts;
 import '../editor_state.dart';
+import '../../../l10n/l10n.dart';
 
 /// 编辑器顶栏(精简):返回(=保存并退出)+ token 读数 + 文本整理 + 设置 + 满宽进度条。
 /// 正/负 tab、撤销、纯文本切换都下放到底栏。整栏固定不滚。
@@ -110,7 +111,7 @@ class EditorTopBar extends ConsumerWidget {
               IconButton(
                 onPressed: onBack,
                 icon: const Icon(Icons.arrow_back),
-                tooltip: '保存并返回',
+                tooltip: context.l10n.saveAndBack,
               ),
               // 标题位兼作弹性占位:主提示词会话为空,视觉与从前的 Spacer 一致
               Expanded(
@@ -150,7 +151,7 @@ class EditorTopBar extends ConsumerWidget {
               IconButton(
                 onPressed: onSettings,
                 icon: const Icon(Icons.settings_outlined, size: 22),
-                tooltip: '编辑器设置',
+                tooltip: context.l10n.editorSettings,
               ),
             ],
           ),

@@ -7,6 +7,7 @@ import 'package:crypto/crypto.dart';
 import '../../core/platform/cloud_folder.dart';
 import '../../core/store/atomic_file.dart';
 import '../../core/util/log.dart';
+import '../../core/util/webp_to_png.dart' show isWebp;
 import '../gallery/gallery_store.dart';
 import '../local_gallery/local_gallery_store.dart';
 
@@ -190,7 +191,9 @@ class CloudSyncEngine {
           final hash = sha256.convert(bytes).toString().substring(0, 16);
           var name = remoteByHash[hash];
           if (name == null) {
-            name = cloudFileName(image.createdAt, hash, image.ext);
+            // 生成历史按 PNG 记,但开了「保持图片格式」的 bot 图落盘是 WebP
+            final ext = isWebp(bytes) ? 'webp' : image.ext;
+            name = cloudFileName(image.createdAt, hash, ext);
             await folder.write(name, bytes);
             remoteNames.add(name);
             remoteByHash[hash] = name;

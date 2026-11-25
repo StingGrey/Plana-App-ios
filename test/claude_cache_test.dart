@@ -1,32 +1,31 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:plana_app/features/assistant/assistant_settings.dart';
 import 'package:plana_app/features/assistant/custom_endpoint.dart';
-import 'package:plana_app/features/assistant/direct_agent.dart';
+import 'package:plana_app/features/assistant/llm/http_provider.dart';
+import 'package:plana_app/features/assistant/llm/llm_provider.dart';
 
 void main() {
-  CustomEndpoint ep(AgentApiFormat f) => CustomEndpoint(
-    id: 'e',
-    name: '',
-    format: f,
-    baseUrl: '',
-    apiKey: 'k',
-    model: 'claude-opus-5-5',
+  HttpLlmProvider llm(AgentApiFormat f) => llmProviderFor(
+    CustomEndpoint(
+      id: 'e',
+      name: '',
+      format: f,
+      baseUrl: '',
+      apiKey: 'k',
+      model: 'claude-opus-5-5',
+    ),
   );
   const mark = {'type': 'ephemeral'};
-  DirectMsg text(String role, String content) =>
-      (role: role, content: content, image: null);
+  LlmMessage text(String role, String content) =>
+      (role: role, content: content, images: const <LlmImage>[]);
   Map<String, dynamic> body(
-    List<DirectMsg> msgs, {
+    List<LlmMessage> msgs, {
     String system = 'RULES',
     AgentApiFormat f = AgentApiFormat.anthropic,
-  }) => directRequest(
-    ep(f),
-    system: system,
-    msgs: msgs,
-    think: ThinkLevel.auto,
-  ).$2;
+  }) => llm(
+    f,
+  ).requestBody(LlmRequest(system: system, messages: msgs), stream: false);
 
   group('Claude 缓存标记', () {
     test('系统提示整段一个缓存点', () {
@@ -80,7 +79,10 @@ void main() {
     test('带图:标在最后一块,图在前', () {
       const img = (mime: 'image/png', data: 'QUJD');
       final m =
-          body([(role: 'user', content: '', image: img)])['messages'] as List;
+          body([
+                (role: 'user', content: '', images: const [img]),
+              ])['messages']
+              as List;
       expect(m.single['content'], [
         {
           'type': 'image',

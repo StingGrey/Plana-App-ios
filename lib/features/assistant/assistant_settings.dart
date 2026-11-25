@@ -2,8 +2,7 @@
 ///
 /// 几个开关都是**把默认的手动改成自动**,所以默认一律关着 —— 这套流程的地基是
 /// 「AI 碰创作页、花点数出图,两件事都得用户按一下」;打开哪一项都是用户明知
-/// 自己在放权,不能替他决定。同理,[AssistantSettings.libraryScope] 的默认取
-/// **范围更窄**的那一档。
+/// 自己在放权,不能替他决定。
 library;
 
 import 'dart:convert';
@@ -12,11 +11,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/store/app_stores.dart';
 import '../generate/prompt_sections.dart' show SectionImport;
+import '../../l10n/l10n.dart';
+import 'domain/image_gen.dart' show isImageAspect, kImageSizes, kMaxImageCount;
+import 'runtime/refusal.dart' show kRefusalKeywords;
+import 'tools/tool_settings.dart' show migrateLegacyToolSettings;
 
 const _key = 'assistant_settings';
 
-/// 思考等级。**只对自定义接口生效** —— 后端渠道的推理档位由服务端按渠道定死
-/// (见 `MODEL_REGISTRY`),app 这边没有可下发的字段。
+/// 思考等级。当前模型调得了才随请求发出(见 `LlmCapabilities.thinking`)。
 /// **声明顺序即滑杆顺序**(关 → 自动 → 由低到高),别乱动。
 /// 落盘存的是 `name` 不是序号,所以将来插一档不会把老存档串位。
 enum ThinkLevel {
@@ -36,62 +38,18 @@ enum ThinkLevel {
 }
 
 String thinkLevelLabel(ThinkLevel l) => switch (l) {
-  ThinkLevel.off => '关闭',
-  ThinkLevel.auto => '自动',
-  ThinkLevel.low => '低',
-  ThinkLevel.medium => '中等',
-  ThinkLevel.high => '高',
-  ThinkLevel.ultra => '超高',
+  ThinkLevel.off => l10nNow.thinkOff,
+  ThinkLevel.auto => l10nNow.thinkAuto,
+  ThinkLevel.low => l10nNow.thinkLow,
+  ThinkLevel.medium => l10nNow.thinkMedium,
+  ThinkLevel.high => l10nNow.thinkHigh,
+  ThinkLevel.ultra => l10nNow.thinkUltra,
 };
-
-/// AI 查画师串 / 角色时认哪些库。**由窄到宽声明**(菜单顺序即此)。
-///
-/// 落盘存 `name`,插档不串位(同 [ThinkLevel])。
-enum LibraryScope {
-  /// 一个库都不给:画师串、OC、预训练角色三样都不喂,也不补上一轮记着的。
-  /// 模型只能凭自己那点知识写 —— 想要「别掺进来任何我这边的数据」时用。
-  none,
-
-  /// 只认灵感页里你自己那份库。
-  local,
-
-  /// 自己那份之外,再并上服务端的公共库。
-  all,
-}
-
-String libraryScopeLabel(LibraryScope s) => switch (s) {
-  LibraryScope.none => '不使用',
-  LibraryScope.local => '本地库',
-  LibraryScope.all => '本地库 + 公共库',
-};
-
-/// 选项下面那行说明。首次引导和助手设置里的选择框共用。
-String libraryScopeDesc(LibraryScope s) => switch (s) {
-  LibraryScope.none => '完全不使用你的灵感库内容',
-  LibraryScope.local => '使用你在灵感库中创建和收藏的内容',
-  LibraryScope.all => '使用本地和公共库的所有内容',
-};
-
-/// 公共库要 Bot 授权:没授权时「本地库 + 公共库」选不了,已经选着的按本地库算
-/// (存着的不改,授权回来就还是它)。
-bool libraryScopeAllowed(LibraryScope s, {required bool botAuthorized}) =>
-    botAuthorized || s != LibraryScope.all;
-
-LibraryScope effectiveLibraryScope(
-  LibraryScope s, {
-  required bool botAuthorized,
-}) => libraryScopeAllowed(s, botAuthorized: botAuthorized)
-    ? s
-    : LibraryScope.local;
-
-/// 发给服务端的取值(`library_scope`)。就是枚举名,单独写一个函数是为了
-/// 把「线上协议」和「本地枚举」的耦合摆到明面上:改名字要一起改。
-String libraryScopeWire(LibraryScope s) => s.name;
 
 String sectionImportLabel(SectionImport m) => switch (m) {
-  SectionImport.main => '替换主体',
-  SectionImport.newSection => '新建分区',
-  SectionImport.clear => '清空分区',
+  SectionImport.main => l10nNow.importReplaceMain,
+  SectionImport.newSection => l10nNow.importNewSection,
+  SectionImport.clear => l10nNow.importClearSections,
 };
 
 /// 首次引导的版本。引导内容改版时加一:走过旧版的人进 AI 页会再看到一次。
@@ -103,23 +61,35 @@ class AssistantSettings {
     this.inlineImage = false,
     this.autoImport = false,
     this.thinkLevel = ThinkLevel.auto,
-    this.libraryScope = LibraryScope.local,
-    this.ocPlaceholders = false,
     this.noDraw = false,
     this.introVersion = 0,
     this.fontSize = fontSizeDefault,
     this.historyTurns = historyTurnsDefault,
     this.stream = true,
     this.importTo = SectionImport.main,
+    this.retries = retriesDefault,
+    this.retryStripImage = false,
+    this.rerolls = rerollsDefault,
+    this.refusalKeywords = kRefusalKeywords,
+    this.imageSize = '',
+    this.imageAspect = '',
+    this.imageCount = 1,
     this.prefixPrompt = '',
   });
 
+  /// 前置提示词的字数上限:它跟着规则一起进系统提示,规则本身已经卡在后端通道上限以内。
+  static const prefixPromptMax = 2000;
+
+  /// 失败重试 / 拒绝重试的默认次数与上限。0 = 关。
+  static const retriesDefault = 3;
+  static const rerollsDefault = 3;
+  static const retriesMax = 5;
+
   /// 上下文轮数的默认值、可调范围与步长。
   ///
-  /// 默认 20 与服务端原先写死的窗口一样(`history_adapter.WEB_HISTORY_MAX_TURNS`)。
-  /// 上界 200 对齐服务端肯收的上限(`WEB_HISTORY_TURNS_MAX`):走后端渠道时 token 是
-  /// 服务端付的,拉满一个请求光历史就三万多;老版服务端封顶更低,要多了照样截回去。
-  /// 自定义接口那条没人替它截,也按同一个上限走。
+  /// 默认 20 与 bot 的历史窗口一样。上界 200 落在后端模型通道收的消息条数以内
+  /// (`CHANNEL_MESSAGES_MAX`):走后端渠道时 token 是服务端付的,拉满一个请求光历史
+  /// 就三万多。自定义接口那条也按同一个上限走。
   ///
   /// 十轮一档:两百轮的范围,一轮一轮地按太碎。
   static const historyTurnsDefault = 20;
@@ -156,18 +126,8 @@ class AssistantSettings {
   /// 默认关:拿助手当草稿本、不想动画布的人一旦被自动覆盖,丢的是他自己写的词。
   final bool autoImport;
 
-  /// 自定义接口的思考等级。默认 [ThinkLevel.auto] = 想不想、想多深按模型自己的默认,
-  /// 只补「把思考给我看」的字段(见 `thinkFields`)。
+  /// 思考等级。默认 [ThinkLevel.auto] = 不发这个字段。
   final ThinkLevel thinkLevel;
-
-  /// AI 查资料时认哪些库。默认 [LibraryScope.local]。
-  ///
-  /// 默认只认自己那份,是因为公共库上万条画师串,而用户想用的是自己收藏的那几十条;
-  /// 拿全量去和一句话做匹配,捞上来的多半是他没见过的东西。
-  final LibraryScope libraryScope;
-
-  /// 自定义接口渠道：本地和公共库 OC 只给 AI 占位符，结果落地前展开。默认关闭。
-  final bool ocPlaceholders;
 
   /// 纯文本格式:AI 照常写提示词,提议只显示成纯文本给复制,不出结果卡、不导入、不出图
   /// (见 [AssistantMsg.promptAsText])。什么都不发给模型。
@@ -180,7 +140,7 @@ class AssistantSettings {
   final int introVersion;
 
   /// 第一次打开 AI 页的引导走完了没有。没走完每次进 AI 页都会弹,
-  /// 引导里定下的资料库范围和使用习惯要用户点过「开始使用」才算数。
+  /// 引导里定下的使用习惯要用户点过「开始使用」才算数。
   bool get introDone => introVersion >= kAssistantIntroVersion;
 
   /// 对话消息的正文字号:用户气泡、AI 回复、报错,见 [fontSizeMin] / [fontSizeMax]。
@@ -194,7 +154,7 @@ class AssistantSettings {
   /// 不占轮数,调小了也不会丢。
   final int historyTurns;
 
-  /// 回复边写边显示。**只对自定义接口生效** —— 后端渠道还没开流(见 agent_stream)。
+  /// 回复边写边显示。当前模型支持才生效(见 `LlmCapabilities.streaming`)。
   ///
   /// 这一项与上面那几个「放权」开关不同类,默认**开着**:它不替用户决定任何事,
   /// 只是把已经在发生的事显示出来。关掉 = 整段写完一次出,留给中转不认 `stream`
@@ -204,38 +164,72 @@ class AssistantSettings {
   /// 导入 / 直接生成时提议写进主提示词的方式(见 [SectionImport])。
   final SectionImport importTo;
 
-  /// 用户自己写给 AI 的前置提示词,放在规则最前面(见 `withPrefix`)。空 = 不加。
+  /// 出错后自动重发几次。
+  final int retries;
+
+  /// 最后一次失败重试时去掉附图。
+  final bool retryStripImage;
+
+  /// 回复像拒绝时原地重掷几次。0 = 不判拒绝,回复照常显示。
+  final int rerolls;
+
+  /// 回复命中这些词就算拒绝。和默认一样时不落盘,默认词表更新能跟上。
+  final List<String> refusalKeywords;
+
+  /// 图像模型的分辨率档 / 比例(输入框上方那排);空 = 交给图像模型。
+  /// 当前模型出不了的照存着,发的时候按「自动」走,换回能出的模型还是它。
+  final String imageSize;
+  final String imageAspect;
+
+  /// 图像模型一轮出几张。
+  final int imageCount;
+
+  /// 用户自己写给 AI 的前置提示词,每轮都排在系统提示最前面(见 `composeSystemPrompt`)。
+  /// 空 = 不加。
   ///
   /// 写给的是**写提示词的那个 AI**,不是出图模型 —— 出图那头的固定片段是固定词库。
   final String prefixPrompt;
+
+  bool get defaultRefusalKeywords =>
+      _sameList(refusalKeywords, kRefusalKeywords);
 
   AssistantSettings copyWith({
     bool? autoGenerate,
     bool? inlineImage,
     bool? autoImport,
     ThinkLevel? thinkLevel,
-    LibraryScope? libraryScope,
-    bool? ocPlaceholders,
     bool? noDraw,
     int? introVersion,
     double? fontSize,
     int? historyTurns,
     bool? stream,
     SectionImport? importTo,
+    int? retries,
+    bool? retryStripImage,
+    int? rerolls,
+    List<String>? refusalKeywords,
+    String? imageSize,
+    String? imageAspect,
+    int? imageCount,
     String? prefixPrompt,
   }) => AssistantSettings(
     autoGenerate: autoGenerate ?? this.autoGenerate,
     inlineImage: inlineImage ?? this.inlineImage,
     autoImport: autoImport ?? this.autoImport,
     thinkLevel: thinkLevel ?? this.thinkLevel,
-    libraryScope: libraryScope ?? this.libraryScope,
-    ocPlaceholders: ocPlaceholders ?? this.ocPlaceholders,
     noDraw: noDraw ?? this.noDraw,
     introVersion: introVersion ?? this.introVersion,
     fontSize: fontSize ?? this.fontSize,
     historyTurns: historyTurns ?? this.historyTurns,
     stream: stream ?? this.stream,
     importTo: importTo ?? this.importTo,
+    retries: retries ?? this.retries,
+    retryStripImage: retryStripImage ?? this.retryStripImage,
+    rerolls: rerolls ?? this.rerolls,
+    refusalKeywords: refusalKeywords ?? this.refusalKeywords,
+    imageSize: imageSize ?? this.imageSize,
+    imageAspect: imageAspect ?? this.imageAspect,
+    imageCount: imageCount ?? this.imageCount,
     prefixPrompt: prefixPrompt ?? this.prefixPrompt,
   );
 
@@ -244,15 +238,20 @@ class AssistantSettings {
     'inlineImage': inlineImage,
     'autoImport': autoImport,
     'thinkLevel': thinkLevel.name,
-    'libraryScope': libraryScope.name,
-    'ocPlaceholders': ocPlaceholders,
     'noDraw': noDraw,
     'introVersion': introVersion,
     'fontSize': fontSize,
     'historyTurns': historyTurns,
     'stream': stream,
     'importTo': importTo.name,
-    'prefixPrompt': prefixPrompt,
+    'retries': retries,
+    'retryStripImage': retryStripImage,
+    'rerolls': rerolls,
+    if (!defaultRefusalKeywords) 'refusalKeywords': refusalKeywords,
+    if (imageSize.isNotEmpty) 'imageSize': imageSize,
+    if (imageAspect.isNotEmpty) 'imageAspect': imageAspect,
+    if (imageCount != 1) 'imageCount': imageCount,
+    if (prefixPrompt.isNotEmpty) 'prefixPrompt': prefixPrompt,
   };
 
   factory AssistantSettings.fromJson(Map<String, dynamic> j) =>
@@ -264,20 +263,12 @@ class AssistantSettings {
         autoImport: j['autoImport'] == true || j['alwaysCanvas'] == true,
         thinkLevel:
             ThinkLevel.values.asNameMap()[j['thinkLevel']] ?? ThinkLevel.auto,
-        libraryScope:
-            LibraryScope.values.asNameMap()[j['libraryScope']] ??
-            LibraryScope.local,
-        ocPlaceholders: j['ocPlaceholders'] == true,
         noDraw: j['noDraw'] == true,
         // 缺键 = 老存档,按开算:新行为更好,不必等用户自己去翻设置
         stream: j['stream'] != false,
         importTo:
             SectionImport.values.asNameMap()[j['importTo']] ??
             SectionImport.main,
-        prefixPrompt: switch (j['prefixPrompt']) {
-          final String v => v,
-          _ => '',
-        },
         introVersion: switch (j['introVersion']) {
           final num v => v.toInt(),
           _ => 0,
@@ -297,7 +288,47 @@ class AssistantSettings {
             ),
           _ => historyTurnsDefault,
         },
+        retries: _count(j['retries'], retriesDefault),
+        retryStripImage: j['retryStripImage'] == true,
+        rerolls: _count(j['rerolls'], rerollsDefault),
+        refusalKeywords: switch (j['refusalKeywords']) {
+          final List<dynamic> l => [
+            for (final k in l)
+              if (k is String && k.trim().isNotEmpty) k.trim(),
+          ],
+          _ => kRefusalKeywords,
+        },
+        imageSize: switch (j['imageSize']) {
+          final String s when kImageSizes.contains(s) => s,
+          _ => '',
+        },
+        imageAspect: switch (j['imageAspect']) {
+          final String s when isImageAspect(s) => s,
+          _ => '',
+        },
+        imageCount: switch (j['imageCount']) {
+          final int n when n >= 1 && n <= kMaxImageCount => n,
+          _ => 1,
+        },
+        prefixPrompt: switch (j['prefixPrompt']) {
+          final String v => v,
+          _ => '',
+        },
       );
+
+  static int _count(Object? v, int fallback) => switch (v) {
+    final num n when n.isFinite => n.round().clamp(0, retriesMax),
+    _ => fallback,
+  };
+}
+
+bool _sameList(List<String> a, List<String> b) {
+  if (identical(a, b)) return true;
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
 }
 
 final assistantSettingsProvider =
@@ -309,7 +340,10 @@ class AssistantSettingsNotifier extends AsyncNotifier<AssistantSettings> {
   @override
   Future<AssistantSettings> build() async {
     try {
-      final raw = await ref.read(prefsStoreProvider).read(key: _key);
+      final prefs = ref.read(prefsStoreProvider);
+      // 先把旧字段迁走:这份设置一改就整份重写,旧字段就没了
+      await migrateLegacyToolSettings(prefs);
+      final raw = await prefs.read(key: _key);
       if (raw == null || raw.isEmpty) return const AssistantSettings();
       return AssistantSettings.fromJson(
         jsonDecode(raw) as Map<String, dynamic>,

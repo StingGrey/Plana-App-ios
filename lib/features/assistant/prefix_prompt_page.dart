@@ -1,5 +1,5 @@
-/// 前置提示词:用户自己写给 AI 助手的一段话,每轮都排在规则最前面发出去
-/// (见 `withPrefix`)。
+/// 前置提示词:用户自己写给 AI 助手的一段话,每轮都排在系统提示最前面发出去
+/// (见 `composeSystemPrompt`)。
 ///
 /// 和规则预设分开放:预设是一整套「怎么写提示词」,换预设是换整套;前置词是
 /// 用户自己的几句偏好,换哪套预设都跟着走。
@@ -8,6 +8,7 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../l10n/l10n.dart';
 import '../generate/widgets/common.dart' show confirmDialog;
 import 'assistant_settings.dart';
 
@@ -41,9 +42,9 @@ class _PrefixPromptPageState extends ConsumerState<PrefixPromptPage> {
   Future<void> _confirmLeave() async {
     final ok = await confirmDialog(
       context,
-      title: '放弃修改?',
-      message: '还没保存的改动会丢掉。',
-      confirmLabel: '放弃',
+      title: context.l10n.discardChangesQ,
+      message: context.l10n.unsavedLost2,
+      confirmLabel: context.l10n.discardAction,
     );
     if (ok && mounted) Navigator.pop(context);
   }
@@ -58,10 +59,10 @@ class _PrefixPromptPageState extends ConsumerState<PrefixPromptPage> {
       },
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('前置提示词'),
+          title: Text(context.l10n.prefixPrompt),
           actions: [
             IconButton(
-              tooltip: '保存',
+              tooltip: context.l10n.save,
               onPressed: _save,
               icon: const Icon(Icons.check),
             ),
@@ -75,8 +76,7 @@ class _PrefixPromptPageState extends ConsumerState<PrefixPromptPage> {
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
                 child: Text(
-                  '写给 AI 助手的话,每轮都放在它的规则最前面。'
-                  '只影响写提示词的 AI,不会写进出图的提示词。',
+                  context.l10n.prefixPromptNote,
                   style: TextStyle(
                     fontSize: 13,
                     color: scheme.onSurfaceVariant,
@@ -88,15 +88,16 @@ class _PrefixPromptPageState extends ConsumerState<PrefixPromptPage> {
                   controller: _ctl,
                   expands: true,
                   maxLines: null,
+                  maxLength: AssistantSettings.prefixPromptMax,
                   keyboardType: TextInputType.multiline,
                   textAlignVertical: TextAlignVertical.top,
                   onChanged: (_) {
                     if (!_dirty) setState(() => _dirty = true);
                   },
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     border: InputBorder.none,
-                    hintText: '例:回复一律用中文,先简短说说构思再给提示词',
-                    contentPadding: EdgeInsets.fromLTRB(16, 4, 16, 16),
+                    hintText: context.l10n.prefixPromptHint,
+                    contentPadding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
                   ),
                 ),
               ),

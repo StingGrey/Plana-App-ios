@@ -1,15 +1,10 @@
 /// 一轮 AI 对话的调试记录:这一轮发出去了什么、收回来了什么。
 ///
-/// 助手设置里「导出对话记录」导出的就是它,用途和服务端的 AI 调试(`agent_debug`)
-/// 一样:调预设、查「它为什么没照我说的改」。两条路记得不一样多 ——
+/// 助手设置里「导出对话记录」导出的就是它:调预设、查「它为什么没照我说的改」。
+/// 两条路都在 app 里跑,模型看到的全在这儿 —— 系统提示全文、消息、每一跳的模型原话、
+/// 工具结果、回灌与重试。后端渠道另外套的外壳在服务端,要看得开服务端的 AGENT_DEBUG_DUMP。
 ///
-///   · **后端渠道**:app 只看得见自己发出去的请求体、收回来的事件。系统提示、预匹配块、
-///     工具的原始返回都在服务端拼,要看那些得开服务端的 AGENT_DEBUG_DUMP。
-///   · **自定义接口**:整轮在 app 里跑,模型看到的全在这儿 —— 系统提示全文、消息、
-///     每一跳的模型原话和工具结果。
-///
-/// **不记密钥**:会话令牌在请求头里、不在请求体里;自定义接口只记名字、格式、模型和域名。
-/// 用户带的图只记大小。
+/// **不记密钥**:自定义接口只记名字、格式、模型和域名。用户带的图只记大小。
 library;
 
 import 'dart:convert';
@@ -42,10 +37,10 @@ class AgentTrace {
   /// 失败 / 被停下的原因。null = 正常收尾。
   String? error;
 
-  /// 后端渠道:发出去的请求体。
+  /// 旧版后端渠道发出去的请求体,只在旧记录里有。
   Map<String, Object?>? request;
 
-  /// 自定义接口:系统提示全文。
+  /// 系统提示全文。
   String? system;
 
   /// 自定义接口:预匹配回来的东西(资料块、本轮命中的资源、条件段模式)。
@@ -55,8 +50,8 @@ class AgentTrace {
   /// 和工具结果,见 [hops]。
   List<Map<String, String>>? messages;
 
-  /// 自定义接口:每一跳 `{t, ms, reply, tool_calls?, tool_results?}`,
-  /// t 是距开始的毫秒数,ms 是这一跳模型调用花了多久。
+  /// 自定义接口:每一跳 `{t, ms, reply, tool_calls?, tool_results?, repairs?, feedback?,
+  /// refusal?}`,t 是距开始的毫秒数,ms 是这一跳模型调用花了多久。
   final List<Map<String, Object?>> hops = [];
 
   /// 收到的事件,按到达顺序 `{t, event, data}`。
@@ -235,6 +230,23 @@ String renderTraceExport({
           ..writeln()
           ..writeln('工具结果:')
           ..writeln(h['tool_results']);
+      }
+      if (h['repairs'] != null) {
+        b
+          ..writeln()
+          ..writeln('就地修好:')
+          ..writeln(_json(h['repairs']));
+      }
+      if (h['feedback'] != null) {
+        b
+          ..writeln()
+          ..writeln('回灌重写:')
+          ..writeln(h['feedback']);
+      }
+      if (h['refusal'] != null) {
+        b
+          ..writeln()
+          ..writeln('像拒绝:命中「${h['refusal']}」');
       }
     }
     if (t.events.isNotEmpty) {

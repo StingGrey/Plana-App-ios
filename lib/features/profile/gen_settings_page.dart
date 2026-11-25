@@ -10,6 +10,7 @@ import '../../core/theme/app_theme.dart';
 import '../gallery/save_settings.dart';
 import '../generate/gen_modules.dart';
 import 'widgets/settings_ui.dart';
+import '../../l10n/l10n.dart';
 
 class GenSettingsPage extends ConsumerWidget {
   const GenSettingsPage({super.key});
@@ -21,7 +22,7 @@ class GenSettingsPage extends ConsumerWidget {
         ref.read(genSettingsProvider.notifier).patch(change);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('生成设置')),
+      appBar: AppBar(title: Text(context.l10n.genSettings)),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(14, 8, 14, 24),
         children: [
@@ -32,7 +33,7 @@ class GenSettingsPage extends ConsumerWidget {
                   value: s.genNotify,
                   onChanged: (v) => patch((x) => x.copyWith(genNotify: v)),
                   title: Text(
-                    '生成通知',
+                    context.l10n.genNotify,
                     style: context.texts.bodyMedium!.copyWith(
                       fontWeight: FontWeight.w600,
                     ),
@@ -55,7 +56,7 @@ class GenSettingsPage extends ConsumerWidget {
                 value: s.streamGen,
                 onChanged: (v) => patch((x) => x.copyWith(streamGen: v)),
                 title: Text(
-                  '流式生成',
+                  context.l10n.streamingGen,
                   style: context.texts.bodyMedium!.copyWith(
                     fontWeight: FontWeight.w600,
                   ),
@@ -66,7 +67,7 @@ class GenSettingsPage extends ConsumerWidget {
                 value: s.straightAlpha,
                 onChanged: (v) => patch((x) => x.copyWith(straightAlpha: v)),
                 title: Text(
-                  '透明图直通 Alpha',
+                  context.l10n.straightAlpha,
                   style: context.texts.bodyMedium!.copyWith(
                     fontWeight: FontWeight.w600,
                   ),
@@ -77,7 +78,7 @@ class GenSettingsPage extends ConsumerWidget {
                 value: s.retryOn429,
                 onChanged: (v) => patch((x) => x.copyWith(retryOn429: v)),
                 title: Text(
-                  '限流后自动重试',
+                  context.l10n.autoRetry,
                   style: context.texts.bodyMedium!.copyWith(
                     fontWeight: FontWeight.w600,
                   ),
@@ -86,21 +87,23 @@ class GenSettingsPage extends ConsumerWidget {
               ),
               if (s.retryOn429) ...[
                 _ValueRow(
-                  label: '重试间隔',
-                  value: s.retryDelaySecs > 0 ? '${s.retryDelaySecs} 秒' : '立即',
-                  dialogTitle: '重试间隔',
-                  unit: '秒',
+                  label: context.l10n.retryDelay,
+                  value: s.retryDelaySecs > 0
+                      ? context.l10n.secondsN(s.retryDelaySecs)
+                      : context.l10n.immediately,
+                  dialogTitle: context.l10n.retryDelay,
+                  unit: context.l10n.unitSeconds,
                   current: s.retryDelaySecs,
-                  zeroLabel: '立即',
+                  zeroLabel: context.l10n.immediately,
                   min: 0,
                   max: 600,
                   onChanged: (v) => patch((x) => x.copyWith(retryDelaySecs: v)),
                 ),
                 _ValueRow(
-                  label: '重试次数',
-                  value: '${s.retryCount} 次',
-                  dialogTitle: '重试次数',
-                  unit: '次',
+                  label: context.l10n.retryCount,
+                  value: context.l10n.timesN(s.retryCount),
+                  dialogTitle: context.l10n.retryCount,
+                  unit: context.l10n.unitTimes,
                   current: s.retryCount,
                   min: 1,
                   max: 99,
@@ -110,13 +113,35 @@ class GenSettingsPage extends ConsumerWidget {
             ],
           ),
           const SizedBox(height: 16),
+          SettingsLabel(context.l10n.keepImageFormat),
+          SettingsCard(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: SegmentedButton<bool>(
+                    segments: const [
+                      ButtonSegment(value: false, label: Text('PNG')),
+                      ButtonSegment(value: true, label: Text('WebP')),
+                    ],
+                    selected: {s.keepWebp},
+                    onSelectionChanged: (v) =>
+                        patch((x) => x.copyWith(keepWebp: v.first)),
+                    showSelectedIcon: false,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
           const _ModulesSection(),
           const SizedBox(height: 16),
           const SettingsLabel('提示词卡按钮'),
           _ButtonsCard([
             (
               icon: Icons.grid_view,
-              title: '灵感库',
+              title: context.l10n.inspirationLibrary,
               get: (p) => p.cardLibrary,
               set: (p, v) => p.copyWith(cardLibrary: v),
             ),
@@ -134,7 +159,7 @@ class GenSettingsPage extends ConsumerWidget {
             ),
             (
               icon: Icons.add,
-              title: '添加分区',
+              title: context.l10n.addSection,
               get: (p) => p.cardAddSection,
               set: (p, v) => p.copyWith(cardAddSection: v),
             ),
@@ -144,13 +169,13 @@ class GenSettingsPage extends ConsumerWidget {
           _ButtonsCard([
             (
               icon: Icons.input,
-              title: '导入图片',
+              title: context.l10n.importImage,
               get: (p) => p.barImport,
               set: (p, v) => p.copyWith(barImport: v),
             ),
             (
               icon: Icons.autorenew,
-              title: '循环生成',
+              title: context.l10n.loopGenerate,
               get: (p) => p.barLoop,
               set: (p, v) => p.copyWith(barLoop: v),
             ),
@@ -165,7 +190,7 @@ class GenSettingsPage extends ConsumerWidget {
           const SettingsLabel('灵感'),
           const _InspirationCard(),
           const SizedBox(height: 16),
-          const SettingsLabel('图库默认保存'),
+          SettingsLabel(context.l10n.galleryDefaultSave),
           const _SaveDefaultsCard(),
         ],
       ),
@@ -207,7 +232,7 @@ class _ModulesSectionState extends ConsumerState<_ModulesSection> {
           child: Row(
             children: [
               Text(
-                '创作页模块',
+                context.l10n.createPageModules,
                 style: context.texts.labelMedium!.copyWith(
                   color: context.scheme.onSurfaceVariant,
                   fontWeight: FontWeight.w700,
@@ -215,7 +240,7 @@ class _ModulesSectionState extends ConsumerState<_ModulesSection> {
               ),
               const Spacer(),
               Text(
-                '已开 $on/${order.length}',
+                context.l10n.modulesOn(on, order.length),
                 style: context.texts.labelMedium!.copyWith(
                   color: context.scheme.onSurfaceVariant,
                 ),
@@ -340,7 +365,7 @@ class _ModuleRow extends StatelessWidget {
             const SizedBox(width: 12),
             Expanded(
               child: Text(
-                def.label,
+                genModuleLabel(context.l10n, def),
                 style: context.texts.bodyMedium!.copyWith(
                   fontWeight: FontWeight.w600,
                   color: enabled ? null : scheme.outline,
@@ -439,9 +464,15 @@ class _SaveDefaultsCard extends ConsumerWidget {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               SegmentedButton<SaveFormat>(
-                segments: const [
-                  ButtonSegment(value: SaveFormat.png, label: Text('PNG 无损')),
-                  ButtonSegment(value: SaveFormat.jpg, label: Text('JPG 有损')),
+                segments: [
+                  ButtonSegment(
+                    value: SaveFormat.png,
+                    label: Text(context.l10n.pngLossless),
+                  ),
+                  ButtonSegment(
+                    value: SaveFormat.jpg,
+                    label: Text(context.l10n.jpgLossy),
+                  ),
                 ],
                 selected: {s.format},
                 onSelectionChanged: (v) =>
@@ -451,13 +482,19 @@ class _SaveDefaultsCard extends ConsumerWidget {
               if (s.format == SaveFormat.png) ...[
                 const SizedBox(height: 8),
                 SegmentedButton<SaveMeta>(
-                  segments: const [
+                  segments: [
                     ButtonSegment(
                       value: SaveMeta.original,
-                      label: Text('原始元数据'),
+                      label: Text(context.l10n.rawMetadata),
                     ),
-                    ButtonSegment(value: SaveMeta.clean, label: Text('清除')),
-                    ButtonSegment(value: SaveMeta.custom, label: Text('自定义')),
+                    ButtonSegment(
+                      value: SaveMeta.clean,
+                      label: Text(context.l10n.clearMeta),
+                    ),
+                    ButtonSegment(
+                      value: SaveMeta.custom,
+                      label: Text(context.l10n.sizeCustom),
+                    ),
                   ],
                   selected: {s.meta},
                   onSelectionChanged: (v) =>
@@ -473,9 +510,9 @@ class _SaveDefaultsCard extends ConsumerWidget {
         ),
         if (s.format == SaveFormat.jpg)
           _ValueRow(
-            label: '压缩质量',
+            label: context.l10n.compressQuality,
             value: '${(s.quality * 100).round()}',
-            dialogTitle: '压缩质量(10~100)',
+            dialogTitle: context.l10n.compressQualityDialog,
             unit: '',
             current: (s.quality * 100).round(),
             min: 10,
@@ -504,22 +541,22 @@ class _PromptRow extends StatelessWidget {
     final result = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('自定义提示词'),
+        title: Text(context.l10n.customPrompt),
         content: TextField(
           controller: ctl,
           autofocus: true,
           minLines: 2,
           maxLines: 6,
-          decoration: const InputDecoration(hintText: '写入图片的提示词(其余参数清除)…'),
+          decoration: InputDecoration(hintText: context.l10n.customPromptHint),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('取消'),
+            child: Text(context.l10n.cancel),
           ),
           FilledButton(
             onPressed: () => Navigator.of(ctx).pop(ctl.text),
-            child: const Text('确定'),
+            child: Text(context.l10n.ok),
           ),
         ],
       ),
@@ -538,7 +575,7 @@ class _PromptRow extends StatelessWidget {
         child: Row(
           children: [
             Text(
-              '自定义提示词',
+              context.l10n.customPrompt,
               style: context.texts.bodyMedium!.copyWith(
                 fontWeight: FontWeight.w600,
               ),
@@ -546,7 +583,7 @@ class _PromptRow extends StatelessWidget {
             const SizedBox(width: 12),
             Expanded(
               child: Text(
-                excerpt.isEmpty ? '未设置' : excerpt,
+                excerpt.isEmpty ? context.l10n.notSet : excerpt,
                 textAlign: TextAlign.end,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
@@ -611,12 +648,12 @@ class _ValueRow extends StatelessWidget {
             ),
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('取消'),
+            child: Text(context.l10n.cancel),
           ),
           FilledButton(
             onPressed: () =>
                 Navigator.of(ctx).pop(int.tryParse(ctl.text.trim()) ?? min),
-            child: const Text('确定'),
+            child: Text(context.l10n.ok),
           ),
         ],
       ),

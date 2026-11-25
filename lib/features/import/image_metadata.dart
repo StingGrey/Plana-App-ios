@@ -6,6 +6,7 @@ import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 
 import '../../core/util/prompt_convert.dart' show stripInlineTags;
+import '../../core/util/webp_to_png.dart' show isWebp, readWebpText;
 
 /// 图片元数据解析。移植自 web 桌面端 `utils/imageMetadata.ts`:
 /// 支持 PNG tEXt/iTXt 块(NovelAI Comment / SD parameters / ComfyUI prompt)、
@@ -199,8 +200,29 @@ class _PngTextChunks {
 }
 
 /// 逐块扫描 PNG,取出 tEXt/iTXt 里我们关心的键(小写匹配)。
+/// WebP 读 EXIF UserComment 里的 NAI 文字块和本 app 的自定义块(见 webp_to_png),
+/// 字段与 PNG 一一对应,后面按同一条路解析。
 _PngTextChunks _extractPngTextChunks(Uint8List bytes) {
   final result = _PngTextChunks();
+  if (isWebp(bytes)) {
+    for (final MapEntry(:key, :value) in readWebpText(bytes).entries) {
+      switch (key.toLowerCase()) {
+        case 'parameters':
+          result.parameters = value;
+        case 'comment':
+          result.comment = value;
+        case 'source':
+          result.source = value;
+        case 'prompt':
+          result.prompt = value;
+        case 'workflow':
+          result.workflow = value;
+        case 'plana:sections':
+          result.sections = value;
+      }
+    }
+    return result;
+  }
   if (bytes.length < 8) return result;
   const sig = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
   for (var i = 0; i < 8; i++) {
@@ -1276,13 +1298,4 @@ Future<ImageMetadata?> _extract(Uint8List bytes, _PngTextChunks chunks) async {
   } catch (_) {
     return null;
   }
-}
-
-/// 尺寸类型(与 web `getPictureSizeType` 一致)。
-String pictureSizeType(int w, int h) {
-  if (w == 832 && h == 1216) return '竖图';
-  if (w == 1216 && h == 832) return '横图';
-  if (w == 1024 && h == 1024) return '方图';
-  if (w == 1984 && h == 832) return '宽图';
-  return '$w×$h';
 }

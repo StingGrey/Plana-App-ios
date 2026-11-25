@@ -7,7 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/store/app_stores.dart';
 import '../../core/theme/app_theme.dart';
 import '../generate/generate_state.dart';
-import '../generate/models.dart' show CharRefMode, GenerateState;
+import '../generate/models.dart' show CharRefBaseMode, GenerateState;
 import '../shell/shell_state.dart';
 
 import '../generate/widgets/common.dart' show hintSnack, sharedAxisRoute;
@@ -213,10 +213,11 @@ class _ResultDetailPageState extends ConsumerState<ResultDetailPage> {
       const SizedBox(height: 14),
       _resourceSection('角色参考 (${input.charRefs.length})', [
         for (final reference in input.charRefs)
-          '${reference.name.isEmpty ? '参考图' : reference.name} · ${switch (reference.mode) {
-            CharRefMode.character => context.l10n.refCharacter,
-            CharRefMode.style => context.l10n.refStyle,
-            CharRefMode.both => context.l10n.refCharacterStyle,
+          '${reference.name.isEmpty ? '参考图' : reference.name} · ${switch (reference.mode.baseMode) {
+            CharRefBaseMode.character => context.l10n.refCharacter,
+            CharRefBaseMode.style => context.l10n.refStyle,
+            CharRefBaseMode.both => context.l10n.refCharacterStyle,
+            CharRefBaseMode.outfit => context.l10n.refOutfit,
           }}',
       ], scheme),
     ],

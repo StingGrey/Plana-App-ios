@@ -126,6 +126,37 @@ void main() {
     expect(stripHiddenModules(plain, const GenModuleSettings()).prompt, 'x');
   });
 
+  test('生成快照记下各格来自的灵感库条目:停用的、空的不算', () {
+    final s = GenerateState.initial().copyWith(
+      prompt: '1girl',
+      sections: const [
+        PromptSection.main(),
+        PromptSection(id: 'a', name: '画风', positive: 'wlop', sources: ['t1']),
+        PromptSection(
+          id: 'b',
+          name: '角色',
+          positive: 'miku',
+          enabled: false,
+          sources: ['t2'],
+        ),
+        PromptSection(id: 'c', name: '场景', sources: ['t3']),
+        PromptSection(
+          id: 'd',
+          name: '画风',
+          positive: 'ask',
+          sources: ['t1', 't4'],
+        ),
+      ],
+    );
+    expect(composeSections(s).usedEntries, ['t1', 't4']);
+    // 没分区的画布不带
+    final plain = GenerateState.initial().copyWith(
+      prompt: 'x',
+      usedEntries: const ['t1'],
+    );
+    expect(composeSections(plain).usedEntries, isEmpty);
+  });
+
   test('灵感库条目各自成一格不折叠:一律接在最后,按加进来的先后往下排;重复的不另建', () {
     const rain = TagEntry(
       id: 's1',
@@ -140,6 +171,14 @@ void main() {
     ], newId: _nextId);
     // 主体留在原位,新格子按加进来的先后往下排
     expect(_names(list), ['主体', 'A12', '雨夜']);
+    expect(
+      [for (final s in list) s.sources],
+      [
+        const [],
+        ['t1'],
+        ['s1'],
+      ],
+    );
     expect(list[1].artist, isTrue);
     expect(list[1].positive, 'artist:wlop, artist:ask');
     expect(list[1].positiveRaw, isEmpty); // 原样放进去,不折叠
@@ -234,14 +273,14 @@ void main() {
       expect(r.section.isMain, isTrue);
       expect(st().prompt, isEmpty);
       expect(st().negativePrompt, 'lowres');
-      expect(_names(st().sections), ['画风']);
+      expect(_names(st().sections), ['A12']);
       expect(
         stripHiddenModules(st(), const GenModuleSettings()).negativePrompt,
         'lowres, blurry',
       );
       // 外头写进了正向:主体那一行补回最上面,也照样进载荷
       gen.setPrompts(positive: '2girls');
-      expect(_names(withMainRow(st().sections, st().prompt)), ['主体', '画风']);
+      expect(_names(withMainRow(st().sections, st().prompt)), ['主体', 'A12']);
       expect(
         stripHiddenModules(st(), const GenModuleSettings()).prompt,
         '2girls, artist:wlop, artist:ask',
@@ -313,7 +352,7 @@ void main() {
       positive: 'artist:wlop, 2girls, smile',
       negative: 'lowres, bad hands',
     );
-    expect(_names(st().sections), ['主体', '画风', '分区 1']);
+    expect(_names(st().sections), ['主体', 'A12', '分区 1']);
     final added = st().sections.last;
     expect(added.positive, '2girls, smile');
     expect(added.negative, 'bad hands');
@@ -349,7 +388,7 @@ void main() {
     expect(st().prompt, '1girl');
   });
 
-  test('灵感库落地:每条自成一格、名字是分类名;角色也进分区,不进角色卡', () {
+  test('灵感库落地:每条自成一格、名字是条目名;角色也进分区,不进角色卡', () {
     const rain = TagEntry(
       id: 's1',
       category: TagCategory.scene,
@@ -365,7 +404,7 @@ void main() {
     );
     gen.setPrompts(positive: '1girl');
     gen.addEntrySections([_a12, rain, miku, _watercolor]);
-    expect(_names(st().sections), ['主体', '画风', '场景', '角色', '画风']);
+    expect(_names(st().sections), ['主体', 'A12', '雨夜', '初音', '水彩厚涂']);
     expect(
       [for (final s in st().sections) s.positive],
       [
@@ -379,7 +418,7 @@ void main() {
     expect(st().characters, isEmpty);
     expect(st().prompt, '1girl');
     expect(st().sections[2].negative, 'sunny');
-    // 法典词条由调用方给名字
+    // 条目没名字时用调用方给的名字
     gen.addEntrySections([
       const TagEntry(
         id: 'codex_1',
@@ -387,8 +426,14 @@ void main() {
         name: '雨中回眸',
         positive: 'looking back, umbrella',
       ),
-    ], name: '法典');
-    expect(st().sections.last.name, '法典');
+      const TagEntry(
+        id: 'codex_2',
+        category: TagCategory.other,
+        name: '',
+        positive: 'cherry blossoms',
+      ),
+    ], fallback: '法典');
+    expect(_names(st().sections).skip(5), ['雨中回眸', '法典']);
   });
 
   test('正向已在提示词里不另建格子、同名格子只重新打开的,负面照样带进来', () {
@@ -424,8 +469,14 @@ void main() {
       name: '画风',
       positive: 'artist:wlop',
       negative: 'blurry',
+      sources: ['t1'],
     );
-    const b = PromptSection(id: 'b', name: '画风', positive: 'watercolor');
+    const b = PromptSection(
+      id: 'b',
+      name: '画风',
+      positive: 'watercolor',
+      sources: ['t2'],
+    );
     const sc = PromptSection(id: 'c', name: '场景', positive: 'night');
 
     test('留下最上面那格,词按行序从上往下接;挨着的几格合完拼出来的串不变', () {
@@ -436,6 +487,7 @@ void main() {
       expect(m.sections[1].id, 'a');
       expect(m.sections[1].positive, 'artist:wlop, watercolor, night');
       expect(m.sections[1].negative, 'blurry');
+      expect(m.sections[1].sources, ['t1', 't2'], reason: '来源跟着词并过来');
       expect(composeSections(m).prompt, before);
       // 不挨着的两格:下面那格的词挪上来,接在上面那格后面
       final gap = mergeSectionsIn(s, {'a', 'c'})!;
@@ -515,11 +567,31 @@ void main() {
     );
     expect(_names(back.sections), ['人物', 'A12', '场景']);
     expect(back.sections[1].artist, isTrue);
+    expect(back.sections[1].sources, ['t1']);
     expect(back.sections[1].positive, s.sections[1].positive);
     expect(back.sections.last.enabled, isFalse);
     expect(back.sections.first.isMain, isTrue);
     // 没分区的存档不写这个键
     final plain = await encodeGenerateState(GenerateState.initial(), blobs);
     expect(plain.json.containsKey('sections'), isFalse);
+    expect(plain.json.containsKey('usedEntries'), isFalse);
+  });
+
+  test('生成快照往返保留来源:各格的条目 id、角色卡的条目 id', () async {
+    final blobs = stores.blobs;
+    final snap = GenerateState.initial().copyWith(
+      prompt: '1girl',
+      usedEntries: const ['t1', 't4'],
+      characters: const [
+        CharacterPrompt(id: 'a', name: '初音', positive: 'miku', source: 'c1'),
+        CharacterPrompt(id: 'b', name: '角色 2', positive: 'rin'),
+      ],
+    );
+    final back = await decodeGenerateState(
+      (await encodeGenerateState(snap, blobs)).json,
+      blobs,
+    );
+    expect(back.usedEntries, ['t1', 't4']);
+    expect([for (final c in back.characters) c.source], ['c1', null]);
   });
 }

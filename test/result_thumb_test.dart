@@ -1,39 +1,19 @@
-import 'dart:convert';
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:plana_app/features/gallery/gallery_state.dart';
+import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/features/gallery/models.dart';
 import 'package:plana_app/features/gallery/widgets/result_thumb.dart';
 
-const _png1x1 =
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGMAAQAABQAB'
-    'oIJXOQAAAABJRU5ErkJggg==';
-
 void main() {
-  testWidgets('平板历史缩略图读取原图而非方形裁切图', (tester) async {
-    var originalRead = false;
-    var croppedThumbRead = false;
-    final bytes = Uint8List.fromList(base64Decode(_png1x1));
-
+  Future<Image> pumpThumb(WidgetTester tester, {required bool original}) async {
     await tester.pumpWidget(
       ProviderScope(
-        overrides: [
-          galleryImageProvider('history-test').overrideWith((ref) async {
-            originalRead = true;
-            return bytes;
-          }),
-          galleryThumbProvider('history-test').overrideWith((ref) async {
-            croppedThumbRead = true;
-            return bytes;
-          }),
-        ],
-        child: const MaterialApp(
+        overrides: [appStoresProvider.overrideWithValue(AppStores.ephemeral())],
+        child: MaterialApp(
           home: Scaffold(
             body: ResultThumb(
-              result: ResultImage(
+              result: const ResultImage(
                 id: 'history-test',
                 width: 832,
                 height: 1216,
@@ -41,17 +21,28 @@ void main() {
               ),
               width: 158,
               height: 218,
-              fit: BoxFit.contain,
-              useOriginal: true,
+              fit: original ? BoxFit.contain : BoxFit.cover,
+              useOriginal: original,
             ),
           ),
         ),
       ),
     );
-    await tester.pumpAndSettle();
+    return tester.widget<Image>(find.byType(Image));
+  }
 
-    expect(originalRead, isTrue);
-    expect(croppedThumbRead, isFalse);
-    expect(tester.widget<Image>(find.byType(Image)).fit, BoxFit.contain);
+  GalleryThumbImage source(Image img) =>
+      (img.image as ResizeImage).imageProvider as GalleryThumbImage;
+
+  testWidgets('平板历史缩略图读取原图而非方形裁切图', (tester) async {
+    final img = await pumpThumb(tester, original: true);
+    expect(source(img).original, isTrue);
+    expect(img.fit, BoxFit.contain);
+  });
+
+  testWidgets('网格/胶片条照旧读方形缩略图', (tester) async {
+    final img = await pumpThumb(tester, original: false);
+    expect(source(img).original, isFalse);
+    expect(img.fit, BoxFit.cover);
   });
 }

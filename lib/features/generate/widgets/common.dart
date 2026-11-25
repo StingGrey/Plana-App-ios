@@ -7,6 +7,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/ui/param_help.dart';
 import '../../../core/ui/param_input.dart';
 import '../../../core/util/haptics.dart';
+import '../../../l10n/l10n.dart';
 
 // ExpandBody 已挪到 core/ui(多选底栏等非 generate 的地方也在用)。
 // 这里转出去,老的 `show ExpandBody` 导入照常可用。
@@ -137,6 +138,8 @@ class ParamSlider extends StatelessWidget {
     this.dense = false,
     this.help,
     this.snapTo,
+    this.toSlider,
+    this.fromSlider,
   });
 
   final String label;
@@ -162,6 +165,10 @@ class ParamSlider extends StatelessWidget {
 
   /// 拖动吸附点:离它不到一格就落在它上面。
   final double? snapTo;
+
+  /// 可选非线性映射:同时传入时 Slider 物理范围走 `0..1`,读数与手输弹窗仍走 `[min, max]`。
+  final double Function(double)? toSlider;
+  final double Function(double)? fromSlider;
 
   double _snap(double v) {
     final s = snapTo;
@@ -225,14 +232,26 @@ class ParamSlider extends StatelessWidget {
               thumbSize: WidgetStatePropertyAll(Size.fromRadius(dense ? 7 : 9)),
               overlayShape: SliderComponentShape.noOverlay,
             ),
-            child: Slider(
-              value: value.clamp(min, max),
-              min: min,
-              max: max,
-              onChanged: onChanged == null ? null : (v) => onChanged!(_snap(v)),
-              onChangeEnd: onChangeEnd == null
-                  ? null
-                  : (v) => onChangeEnd!(_snap(v)),
+            child: Builder(
+              builder: (_) {
+                final nonLinear = toSlider != null && fromSlider != null;
+                final sliderVal = nonLinear
+                    ? toSlider!(value.clamp(min, max)).clamp(0.0, 1.0)
+                    : value.clamp(min, max);
+                double decode(double raw) =>
+                    _snap(nonLinear ? fromSlider!(raw) : raw);
+                return Slider(
+                  value: sliderVal,
+                  min: nonLinear ? 0.0 : min,
+                  max: nonLinear ? 1.0 : max,
+                  onChanged: onChanged == null
+                      ? null
+                      : (v) => onChanged!(decode(v)),
+                  onChangeEnd: onChangeEnd == null
+                      ? null
+                      : (v) => onChangeEnd!(decode(v)),
+                );
+              },
             ),
           ),
         ),
@@ -264,6 +283,8 @@ class LiveParamSlider extends StatefulWidget {
     this.help,
     this.valueTextOf,
     this.enabled = true,
+    this.toSlider,
+    this.fromSlider,
   });
 
   final String label;
@@ -283,6 +304,10 @@ class LiveParamSlider extends StatefulWidget {
   /// 读数格式化;拿到的是**拖动中的实时值**(未量化)。null = 默认两位小数。
   /// [ParamSlider.valueText] 是死串,这里必须是函数——拖动时读数得跟着走。
   final String Function(double)? valueTextOf;
+
+  /// 可选非线性映射(透传给 [ParamSlider])。
+  final double Function(double)? toSlider;
+  final double Function(double)? fromSlider;
 
   @override
   State<LiveParamSlider> createState() => _LiveParamSliderState();
@@ -306,6 +331,8 @@ class _LiveParamSliderState extends State<LiveParamSlider> {
       caption: widget.caption,
       dense: widget.dense,
       help: widget.help,
+      toSlider: widget.toSlider,
+      fromSlider: widget.fromSlider,
       onChanged: widget.enabled ? (v) => setState(() => _drag = v) : null,
       onChangeEnd: widget.enabled
           ? (v) {
@@ -576,16 +603,16 @@ class RefEnableToggle extends StatelessWidget {
     super.key,
     required this.enabled,
     required this.onTap,
-    this.onTooltip = '停用此参考图',
-    this.offTooltip = '启用',
+    this.onTooltip,
+    this.offTooltip,
   });
 
   final bool enabled;
   final VoidCallback onTap;
 
   /// 已启用/已停用时的长按提示(非参考图的调用方要改写)。
-  final String onTooltip;
-  final String offTooltip;
+  final String? onTooltip;
+  final String? offTooltip;
 
   @override
   Widget build(BuildContext context) {
@@ -606,7 +633,9 @@ class RefEnableToggle extends StatelessWidget {
               ? scheme.primary.withValues(alpha: .12)
               : Colors.transparent,
         ),
-        tooltip: enabled ? onTooltip : offTooltip,
+        tooltip: enabled
+            ? onTooltip ?? context.l10n.refDisable
+            : offTooltip ?? context.l10n.enable,
         padding: EdgeInsets.zero,
         visualDensity: VisualDensity.compact,
       ),
@@ -645,7 +674,7 @@ class AddTile extends StatelessWidget {
                 Icon(Icons.add, size: 22, color: scheme.primary),
                 const SizedBox(height: 2),
                 Text(
-                  '添加',
+                  context.l10n.add,
                   style: context.texts.labelSmall!.copyWith(
                     color: scheme.onSurfaceVariant,
                   ),
@@ -666,13 +695,18 @@ class RefDetailHeader extends StatelessWidget {
     required this.index,
     required this.name,
     required this.onRemove,
+    this.enabled = true,
     this.enableToggle,
     this.leadingAction,
+    this.leadingActionWidth = 0,
   });
 
   final int index;
   final String name;
   final VoidCallback onRemove;
+
+  /// 停用时标题与名称灰掉并加删除线,一眼看出这一张不进载荷。
+  final bool enabled;
 
   /// 行首的启用/停用开关
   final Widget? enableToggle;
@@ -680,16 +714,64 @@ class RefDetailHeader extends StatelessWidget {
   /// 放在「移除」按钮左侧的额外控件(如角色参考的迁移模式切换)
   final Widget? leadingAction;
 
+  /// [leadingAction] 的宽度,用来判一行放不放得下。
+  final double leadingActionWidth;
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) =>
+      LayoutBuilder(builder: (context, cons) => _row(context, cons.maxWidth));
+
+  Widget _row(BuildContext context, double maxWidth) {
     final scheme = context.scheme;
+    final l = context.l10n;
+    final title = l.refIndex(index);
+    final titleStyle = context.texts.bodyLarge!.copyWith(
+      fontWeight: FontWeight.w700,
+      color: enabled ? null : scheme.outline,
+      decoration: enabled ? null : TextDecoration.lineThrough,
+      decorationColor: scheme.outline,
+      decorationThickness: 2,
+    );
+    final removeStyle = context.texts.bodyMedium!.copyWith(
+      color: scheme.onSurface,
+    );
+    // 放不下时(英文标签长)「移除」只留图标
+    final need =
+        (enableToggle != null ? 42 : 0) +
+        measureText(context, title, titleStyle) +
+        8 +
+        (leadingAction != null ? leadingActionWidth + 8 : 0) +
+        56 +
+        measureText(context, l.remove, removeStyle);
+    final compact = need > maxWidth;
+    final remove = Material(
+      color: scheme.surfaceContainerHigh,
+      borderRadius: BorderRadius.circular(20),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onRemove,
+        child: Padding(
+          padding: EdgeInsets.symmetric(
+            horizontal: compact ? 11 : 16,
+            vertical: 9,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.delete_outline, size: 18, color: scheme.error),
+              if (!compact) ...[
+                const SizedBox(width: 6),
+                Text(l.remove, style: removeStyle),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
     return Row(
       children: [
         if (enableToggle != null) ...[enableToggle!, const SizedBox(width: 4)],
-        Text(
-          '参考图 $index',
-          style: context.texts.bodyLarge!.copyWith(fontWeight: FontWeight.w700),
-        ),
+        Text(title, style: titleStyle),
         const SizedBox(width: 8),
         // Expanded 占满中段,把尾部(切换 + 移除)顶到最右
         Expanded(
@@ -698,7 +780,10 @@ class RefDetailHeader extends StatelessWidget {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: context.texts.bodySmall!.copyWith(
-              color: scheme.onSurfaceVariant,
+              color: enabled ? scheme.onSurfaceVariant : scheme.outline,
+              decoration: enabled ? null : TextDecoration.lineThrough,
+              decorationColor: scheme.outline,
+              decorationThickness: 2,
             ),
           ),
         ),
@@ -706,34 +791,23 @@ class RefDetailHeader extends StatelessWidget {
           leadingAction!,
           const SizedBox(width: 8),
         ],
-        Material(
-          color: scheme.surfaceContainerHigh,
-          borderRadius: BorderRadius.circular(20),
-          clipBehavior: Clip.antiAlias,
-          child: InkWell(
-            onTap: onRemove,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.delete_outline, size: 18, color: scheme.error),
-                  const SizedBox(width: 6),
-                  Text(
-                    '移除',
-                    style: context.texts.bodyMedium!.copyWith(
-                      color: scheme.onSurface,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
+        if (compact) Tooltip(message: l.remove, child: remove) else remove,
       ],
     );
   }
 }
+
+/// 一行字按当前字号排出来有多宽(判一行放不放得下用)。
+double measureText(BuildContext context, String text, TextStyle style) =>
+    (TextPainter(
+      text: TextSpan(
+        text: text,
+        style: DefaultTextStyle.of(context).style.merge(style),
+      ),
+      textDirection: TextDirection.ltr,
+      textScaler: MediaQuery.textScalerOf(context),
+      maxLines: 1,
+    )..layout()).width;
 
 /// 虚线圆角边框
 class DashedBorderPainter extends CustomPainter {
@@ -782,8 +856,8 @@ Future<bool> confirmDialog(
   required String title,
   String? message,
   Widget? body,
-  String confirmLabel = '确定',
-  String cancelLabel = '取消',
+  String? confirmLabel,
+  String? cancelLabel,
   bool danger = true,
 }) async {
   assert(message != null || body != null);
@@ -795,7 +869,7 @@ Future<bool> confirmDialog(
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context, false),
-          child: Text(cancelLabel),
+          child: Text(cancelLabel ?? context.l10n.cancel),
         ),
         FilledButton(
           onPressed: () => Navigator.pop(context, true),
@@ -805,16 +879,13 @@ Future<bool> confirmDialog(
                   foregroundColor: context.scheme.onError,
                 )
               : null,
-          child: Text(confirmLabel),
+          child: Text(confirmLabel ?? context.l10n.ok),
         ),
       ],
     ),
   );
   return ok ?? false;
 }
-
-void todoSnack(BuildContext context, String what) =>
-    hintSnack(context, '$what · 下一里程碑接入', icon: Icons.upcoming_outlined);
 
 /// 弹层关掉之后**别把焦点还给刚才那个输入框**。
 ///

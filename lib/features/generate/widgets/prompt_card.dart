@@ -27,6 +27,7 @@ import '../style_recipes.dart';
 import 'common.dart';
 import 'section_save.dart';
 import '../../../l10n/l10n.dart';
+import '../display_names.dart';
 
 /// 提示词卡:正/负面可独立展开,分区支持多选、排序及批量操作。
 /// 卡头保留固定词库和下划线替换入口。
@@ -215,7 +216,9 @@ class _PromptCardState extends ConsumerState<PromptCard> {
                           RoundIconBtn(
                             Icons.delete_sweep_outlined,
                             size: actionSize,
-                            tooltip: sections.isEmpty ? '清空正向提示词' : '清空提示词和分区',
+                            tooltip: sections.isEmpty
+                                ? context.l10n.clearPositivePrompt
+                                : context.l10n.clearPromptAndSections,
                             color: scheme.onSurfaceVariant,
                             onTap: () => _clearPositive(context, ref),
                           ),
@@ -226,7 +229,7 @@ class _PromptCardState extends ConsumerState<PromptCard> {
                           RoundIconBtn(
                             Icons.grid_view,
                             size: actionSize,
-                            tooltip: '灵感库',
+                            tooltip: context.l10n.inspirationLibrary,
                             color: scheme.onSurfaceVariant,
                             onTap: () => _importFromLibrary(context, ref),
                           ),
@@ -275,7 +278,7 @@ class _PromptCardState extends ConsumerState<PromptCard> {
                                 context,
                                 '已将 $count 个下划线替换为空格',
                                 icon: Icons.space_bar_outlined,
-                                actionLabel: '撤销',
+                                actionLabel: context.l10n.undo,
                                 onAction: () => notifier.setPrompts(
                                   positive: oldPositive,
                                   negative: oldNegative,
@@ -289,7 +292,7 @@ class _PromptCardState extends ConsumerState<PromptCard> {
                           RoundIconBtn(
                             Icons.add,
                             size: actionSize,
-                            tooltip: '添加分区',
+                            tooltip: context.l10n.addSection,
                             onTap: notifier.addSection,
                           ),
                           const SizedBox(width: 6),
@@ -360,7 +363,7 @@ class _PromptCardState extends ConsumerState<PromptCard> {
                               ),
                               child: Text(
                                 state.prompt.isEmpty
-                                    ? '点击编辑正面提示词…'
+                                    ? context.l10n.tapToEditPositive
                                     : state.prompt,
                                 style: context.texts.bodyLarge!.copyWith(
                                   height: 1.5,
@@ -401,10 +404,10 @@ class _PromptCardState extends ConsumerState<PromptCard> {
                           // 收起时只报前 3 个 tag 与 +N 溢出,展开才给全文
                           _negativeExpanded
                               ? (state.negativePrompt.isEmpty
-                                    ? '点击编辑负面提示词…'
+                                    ? context.l10n.tapToEditNegative
                                     : state.negativePrompt)
                               : switch (negativePreview(state.negativePrompt)) {
-                                  '' => '点击编辑负面提示词…',
+                                  '' => context.l10n.tapToEditNegative,
                                   final s => s,
                                 },
                           maxLines: 1,
@@ -461,7 +464,7 @@ class _PromptCardState extends ConsumerState<PromptCard> {
                   padding: const EdgeInsets.fromLTRB(15, 2, 15, 14),
                   child: Text(
                     state.negativePrompt.isEmpty
-                        ? '点击编辑负面提示词…'
+                        ? context.l10n.tapToEditNegative
                         : state.negativePrompt,
                     style: context.texts.bodyMedium!.copyWith(
                       height: 1.5,
@@ -502,20 +505,22 @@ class _PromptCardState extends ConsumerState<PromptCard> {
         RoundIconBtn(
           Icons.close,
           size: size,
-          tooltip: '退出多选',
+          tooltip: context.l10n.exitMultiSelect,
           color: scheme.onSurfaceVariant,
           onTap: _exitSelect,
         ),
         const SizedBox(width: 9),
         Text(
-          '已选 ${picked.length}',
+          context.l10n.selectedCount(picked.length),
           style: context.texts.bodyLarge!.copyWith(fontWeight: FontWeight.w600),
         ),
         const Spacer(),
         RoundIconBtn(
           Icons.power_settings_new,
           size: size,
-          tooltip: rows.isEmpty || anyOn ? '停用' : '启用',
+          tooltip: rows.isEmpty || anyOn
+              ? context.l10n.disable
+              : context.l10n.enable,
           color: rows.isEmpty ? scheme.outline : scheme.primary,
           onTap: rows.isEmpty
               ? null
@@ -527,7 +532,7 @@ class _PromptCardState extends ConsumerState<PromptCard> {
         RoundIconBtn(
           Icons.delete_outline,
           size: size,
-          tooltip: '删除',
+          tooltip: context.l10n.delete,
           color: rows.isEmpty ? scheme.outline : scheme.error,
           onTap: rows.isEmpty ? null : () => _deletePicked(context, rows),
         ),
@@ -535,7 +540,7 @@ class _PromptCardState extends ConsumerState<PromptCard> {
         RoundIconBtn(
           Icons.save_outlined,
           size: size,
-          tooltip: '存到灵感库',
+          tooltip: context.l10n.saveToInspiration,
           color: canSave ? scheme.primary : scheme.outline,
           onTap: !canSave
               ? null
@@ -546,7 +551,7 @@ class _PromptCardState extends ConsumerState<PromptCard> {
         const SizedBox(width: 6),
         // 合并是这一栏的正事:勾够两格就填主色
         Tooltip(
-          message: '合并',
+          message: context.l10n.merge,
           child: Material(
             color: canMerge ? scheme.primary : scheme.surfaceContainerHigh,
             shape: const CircleBorder(),
@@ -582,9 +587,9 @@ class _PromptCardState extends ConsumerState<PromptCard> {
     _exitSelect();
     hintSnack(
       context,
-      '已删除 ${rows.length} 个分区',
+      context.l10n.sectionsDeleted(rows.length),
       icon: Icons.delete_outline,
-      actionLabel: '撤销',
+      actionLabel: context.l10n.undo,
       onAction: () => canvases.updatePrompts(
         canvasId,
         (p) => p.copyWith(
@@ -615,9 +620,9 @@ class _PromptCardState extends ConsumerState<PromptCard> {
     _exitSelect();
     hintSnack(
       context,
-      '已合并到「${into.name}」',
+      context.l10n.mergedInto(sectionDisplayName(context.l10n, into.name)),
       icon: Icons.call_merge,
-      actionLabel: '撤销',
+      actionLabel: context.l10n.undo,
       onAction: () => canvases.updatePrompts(
         canvasId,
         (p) => p.copyWith(
@@ -649,10 +654,10 @@ class _PromptCardState extends ConsumerState<PromptCard> {
     hintSnack(
       context,
       r.saved == 0
-          ? '灵感库里都已有了'
+          ? context.l10n.inspirationAllExist
           : r.skipped > 0
-          ? '已存 ${r.saved} 条到灵感库,${r.skipped} 条已有'
-          : '已存 ${r.saved} 条到灵感库',
+          ? context.l10n.inspirationSavedSkipped(r.saved, r.skipped)
+          : context.l10n.inspirationSaved(r.saved),
       icon: Icons.check_circle_outline,
     );
   }
@@ -673,9 +678,11 @@ class _PromptCardState extends ConsumerState<PromptCard> {
     final oldIds = {for (final x in old.sections) x.id};
     hintSnack(
       context,
-      old.sections.isEmpty ? '已清空正向提示词' : '已清空提示词和分区',
+      old.sections.isEmpty
+          ? context.l10n.clearedPositivePrompt
+          : context.l10n.clearedPromptAndSections,
       icon: Icons.delete_sweep_outlined,
-      actionLabel: '撤销',
+      actionLabel: context.l10n.undo,
       onAction: () => canvases.updatePrompts(
         canvasId,
         (p) => p.copyWith(
@@ -695,7 +702,7 @@ class _PromptCardState extends ConsumerState<PromptCard> {
   }
 
   /// 卡头「灵感库」:角色、画风、场景与法典收藏都能挑。选完每条自成一格、
-  /// 不折叠,格子名是分类名(角色也进分区,角色卡有自己的选择器),按勾选顺序
+  /// 不折叠,格子名是条目名(角色也进分区,角色卡有自己的选择器),按勾选顺序
   /// 接在最后;法典收藏同法典页的「使用」(角色段照旧拆成角色卡),画师串词典
   /// 里收的算画风。
   Future<void> _importFromLibrary(BuildContext context, WidgetRef ref) async {
@@ -732,7 +739,7 @@ class _PromptCardState extends ConsumerState<PromptCard> {
       final cap = maxCharactersOf(ref.read(generateProvider).params.model);
       hintSnack(
         context,
-        '角色已满 $cap 个,$dropped 个没加进去',
+        context.l10n.charactersFull(cap, dropped),
         icon: Icons.block_outlined,
       );
     }
@@ -912,7 +919,7 @@ class _SectionRow extends ConsumerWidget {
                 ),
               ),
             _NameChip(
-              name: s.name,
+              name: sectionDisplayName(context.l10n, s.name),
               enabled: on,
               onTap: selecting ? onToggle! : () => _rename(context, notifier),
             ),
@@ -949,7 +956,9 @@ class _SectionRow extends ConsumerWidget {
                 Icons.power_settings_new,
                 size: btnSize,
                 color: on ? scheme.primary : scheme.outline,
-                tooltip: on ? '停用(保留配置)' : '启用',
+                tooltip: on
+                    ? context.l10n.disableKeepConfig
+                    : context.l10n.enable,
                 onTap: () => notifier.updateSection(s.id, enabled: !on),
               ),
               const SizedBox(width: 6),
@@ -957,7 +966,7 @@ class _SectionRow extends ConsumerWidget {
                 Icons.delete_outline,
                 size: btnSize,
                 color: scheme.error,
-                tooltip: '删除分区',
+                tooltip: context.l10n.deleteSection,
                 onTap: () => _remove(context, ref),
               ),
             ],
@@ -967,33 +976,39 @@ class _SectionRow extends ConsumerWidget {
     );
   }
 
-  /// 点名字改名,同角色卡:留空 = 回到默认名。
+  /// 点名字改名,同角色卡:留空 = 回到默认名。默认名存原文,框里显示译名。
   Future<void> _rename(BuildContext context, GenerateNotifier notifier) async {
-    final ctrl = TextEditingController(text: section.name);
+    final l = context.l10n;
+    final shown = sectionDisplayName(l, section.name);
+    final ctrl = TextEditingController(text: shown);
     final name = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('重命名'),
+        title: Text(l.rename),
         content: TextField(
           controller: ctrl,
           autofocus: true,
-          decoration: InputDecoration(isDense: true, hintText: fallbackName),
+          decoration: InputDecoration(
+            isDense: true,
+            hintText: sectionDisplayName(l, fallbackName),
+          ),
           onSubmitted: (v) => Navigator.pop(context, v),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
+            child: Text(l.cancel),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, ctrl.text),
-            child: const Text('保存'),
+            child: Text(l.save),
           ),
         ],
       ),
     );
     if (name == null) return; // 取消
     final trimmed = name.trim();
+    if (trimmed.isNotEmpty && trimmed == shown) return;
     notifier.updateSection(
       section.id,
       name: trimmed.isEmpty ? fallbackName : trimmed,
@@ -1011,9 +1026,11 @@ class _SectionRow extends ConsumerWidget {
     if (r == null) return;
     hintSnack(
       context,
-      '已删除「${r.section.name}」',
+      context.l10n.deletedNamed(
+        sectionDisplayName(context.l10n, r.section.name),
+      ),
       icon: Icons.delete_outline,
-      actionLabel: '撤销',
+      actionLabel: context.l10n.undo,
       onAction: () => canvases.updatePrompts(
         canvasId,
         (p) => p.sections.any((x) => x.id == r.section.id)
@@ -1058,7 +1075,7 @@ class _PickDot extends StatelessWidget {
   }
 }
 
-/// 分区名:填色小签,停用时改成描边、灰字。点它改名。
+/// 分区名:填色小签,最多显示 6 个字,停用时改成描边、灰字。点它改名。
 class _NameChip extends StatelessWidget {
   const _NameChip({
     required this.name,
@@ -1086,20 +1103,17 @@ class _NameChip extends StatelessWidget {
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 76),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-            child: Text(
-              name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: context.texts.labelMedium!.copyWith(
-                fontWeight: FontWeight.w600,
-                color: enabled
-                    ? context.onSolidFill(scheme.onPrimaryContainer)
-                    : scheme.outline,
-              ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+          child: Text(
+            name.characters.take(6).toString(),
+            maxLines: 1,
+            softWrap: false,
+            style: context.texts.labelMedium!.copyWith(
+              fontWeight: FontWeight.w600,
+              color: enabled
+                  ? context.onSolidFill(scheme.onPrimaryContainer)
+                  : scheme.outline,
             ),
           ),
         ),
@@ -1123,11 +1137,12 @@ class _Preview extends StatelessWidget {
       color: enabled ? scheme.onSurfaceVariant : scheme.outline,
       decoration: enabled ? null : TextDecoration.lineThrough,
       decorationColor: scheme.outline,
+      decorationThickness: 2,
     );
     final pieces = previewPieces(draft);
     if (pieces.isEmpty) {
       return Text(
-        '点击编辑…',
+        context.l10n.tapToEdit,
         maxLines: 1,
         style: context.texts.bodyMedium!.copyWith(color: scheme.outline),
       );

@@ -18,3 +18,9 @@ bool get supportsBackgroundGeneration =>
 /// GitHub Release 下载流程。
 bool get supportsGithubReleaseUpdate =>
     !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
+/// Google 云端硬盘备份要在 Info.plist 里配 GIDClientID 与回调 URL scheme;
+/// iOS 工程由 prepare_ios.sh 现生成、重签用的也不是我们的 OAuth 客户端,
+/// 没配就点「连接」会直接闪退。iOS 走「我的 → iCloud 同步」。
+bool get supportsGoogleDriveBackup =>
+    !kIsWeb && defaultTargetPlatform == TargetPlatform.android;

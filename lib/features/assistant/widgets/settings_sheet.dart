@@ -15,13 +15,18 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/ui/setting_row.dart';
 import '../../generate/prompt_sections.dart' show SectionImport;
 import '../../generate/widgets/common.dart' show dropFocusSoon, hintSnack;
-import '../agent_model.dart'
-    show assistantBotAuthorizedProvider, assistantEndpointProvider;
+import '../agent_model.dart' show assistantCapabilitiesProvider;
 import '../assistant_settings.dart';
-import '../assistant_state.dart';
+import '../application/assistant_controller.dart';
 import '../prefix_prompt_page.dart';
-import '../preset_rules.dart';
+import '../presets/preset_rule.dart';
+import '../presets/rules_library.dart';
+import '../refusal_keywords_page.dart';
 import '../rules_page.dart';
+import '../tools/tool_registry.dart';
+import '../tools/tool_settings.dart';
+import '../tools_page.dart';
+import '../../../l10n/l10n.dart';
 
 Future<void> showAssistantSettings(BuildContext context) async {
   await showModalBottomSheet<void>(
@@ -44,10 +49,10 @@ class _SettingsSheet extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final s = ref.watch(assistantSettingsProvider).value;
     final n = ref.read(assistantSettingsProvider.notifier);
-    final authorized = ref.watch(assistantBotAuthorizedProvider);
-    final customEndpoint = ref.watch(assistantEndpointProvider) != null;
+    final caps = ref.watch(assistantCapabilitiesProvider);
+    final tools = ref.watch(toolSettingsProvider).value;
     return SettingSheet(
-      title: '助手设置',
+      title: context.l10n.assistantSettings,
       children: [
         if (s == null)
           const Padding(
@@ -55,11 +60,11 @@ class _SettingsSheet extends ConsumerWidget {
             child: Center(child: CircularProgressIndicator()),
           )
         else ...[
-          settingSection(context, '显示'),
+          settingSection(context, context.l10n.settingDisplay),
           SettingStepperRow(
             icon: Icons.format_size,
-            title: '消息字号',
-            desc: '对话消息的文字显示大小',
+            title: context.l10n.settingMessageSize,
+            desc: context.l10n.settingMessageSizeDesc,
             value: s.fontSize,
             min: AssistantSettings.fontSizeMin,
             max: AssistantSettings.fontSizeMax,
@@ -67,61 +72,65 @@ class _SettingsSheet extends ConsumerWidget {
             format: (v) => v.toStringAsFixed(0),
             onChanged: (v) => n.patch((o) => o.copyWith(fontSize: v)),
           ),
+          // 当前模型不能逐字显示时置灰,显示生效的「关」
           SettingRow(
             icon: Icons.keyboard_outlined,
-            title: '流式输出',
-            desc: '逐字显示回复',
-            value: s.stream,
+            title: context.l10n.streamOutput,
+            desc: caps.streaming
+                ? context.l10n.streamOutputDesc
+                : context.l10n.modelUnsupported,
+            value: caps.streaming && s.stream,
+            enabled: caps.streaming,
             onChanged: (v) => n.patch((o) => o.copyWith(stream: v)),
           ),
-          settingSection(context, '出图'),
+          settingSection(context, context.l10n.settingDraw),
           SettingRow(
             icon: Icons.notes,
-            title: '纯文本格式',
-            desc: '提示词只显示为文本,不导入也不出图',
+            title: context.l10n.plainTextFormat,
+            desc: context.l10n.plainTextFormatDesc,
             value: s.noDraw,
             onChanged: (v) => n.patch((o) => o.copyWith(noDraw: v)),
           ),
           SettingChoiceRow<SectionImport>(
             icon: Icons.splitscreen_outlined,
-            title: '导入方式',
-            desc: '提示词写入创作页主提示词的位置',
+            title: context.l10n.importMode,
+            desc: context.l10n.importModeDesc,
             enabled: !s.noDraw,
             value: s.importTo,
             options: SectionImport.values,
             labelOf: sectionImportLabel,
             onChanged: (v) => n.patch((o) => o.copyWith(importTo: v)),
           ),
-          settingSection(context, '自动'),
+          settingSection(context, context.l10n.settingAuto),
           // 纯文本格式开着时这两项不会发生,淡显
           SettingRow(
             icon: Icons.bolt_outlined,
-            title: '生成提示词后自动出图',
-            desc: '提示词生成完成后立即开始出图',
+            title: context.l10n.autoDraw,
+            desc: context.l10n.autoDrawDesc,
             enabled: !s.noDraw,
             value: s.autoGenerate,
             onChanged: (v) => n.patch((o) => o.copyWith(autoGenerate: v)),
           ),
           SettingRow(
             icon: Icons.image_outlined,
-            title: '在对话内显示图片',
-            desc: '生成的图片显示在对话内,同时保存至图库',
+            title: context.l10n.inlineImages,
+            desc: context.l10n.inlineImagesDesc,
             value: s.inlineImage,
             onChanged: (v) => n.patch((o) => o.copyWith(inlineImage: v)),
           ),
           SettingRow(
             icon: Icons.draw_outlined,
-            title: '自动写入创作页',
-            desc: '生成的提示词自动写回创作页,无需手动导入',
+            title: context.l10n.autoWrite,
+            desc: context.l10n.autoWriteDesc,
             enabled: !s.noDraw,
             value: s.autoImport,
             onChanged: (v) => n.patch((o) => o.copyWith(autoImport: v)),
           ),
-          settingSection(context, '对话'),
+          settingSection(context, context.l10n.settingChat),
           SettingStepperRow(
             icon: Icons.history,
-            title: '上下文轮数',
-            desc: '每次发送带上最近几轮对话',
+            title: context.l10n.contextTurns,
+            desc: context.l10n.contextTurnsDesc,
             value: s.historyTurns.toDouble(),
             min: AssistantSettings.historyTurnsMin.toDouble(),
             max: AssistantSettings.historyTurnsMax.toDouble(),
@@ -130,39 +139,66 @@ class _SettingsSheet extends ConsumerWidget {
             onChanged: (v) =>
                 n.patch((o) => o.copyWith(historyTurns: v.round())),
           ),
-          settingSection(context, '资料'),
-          SettingChoiceRow<LibraryScope>(
-            icon: Icons.library_books_outlined,
-            title: '资料库范围',
-            desc: '查询画师串与角色时使用的资料来源',
-            value: effectiveLibraryScope(
-              s.libraryScope,
-              botAuthorized: authorized,
-            ),
-            options: LibraryScope.values,
-            labelOf: libraryScopeLabel,
-            optionEnabled: (o) =>
-                libraryScopeAllowed(o, botAuthorized: authorized),
-            optionNote: (o) => libraryScopeAllowed(o, botAuthorized: authorized)
-                ? libraryScopeDesc(o)
-                : '暂未开放',
-            onChanged: (v) => n.patch((o) => o.copyWith(libraryScope: v)),
+          SettingStepperRow(
+            icon: Icons.replay,
+            title: context.l10n.failRetries,
+            desc: context.l10n.failRetriesDesc,
+            value: s.retries.toDouble(),
+            min: 0,
+            max: AssistantSettings.retriesMax.toDouble(),
+            step: 1,
+            format: (v) => _countLabel(context, v),
+            onChanged: (v) => n.patch((o) => o.copyWith(retries: v.round())),
           ),
           SettingRow(
-            icon: Icons.person_outline,
-            title: 'OC 使用占位符',
-            desc: customEndpoint
-                ? '本地与公共 OC 只给 AI 占位符，出图时还原；调整原设时请关闭'
-                : '仅自定义接口渠道可用',
-            value: customEndpoint && s.ocPlaceholders,
-            enabled: customEndpoint,
-            onChanged: (v) => n.patch((o) => o.copyWith(ocPlaceholders: v)),
+            icon: Icons.hide_image_outlined,
+            title: context.l10n.retryStripImage,
+            desc: context.l10n.retryStripImageDesc,
+            enabled: s.retries > 0,
+            value: s.retryStripImage,
+            onChanged: (v) => n.patch((o) => o.copyWith(retryStripImage: v)),
           ),
-          settingSection(context, '规则'),
+          SettingStepperRow(
+            icon: Icons.casino_outlined,
+            title: context.l10n.refusalRetries,
+            desc: context.l10n.refusalRetriesDesc,
+            value: s.rerolls.toDouble(),
+            min: 0,
+            max: AssistantSettings.retriesMax.toDouble(),
+            step: 1,
+            format: (v) => _countLabel(context, v),
+            onChanged: (v) => n.patch((o) => o.copyWith(rerolls: v.round())),
+          ),
+          SettingNavRow(
+            icon: Icons.label_outline,
+            title: context.l10n.refusalKeywords,
+            desc: context.l10n.refusalKeywordsDesc,
+            value: context.l10n.keywordsN(s.refusalKeywords.length),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const RefusalKeywordsPage(),
+              ),
+            ),
+          ),
+          settingSection(context, context.l10n.settingLibrary),
+          SettingNavRow(
+            icon: Icons.handyman_outlined,
+            title: context.l10n.assistantTools,
+            desc: context.l10n.assistantToolsDesc,
+            value: tools == null
+                ? ''
+                : context.l10n.toolsEnabledN(enabledTools(tools).length),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const AssistantToolsPage(),
+              ),
+            ),
+          ),
+          settingSection(context, context.l10n.settingRules),
           SettingNavRow(
             icon: Icons.rule_outlined,
-            title: '规则预设',
-            desc: '生成提示词时遵循的规则',
+            title: context.l10n.rulePresets,
+            desc: context.l10n.rulePresetsDesc,
             value: _rulesValue(ref),
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute<void>(builder: (_) => const RulesPresetPage()),
@@ -170,24 +206,24 @@ class _SettingsSheet extends ConsumerWidget {
           ),
           SettingNavRow(
             icon: Icons.vertical_align_top,
-            title: '前置提示词',
-            desc: '写给 AI 的话,放在规则最前面',
+            title: context.l10n.prefixPrompt,
+            desc: context.l10n.prefixPromptDesc,
             value: switch (s.prefixPrompt.trim().length) {
-              0 => '未设置',
-              final n => '$n 字',
+              0 => context.l10n.notSet,
+              final n => context.l10n.charsN(n),
             },
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute<void>(builder: (_) => const PrefixPromptPage()),
             ),
           ),
-          settingSection(context, '调试'),
+          settingSection(context, context.l10n.settingDebug),
           SettingNavRow(
             icon: Icons.bug_report_outlined,
-            title: '导出对话记录',
-            desc: '当前对话每一轮发给 AI 的内容和返回',
+            title: context.l10n.exportChatLog,
+            desc: context.l10n.exportChatLogDesc,
             value: switch (ref.read(assistantProvider.notifier).traceCount) {
               0 => '',
-              final n => '$n 轮',
+              final n => context.l10n.turnsN(n),
             },
             onTap: () => _exportTrace(context, ref),
           ),
@@ -197,10 +233,13 @@ class _SettingsSheet extends ConsumerWidget {
   }
 }
 
+String _countLabel(BuildContext context, double v) =>
+    v == 0 ? context.l10n.off : v.toStringAsFixed(0);
+
 /// 导出成一个文本文件,存到用户选的位置。内容见 `renderTraceExport`。
 Future<void> _exportTrace(BuildContext context, WidgetRef ref) async {
   if (ref.read(assistantProvider).msgs.isEmpty) {
-    hintSnack(context, '当前对话是空的', icon: Icons.info_outline);
+    hintSnack(context, context.l10n.chatEmpty, icon: Icons.info_outline);
     return;
   }
   try {
@@ -214,11 +253,19 @@ Future<void> _exportTrace(BuildContext context, WidgetRef ref) async {
       bytes: utf8.encode(ref.read(assistantProvider.notifier).exportTrace()),
     );
     if (path != null && context.mounted) {
-      hintSnack(context, '已导出对话记录', icon: Icons.check_circle_outline);
+      hintSnack(
+        context,
+        context.l10n.chatLogExported,
+        icon: Icons.check_circle_outline,
+      );
     }
   } catch (e) {
     if (context.mounted) {
-      hintSnack(context, '导出失败:$e', icon: Icons.error_outline);
+      hintSnack(
+        context,
+        context.l10n.exportFailed('$e'),
+        icon: Icons.error_outline,
+      );
     }
   }
 }
@@ -229,7 +276,7 @@ String _rulesValue(WidgetRef ref) {
   final lib = ref.watch(rulesLibraryProvider).value;
   if (lib == null) return '';
   final used = [for (final f in RulesFamily.values) lib.activeFor(f)];
-  if (used.every((p) => p.isDefault)) return '默认';
+  if (used.every((p) => p.isDefault)) return l10nNow.presetGroupDefault;
   if (used.every((p) => p.id == used.first.id)) return used.first.name;
-  return '自定义';
+  return l10nNow.sizeCustom;
 }

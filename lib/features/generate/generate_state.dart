@@ -253,10 +253,18 @@ class GenerateNotifier extends Notifier<GenerateState> {
   }
 
   /// 灵感页「加入角色」/ 角色卡头「角色库」:带名追加(名字取自角色条目,
-  /// 头像取条目预览),尊重张数上限(按模型取,见 maxCharactersOf),超出静默
-  /// 截断(对齐 web availableSlots 语义)。返回实际加入条数。
+  /// 头像取条目预览,[source] 是条目 id),尊重张数上限(按模型取,见
+  /// maxCharactersOf),超出静默截断(对齐 web availableSlots 语义)。返回实际加入条数。
   int addNamedCharactersFrom(
-    List<({String name, String positive, String negative, String? avatar})>
+    List<
+      ({
+        String name,
+        String positive,
+        String negative,
+        String? avatar,
+        String? source,
+      })
+    >
     chars,
   ) {
     final cap = maxCharactersOf(state.params.model);
@@ -272,6 +280,7 @@ class GenerateNotifier extends Notifier<GenerateState> {
           negative: c.negative,
           position: _spawnPos(base),
           avatar: c.avatar,
+          source: c.source,
         ),
       );
       added++;
@@ -283,7 +292,7 @@ class GenerateNotifier extends Notifier<GenerateState> {
     return added;
   }
 
-  /// 角色卡点头像换人:名字、正负向、头像整份换成库条目的,站位和开关不动。
+  /// 角色卡点头像换人:名字、正负向、头像、来源整份换成库条目的,站位和开关不动。
   /// 编辑器草稿一并清空(空 = 与定稿无差别)—— 那份草稿对的是旧提示词。
   /// 条目没有预览图时头像也清掉,别让新名字挂着上一个人的脸。
   void fillCharacterFrom(
@@ -292,6 +301,7 @@ class GenerateNotifier extends Notifier<GenerateState> {
     required String positive,
     required String negative,
     String? avatar,
+    String? source,
   }) {
     state = state.copyWith(
       characters: [
@@ -304,6 +314,7 @@ class GenerateNotifier extends Notifier<GenerateState> {
               positiveRaw: '',
               negativeRaw: '',
               avatar: avatar,
+              source: source,
             )
           else
             c,
@@ -424,6 +435,12 @@ class GenerateNotifier extends Notifier<GenerateState> {
   void restoreVibes(List<VibeItem> vibes) =>
       state = state.copyWith(vibes: vibes);
 
+  /// 当前处于重绘态且模型不支持重绘时挂角色参考(如 V5):
+  /// 角色参考全部强制停用,且禁止启用。
+  bool _crBlockedByInpaint([String? model, InpaintJob? inpaint]) =>
+      (inpaint ?? state.inpaint) != null &&
+      !crSupportsInpainting(model ?? state.params.model);
+
   // ---- 角色参考 ----
   String addCharRef({
     required Uint8List image,
@@ -431,12 +448,20 @@ class GenerateNotifier extends Notifier<GenerateState> {
     String? imageHash,
   }) {
     final id = _newId();
+    final blocked = _crBlockedByInpaint();
     state = state.copyWith(
       charRefs: [
         ...state.charRefs,
-        CharRefItem(id: id, name: name, image: image, imageHash: imageHash),
+        CharRefItem(
+          id: id,
+          name: name,
+          image: image,
+          imageHash: imageHash,
+          enabled: !blocked,
+        ),
       ],
-      vibes: _vibesDisabled(), // 与 Vibe 互斥
+      // 重绘冲突下以停用态加入,不去停用 Vibe
+      vibes: blocked ? null : _vibesDisabled(),
     );
     openPanel(Panel.charRef);
     return id;
@@ -469,7 +494,10 @@ class GenerateNotifier extends Notifier<GenerateState> {
     );
   }
 
-  void setCharRefEnabled(String id, bool enabled) {
+  /// 切换单张角色参考启停。重绘态下若当前模型不支持角色参考(如 V5),
+  /// 拒绝启用并返回 false 供界面弹不支持提示。
+  bool setCharRefEnabled(String id, bool enabled) {
+    if (enabled && _crBlockedByInpaint()) return false;
     state = state.copyWith(
       charRefs: [
         for (final r in state.charRefs)
@@ -478,6 +506,7 @@ class GenerateNotifier extends Notifier<GenerateState> {
       // 启用角色参考即停用 Vibe(互斥);停用时不动另一方
       vibes: enabled ? _vibesDisabled() : null,
     );
+    return true;
   }
 
   /// 整体替换角色参考列表(角色参考图库 / Vibe 管理器按**返回键**还原进入前
@@ -723,6 +752,37 @@ class GenerateNotifier extends Notifier<GenerateState> {
 
   void disableImg2Img() => state = state.copyWith(img2img: null);
 
+  /// 图生图放大存入:底图 + 倍率 + 强度/噪声,顶掉原有底图与遮罩。主分辨率不动,
+  /// 发送尺寸见 [Img2ImgUpscale]。
+  void setImg2ImgUpscale({
+    required Uint8List image,
+    required int srcW,
+    required int srcH,
+    required EnhanceScale scale,
+    required double strength,
+    required double noise,
+  }) {
+    state = state.copyWith(
+      img2img: Img2ImgConfig(
+        image: image,
+        strength: strength,
+        noise: noise,
+        upscale: Img2ImgUpscale(scale: scale, srcW: srcW, srcH: srcH),
+      ),
+      inpaint: null,
+    );
+    openPanel(Panel.i2i);
+  }
+
+  void updateImg2ImgScale(EnhanceScale scale) {
+    final cur = state.img2img;
+    final up = cur?.upscale;
+    if (cur == null || up == null) return;
+    state = state.copyWith(
+      img2img: cur.copyWith(upscale: up.copyWith(scale: scale)),
+    );
+  }
+
   // ---- 重绘遮罩 ----
 
   /// 遮罩编辑器存盘:底图 + 遮罩 + 强度(+ 局部重绘的回贴信息)一起落进创作页
@@ -733,7 +793,14 @@ class GenerateNotifier extends Notifier<GenerateState> {
   ///
   /// 与 img2img 互斥:带遮罩的图生图就是重绘,留着另一份底图只会让发送层二选一。
   void setInpaint(InpaintJob job) {
-    state = state.copyWith(inpaint: job, img2img: null);
+    state = state.copyWith(
+      inpaint: job,
+      img2img: null,
+      // V5 等重绘不支持角色参考的模型:进入重绘时强制停用全部角色参考
+      charRefs: _crBlockedByInpaint(state.params.model, job)
+          ? _charRefsDisabled()
+          : null,
+    );
     openPanel(Panel.i2i);
   }
 
@@ -858,15 +925,17 @@ class GenerateNotifier extends Notifier<GenerateState> {
 
   // ---- 主提示词分区 ----
 
-  /// 灵感库条目各自成一格,不折叠(见 [withEntrySections])。格子名是分类名
-  /// (画风 / 角色 / 场景…),给了 [name] 就用它(法典词条叫「法典」)。
+  /// 灵感库条目各自成一格,不折叠(见 [withEntrySections])。格子名是条目名,
+  /// 条目没名字时用 [fallback],没给就用分类名(画风 / 角色 / 场景…)。
   ///
   /// 正向已全在提示词里没另建格子的、同名同词的格子只是重新打开的,条目负面里
   /// 整张卡还没有的词接到主体负面。
-  void addEntrySections(Iterable<TagEntry> entries, {String? name}) {
+  void addEntrySections(Iterable<TagEntry> entries, {String? fallback}) {
     final named = [
       for (final e in entries)
-        e.copyWith(name: name ?? tagCategoryDef(e.category).label),
+        e.name.trim().isNotEmpty
+            ? e
+            : e.copyWith(name: fallback ?? tagCategoryDef(e.category).label),
     ];
     final sections = withEntrySections(
       _rows,
@@ -1001,10 +1070,12 @@ class GenerateNotifier extends Notifier<GenerateState> {
       cur = cur.rememberModalSampling();
       base = state.withLoraBaseOf(model);
     }
+    final nextModel = model ?? cur.model;
     state = base.copyWith(
       // 导入面板勾了模型这一项时也可能把槽位换小,同 setModel 一样收口。
       // 角色是在这之前落地的(导入面板先加角色再落设置),所以得在这儿再过一遍。
-      characters: _capEnabled(state.characters, model ?? cur.model),
+      characters: _capEnabled(state.characters, nextModel),
+      charRefs: _crBlockedByInpaint(nextModel) ? _charRefsDisabled() : null,
       params: cur.copyWith(
         model: model,
         width: width,
@@ -1056,6 +1127,8 @@ class GenerateNotifier extends Notifier<GenerateState> {
           params: p,
           // 5 → 4/4.5 槽位从 32 掉到 6,超出的尾巴就地停用(见 [_capEnabled])
           characters: _capEnabled(state.characters, model),
+          // 重绘态下切到 V5 等不支持重绘角色参考的模型:强制停用全部角色参考
+          charRefs: _crBlockedByInpaint(model) ? _charRefsDisabled() : null,
         );
   }
 

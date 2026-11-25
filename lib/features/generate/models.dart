@@ -3,6 +3,7 @@ library;
 
 import 'dart:typed_data';
 
+import '../../core/util/webp_to_png.dart' show webpSizeOf;
 import 'res_rules.dart' show kFreePixelThreshold;
 
 const Object _unset = Object();
@@ -31,6 +32,7 @@ class CharacterPrompt {
     this.position, // 'A1'..'E5';null = AUTO
     this.activeTab = CharTab.positive,
     this.avatar,
+    this.source,
   });
 
   final String id;
@@ -41,6 +43,9 @@ class CharacterPrompt {
   /// 头像:从灵感角色库选来时带上的预览图(http URL 或本机文件路径)。
   /// 只在角色卡上显示,不进载荷;null = 没有(手写 / AI 写的 / 导入的角色)。
   final String? avatar;
+
+  /// 从灵感角色库选来时的条目 id,不进载荷;图库按角色归类认它。
+  final String? source;
 
   /// 编辑器原文草稿(含禁用 `~tag~` / 折叠 `<#名字: …>` 等仅编辑期语法),
   /// 空 = 与定稿无差别,不必单独存。有效性由读取侧判定,见 [pickEditorText]。
@@ -61,6 +66,7 @@ class CharacterPrompt {
     Object? position = _unset,
     CharTab? activeTab,
     Object? avatar = _unset,
+    Object? source = _unset,
   }) {
     return CharacterPrompt(
       id: id,
@@ -73,6 +79,7 @@ class CharacterPrompt {
       position: position == _unset ? this.position : position as String?,
       activeTab: activeTab ?? this.activeTab,
       avatar: avatar == _unset ? this.avatar : avatar as String?,
+      source: source == _unset ? this.source : source as String?,
     );
   }
 }
@@ -95,6 +102,7 @@ class PromptSection {
     this.negativeRaw = '',
     this.enabled = true,
     this.artist = false,
+    this.sources = const [],
   });
 
   /// 主体那一行(见 [kMainSectionId])。
@@ -104,7 +112,8 @@ class PromptSection {
       negative = '',
       positiveRaw = '',
       negativeRaw = '',
-      artist = false;
+      artist = false,
+      sources = const [];
 
   final String id;
   final String name;
@@ -121,6 +130,9 @@ class PromptSection {
   /// 「画风」而不是「分区 N」。
   final bool artist;
 
+  /// 这一格来自的灵感库条目 id(合并过的格子有几个);图库按角色 / 画风归类认它。
+  final List<String> sources;
+
   bool get isMain => id == kMainSectionId;
 
   PromptSection copyWith({
@@ -130,6 +142,7 @@ class PromptSection {
     String? positiveRaw,
     String? negativeRaw,
     bool? enabled,
+    List<String>? sources,
   }) => PromptSection(
     id: id,
     name: name ?? this.name,
@@ -139,6 +152,7 @@ class PromptSection {
     negativeRaw: negativeRaw ?? this.negativeRaw,
     enabled: enabled ?? this.enabled,
     artist: artist,
+    sources: sources ?? this.sources,
   );
 }
 
@@ -192,14 +206,66 @@ class VibeItem {
       );
 }
 
+/// 角色参考主模式(用于 UI 选择器;「优先相同服装」开关叠加在 character / both 上)。
+enum CharRefBaseMode { character, style, both, outfit }
+
 /// 角色参考迁移模式。api 直接进载荷 base_caption(对齐 web)。
+/// 保留旧枚举名 `character` / `style` / `both` 以兼容既有存档 JSON。
 enum CharRefMode {
   character('character'),
+  characterMainOutfit('character_mainoutfit'),
   style('style'),
-  both('character&style');
+  both('character&style'),
+  bothAnyOutfit('character&style_anyoutfit'),
+  outfit('costume');
 
   const CharRefMode(this.api);
   final String api;
+
+  /// 对应的 UI 主模式。
+  CharRefBaseMode get baseMode => switch (this) {
+    CharRefMode.character ||
+    CharRefMode.characterMainOutfit => CharRefBaseMode.character,
+    CharRefMode.style => CharRefBaseMode.style,
+    CharRefMode.both || CharRefMode.bothAnyOutfit => CharRefBaseMode.both,
+    CharRefMode.outfit => CharRefBaseMode.outfit,
+  };
+
+  /// 是否支持「优先相同服装」开关(仅 character / both 主模式)。
+  bool get supportsPreferSameOutfit =>
+      baseMode == CharRefBaseMode.character || baseMode == CharRefBaseMode.both;
+
+  /// 当前是否开启「优先相同服装」。
+  /// character 默认不优先同款(`character`),开启为 `character_mainoutfit`;
+  /// both 默认优先同款(`character&style`),关闭为 `character&style_anyoutfit`。
+  bool get preferSameOutfit =>
+      this == CharRefMode.characterMainOutfit || this == CharRefMode.both;
+
+  /// 切换「优先相同服装」开关后的迁移模式。
+  CharRefMode withPreferSameOutfit(bool prefer) => switch (baseMode) {
+    CharRefBaseMode.character =>
+      prefer ? CharRefMode.characterMainOutfit : CharRefMode.character,
+    CharRefBaseMode.both =>
+      prefer ? CharRefMode.both : CharRefMode.bothAnyOutfit,
+    CharRefBaseMode.style || CharRefBaseMode.outfit => this,
+  };
+
+  /// 从主模式构造默认迁移模式:切到「角色&风格」默认勾同款,切到「角色」默认不勾。
+  static CharRefMode fromBaseMode(CharRefBaseMode base) => switch (base) {
+    CharRefBaseMode.character => CharRefMode.character,
+    CharRefBaseMode.style => CharRefMode.style,
+    CharRefBaseMode.both => CharRefMode.both,
+    CharRefBaseMode.outfit => CharRefMode.outfit,
+  };
+
+  /// 同时兼容既有存档枚举名(`character` / `both`…)与 API 串(`costume` / `character_mainoutfit`…)。
+  static CharRefMode? tryParse(Object? raw) {
+    if (raw is! String) return null;
+    for (final v in values) {
+      if (v.name == raw || v.api == raw) return v;
+    }
+    return null;
+  }
 }
 
 class CharRefItem {
@@ -303,6 +369,9 @@ class InpaintJob {
   return w > 0 && h > 0 ? (w, h) : null;
 }
 
+/// 成图宽高(PNG / WebP 都只读文件头);两种都不是给 null。
+(int, int)? imageSizeOf(Uint8List b) => pngSizeOf(b) ?? webpSizeOf(b);
+
 /// 局部重绘贴回:成图(发送尺寸)缩回 [region] 大小,按羽化遮罩混回原图。
 class InpaintPaste {
   const InpaintPaste({
@@ -335,12 +404,44 @@ class InpaintPaste {
       (x: tightX, y: tightY, w: tightW, h: tightH);
 }
 
+/// 放大重绘的倍率。[factor] 为 null = Max ✨ 档:**发原图尺寸 + upscaled_enhance**,
+/// 由服务端放大到总像素上限,客户端不自己算目标尺寸(算了也只用于预估价格)。
+enum EnhanceScale {
+  max('Max', null),
+  x2('2×', 2.0),
+  x15('1.5×', 1.5),
+  x1('1×', 1.0);
+
+  const EnhanceScale(this.label, this.factor);
+
+  final String label;
+  final double? factor;
+}
+
+/// 图生图放大:底图按倍率重新生成。[srcW]×[srcH] 是底图原尺寸,发送尺寸由它和
+/// 倍率算(见 `img2imgUpscaleSendSize`),主分辨率不动。
+class Img2ImgUpscale {
+  const Img2ImgUpscale({
+    required this.scale,
+    required this.srcW,
+    required this.srcH,
+  });
+
+  final EnhanceScale scale;
+  final int srcW;
+  final int srcH;
+
+  Img2ImgUpscale copyWith({EnhanceScale? scale}) =>
+      Img2ImgUpscale(scale: scale ?? this.scale, srcW: srcW, srcH: srcH);
+}
+
 class Img2ImgConfig {
   const Img2ImgConfig({
     this.strength = 0.7,
     this.noise = 0.0,
     this.image,
     this.upscaledEnhance = false,
+    this.upscale,
   });
 
   final double strength;
@@ -354,16 +455,21 @@ class Img2ImgConfig {
   /// 倍率是客户端自己把 params 的宽高算好再发的。
   final bool upscaledEnhance;
 
+  /// 非空 = 图生图放大形态。
+  final Img2ImgUpscale? upscale;
+
   Img2ImgConfig copyWith({
     double? strength,
     double? noise,
     Uint8List? image,
     bool? upscaledEnhance,
+    Img2ImgUpscale? upscale,
   }) => Img2ImgConfig(
     strength: strength ?? this.strength,
     noise: noise ?? this.noise,
     image: image ?? this.image,
     upscaledEnhance: upscaledEnhance ?? this.upscaledEnhance,
+    upscale: upscale ?? this.upscale,
   );
 }
 
@@ -461,10 +567,92 @@ bool isNai5MediumModel(String displayModel) =>
 const kNai5MediumSteps = 14;
 const kNai5MediumSampler = 'Euler Ancestral';
 
-/// 角色参考(Director/Precise Reference)仅 4.5 系模型支持(对齐 web 门槛)。
-/// 载荷构造 / 成本预估 / 卡片提示共用此判定,入参为 UI 展示名。
-/// NAI 5 是否支持官方未公布,预载期按不支持处理(startsWith 天然排除)。
-bool crSupportsModel(String displayModel) => displayModel.startsWith('NAI 4.5');
+/// V5 精确参考单次请求张数上限。
+const kMaxCrRefsV5 = 16;
+
+/// 角色参考(Director/Precise Reference)支持门槛:
+/// 仅 NAI 4.5 Full / Curated 与 NAI 5.0 Full / Curated 支持;
+/// NAI 5.0 Full Medium、NAI 4.0、Anima / Krea 均不支持。
+/// 载荷构造 / 成本预估 / 模块可见性共用此判定,入参为 UI 展示名。
+bool crSupportsModel(String displayModel) => switch (displayModel) {
+  'NAI 4.5 Full' ||
+  'NAI 4.5 Curated' ||
+  'NAI 5.0 Full' ||
+  'NAI 5.0 Curated' => true,
+  _ => false,
+};
+
+/// 局部重绘下是否支持角色参考:仅 4.5 系支持,V5 重绘不支持(不发、不计费)。
+bool crSupportsInpainting(String displayModel) =>
+    displayModel == 'NAI 4.5 Full' || displayModel == 'NAI 4.5 Curated';
+
+/// 是否支持「服装」模式与「优先相同服装」开关(仅 V5 Full / Curated)。
+bool crSupportsOutfit(String displayModel) =>
+    displayModel == 'NAI 5.0 Full' || displayModel == 'NAI 5.0 Curated';
+
+/// 是否支持 Fidelity 保真度滑块(仅 4.5 系;V5 隐藏滑块,发送时强制 fidelity=1.0 → secondary=0)。
+bool crSupportsFidelity(String displayModel) =>
+    displayModel == 'NAI 4.5 Full' || displayModel == 'NAI 4.5 Curated';
+
+/// 参考强度上限:V5 为 5.0,V4.5 为 1.0。
+double crStrengthMax(String displayModel) =>
+    crSupportsOutfit(displayModel) ? 5.0 : 1.0;
+
+/// 参考图预处理是否走 V5 97 档桶表 Cover 裁切(否则走 4.5 三档黑边 contain)。
+bool crUsesBucketResize(String displayModel) => crSupportsOutfit(displayModel);
+
+/// V5 精确参考强度滑块非线性映射:物理位置 t ∈ [0.0, 1.0] → 强度 v ∈ [0.0, 5.0],
+/// 中点 t = 0.5 精确对应常用默认强度 1.0。
+double crV5StrengthFromSlider(double t) {
+  final x = t.clamp(0.0, 1.0);
+  return x <= 0.5 ? x * 2.0 : 1.0 + (x - 0.5) * 8.0;
+}
+
+/// V5 精确参考强度滑块逆映射:强度 v ∈ [0.0, 5.0] → 物理位置 t ∈ [0.0, 1.0]。
+double crV5StrengthToSlider(double v) {
+  final x = v.clamp(0.0, 5.0);
+  return x <= 1.0 ? x / 2.0 : 0.5 + (x - 1.0) / 8.0;
+}
+
+/// 返回在 [displayModel] 与 [inpaint] 下真正会生效并参与发送/计费的精确参考列表:
+/// - 不支持的模型或重绘不支持时返回空;
+/// - 仅保留启用项;
+/// - V4.5 下跳过 `outfit`,并将 `characterMainOutfit -> character`、`bothAnyOutfit -> both`;
+/// - 按模型能力收口 `strength`(V4.5 `0..1`,V5 `0..5`)与 `infoExtracted`(V5 恒 `1.0`);
+/// - V5 截断至上限 [kMaxCrRefsV5] 张。
+List<CharRefItem> effectiveCrRefs(
+  List<CharRefItem> refs,
+  String displayModel, {
+  bool inpaint = false,
+}) {
+  if (!crSupportsModel(displayModel)) return const [];
+  if (inpaint && !crSupportsInpainting(displayModel)) return const [];
+  final outfitOk = crSupportsOutfit(displayModel);
+  final fidelityOk = crSupportsFidelity(displayModel);
+  final maxStrength = crStrengthMax(displayModel);
+  final cap = isNai5Model(displayModel) ? kMaxCrRefsV5 : null;
+  final out = <CharRefItem>[];
+  for (final r in refs) {
+    if (!r.enabled) continue;
+    if (!outfitOk && r.mode == CharRefMode.outfit) continue;
+    final mode = outfitOk
+        ? r.mode
+        : switch (r.mode) {
+            CharRefMode.characterMainOutfit => CharRefMode.character,
+            CharRefMode.bothAnyOutfit => CharRefMode.both,
+            _ => r.mode,
+          };
+    final strength = r.strength.clamp(0.0, maxStrength);
+    final fidelity = fidelityOk ? r.infoExtracted.clamp(0.0, 1.0) : 1.0;
+    out.add(
+      mode == r.mode && strength == r.strength && fidelity == r.infoExtracted
+          ? r
+          : r.copyWith(mode: mode, strength: strength, infoExtracted: fidelity),
+    );
+    if (cap != null && out.length >= cap) break;
+  }
+  return out;
+}
 
 /// Vibe Transfer 门槛:NAI 5 官方未确认支持(编码接口是否兼容也未知),
 /// 预载期整卡屏蔽 —— 渲染与载荷剥离都走模块可见性,这里一处管住。
@@ -581,14 +769,9 @@ String animaTierOf(String displayModel) => switch (displayModel) {
 /// 去掉了 Anima Turbo 的「(默认)」:那在 web 指「anima 档位里的默认」,
 /// 而本 app 默认模型是 NAI 4.5 Full,七档平铺一张表会被读成"app 的默认"。
 /// 分隔符统一用 ` · `(web 的 NAI 用逗号、anima 用点,混着来一页两套版式)。
+///
+/// NAI 各档的文案在 ARB 里(descNai*),这张表只剩 Anima / Krea。
 const modelDescriptions = <String, String>{
-  'NAI 5.0 Full': '最新旗舰模型 · 1471 token · NSFW',
-  'NAI 5.0 Full Medium': '最新旗舰 Medium 档 · 节约 40% 额度 · NSFW',
-  'NAI 5.0 Curated': '最新精选版 · 703 token · SFW',
-  'NAI 4.5 Full': 'V4.5 旧模型 · NSFW',
-  'NAI 4.5 Curated': 'V4.5 旧模型精选版 · SFW',
-  'NAI 4.0 Full': 'V4 旧模型 · NSFW',
-  'NAI 4.0 Curated': 'V4 旧模型精选版 · SFW',
   'Anima Turbo': '蒸馏版 · 12 步 · 快,适合初稿',
   'Anima Aesthetic': '画风美学微调 · 36 步 · 适合试风格',
   'Anima Base': '标准基础模型 · 36 步',
@@ -1234,6 +1417,7 @@ class GenerateState {
     this.negativePromptRaw = '',
     this.sections = const [],
     this.composedSections = const [],
+    this.usedEntries = const [],
     required this.characters,
     required this.vibes,
     required this.charRefs,
@@ -1291,6 +1475,10 @@ class GenerateState {
   /// 生成快照里拼进 [prompt] 的那几格(只留进了载荷的,主体的词也写在行里,
   /// 见 composeSections)。不发给 NAI、不落盘,入库时写进 PNG(见 section_layout.dart)。
   final List<PromptSection> composedSections;
+
+  /// 生成快照里拼进 [prompt] 的那几格来自的灵感库条目 id(见 composeSections)。
+  /// 不发给 NAI;图库按角色 / 画风归类认它。
+  final List<String> usedEntries;
 
   final List<CharacterPrompt> characters;
   final List<VibeItem> vibes;
@@ -1358,6 +1546,7 @@ class GenerateState {
     String? negativePromptRaw,
     List<PromptSection>? sections,
     List<PromptSection>? composedSections,
+    List<String>? usedEntries,
     List<CharacterPrompt>? characters,
     List<VibeItem>? vibes,
     List<CharRefItem>? charRefs,
@@ -1380,6 +1569,7 @@ class GenerateState {
       negativePromptRaw: negativePromptRaw ?? this.negativePromptRaw,
       sections: sections ?? this.sections,
       composedSections: composedSections ?? this.composedSections,
+      usedEntries: usedEntries ?? this.usedEntries,
       characters: characters ?? this.characters,
       vibes: vibes ?? this.vibes,
       charRefs: charRefs ?? this.charRefs,

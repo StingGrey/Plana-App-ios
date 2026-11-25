@@ -13,6 +13,7 @@ import '../../inspiration/widgets/char_pick_sheet.dart' show panelTagCats;
 import '../generate_state.dart';
 import '../models.dart' show PromptSection;
 import 'common.dart';
+import '../../../l10n/l10n.dart';
 
 /// 这一格存进灵感库的词:实际出图的那份(停用的不算、折叠展开)。主体只存正向,
 /// 卡上负面那行是整张卡的。
@@ -23,10 +24,19 @@ import 'common.dart';
     ? (positive: mainPrompt.trim(), negative: '')
     : (positive: s.positive.trim(), negative: s.negative.trim());
 
-/// 存进灵感库时默认落的分类:画风格是画风;名字就叫「画风」「角色」「场景」
-/// 或某个自定义类别名的落那一类;别的不猜。
-TagCategory? sectionSaveCategory(PromptSection s, List<TagCategory> cats) {
+/// 存进灵感库时默认落的分类:画风格是画风;从灵感库条目加进来的落那条的分类;
+/// 名字就叫「画风」「角色」「场景」或某个自定义类别名的落那一类;别的不猜。
+TagCategory? sectionSaveCategory(
+  PromptSection s,
+  List<TagCategory> cats,
+  Iterable<TagEntry> known,
+) {
   if (s.artist) return TagCategory.artist;
+  for (final e in known) {
+    if (s.sources.contains(e.id) && cats.contains(e.category)) {
+      return e.category;
+    }
+  }
   final name = s.name.trim();
   for (final c in cats) {
     if (tagCategoryDef(c).label == name) return c;
@@ -35,8 +45,12 @@ TagCategory? sectionSaveCategory(PromptSection s, List<TagCategory> cats) {
 }
 
 /// 自己起的分区名,存进灵感库时直接当条目名。主体、「分区 N」、分类名、
-/// 法典(含改过的名字)这类默认名不算。
-String? customSectionName(PromptSection s, List<TagCategory> cats) {
+/// 法典(含改过的名字)、来源条目的名字这类默认名不算。
+String? customSectionName(
+  PromptSection s,
+  List<TagCategory> cats,
+  Iterable<TagEntry> known,
+) {
   final name = s.name.trim();
   if (name.isEmpty ||
       name == '主体' ||
@@ -44,7 +58,8 @@ String? customSectionName(PromptSection s, List<TagCategory> cats) {
       name == codexTabLabel() ||
       RegExp(r'^分区 \d+$').hasMatch(name) ||
       kTagCategoryDefs.any((d) => d.label == name) ||
-      cats.any((c) => tagCategoryDef(c).label == name)) {
+      cats.any((c) => tagCategoryDef(c).label == name) ||
+      known.any((e) => s.sources.contains(e.id) && e.name.trim() == name)) {
     return null;
   }
   return name;
@@ -98,16 +113,17 @@ Future<bool> saveSectionToLibrary(
   if (!anchor.mounted) return false;
   final cats = panelTagCats(lib);
   if (cats.isEmpty) return false;
+  final known = _knownEntries(ref, lib);
   final cat =
-      sectionSaveCategory(section, cats) ?? _fallbackCategory(ref, cats);
+      sectionSaveCategory(section, cats, known) ?? _fallbackCategory(ref, cats);
   // 调用方随后退出多选,这颗钮就没了:导航先拿在手里
   final nav = Navigator.of(anchor);
   if (sameLibraryEntry(lib.entries, cat, text.positive, text.negative)
       case final e?) {
     hintSnack(
       anchor,
-      '灵感库里已有「${e.name}」',
-      actionLabel: '编辑',
+      anchor.l10n.inspirationAlreadyHas(e.name),
+      actionLabel: anchor.l10n.edit,
       onAction: () =>
           nav.push(sharedAxisRoute(TagEditorPage(cat: e.category, edit: e))),
     );
@@ -122,7 +138,7 @@ Future<bool> saveSectionToLibrary(
         TagEditorPage(
           cat: cat,
           draft: (
-            name: customSectionName(section, cats) ?? code ?? '',
+            name: customSectionName(section, cats, known) ?? code ?? '',
             positive: text.positive,
             negative: text.negative,
             tags: const [],
@@ -135,6 +151,13 @@ Future<bool> saveSectionToLibrary(
   );
   return true;
 }
+
+/// 分区来源条目(按 id 认分类和默认名):本地库和公共库。
+List<TagEntry> _knownEntries(WidgetRef ref, TagLibraryState lib) => [
+  ...lib.entries,
+  ...?ref.read(publicTagsProvider(TagCategory.character)).value,
+  ...?ref.read(publicTagsProvider(TagCategory.artist)).value,
+];
 
 /// 画风编号要避开的名字:本地和公共库(公共库没拉到就只看本地,同新建页的「编号」)。
 Set<String> _artistNames(WidgetRef ref, TagLibraryState lib) => {
@@ -165,13 +188,14 @@ Future<({int saved, int skipped})> saveSectionsToLibrary(
   for (final s in sections) {
     final text = sectionSaveText(s, prompt);
     if (text.positive.isEmpty) continue;
-    final cat = sectionSaveCategory(s, cats) ?? fallback;
+    final known = _knownEntries(ref, lib);
+    final cat = sectionSaveCategory(s, cats, known) ?? fallback;
     if (sameLibraryEntry(lib.entries, cat, text.positive, text.negative) !=
         null) {
       skipped++;
       continue;
     }
-    String? name = customSectionName(s, cats);
+    String? name = customSectionName(s, cats, known);
     if (name == null && cat == TagCategory.artist) {
       name = suggestArtistCode(occupied);
     }

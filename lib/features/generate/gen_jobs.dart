@@ -10,7 +10,8 @@ import '../gallery/albums/album_models.dart';
 
 /// 任务类型。重绘与普通出图并行不冲突,但**重绘之间仍是一次一条** ——
 /// 回贴信息(裁切框/原图)是随会话共享的,两条同时跑会串。
-enum GenJobKind { normal, inpaint }
+/// [upscale] 是图库的 NAI 超分:预览是源图,只有阶段文案、没有逐步进度。
+enum GenJobKind { normal, inpaint, upscale }
 
 /// 任务所处阶段。分这么细是因为每一档对用户的含义都不同:
 /// 「池满等位」和「服务端排着」都显示成排队会让人以为是同一件事,
@@ -109,30 +110,34 @@ class GenJob {
 
   bool get isRunning => stage == GenJobStage.running;
 
+  /// [clearPaste]:预览已经是贴回后的整图,不再垫原图。
   GenJob copyWith({
     GenJobStage? stage,
+    int? width,
+    int? height,
     int? step,
     int? total,
     int? prepPct,
     Uint8List? preview,
     String? note,
     bool clearNote = false,
+    bool clearPaste = false,
     String? taskId,
   }) => GenJob(
     id: id,
     galleryTarget: galleryTarget,
     kind: kind,
     stage: stage ?? this.stage,
-    width: width,
-    height: height,
+    width: width ?? this.width,
+    height: height ?? this.height,
     seq: seq,
     step: step ?? this.step,
     total: total ?? this.total,
     prepPct: prepPct ?? this.prepPct,
     preview: preview ?? this.preview,
-    pasteUnder: pasteUnder,
-    pasteAt: pasteAt,
-    pasteSize: pasteSize,
+    pasteUnder: clearPaste ? null : pasteUnder,
+    pasteAt: clearPaste ? null : pasteAt,
+    pasteSize: clearPaste ? null : pasteSize,
     note: clearNote ? null : (note ?? this.note),
     taskId: taskId ?? this.taskId,
   );

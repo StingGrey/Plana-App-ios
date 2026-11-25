@@ -11,9 +11,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/features/assistant/assistant_mode.dart';
-import 'package:plana_app/features/assistant/direct_agent.dart'
-    show directSystemPrompt;
-import 'package:plana_app/features/assistant/preset_rules.dart';
+import 'package:plana_app/features/assistant/presets/default_rules.dart';
+import 'package:plana_app/features/assistant/presets/preset_rule.dart';
+import 'package:plana_app/features/assistant/presets/rules_file.dart';
+import 'package:plana_app/features/assistant/presets/rules_library.dart';
+import 'package:plana_app/features/assistant/runtime/prompt_assets.dart';
+import 'package:plana_app/features/assistant/runtime/prompt_composer.dart';
+import 'package:plana_app/l10n/l10n.dart';
 
 Directory _tempRoot() {
   final root = Directory.systemTemp.createTempSync('plana_rules');
@@ -166,6 +170,113 @@ sections:
       );
       expect(() => decodeRulesFile(text), throwsFormatException);
     });
+  });
+
+  group('酒馆预设', () {
+    test('按全局顺序取段,占位和空条目跳过,开关照带,注释宏删掉、别的宏留着', () {
+      final text = jsonEncode({
+        'temperature': 1,
+        'prompts': [
+          {
+            'identifier': 'main',
+            'name': 'Main Prompt',
+            'role': 'system',
+            'content': '主提示 {{char}}',
+          },
+          {'identifier': 'chatHistory', 'name': 'Chat History', 'marker': true},
+          {'identifier': 'nsfw', 'name': 'Auxiliary Prompt', 'content': '辅助'},
+          {
+            'identifier': 'jailbreak',
+            'name': 'Post-History Instructions',
+            'content': '',
+          },
+          {'identifier': 'abc', 'name': '自定义', 'content': '{{// 注释}}正文'},
+        ],
+        'prompt_order': [
+          {
+            'character_id': 100000,
+            'order': [
+              {'identifier': 'main', 'enabled': true},
+            ],
+          },
+          {
+            'character_id': 100001,
+            'order': [
+              {'identifier': 'abc', 'enabled': true},
+              {'identifier': 'main', 'enabled': true},
+              {'identifier': 'chatHistory', 'enabled': true},
+              {'identifier': 'nsfw', 'enabled': false},
+              {'identifier': 'jailbreak', 'enabled': true},
+            ],
+          },
+        ],
+      });
+      final f = decodeRulesFile(text, fileName: '破限预设.json');
+      expect(f.name, '破限预设');
+      expect(f.models, isEmpty, reason: '酒馆预设不分 NAI 模型,导入时让用户选');
+      expect(
+        [for (final r in f.rules) r.name],
+        ['自定义', 'Main Prompt', 'Auxiliary Prompt'],
+      );
+      expect([for (final r in f.rules) r.enabled], [true, true, false]);
+      expect(f.rules[0].content, '正文');
+      expect(f.rules[1].content, '主提示 {{char}}');
+    });
+
+    test('没有 prompt_order 就按 prompts 原顺序;一条能用的都没有报错', () {
+      final f = decodeRulesFile(
+        jsonEncode({
+          'prompts': [
+            {'identifier': 'b', 'name': 'B', 'content': 'b'},
+            {'identifier': 'a', 'content': 'a'},
+          ],
+        }),
+      );
+      expect([for (final r in f.rules) r.name], ['B', 'a']);
+      expect(
+        () => decodeRulesFile(
+          jsonEncode({
+            'prompts': [
+              {'identifier': 'chatHistory', 'marker': true},
+            ],
+          }),
+        ),
+        throwsFormatException,
+      );
+    });
+  });
+
+  test('副本名:原名加后缀,重名往后加数字', () {
+    final first = 'Nyako v5 ${l10nNow.copySuffix}';
+    expect(const RulesLibrary().copyNameOf('Nyako v5'), first);
+    final lib = RulesLibrary(
+      presets: [
+        RulesPreset(
+          id: 'r1',
+          name: first,
+          author: '',
+          models: {RulesFamily.nai5},
+          rules: const [],
+        ),
+      ],
+    );
+    expect(lib.copyNameOf('Nyako v5'), '$first 2');
+  });
+
+  test('一段都没有的预设也读得回来(新建的从空的开始)', () {
+    final lib = RulesLibrary(
+      presets: [
+        RulesPreset(
+          id: 'r1',
+          name: '空',
+          author: '',
+          models: {RulesFamily.nai5},
+          rules: const [],
+        ),
+      ],
+    );
+    final back = RulesLibrary.fromJson(jsonDecode(jsonEncode(lib.toJson())));
+    expect(back.presets.single.rules, isEmpty);
   });
 
   group('预设库', () {
@@ -416,12 +527,12 @@ sections:
       expect(() => decodeRulesFile(text), throwsFormatException);
     });
 
-    test('app 自带的工具层与出图格式都在,也不再提 bot', () async {
-      final tools = await appToolLayer();
+    test('app 自带的工具约定与出图格式都在,也不再提 bot', () async {
+      final tools = await toolLayerText();
       expect(tools, startsWith('<tool_usage>'));
       expect(tools, contains('tool_call'));
       expect(tools, isNot(contains('Bot 端')));
-      expect(await appOutputFormat(), contains('nai_draw'));
+      expect(await outputFormatText(), contains('nai_draw'));
     });
 
     test('默认规则里已经没有工具说明,不会和工具层发两份', () async {
@@ -431,29 +542,28 @@ sections:
       }
     });
 
-    test('自定义接口的系统提示:规则、出图格式、工具表依次排开', () {
-      final system = directSystemPrompt(
+    test('系统提示:规则(工具约定挂在 role 后面)、出图格式、工具清单、附加说明依次排开', () {
+      final system = composeSystemPrompt(
         rules: const [
           PresetRule(name: 'role', content: 'R'),
           PresetRule(name: 'comic_composition', content: 'C', when: 'comic'),
         ],
         modes: const [],
+        toolLayer: '<tool_usage>',
         outputFormat: '[输出格式]',
-        toolsBlock: '[可用工具]',
+        toolList: '[可用工具]',
+        notes: const ['', '[OC 占位符模式]'],
       );
-      expect(system, 'R\n\n[输出格式]\n\n[可用工具]');
+      expect(system, 'R\n\n<tool_usage>\n\n[输出格式]\n\n[可用工具]\n\n[OC 占位符模式]');
     });
 
-    test('自定义接口那条也带上用户选的模式', () {
-      final system = directSystemPrompt(
+    test('系统提示也按用户选的模式挑段', () {
+      final system = composeSystemPrompt(
         rules: const [
           PresetRule(name: 'role', content: 'R'),
           PresetRule(name: 'mode_natural', content: 'NL', when: 'mode:natural'),
         ],
-        modes: const [],
-        chosen: assistantModeKeys(AssistantMode.natural),
-        outputFormat: '',
-        toolsBlock: '',
+        modes: assistantModeKeys(AssistantMode.natural),
       );
       expect(system, 'R\n\nNL');
     });
@@ -466,16 +576,12 @@ sections:
       PresetRule(name: 'output_specification', content: 'O'),
     ];
 
-    test('判过了、不是漫画:漫画规则不发', () {
+    test('没选漫画:漫画规则不发 —— 不按聊天内容自动判', () {
       expect(renderRules(rules, const []), 'R\n\nO');
     });
 
-    test('判出是漫画:发', () {
+    test('选的模式带着 comic:发', () {
       expect(renderRules(rules, const ['comic']), 'R\n\nC\n\nO');
-    });
-
-    test('没判成(预匹配失败):全发 —— 多发一段比把漫画画成单图代价小', () {
-      expect(renderRules(rules, null), 'R\n\nC\n\nO');
     });
 
     const withModes = [
@@ -485,19 +591,13 @@ sections:
       PresetRule(name: 'mode_natural', content: 'NL', when: 'mode:natural'),
     ];
 
-    test('模式段只认用户选的:没判成要全发时也不带,判到漫画也不带', () {
-      // 模式段写的是用户现在选了什么:没选却发出去,模型会以为在做漫画
-      expect(renderRules(withModes, null), 'R\n\nC');
+    test('模式段只认选中的那个键:光有 comic 不带 mode:comic 那段', () {
       expect(renderRules(withModes, const ['comic']), 'R\n\nC');
     });
 
     test('选了漫画:漫画规则和模式段都在,不用等「四格」这类词判到', () {
       expect(
-        renderRules(
-          withModes,
-          const [],
-          chosen: assistantModeKeys(AssistantMode.comic),
-        ),
+        renderRules(withModes, assistantModeKeys(AssistantMode.comic)),
         'R\n\nC\n\nMC',
       );
     });
@@ -505,22 +605,14 @@ sections:
     test('模式选「无」什么都不发给模型', () {
       expect(assistantModeKeys(AssistantMode.normal), isEmpty);
       expect(
-        renderRules(
-          withModes,
-          const [],
-          chosen: assistantModeKeys(AssistantMode.normal),
-        ),
+        renderRules(withModes, assistantModeKeys(AssistantMode.normal)),
         'R',
       );
     });
 
     test('选了仅自然语言:只多它那段,漫画规则不跟着来', () {
       expect(
-        renderRules(
-          withModes,
-          const [],
-          chosen: assistantModeKeys(AssistantMode.natural),
-        ),
+        renderRules(withModes, assistantModeKeys(AssistantMode.natural)),
         'R\n\nNL',
       );
     });
@@ -539,19 +631,13 @@ sections:
           when: 'mode:natural',
         ),
       ];
-      expect(renderRules(swap, null), 'R\n\nMIX');
+      expect(renderRules(swap, const []), 'R\n\nMIX');
       expect(
-        renderRules(swap, const [
-          'comic',
-        ], chosen: assistantModeKeys(AssistantMode.comic)),
+        renderRules(swap, assistantModeKeys(AssistantMode.comic)),
         'R\n\nMIX',
       );
       expect(
-        renderRules(
-          swap,
-          const [],
-          chosen: assistantModeKeys(AssistantMode.natural),
-        ),
+        renderRules(swap, assistantModeKeys(AssistantMode.natural)),
         'R\n\nNAT',
       );
     });
@@ -559,6 +645,55 @@ sections:
     test('漫画、仅自然语言要预设里写了那一段才能选,「无」哪份预设都能选', () {
       expect(supportedModes(withModes), AssistantMode.values.toSet());
       expect(supportedModes(rules), {AssistantMode.normal});
+    });
+
+    test('停用的段不发、不算模式、不占上限,导出导回来还是停用', () {
+      final off = [
+        for (final r in withModes)
+          r.name == 'mode_comic' || r.name == 'role'
+              ? r.copyWith(enabled: false)
+              : r,
+      ];
+      expect(renderRules(off, assistantModeKeys(AssistantMode.comic)), 'C');
+      expect(supportedModes(off), {
+        AssistantMode.normal,
+        AssistantMode.natural,
+      });
+
+      final big = [
+        const PresetRule(name: 'a', content: 'x'),
+        PresetRule(name: 'b', content: 'y' * kRulesMaxChars, enabled: false),
+      ];
+      expect(rulesLimitError(big), isNull);
+      expect(
+        rulesLimitError([big[0], big[1].copyWith(enabled: true)]),
+        isNotNull,
+      );
+
+      final back = decodeRulesFile(
+        encodeRulesFile(
+          name: 'n',
+          author: '',
+          models: {RulesFamily.nai5},
+          rules: off,
+        ),
+      );
+      expect(
+        [for (final r in back.rules) r.enabled],
+        [for (final r in off) r.enabled],
+      );
+      expect(PresetRule.fromJson(off.first.toJson())!.enabled, isFalse);
+      expect(withModes.first.toJson().containsKey('enabled'), isFalse);
+    });
+
+    test('条件段小标签:常驻没有,comic 与 mode:comic 同名,! 开头是不发', () {
+      expect(whenTag(''), isNull);
+      expect(whenTag('comic'), whenTag('mode:comic'));
+      expect(whenTag('!mode:natural'), isNot(whenTag('mode:natural')));
+      expect(whenTag('!mode:natural'), contains(whenTag('mode:natural')!));
+      expect(whenTag('mode:custom'), contains('mode:custom'));
+      expect(ruleSectionLabel('role'), isNot('role'));
+      expect(ruleSectionLabel('我的段'), '我的段');
     });
   });
 
@@ -578,8 +713,7 @@ sections:
     final plain = renderRules(rules, const []);
     final natural = renderRules(
       rules,
-      const [],
-      chosen: assistantModeKeys(AssistantMode.natural),
+      assistantModeKeys(AssistantMode.natural),
     );
     expect(plain, contains('tag + 短句 + 自然语言混排'));
     expect(plain, isNot(contains('提示词构建：纯自然语言')));

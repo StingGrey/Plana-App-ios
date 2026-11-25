@@ -3,11 +3,15 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_symbols_icons/symbols.dart';
+import 'package:url_launcher/url_launcher.dart';
 
+import '../../core/auth/auth_mode.dart';
 import '../../core/auth/bot_session_store.dart';
 import '../../core/auth/nai_credential_login.dart';
 import '../../core/auth/token_store.dart';
 import '../../core/net/backend_config.dart';
+import '../../core/net/bot_socket.dart';
+import '../../core/net/nai_status.dart';
 import '../../core/platform/platform_support.dart';
 import '../../core/store/app_stores.dart';
 import '../../core/store/prefs_store.dart';
@@ -20,7 +24,9 @@ import '../gallery/gallery_state.dart';
 import '../gallery/albums/album_models.dart';
 import '../gallery/albums/album_state.dart';
 import '../generate/generate_page.dart';
+import '../generate/generate_state.dart';
 import '../generate/generation_controller.dart';
+import '../generate/models.dart' as m;
 import '../generate/widgets/common.dart' show hintSnack;
 import '../inspiration/inspiration_page.dart';
 import '../inpaint/inpaint_overlay.dart' show inpaintSessionProvider;
@@ -29,6 +35,7 @@ import '../update/update_service.dart';
 import '../update/update_sheet.dart' show showUpdateSheet;
 import 'float_theme_intro.dart';
 import 'shell_state.dart';
+import '../../l10n/l10n.dart';
 
 /// 全局骨架:5 tab 底部导航 + PageView 切页。
 ///
@@ -88,7 +95,109 @@ class _AppShellState extends ConsumerState<AppShell> {
     ref.read(backendBaseProvider);
     // 账号密码登录的 JWT 临期静默换新(非该来源的令牌自动跳过)。
     ref.read(naiTokenAutoRefreshProvider);
+    unawaited(_syncBotSocket());
+    ref.listenManual(authModeProvider, (_, _) => _syncBotSocket());
+    ref.listenManual(botSessionProvider, (_, _) => _syncBotSocket());
+    ref.listenManual(backendBaseProvider, (_, _) => _syncBotSocket());
+    final naiStatus = ref.read(naiStatusProvider.notifier)
+      ..setForeground(true);
+    _life = AppLifecycleListener(
+      onResume: () {
+        BotSocket.instance.setForeground(true);
+        unawaited(_syncBotSocket());
+      },
+      onShow: () => naiStatus.setForeground(true),
+      onHide: () {
+        BotSocket.instance.setForeground(false);
+        naiStatus.setForeground(false);
+      },
+    );
     _schedulePrompts();
+  }
+
+  /// 出图失败提示正在等状态刷新,这期间不弹新事故提示。
+  bool _genErrorPending = false;
+
+  bool get _naiModel =>
+      !m.isModalModel(ref.read(generateProvider).params.model);
+
+  /// 新出现的图像生成异常弹一次顶部提示;当前是 Anima / Krea 时不弹。
+  void _remindNaiStatus() {
+    if (!mounted || _genErrorPending || !_naiModel) return;
+    final status = ref.read(naiStatusProvider.notifier);
+    final alert = status.unseenAlert();
+    if (alert == null) return;
+    status.markSeen(alert);
+    final line = naiStatusLine(context.l10n, alert);
+    hintSnack(
+      context,
+      alert.title == null ? line : '$line\n${alert.title}',
+      icon: Icons.warning_amber_rounded,
+      actionLabel: context.l10n.naiStatusDetails,
+      onAction: () => _openUrl(alert.url),
+    );
+  }
+
+  /// 出图失败提示;NovelAI 图像生成异常时附上状态和详情入口。
+  Future<void> _showGenError(String err) async {
+    final status = ref.read(naiStatusProvider.notifier);
+    final nai = _naiModel;
+    if (nai) {
+      _genErrorPending = true;
+      try {
+        await status
+            .refresh(maxAge: const Duration(minutes: 1))
+            .timeout(const Duration(seconds: 3));
+      } catch (_) {
+      } finally {
+        _genErrorPending = false;
+      }
+    }
+    if (!mounted) return;
+    final alert = nai ? naiStatusAlert(ref.read(naiStatusProvider)) : null;
+    if (alert == null) {
+      hintSnack(context, err, icon: Icons.error_outline);
+      return;
+    }
+    status.markSeen(alert);
+    hintSnack(
+      context,
+      '$err\n${naiStatusLine(context.l10n, alert)}',
+      icon: Icons.error_outline,
+      actionLabel: context.l10n.naiStatusDetails,
+      onAction: () => _openUrl(alert.url),
+    );
+  }
+
+  Future<void> _openUrl(String url) async {
+    final ok = await launchUrl(
+      Uri.parse(url),
+      mode: LaunchMode.externalApplication,
+    );
+    if (!ok && mounted) {
+      hintSnack(
+        context,
+        context.l10n.cantOpenBrowserShort,
+        icon: Icons.link_off,
+      );
+    }
+  }
+
+  late final AppLifecycleListener _life;
+
+  /// bot 模式下 `/ws/bot` 前台常驻;不是 bot 模式或没会话就停掉。
+  Future<void> _syncBotSocket() async {
+    try {
+      final mode = await ref.read(authModeProvider.future);
+      final session = await ref.read(botSessionProvider.future);
+      final base = await ref.read(backendBaseProvider.future);
+      if (!mounted) return;
+      if (mode == AuthMode.bot && session != null && base.isNotEmpty) {
+        BotSocket.instance.warm(base, session.sessionId, resident: true);
+      } else {
+        BotSocket.instance.stop();
+      }
+    } catch (_) {}
   }
 
   /// 冷启动的两个弹窗:浮卡介绍(只弹一次)、静默查更新(24h 节流),
@@ -130,6 +239,7 @@ class _AppShellState extends ConsumerState<AppShell> {
   @override
   void dispose() {
     _promptTimer?.cancel();
+    _life.dispose();
     _pc.dispose();
     super.dispose();
   }
@@ -150,8 +260,11 @@ class _AppShellState extends ConsumerState<AppShell> {
     // 索引变化(导航点按 / 生成后跳图库)→ 滑到对应页。
     ref.listen<int>(shellIndexProvider, (prev, next) {
       if (!_pc.hasClients) return;
-      final current = _pc.page?.round() ?? _pc.initialPage;
-      if (current != next) {
+      // 比精确页码,不比 round 过的:切页动画途中改点别的格,若途经页 round 出来
+      // 恰好是新目标,会被当成「已经到了」,页面却继续滑向原目标、底栏对不上。
+      // 停稳时 page 就是整数(PagePosition 会把浮点误差吸附掉)。
+      final current = _pc.page ?? _pc.initialPage.toDouble();
+      if (current != next.toDouble()) {
         // 切页先收焦点。PageView 是保活的,离开时焦点还留在原页的输入框上
         // (灵感页搜索框最容易中招),之后**在任何一页**切页都会把软键盘重新
         // 顶出来一下。放在动画开始前,不是切完再收 —— 否则过渡里照样闪一下。
@@ -171,17 +284,19 @@ class _AppShellState extends ConsumerState<AppShell> {
       if (next.noToken) {
         hintSnack(
           context,
-          '请先在「我的」页设置 NovelAI API Token',
+          context.l10n.setTokenFirst,
           icon: Icons.key_off_outlined,
-          actionLabel: '去设置',
+          actionLabel: context.l10n.goToSettings,
           onAction: () =>
               ref.read(shellIndexProvider.notifier).select(kTabProfile),
         );
       } else {
-        hintSnack(context, err, icon: Icons.error_outline);
+        unawaited(_showGenError(err));
       }
       ref.read(generationProvider.notifier).clearError();
     });
+
+    ref.listen(naiStatusProvider, (_, _) => _remindNaiStatus());
 
     // 生成侧非致命提醒(LoRA 超上限被丢弃等):图照常出,但得说一声,
     // 否则用户对着一个根本没生效的 LoRA 查半天。
@@ -197,20 +312,20 @@ class _AppShellState extends ConsumerState<AppShell> {
       final name = ref.read(albumsProvider).name(next.target.albumId);
       hintSnack(
         context,
-        '新图片已保存到「$name」',
+        context.l10n.savedToAlbum(name),
         icon: Icons.photo_library_outlined,
-        actionLabel: '查看',
+        actionLabel: context.l10n.view,
         onAction: () {
           if (!mounted) return;
           if (ref.read(inpaintSessionProvider) != null) {
-            hintSnack(context, '结束编辑后可查看新图片');
+            hintSnack(context, context.l10n.viewAfterEditing);
             return;
           }
           if (!ref
               .read(galleryProvider)
               .results
               .any((r) => r.id == next.imageId)) {
-            hintSnack(context, '这张图片已被删除');
+            hintSnack(context, context.l10n.imageDeleted);
             return;
           }
           final target = ref.read(albumsProvider).exists(next.target.albumId)
@@ -248,7 +363,7 @@ class _AppShellState extends ConsumerState<AppShell> {
                 groupAlignment: -.75,
                 onDestinationSelected: (i) =>
                     ref.read(shellIndexProvider.notifier).select(i),
-                destinations: const [
+                destinations: [
                   NavigationRailDestination(
                     icon: _NavIcon(Icons.draw_outlined, Symbols.draw_rounded),
                     selectedIcon: _NavIcon(
@@ -256,7 +371,7 @@ class _AppShellState extends ConsumerState<AppShell> {
                       Symbols.draw_rounded,
                       selected: true,
                     ),
-                    label: Text('创作'),
+                    label: Text(context.l10n.tabCreate),
                   ),
                   NavigationRailDestination(
                     icon: _NavIcon(
@@ -268,7 +383,7 @@ class _AppShellState extends ConsumerState<AppShell> {
                       Symbols.photo_library_rounded,
                       selected: true,
                     ),
-                    label: Text('图库'),
+                    label: Text(context.l10n.gallery),
                   ),
                   NavigationRailDestination(
                     icon: _NavIcon(
@@ -292,7 +407,7 @@ class _AppShellState extends ConsumerState<AppShell> {
                       Symbols.lightbulb_rounded,
                       selected: true,
                     ),
-                    label: Text('灵感'),
+                    label: Text(context.l10n.tabInspiration),
                   ),
                   NavigationRailDestination(
                     icon: CloudSyncTabIcon(
@@ -308,7 +423,7 @@ class _AppShellState extends ConsumerState<AppShell> {
                         selected: true,
                       ),
                     ),
-                    label: Text('我的'),
+                    label: Text(context.l10n.tabProfile),
                   ),
                 ],
               ),
@@ -338,29 +453,29 @@ class _AppShellState extends ConsumerState<AppShell> {
           // 仅横滑仍锁(防抢涂抹手势)。
           onDestinationSelected: (i) =>
               ref.read(shellIndexProvider.notifier).select(i),
-          destinations: const [
+          destinations: [
             NavigationDestination(
-              icon: _NavIcon(Icons.draw_outlined, Symbols.draw_rounded),
-              selectedIcon: _NavIcon(
+              icon: const _NavIcon(Icons.draw_outlined, Symbols.draw_rounded),
+              selectedIcon: const _NavIcon(
                 Icons.draw,
                 Symbols.draw_rounded,
                 selected: true,
               ),
-              label: '创作',
+              label: context.l10n.tabCreate,
             ),
             NavigationDestination(
-              icon: _NavIcon(
+              icon: const _NavIcon(
                 Icons.photo_library_outlined,
                 Symbols.photo_library_rounded,
               ),
-              selectedIcon: _NavIcon(
+              selectedIcon: const _NavIcon(
                 Icons.photo_library,
                 Symbols.photo_library_rounded,
                 selected: true,
               ),
-              label: '图库',
+              label: context.l10n.gallery,
             ),
-            NavigationDestination(
+            const NavigationDestination(
               icon: _NavIcon(
                 Icons.auto_awesome_outlined,
                 Symbols.auto_awesome_rounded,
@@ -373,29 +488,29 @@ class _AppShellState extends ConsumerState<AppShell> {
               label: 'AI',
             ),
             NavigationDestination(
-              icon: _NavIcon(
+              icon: const _NavIcon(
                 Icons.lightbulb_outline,
                 Symbols.lightbulb_rounded,
               ),
-              selectedIcon: _NavIcon(
+              selectedIcon: const _NavIcon(
                 Icons.lightbulb,
                 Symbols.lightbulb_rounded,
                 selected: true,
               ),
-              label: '灵感',
+              label: context.l10n.tabInspiration,
             ),
             NavigationDestination(
-              icon: CloudSyncTabIcon(
+              icon: const CloudSyncTabIcon(
                 child: _NavIcon(Icons.person_outline, Symbols.person_rounded),
               ),
-              selectedIcon: CloudSyncTabIcon(
+              selectedIcon: const CloudSyncTabIcon(
                 child: _NavIcon(
                   Icons.person,
                   Symbols.person_rounded,
                   selected: true,
                 ),
               ),
-              label: '我的',
+              label: context.l10n.tabProfile,
             ),
           ],
         ),

@@ -3,9 +3,7 @@
 /// **存在加密存储里**,因为条目带 API Key —— 与 NAI 令牌同一条规矩
 /// (见 `secure_storage.dart`:读写点一律走共享的那份配置,别自建)。
 ///
-/// 直连那条用的是**规则主体**(与服务端那条同一份,见 `preset_rules.dart`),只是不套
-/// 服务端的外壳;查角色、画风这些**工具仍然走后端**(`/api/agent/tools/call`),
-/// 与 tag 补全同一个路子。没有的是降级阶梯、拒绝重掷、tag 哨兵 —— 跑失败就是失败。
+/// 选了它,整轮在本机跑(见 `runtime/direct_runtime.dart`),报文格式见 `llm/`。
 library;
 
 import 'dart:convert';
@@ -17,20 +15,11 @@ import '../../core/auth/secure_storage.dart';
 
 const _key = 'assistant_endpoints';
 
-/// 接口的报文格式。各家的鉴权头、请求体、模型列表路径都不一样。
-///
-/// 落盘存 `name`,插档不串位。
+/// 接口的报文格式。三家的鉴权头、请求体、模型列表路径都不一样。
 enum AgentApiFormat {
   /// OpenAI 兼容(`/chat/completions`,`Authorization: Bearer`)。
   /// 绝大多数第三方中转、本地推理都是这个。
   openai,
-
-  /// OpenAI Responses(`/responses`,鉴权同上)。
-  ///
-  /// OpenAI 官方的推理模型(o 系、GPT-5)**只在这条接口上回思考摘要** ——
-  /// `/chat/completions` 上它们想归想,一个字都不给你看。界面上挂在 OpenAI 那段下面
-  /// 当一个开关,不单占一段:对用户来说它还是「OpenAI」。
-  responses,
 
   /// Google Gemini(`/models/{model}:generateContent`,`x-goog-api-key`)。
   google,
@@ -41,18 +30,15 @@ enum AgentApiFormat {
 
 /// 分段选择器上那三个字。用大家叫得出口的名字(Gemini / Claude),
 /// 不用公司名 —— 三段并排放不下「Google Gemini」这种长度。
-/// [AgentApiFormat.responses] 不上分段(见那边),这个名字只出现在列表副行。
 String agentApiFormatLabel(AgentApiFormat f) => switch (f) {
   AgentApiFormat.openai => 'OpenAI',
-  AgentApiFormat.responses => 'OpenAI Responses',
   AgentApiFormat.google => 'Gemini',
   AgentApiFormat.anthropic => 'Claude',
 };
 
 /// 各家默认基址。用户留空时用它,省得为官方地址还要查一遍文档。
 String agentApiDefaultBase(AgentApiFormat f) => switch (f) {
-  AgentApiFormat.openai ||
-  AgentApiFormat.responses => 'https://api.openai.com/v1',
+  AgentApiFormat.openai => 'https://api.openai.com/v1',
   AgentApiFormat.google => 'https://generativelanguage.googleapis.com/v1beta',
   AgentApiFormat.anthropic => 'https://api.anthropic.com/v1',
 };
@@ -62,10 +48,91 @@ String agentApiDefaultBase(AgentApiFormat f) => switch (f) {
 /// Gemini 那条**把模型名写在路径里**,所以用 `{model}` 占位,发请求时替换。
 String agentApiDefaultPath(AgentApiFormat f) => switch (f) {
   AgentApiFormat.openai => '/chat/completions',
-  AgentApiFormat.responses => '/responses',
   AgentApiFormat.google => '/models/{model}:generateContent',
   AgentApiFormat.anthropic => '/messages',
 };
+
+/// 添加接口时可以直接选的服务:格式和地址都带好。不在表里的走「自定义」自己填。
+class EndpointPreset {
+  const EndpointPreset(this.label, this.format, this.base, this.keyUrl);
+
+  final String label;
+  final AgentApiFormat format;
+  final String base;
+
+  /// 创建 API Key 的页面。
+  final String keyUrl;
+
+  /// 这个格式的官方服务;选择页分在「官方」一组。
+  bool get official => base == agentApiDefaultBase(format);
+}
+
+const kEndpointPresets = [
+  EndpointPreset(
+    'OpenAI',
+    AgentApiFormat.openai,
+    'https://api.openai.com/v1',
+    'https://platform.openai.com/api-keys',
+  ),
+  EndpointPreset(
+    'Gemini',
+    AgentApiFormat.google,
+    'https://generativelanguage.googleapis.com/v1beta',
+    'https://aistudio.google.com/apikey',
+  ),
+  EndpointPreset(
+    'Claude',
+    AgentApiFormat.anthropic,
+    'https://api.anthropic.com/v1',
+    'https://console.anthropic.com/settings/keys',
+  ),
+  EndpointPreset(
+    'DeepSeek',
+    AgentApiFormat.openai,
+    'https://api.deepseek.com/v1',
+    'https://platform.deepseek.com/api_keys',
+  ),
+  EndpointPreset(
+    'OpenRouter',
+    AgentApiFormat.openai,
+    'https://openrouter.ai/api/v1',
+    'https://openrouter.ai/keys',
+  ),
+];
+
+/// 按格式 + 地址认出是哪一家;认不出(中转、自建)返回 null。地址留空的按该格式的官方地址算。
+EndpointPreset? endpointPresetOf(AgentApiFormat format, String baseUrl) {
+  String norm(String u) =>
+      u.trim().toLowerCase().replaceAll(RegExp(r'/+$'), '');
+  final b = norm(baseUrl.isEmpty ? agentApiDefaultBase(format) : baseUrl);
+  for (final p in kEndpointPresets) {
+    if (p.format == format && norm(p.base) == b) return p;
+  }
+  return null;
+}
+
+/// 填进来的地址 → 基址:去掉末尾斜杠,连对话路径一起贴进来的把路径切掉
+/// (`…/v1/chat/completions` → `…/v1`),不然发请求时路径会拼两遍。
+String normalizeEndpointBase(String raw, AgentApiFormat format) {
+  var b = raw.trim().replaceAll(RegExp(r'/+$'), '');
+  final tail = switch (format) {
+    AgentApiFormat.openai => RegExp(
+      r'/chat/completions$',
+      caseSensitive: false,
+    ),
+    AgentApiFormat.anthropic => RegExp(r'/messages$', caseSensitive: false),
+    AgentApiFormat.google => RegExp(
+      r'/models/[^/]+:(?:stream)?generateContent.*$',
+      caseSensitive: false,
+    ),
+  };
+  b = b.replaceFirst(tail, '');
+  // OpenAI 那条还可能是 Responses 的地址
+  if (format == AgentApiFormat.openai) {
+    b = b.replaceFirst(RegExp(r'/responses$', caseSensitive: false), '');
+  }
+  return b.replaceAll(RegExp(r'/+$'), '');
+}
 
 class CustomEndpoint {
   const CustomEndpoint({
@@ -74,15 +141,17 @@ class CustomEndpoint {
     required this.format,
     required this.baseUrl,
     required this.apiKey,
-    this._models = const [],
-    String model = '',
+    required this.model,
+    this.models = const [],
+    this.imageModels = const [],
     this.apiPath = '',
     this.headers = const {},
-  }) : _picked = model;
+    this.responses = false,
+  });
 
   final String id;
 
-  /// 界面上显示的名字。空的话拿模型名顶上。
+  /// 界面上显示的名字。空的话按地址认出的服务名或主机名。
   final String name;
 
   final AgentApiFormat format;
@@ -92,29 +161,41 @@ class CustomEndpoint {
 
   final String apiKey;
 
-  final List<String> _models;
+  /// 这一次请求用的模型 id,如 `gpt-5.6-luna` / `gemini-3.7-flash` / `claude-sonnet-4-6`。
+  /// 读存档时是 [models] 的第一个,选了别的用 [forModel] 换。
+  final String model;
 
-  /// 这一轮选中的模型(见 [model])。不落盘:选的是哪条存在模型偏好里,
-  /// 发请求前由 `assistantEndpointProvider` 带进来。
-  final String _picked;
+  /// 这个接口下存的全部模型。
+  final List<String> models;
 
-  /// 这个接口上挂的全部模型 id,如 `gpt-5.6-luna` / `gemini-3.7-flash` / `claude-sonnet-5-5`。
-  ///
-  /// 同一个地址 + 同一把 Key 底下往往有一串模型可用(中转尤其如此),
-  /// 一个模型配一遍接口等于把 Key 抄 N 遍,改 Key 还得改 N 处。
-  /// 只给了 [model] 没给列表时,列表就是那一条。
-  List<String> get models =>
-      _models.isNotEmpty || _picked.isEmpty ? _models : [_picked];
+  /// 出图模型(「生成图片」用),和对话模型分开存。Claude 格式不出图,恒为空。
+  final List<String> imageModels;
 
-  /// 这一轮要打的模型:选过的那条,没选过就是列表第一条。
-  String get model =>
-      _picked.isNotEmpty ? _picked : (_models.isEmpty ? '' : _models.first);
+  /// 这个接口能不能出图:格式支持、填了 Key、有出图模型。
+  bool get canDraw =>
+      format != AgentApiFormat.anthropic &&
+      apiKey.trim().isNotEmpty &&
+      imageModels.isNotEmpty;
+
+  /// [models] 为空时(只给了 [model] 的)按 [model] 一个算。
+  List<String> get allModels =>
+      models.isNotEmpty ? models : [if (model.isNotEmpty) model];
+
+  /// 换成用 [m] 发请求。
+  CustomEndpoint forModel(String m) => copyWith(model: m);
 
   /// 对话接口路径。空 = 用 [agentApiDefaultPath]。`{model}` 会被替换成模型名。
   final String apiPath;
 
   /// 自定义请求头,对话和拉模型列表都带。
   final Map<String, String> headers;
+
+  /// OpenAI 格式走 Responses 报文(`/responses`)而不是 `/chat/completions`。
+  /// 别的格式恒为 false。
+  ///
+  /// OpenAI 官方的推理模型(o 系、GPT-5)**只在这条接口上回思考摘要**。界面上挂在
+  /// OpenAI 那段下面当一个开关,不单占一段:对用户来说它还是「OpenAI」。
+  final bool responses;
 
   /// [builtIn] 叠上 [headers]。头名不分大小写,同名的以 [headers] 为准。
   Map<String, String> withHeaders(Map<String, String> builtIn) {
@@ -127,14 +208,14 @@ class CustomEndpoint {
     };
   }
 
-  String get displayName => name.trim().isNotEmpty ? name.trim() : model;
+  String get displayName =>
+      name.trim().isNotEmpty ? name.trim() : providerLabel;
 
-  /// 选中这一条时顶栏显示什么。只挂一个模型时就是接口名;挂了一串时得显示
-  /// 模型名 —— 不然切了模型顶栏纹丝不动,看不出这轮到底在用哪个。
-  String get pickLabel => models.length > 1 ? model : displayName;
-
-  /// 换一个模型发。不在列表里也照用(调用方负责只传列表里的)。
-  CustomEndpoint withModel(String m) => copyWith(model: m);
+  /// 地址认得出是哪家就写那家,认不出写主机名。
+  String get providerLabel =>
+      endpointPresetOf(format, baseUrl)?.label ??
+      Uri.tryParse(effectiveBase)?.host ??
+      effectiveBase;
 
   String get effectiveBase {
     final b = baseUrl.trim();
@@ -146,29 +227,15 @@ class CustomEndpoint {
 
   /// 拼在 [effectiveBase] 后面的那一段。开头补斜杠,`{model}` 就地替换。
   String get effectivePath {
-    final raw = apiPath.trim().isEmpty
-        ? agentApiDefaultPath(format)
-        : apiPath.trim();
+    final raw = apiPath.trim().isNotEmpty
+        ? apiPath.trim()
+        : (responses ? '/responses' : agentApiDefaultPath(format));
     final withSlash = raw.startsWith('/') ? raw : '/$raw';
     return withSlash.replaceAll('{model}', model.trim());
   }
 
-  /// 完整的对话接口地址。
+  /// 完整的对话接口地址(非流式)。流式地址各家不同,见 `llm/` 下的实现。
   Uri get chatUri => Uri.parse('$effectiveBase$effectivePath');
-
-  /// 流式的对话接口地址。OpenAI / Claude 与 [chatUri] 同一个地址(开不开流由请求体
-  /// 里的 `stream` 说了算),Gemini 得换方法名、还得带 `alt=sse` —— 不带 alt 回的是
-  /// 一个巨大的 JSON 数组、要收完才能解析,等于没开流。
-  ///
-  /// 路径是用户可改的,所以只在认得出 `:generateContent` 时替换;中转把路径改成
-  /// 别的样子时原样用它,顶多是流不起来,按非流式回落(见 `directModelStream`)。
-  Uri get chatStreamUri {
-    if (format != AgentApiFormat.google) return chatUri;
-    final u = Uri.parse(
-      '$effectiveBase${effectivePath.replaceFirst(':generateContent', ':streamGenerateContent')}',
-    );
-    return u.replace(queryParameters: {...u.queryParameters, 'alt': 'sse'});
-  }
 
   /// 填全了才能用。缺一样就发不出去,列表里置灰。
   bool get usable => apiKey.trim().isNotEmpty && model.trim().isNotEmpty;
@@ -178,20 +245,24 @@ class CustomEndpoint {
     AgentApiFormat? format,
     String? baseUrl,
     String? apiKey,
-    List<String>? models,
     String? model,
+    List<String>? models,
+    List<String>? imageModels,
     String? apiPath,
     Map<String, String>? headers,
+    bool? responses,
   }) => CustomEndpoint(
     id: id,
     name: name ?? this.name,
     format: format ?? this.format,
     baseUrl: baseUrl ?? this.baseUrl,
     apiKey: apiKey ?? this.apiKey,
-    models: models ?? _models,
-    model: model ?? _picked,
+    model: model ?? this.model,
+    models: models ?? this.models,
+    imageModels: imageModels ?? this.imageModels,
     apiPath: apiPath ?? this.apiPath,
     headers: headers ?? this.headers,
+    responses: responses ?? this.responses,
   );
 
   Map<String, dynamic> toJson() => {
@@ -200,31 +271,43 @@ class CustomEndpoint {
     'format': format.name,
     'baseUrl': baseUrl,
     'apiKey': apiKey,
-    'models': models,
-    // 老版本只认 `model` 这一个字段:装回老版本时至少第一个模型还在
-    'model': models.isEmpty ? '' : models.first,
+    'model': allModels.firstOrNull ?? '',
+    'models': allModels,
+    if (imageModels.isNotEmpty) 'imageModels': imageModels,
     if (apiPath.isNotEmpty) 'apiPath': apiPath,
     if (headers.isNotEmpty) 'headers': headers,
+    if (responses && format == AgentApiFormat.openai) 'responses': true,
   };
 
   static CustomEndpoint? fromJson(Object? e) {
     if (e is! Map) return null;
     final id = e['id']?.toString() ?? '';
     if (id.isEmpty) return null;
-    final list = e['models'];
-    final single = e['model']?.toString().trim() ?? '';
+    final single = e['model']?.toString() ?? '';
+    final models = switch (e['models']) {
+      final List l => [
+        for (final m in l)
+          if ('$m'.trim().isNotEmpty) '$m'.trim(),
+      ],
+      _ => [if (single.isNotEmpty) single],
+    };
+    // iOS 版早先把 Responses 存成单独一种格式
+    final legacyResponses = e['format'] == 'responses';
+    final format =
+        AgentApiFormat.values.asNameMap()[e['format']] ?? AgentApiFormat.openai;
     return CustomEndpoint(
       id: id,
       name: e['name']?.toString() ?? '',
-      format:
-          AgentApiFormat.values.asNameMap()[e['format']] ??
-          AgentApiFormat.openai,
+      format: format,
       baseUrl: e['baseUrl']?.toString() ?? '',
       apiKey: e['apiKey']?.toString() ?? '',
-      // 老存档只有 `model` 一个字段
-      models: list is List
-          ? cleanModelList([for (final m in list) '$m'])
-          : [if (single.isNotEmpty) single],
+      model: models.firstOrNull ?? '',
+      models: models,
+      imageModels: [
+        if (e['imageModels'] case final List l)
+          for (final m in l)
+            if ('$m'.trim().isNotEmpty) '$m'.trim(),
+      ],
       apiPath: e['apiPath']?.toString() ?? '',
       headers: switch (e['headers']) {
         final Map h => {
@@ -233,18 +316,11 @@ class CustomEndpoint {
         },
         _ => const {},
       },
+      responses:
+          format == AgentApiFormat.openai &&
+          (legacyResponses || e['responses'] == true),
     );
   }
-}
-
-/// 模型 id 列表去空白、去空、去重,保持原顺序(第一个是默认那条)。
-List<String> cleanModelList(Iterable<String> raw) {
-  final out = <String>[];
-  for (final m in raw) {
-    final t = m.trim();
-    if (t.isNotEmpty && !out.contains(t)) out.add(t);
-  }
-  return out;
 }
 
 final _headerName = RegExp(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$");
@@ -332,6 +408,15 @@ class CustomEndpointsNotifier extends AsyncNotifier<List<CustomEndpoint>> {
       for (final e in state.value ?? const <CustomEndpoint>[])
         if (e.id != id) e,
     ];
+    await _save(list);
+  }
+
+  /// [to] 按 `onReorderItem` 语义,已经是移除 [from] 之后的位置。
+  Future<void> reorder(int from, int to) async {
+    final list = [...state.value ?? const <CustomEndpoint>[]];
+    if (from == to || from < 0 || from >= list.length) return;
+    if (to < 0 || to >= list.length) return;
+    list.insert(to, list.removeAt(from));
     await _save(list);
   }
 }

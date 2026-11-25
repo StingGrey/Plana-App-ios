@@ -13,6 +13,7 @@ import 'nai_request.dart'
         naiModelId,
         naiSamplerId,
         naiSupportsTransparency,
+        normalizeCharRefPayloads,
         normalizeVibeStrengths;
 import 'prompt_presets.dart'
     show builtinPresetHasPositive, promptPresetTagHints, ucPresetValue;
@@ -38,13 +39,15 @@ Map<String, dynamic> buildBotParams(
   /// 见 [buildNaiPayload]:透明图的 alpha 编码约定。
   bool straightAlpha = true,
   Img2ImgRef? img2img,
+
+  /// [img2img] 是原图,由后端 cover 放大到出图尺寸(后端 caps 的 img2img_fit)。
+  bool img2imgFit = false,
   List<CharRefPayload> charRefs = const [],
   List<BotVibe> vibes = const [],
   List<KreaStyleRefPayload> kreaStyleRefs = const [],
 }) {
   final p = s.params;
   final model = naiModelId(p.model);
-  final is45 = crSupportsModel(p.model);
   final isV5 = model.startsWith('nai-diffusion-5');
 
   final chars = s.characters
@@ -131,10 +134,16 @@ Map<String, dynamic> buildBotParams(
     'useCoords': s.params.useCoords,
   };
 
-  // 角色参考(CR / Precise Reference):仅 4.5;后端算 secondary = 1 - informationExtracted
-  if (charRefs.isNotEmpty && is45) {
+  // 角色参考(CR / Precise Reference):4.5 与 V5 Full / Curated 下发(V5 重绘不发);
+  // 后端算 secondary = 1 - informationExtracted(V5 下 fidelity 恒 1.0 → secondary=0)。
+  final activeCharRefs = normalizeCharRefPayloads(
+    charRefs,
+    p.model,
+    inpaint: s.inpaint != null,
+  );
+  if (activeCharRefs.isNotEmpty) {
     params['preciseReferences'] = [
-      for (final c in charRefs)
+      for (final c in activeCharRefs)
         {
           'imageBase64': c.image,
           'mode': c.mode,
@@ -163,6 +172,7 @@ Map<String, dynamic> buildBotParams(
     // 图生图
     params['img2img'] = {
       'imageBase64': img2img.image,
+      if (img2imgFit) 'fit': 'cover',
       'strength': img2img.strength,
       'noise': img2img.noise,
     };

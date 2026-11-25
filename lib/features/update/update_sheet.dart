@@ -2,12 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../../core/app_info.dart';
 import '../../core/theme/app_theme.dart';
 import '../generate/widgets/common.dart' show hintSnack;
 import '../profile/widgets/settings_ui.dart';
 import 'release_notes.dart';
 import 'update_service.dart';
+import '../../l10n/l10n.dart';
 
 /// 「检查更新」行。放在关于页,按设置行规范:单行 + 右侧状态,不写副标题。
 class UpdateRow extends ConsumerStatefulWidget {
@@ -38,11 +38,15 @@ class _UpdateRowState extends ConsumerState<UpdateRow> {
       setState(() => _result = check);
       if (check.hasUpdate) {
         await showUpdateSheet(context, check);
-      } else if (kGithubRepo.isEmpty || !installed.isKnown) {
-        // 没填仓库 / 拿不到本机版本 —— 不是错误,别报红
-        hintSnack(context, '暂无更新信息', icon: Icons.info_outline);
+      } else if (!installed.isKnown) {
+        // 拿不到本机版本 —— 不是错误,别报红
+        hintSnack(context, context.l10n.noUpdateInfo, icon: Icons.info_outline);
       } else {
-        hintSnack(context, '已是最新版本', icon: Icons.check_circle_outline);
+        hintSnack(
+          context,
+          context.l10n.onLatestVersion,
+          icon: Icons.check_circle_outline,
+        );
       }
     } catch (e) {
       if (!mounted) return;
@@ -58,18 +62,18 @@ class _UpdateRowState extends ConsumerState<UpdateRow> {
     final scheme = context.scheme;
     final r = _result;
     final (String value, Color? color) = switch (null) {
-      _ when _checking => ('检查中…', null),
-      _ when _failed => ('检查失败', scheme.error),
+      _ when _checking => (context.l10n.checking, null),
+      _ when _failed => (context.l10n.checkFailed, scheme.error),
       _ when r != null && r.hasUpdate => (
-        '新版本 ${r.release!.display}',
+        context.l10n.newVersion(r.release!.display),
         scheme.tertiary,
       ),
-      _ when r != null => ('已是最新', null),
+      _ when r != null => (context.l10n.upToDate, null),
       _ => ('', null),
     };
     return SettingsRow(
       icon: Icons.system_update_alt,
-      title: '检查更新',
+      title: context.l10n.checkUpdates,
       value: value,
       valueColor: color,
       onTap: _check,
@@ -77,7 +81,8 @@ class _UpdateRowState extends ConsumerState<UpdateRow> {
   }
 }
 
-/// 新版本提示。只提示 + 跳转,**不下载不安装** —— 那两步交给浏览器和系统。
+/// 新版本提示。只提示 + 交给浏览器打开下载地址(最新正式版是安装包直链),
+/// **应用自己不下载不安装** —— 那两步交给浏览器和系统。
 Future<void> showUpdateSheet(BuildContext context, UpdateCheck check) {
   return showModalBottomSheet<void>(
     context: context,
@@ -93,16 +98,20 @@ class _UpdateSheet extends StatelessWidget {
   final GithubRelease release;
   final InstalledInfo installed;
 
-  Future<void> _open(BuildContext context) async {
+  Future<void> _open(BuildContext context, String url) async {
     final ok = await launchUrl(
-      Uri.parse(release.url),
+      Uri.parse(url),
       mode: LaunchMode.externalApplication,
     );
     if (!context.mounted) return;
     if (ok) {
       Navigator.pop(context);
     } else {
-      hintSnack(context, '打不开浏览器', icon: Icons.link_off);
+      hintSnack(
+        context,
+        context.l10n.cantOpenBrowserShort,
+        icon: Icons.link_off,
+      );
     }
   }
 
@@ -130,14 +139,14 @@ class _UpdateSheet extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          '新版本 ${release.display}',
+                          context.l10n.newVersion(release.display),
                           style: context.texts.titleMedium!.copyWith(
                             fontWeight: FontWeight.w700,
                           ),
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          '当前 ${installed.versionName}',
+                          context.l10n.currentVersion(installed.versionName),
                           style: context.texts.bodySmall!.copyWith(
                             color: scheme.onSurfaceVariant,
                           ),
@@ -170,20 +179,31 @@ class _UpdateSheet extends StatelessWidget {
                   Expanded(
                     child: TextButton(
                       onPressed: () => Navigator.pop(context),
-                      child: const Text('以后再说'),
+                      child: Text(context.l10n.later),
                     ),
                   ),
                   const SizedBox(width: 10),
                   Expanded(
                     flex: 2,
                     child: FilledButton.icon(
-                      onPressed: () => _open(context),
-                      icon: const Icon(Icons.open_in_new, size: 18),
-                      label: const Text('去 GitHub 下载'),
+                      onPressed: () => _open(context, release.downloadUrl),
+                      icon: const Icon(Icons.download, size: 18),
+                      label: Text(context.l10n.downloadUpdate),
                     ),
                   ),
                 ],
               ),
+              // 主按钮是后端直链时,留一个去 GitHub Release 页的入口
+              if (release.downloadUrl != release.url) ...[
+                const SizedBox(height: 4),
+                Center(
+                  child: TextButton.icon(
+                    onPressed: () => _open(context, release.url),
+                    icon: const Icon(Icons.open_in_new, size: 16),
+                    label: Text(context.l10n.downloadOnGithub),
+                  ),
+                ),
+              ],
             ],
           ),
         ),

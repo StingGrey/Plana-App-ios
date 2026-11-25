@@ -4,10 +4,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/ui/import_picker.dart';
 import '../char_library/char_library.dart';
 import '../generate/prompt_presets.dart';
+import '../inspiration/tag_cloud_backup.dart';
 import '../inspiration/tag_library.dart';
 import '../inspiration/tag_models.dart';
 import '../vibe_library/vibe_library.dart';
 import 'web_backup.dart';
+import '../../l10n/l10n.dart';
 
 /// 一次导入的结果:逐类结果行(标签, 数值)+ 失败原因。
 typedef WebBackupImportOutcome = ({
@@ -17,9 +19,7 @@ typedef WebBackupImportOutcome = ({
 
 /// 弹「自选导入内容」→ 按勾选把 web 备份落进各库。用户取消返回 null。
 ///
-/// 独立于任何页面:哪个入口拿到备份文件都能调(专用导入页、灵感库的手动导入),
-/// 所以不存在"从某个入口进来只能导一部分"的阉割版 —— 面板里列全五类,
-/// 勾什么导什么。[notice] 用于说明来源(如"这是 web 端的全量备份")。
+/// 面板里列全五类,勾什么导什么。[notice] 用于说明来源。
 ///
 /// [onProgress] 报「哪一类、第几条/共几条」:vibe 带图,几百条要跑上几分钟,
 /// 没有动静的话用户会以为卡死了去杀进程。
@@ -30,6 +30,7 @@ Future<WebBackupImportOutcome?> runWebBackupImport(
   String? notice,
   void Function(String label, int done, int total)? onProgress,
 }) async {
+  final l = context.l10n;
   final tagLib = ref.read(tagLibraryProvider.notifier);
   final cats = b.tagCategories();
 
@@ -52,42 +53,42 @@ Future<WebBackupImportOutcome?> runWebBackupImport(
 
   final picked = await showImportPicker(
     context,
-    title: '选择要导入的内容',
+    title: context.l10n.chooseImportContent,
     notice: notice,
     options: [
       ImportOption(
         key: 'vibe',
         label: 'Vibe',
-        detail: '${b.vibes.length} 条',
+        detail: context.l10n.itemsN(b.vibes.length),
         enabled: b.vibes.isNotEmpty,
         conflict: vibeConflict,
       ),
       ImportOption(
         key: 'cr',
-        label: '角色参考',
-        detail: '${b.crs.length} 张',
+        label: context.l10n.preciseReference,
+        detail: context.l10n.imagesN(b.crs.length),
         enabled: b.crs.isNotEmpty,
-        note: '重复图自动跳过',
+        note: context.l10n.dupImagesSkipped,
       ),
       ImportOption(
         key: 'oc',
-        label: '灵感库 · 角色',
-        detail: '${b.ocs.length} 条',
+        label: context.l10n.inspirationOf(context.l10n.characters),
+        detail: context.l10n.itemsN(b.ocs.length),
         enabled: b.ocs.isNotEmpty,
         conflict: tagLib.previewMerge({'character': b.ocs}).overwrite,
-        note: '内嵌预览图不导入',
+        note: context.l10n.embeddedPreviewsSkipped,
       ),
       ImportOption(
         key: 'artist',
-        label: '灵感库 · 画风',
-        detail: '${b.artists.length} 条',
+        label: context.l10n.inspirationOf(context.l10n.sectionStyle),
+        detail: context.l10n.itemsN(b.artists.length),
         enabled: b.artists.isNotEmpty,
         conflict: tagLib.previewMerge({'artist-style': b.artists}).overwrite,
       ),
       ImportOption(
         key: 'preset',
-        label: '提示词预设',
-        detail: '${b.presets.length} 条',
+        label: context.l10n.promptPresets,
+        detail: context.l10n.itemsN(b.presets.length),
         enabled: b.presets.isNotEmpty || b.activePresetId != null,
         conflict: presetConflict,
       ),
@@ -107,9 +108,9 @@ Future<WebBackupImportOutcome?> runWebBackupImport(
             b.naiv4Raws(),
             onProgress: (d, t) => onProgress?.call('Vibe', d, t),
           );
-      rows.add(('Vibe', '${got.length} 条'));
+      rows.add(('Vibe', l.itemsN(got.length)));
     } catch (e) {
-      errors.add('Vibe 导入失败: $e');
+      errors.add(l.vibeImportFailed('$e'));
     }
   }
 
@@ -122,11 +123,11 @@ Future<WebBackupImportOutcome?> runWebBackupImport(
         await lib.importImageBytes(c.bytes, c.name);
         n++;
       } catch (e) {
-        errors.add('角色参考「${c.name}」失败: $e');
+        errors.add(l.charRefImportFailed(c.name, '$e'));
       }
-      onProgress?.call('角色参考', n, b.crs.length);
+      onProgress?.call(l.preciseReference, n, b.crs.length);
     }
-    rows.add(('角色参考', '$n 张'));
+    rows.add((l.preciseReference, l.imagesN(n)));
   }
 
   // 画师串 / OC → 灵感库(一次 mergeBackup 合并两类,只落一次盘)
@@ -137,14 +138,22 @@ Future<WebBackupImportOutcome?> runWebBackupImport(
   };
   if (pickedCats.isNotEmpty) {
     try {
-      final stat = await tagLib.mergeBackup(pickedCats);
+      final stat = await ref
+          .read(tagCloudBackupProvider)
+          .withResolver(
+            (resolve) =>
+                tagLib.mergeBackup(pickedCats, resolvePreview: resolve),
+          );
       for (final d in kTagCategoryDefs) {
         if (stat[d.key] case final s?) {
-          rows.add(('灵感库 · ${d.label}', '新增 ${s.added} · 覆盖 ${s.updated}'));
+          rows.add((
+            l.inspirationOf(d.label),
+            l.addedUpdated(s.added, s.updated),
+          ));
         }
       }
     } catch (e) {
-      errors.add('灵感库导入失败: $e');
+      errors.add(l.inspirationImportFailed('$e'));
     }
   }
 
@@ -155,9 +164,9 @@ Future<WebBackupImportOutcome?> runWebBackupImport(
       final n = await ref
           .read(promptPresetsProvider.notifier)
           .importPresets(b.presets, activeId: b.activePresetId);
-      rows.add(('提示词预设', '$n 条'));
+      rows.add((l.promptPresets, l.itemsN(n)));
     } catch (e) {
-      errors.add('预设导入失败: $e');
+      errors.add(l.presetImportFailed('$e'));
     }
   }
 
