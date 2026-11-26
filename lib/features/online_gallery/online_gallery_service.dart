@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
 import '../../core/store/app_stores.dart';
+import 'online_gallery_credentials.dart';
 import 'online_gallery_models.dart';
 import 'ai_tag_metadata.dart';
 
@@ -23,10 +24,14 @@ class OnlineGalleryPageResult {
 /// notifier deal only with [OnlineGalleryItem], so adding a new source does not
 /// leak API response shapes into the UI.
 class OnlineGalleryService {
-  OnlineGalleryService({http.Client? client})
+  OnlineGalleryService({http.Client? client, this._credentials})
     : _client = client ?? http.Client();
 
   final http.Client _client;
+
+  /// 每次请求前现取一次用户自填的凭据(见 [OnlineGalleryCredentials]);
+  /// null / 读失败 = 匿名。
+  final Future<OnlineGalleryCredentials> Function()? _credentials;
   static const _timeout = Duration(seconds: 25);
   static const _ua = 'Plana-App/1.1 (mobile online gallery)';
   String? _aiTagAssetBase;
@@ -42,11 +47,13 @@ class OnlineGalleryService {
     String rankingPeriod = 'day',
     int dateDays = 0,
   }) async {
+    final creds = await _creds();
     switch (source) {
       case OnlineGallerySource.danbooru:
       case OnlineGallerySource.safebooru:
         return _fetchDonmai(
           source,
+          creds: creds,
           feed: feed,
           query: query,
           page: page,
@@ -56,6 +63,16 @@ class OnlineGalleryService {
           dateDays: dateDays,
         );
       case OnlineGallerySource.gelbooru:
+        if (creds.hasGelbooru) {
+          return _fetchGelbooruApi(
+            creds: creds,
+            query: query,
+            page: page,
+            ratings: ratings,
+            blacklist: blacklist,
+            dateDays: dateDays,
+          );
+        }
         return _fetchGelbooru(
           feed: feed,
           query: query,
@@ -67,6 +84,7 @@ class OnlineGalleryService {
         );
       case OnlineGallerySource.aiTag:
         return _fetchAiTag(
+          creds: creds,
           feed: feed,
           query: query,
           page: page,
@@ -79,12 +97,24 @@ class OnlineGalleryService {
     }
   }
 
+  Future<OnlineGalleryCredentials> _creds() async {
+    try {
+      return await _credentials?.call() ?? const OnlineGalleryCredentials();
+    } catch (_) {
+      return const OnlineGalleryCredentials();
+    }
+  }
+
   Future<OnlineGalleryDetail> detail(OnlineGalleryItem item) async {
+    final creds = await _creds();
     switch (item.source) {
       case OnlineGallerySource.danbooru:
       case OnlineGallerySource.safebooru:
         final base = _donmaiBase(item.source);
-        final response = await _getJson('$base/posts/${item.id}.json');
+        final response = await _getJson(
+          '$base/posts/${item.id}.json',
+          creds: creds,
+        );
         if (response is! Map) throw const FormatException('详情格式异常');
         final parsed = _donmaiItem(
           item.source,
@@ -103,9 +133,10 @@ class OnlineGalleryService {
         // HTML document to the prompt editor; the caller falls back to tags.
         return OnlineGalleryDetail(item: parsed);
       case OnlineGallerySource.aiTag:
-        final assetBase = await _getAiTagAssetBase();
+        final assetBase = await _getAiTagAssetBase(creds);
         final response = await _getJson(
           'https://aitag.win/api/work/${Uri.encodeComponent(item.id)}',
+          creds: creds,
         );
         if (response is! Map) throw const FormatException('AI TAG 详情格式异常');
         final work = response['work'] is Map
@@ -174,6 +205,7 @@ class OnlineGalleryService {
 
   Future<OnlineGalleryPageResult> _fetchDonmai(
     OnlineGallerySource source, {
+    required OnlineGalleryCredentials creds,
     required OnlineGalleryFeed feed,
     required String query,
     required int page,
@@ -201,7 +233,7 @@ class OnlineGalleryService {
       final finalTags = Uri.encodeQueryComponent('$tags$date');
       url = '$base/posts.json?limit=30&page=$page&tags=$finalTags';
     }
-    final raw = await _getJson(url);
+    final raw = await _getJson(url, creds: creds);
     if (raw is! List) throw const FormatException('画廊返回格式异常');
     final items = <OnlineGalleryItem>[];
     for (final value in raw) {
@@ -348,6 +380,117 @@ class OnlineGalleryService {
     );
   }
 
+  /// 填了 Gelbooru 的 User ID + API Key 时走官方 DAPI:每张带原图地址、尺寸、
+  /// 分级、上传者和日期,比匿名抓 HTML 列表(只有缩略图和 title 里的标签)全。
+  Future<OnlineGalleryPageResult> _fetchGelbooruApi({
+    required OnlineGalleryCredentials creds,
+    required String query,
+    required int page,
+    required Set<String> ratings,
+    required Set<String> blacklist,
+    required int dateDays,
+  }) async {
+    const limit = 42;
+    var tags = query.trim();
+    if (ratings.length == 1) {
+      tags = _join(tags, 'rating:${_gelRating(ratings.first)}');
+    }
+    if (dateDays > 0) {
+      final date = DateTime.now()
+          .subtract(Duration(days: dateDays))
+          .toIso8601String()
+          .substring(0, 10);
+      tags = _join(tags, 'date:>=$date');
+    }
+    final uri = Uri.https('gelbooru.com', '/index.php', {
+      'page': 'dapi',
+      's': 'post',
+      'q': 'index',
+      'json': '1',
+      'limit': '$limit',
+      // DAPI 的 pid 是页码(从 0 起),不是 HTML 列表那种条目偏移
+      'pid': '${page - 1}',
+      if (tags.trim().isNotEmpty) 'tags': tags.trim(),
+      'api_key': creds.gelbooruApiKey.trim(),
+      'user_id': creds.gelbooruUserId.trim(),
+    });
+    final raw = await _getJson(uri.toString(), creds: creds);
+    if (raw is! Map && raw is! List) {
+      throw const FormatException('Gelbooru 返回格式异常');
+    }
+    // 没结果时只有 @attributes、没有 post;只有一条时个别版本给的是对象
+    final posts = raw is List ? raw : (raw as Map)['post'];
+    final rows = posts is List
+        ? posts
+        : posts is Map
+        ? [posts]
+        : const [];
+    final items = <OnlineGalleryItem>[];
+    for (final value in rows) {
+      if (value is! Map) continue;
+      try {
+        final item = _gelbooruApiItem(Map<String, dynamic>.from(value));
+        if (item.id.isEmpty || item.previewUrl.isEmpty) continue;
+        if (_passes(item, ratings, blacklist) &&
+            _matchesQuery(item, query) &&
+            _matchesDate(item, dateDays)) {
+          items.add(item);
+        }
+      } catch (_) {}
+    }
+    final attrs = raw is Map && raw['@attributes'] is Map
+        ? raw['@attributes'] as Map
+        : null;
+    final count = _int(attrs?['count']);
+    return OnlineGalleryPageResult(
+      items: items,
+      hasMore: count > 0 ? page * limit < count : rows.length >= limit,
+    );
+  }
+
+  OnlineGalleryItem _gelbooruApiItem(Map<String, dynamic> j) {
+    final file = _normalizeImageUrl(_string(j['file_url']));
+    final sample = _normalizeImageUrl(_string(j['sample_url']));
+    final preview = _normalizeImageUrl(_string(j['preview_url']));
+    final extension =
+        RegExp(
+          r'\.([A-Za-z0-9]+)(?:[?#]|$)',
+        ).firstMatch(file)?.group(1)?.toLowerCase() ??
+        '';
+    final video = const {
+      'mp4',
+      'webm',
+      'mkv',
+      'mov',
+      'avi',
+    }.contains(extension);
+    // 卡片用 sample(平板上 150px 的 preview 太糊);视频没有静态大图,退回 preview
+    final display = sample.isNotEmpty ? sample : (video ? preview : file);
+    return OnlineGalleryItem(
+      id: _string(j['id']),
+      source: OnlineGallerySource.gelbooru,
+      previewUrl: display.isNotEmpty ? display : preview,
+      imageUrl: video
+          ? (display.isNotEmpty ? display : preview)
+          : (file.isNotEmpty ? file : display),
+      width: _int(j['width']),
+      height: _int(j['height']),
+      rating: switch (_string(j['rating']).toLowerCase()) {
+        'explicit' || 'e' => 'e',
+        'questionable' || 'q' => 'q',
+        'sensitive' || 's' => 's',
+        _ => 'g',
+      },
+      score: _int(j['score']),
+      tags: _gelTags(_decodeHtml(_string(j['tags']))),
+      author: _string(j['owner']),
+      createdAt: parseGelbooruDate(_string(j['created_at'])),
+      title: _decodeHtml(_string(j['title'])),
+      description: _string(j['source']),
+      fileExtension: extension,
+    );
+  }
+
   OnlineGalleryItem _parseGelbooruDetail(OnlineGalleryItem base, String html) {
     final section =
         RegExp(
@@ -398,8 +541,11 @@ class OnlineGalleryService {
         if (tag.isNotEmpty) categories[tag] = category;
       }
     }
+    // 经 DAPI 来的条目(带尺寸)已经是原图地址,别被详情页里的缩放图换掉
+    final hasOriginal =
+        base.width > 0 && base.height > 0 && base.imageUrl.isNotEmpty;
     return base.copyWith(
-      imageUrl: image.isEmpty
+      imageUrl: image.isEmpty || hasOriginal
           ? base.imageUrl
           : _normalizeImageUrl(_decodeHtml(image)),
       // Keep the list thumbnail as a reliable fallback. The detail `src` is
@@ -419,6 +565,7 @@ class OnlineGalleryService {
   }
 
   Future<OnlineGalleryPageResult> _fetchAiTag({
+    required OnlineGalleryCredentials creds,
     required OnlineGalleryFeed feed,
     required String query,
     required int page,
@@ -426,7 +573,7 @@ class OnlineGalleryService {
     required String rankingPeriod,
     required int dateDays,
   }) async {
-    final assetBase = await _getAiTagAssetBase();
+    final assetBase = await _getAiTagAssetBase(creds);
     final pageSize = 60;
     final q = query
         .trim()
@@ -450,7 +597,7 @@ class OnlineGalleryService {
         'period': rankingPeriod,
     };
     final uri = Uri.parse(endpoint).replace(queryParameters: params);
-    final raw = await _getJson(uri.toString());
+    final raw = await _getJson(uri.toString(), creds: creds);
     if (raw is! Map) throw const FormatException('AI TAG 返回格式异常');
     final rows = raw['items'];
     if (rows is! List) {
@@ -503,14 +650,17 @@ class OnlineGalleryService {
     );
   }
 
-  Future<String> _getAiTagAssetBase() async {
+  Future<String> _getAiTagAssetBase(OnlineGalleryCredentials creds) async {
     final cached = _aiTagAssetBase;
     if (cached != null && cached.isNotEmpty) return cached;
     final active = _aiTagAssetBaseLoad;
     if (active != null) return active;
     final future = () async {
       try {
-        final raw = await _getJson('https://aitag.win/api/config');
+        final raw = await _getJson(
+          'https://aitag.win/api/config',
+          creds: creds,
+        );
         final base = raw is Map
             ? _string(raw['asset_base_url'], 'https://ai-img.10118899.xyz/')
             : 'https://ai-img.10118899.xyz/';
@@ -526,11 +676,13 @@ class OnlineGalleryService {
     return future;
   }
 
-  Future<Object?> _getJson(String url) async {
+  Future<Object?> _getJson(
+    String url, {
+    OnlineGalleryCredentials creds = const OnlineGalleryCredentials(),
+  }) async {
     final uri = Uri.parse(url);
-    final response = await _client
-        .get(uri, headers: _headers(url))
-        .timeout(_timeout);
+    final headers = _headers(url, creds: creds);
+    final response = await _client.get(uri, headers: headers).timeout(_timeout);
     if (response.statusCode >= 200 && response.statusCode < 300) {
       return _decodeJson(response.bodyBytes);
     }
@@ -543,11 +695,26 @@ class OnlineGalleryService {
     if (uri.host.toLowerCase() == 'aitag.win' && response.statusCode == 403) {
       final proxyUrl = _aiTagProxyUrl(uri);
       final proxy = await _client
-          .get(Uri.parse(proxyUrl), headers: _headers(proxyUrl))
+          .get(Uri.parse(proxyUrl), headers: _headers(proxyUrl, creds: creds))
           .timeout(_timeout);
       if (proxy.statusCode >= 200 && proxy.statusCode < 300) {
         return _decodeJson(proxy.bodyBytes);
       }
+      throw HttpException(switch (proxy.statusCode) {
+        401 || 403 when creds.hasJina =>
+          'Jina Reader API Key 无效 (${proxy.statusCode})',
+        429 =>
+          creds.hasJina
+              ? 'Jina Reader 额度用完了,稍后再试 (429)'
+              : 'AI TAG 中转请求太频繁,稍后再试,或在「API Key」里填 Jina Reader Key (429)',
+        _ => 'AI TAG 中转请求失败 (${proxy.statusCode})',
+      });
+    }
+    final authed =
+        headers.containsKey('Authorization') ||
+        uri.queryParameters.containsKey('api_key');
+    if (authed && (response.statusCode == 401 || response.statusCode == 403)) {
+      throw HttpException('API Key 无效或没有权限 (${response.statusCode})');
     }
     throw HttpException('在线画廊请求失败 (${response.statusCode})');
   }
@@ -594,7 +761,10 @@ class OnlineGalleryService {
     return utf8.decode(response.bodyBytes, allowMalformed: true);
   }
 
-  Map<String, String> _headers(String url) => {
+  Map<String, String> _headers(
+    String url, {
+    OnlineGalleryCredentials creds = const OnlineGalleryCredentials(),
+  }) => {
     'User-Agent': _ua,
     'Accept': url.contains('gelbooru.com')
         ? 'text/html,application/xhtml+xml,application/json'
@@ -604,7 +774,24 @@ class OnlineGalleryService {
     if (url.contains('gelbooru.com')) 'Referer': 'https://gelbooru.com/',
     if (url.contains('aitag.win') || url.contains('ai-img.10118899.xyz'))
       'Referer': 'https://aitag.win/',
+    ...?_authHeader(url, creds),
   };
+
+  /// 按主机精确匹配才带凭据:donmai 的接口域名用 Basic(图片 CDN 不带),
+  /// Jina 中转用 Bearer。Gelbooru 的 DAPI 只认查询参数,不走这里。
+  Map<String, String>? _authHeader(String url, OnlineGalleryCredentials creds) {
+    final host = Uri.tryParse(url)?.host.toLowerCase() ?? '';
+    if (creds.hasDanbooru &&
+        (host == 'danbooru.donmai.us' || host == 'safebooru.donmai.us')) {
+      final pair =
+          '${creds.danbooruLogin.trim()}:${creds.danbooruApiKey.trim()}';
+      return {'Authorization': 'Basic ${base64Encode(utf8.encode(pair))}'};
+    }
+    if (creds.hasJina && host == 'r.jina.ai') {
+      return {'Authorization': 'Bearer ${creds.jinaApiKey.trim()}'};
+    }
+    return null;
+  }
 
   String _donmaiBase(OnlineGallerySource source) =>
       source == OnlineGallerySource.safebooru
@@ -801,6 +988,7 @@ class OnlineGalleryService {
       .replaceAll('&amp;', '&')
       .replaceAll('&quot;', '"')
       .replaceAll('&#39;', "'")
+      .replaceAll('&#039;', "'")
       .replaceAll('&lt;', '<')
       .replaceAll('&gt;', '>');
   String _normalizeImageUrl(String value) {
@@ -820,8 +1008,50 @@ class OnlineGalleryService {
       value is num ? value.toInt() : int.tryParse('$value') ?? 0;
 }
 
+/// Gelbooru DAPI 的 `created_at` 是 `Sat Nov 23 10:12:01 -0600 2024` 这种
+/// Ruby 风格;认不出时再按 ISO 试一次,都不行返回 null。
+DateTime? parseGelbooruDate(String raw) {
+  final m = RegExp(
+    r'^[A-Za-z]{3}\s+([A-Za-z]{3})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+([+-])(\d{2})(\d{2})\s+(\d{4})$',
+  ).firstMatch(raw.trim());
+  if (m == null) return DateTime.tryParse(raw.trim());
+  const months = [
+    'jan',
+    'feb',
+    'mar',
+    'apr',
+    'may',
+    'jun',
+    'jul',
+    'aug',
+    'sep',
+    'oct',
+    'nov',
+    'dec',
+  ];
+  final month = months.indexOf(m.group(1)!.toLowerCase()) + 1;
+  if (month == 0) return null;
+  final local = DateTime.utc(
+    int.parse(m.group(9)!),
+    month,
+    int.parse(m.group(2)!),
+    int.parse(m.group(3)!),
+    int.parse(m.group(4)!),
+    int.parse(m.group(5)!),
+  );
+  final offset = Duration(
+    hours: int.parse(m.group(7)!),
+    minutes: int.parse(m.group(8)!),
+  );
+  // 18:00 -0500 = 23:00 UTC
+  return m.group(6) == '-' ? local.add(offset) : local.subtract(offset);
+}
+
 final onlineGalleryServiceProvider = Provider<OnlineGalleryService>((ref) {
-  final service = OnlineGalleryService();
+  final service = OnlineGalleryService(
+    credentials: () => ref.read(onlineGalleryCredentialsProvider.future),
+  );
+  // 凭据改了(在 API Key 面板里保存):不重建服务,下一次请求自然取到新的
   ref.onDispose(service.dispose);
   return service;
 });
@@ -928,6 +1158,15 @@ class OnlineGalleryNotifier extends Notifier<OnlineGalleryState> {
   void _invalidateLoads() {
     ++_loadSerial;
     state = state.copyWith(listRevision: state.listRevision + 1);
+  }
+
+  /// API Key 改了:丢掉进行中的请求和详情缓存,按新凭据重拉当前列表。
+  void reloadForCredentials() {
+    _details.clear();
+    _detailFailures.clear();
+    _invalidateLoads();
+    state = state.copyWith(loading: false, loadingMore: false);
+    unawaited(load());
   }
 
   OnlineGalleryItem? itemByStableId(String stableId) {

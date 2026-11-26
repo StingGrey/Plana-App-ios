@@ -64,8 +64,10 @@
   search by prompt, model, date, category, favorites and collections, with multi-select save, share, categorize,
   collect and remove; generated images keep a single original, and imported files are managed separately
 
-- **Online gallery** Switch between Danbooru, Safebooru, Gelbooru, AI TAG and Codex sources, with search, rankings,
-  date / rating filters, a blacklist, favorites, details, and sending prompts or reference images back to the generate page
+- **Online gallery** A tab to the right of "Other" on the Inspiration page. Switch between Danbooru, Safebooru, Gelbooru,
+  AI TAG and Codex sources, with search, rankings, date / rating filters, a blacklist, favorites, details, and sending
+  prompts or reference images back to the generate page. Optional per-source API keys (Danbooru login + key, Gelbooru
+  user ID + key, a Jina Reader key for AI TAG's fallback proxy) are kept in the device's secure storage
 
 - **Reusable resources** Fixed tags support positive / negative, prefix / suffix, weights and on/off toggles; the new
   Precise Reference library saves reference type, strength, fidelity and favorites

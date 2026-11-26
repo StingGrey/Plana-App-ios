@@ -74,6 +74,14 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
   bool _codex = false;
   static const _kCodexSel = '__codex__';
 
+  /// 当前在在线画廊页。它固定排在所有页签最右(不进类别管理,不能藏、不能挪),
+  /// 和法典一样没有我的/公共库、新建与底栏。
+  bool _gallery = false;
+  static const _kGallerySel = '__gallery__';
+
+  /// 上次停在在线画廊时记进偏好的值(与各分类 webId / 法典键并列)。
+  static const _kGalleryLast = 'online_gallery';
+
   /// 每页一页的正文;顶栏页签跟着它的位置走。
   PageController? _pc;
   final _pagePos = ValueNotifier<double>(0);
@@ -95,7 +103,9 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     super.initState();
     // 回到上次停的那一页
     final last = ref.read(uiPrefsProvider).lastPages[_kLastPage];
-    if (last == kCodexTabKey) {
+    if (last == _kGalleryLast) {
+      _gallery = true;
+    } else if (last == kCodexTabKey) {
       _codex = true;
     } else if (last != null) {
       _cat = tagCategoryByWebId(last) ?? TagCategory.character;
@@ -273,13 +283,21 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
 
   // ---- build ----
 
-  /// 顶栏页签:按类别管理里排的顺序,藏起来的不出。
+  /// 顶栏页签:按类别管理里排的顺序,藏起来的不出;在线画廊固定垫在最右。
   List<Object> _tabKeys(TagLibraryState lib) => [
     for (final k in lib.visibleTabKeys)
       if (k == kCodexTabKey) _kCodexSel else ?tagCategoryByWebId(k),
+    _kGallerySel,
   ];
 
-  Object get _current => _codex ? _kCodexSel : _cat;
+  Object get _current => _gallery
+      ? _kGallerySel
+      : _codex
+      ? _kCodexSel
+      : _cat;
+
+  /// 页签键 → PageView 子页的键 / 签名用的名字。
+  static String _selOfKey(Object k) => k is TagCategory ? k.name : k as String;
 
   @override
   Widget build(BuildContext context) {
@@ -291,6 +309,7 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     // 当前这一类被删了 / 藏起来了:回到角色
     if (index < 0) {
       _codex = false;
+      _gallery = false;
       _cat = TagCategory.character;
       index = keys.indexOf(_cat);
     }
@@ -300,7 +319,7 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     }
     final pc = _pc!;
     // 页签增删、换序后,页码对不上当前分类了:原地跳回去
-    final sig = keys.map((k) => k is TagCategory ? k.name : _kCodexSel).join();
+    final sig = keys.map(_selOfKey).join('|');
     if (_keysSig != null && _keysSig != sig) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted && pc.hasClients) pc.jumpToPage(index);
@@ -326,24 +345,28 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
                 childrenDelegate: SliverChildBuilderDelegate(
                   (context, i) {
                     final k = keys[i];
-                    return k is TagCategory
-                        ? _CategoryPage(
-                            key: ValueKey(k.name),
-                            cat: k,
-                            host: this,
-                          )
-                        : const _KeepAlive(
-                            key: ValueKey(_kCodexSel),
-                            // 只读浏览器,自带选法典、搜索与筛选,无选择栏
-                            child: CodexView(),
-                          );
+                    return switch (k) {
+                      TagCategory() => _CategoryPage(
+                        key: ValueKey(k.name),
+                        cat: k,
+                        host: this,
+                      ),
+                      _kGallerySel => const _KeepAlive(
+                        key: ValueKey(_kGallerySel),
+                        // 自带来源、搜索、筛选与 API Key,无选择栏
+                        child: OnlineGalleryPage(embedded: true),
+                      ),
+                      _ => const _KeepAlive(
+                        key: ValueKey(_kCodexSel),
+                        // 只读浏览器,自带选法典、搜索与筛选,无选择栏
+                        child: CodexView(),
+                      ),
+                    };
                   },
                   childCount: keys.length,
                   findChildIndexCallback: (key) {
                     final v = (key as ValueKey<String>).value;
-                    final i = keys.indexWhere(
-                      (k) => (k is TagCategory ? k.name : _kCodexSel) == v,
-                    );
+                    final i = keys.indexWhere((k) => _selOfKey(k) == v);
                     return i < 0 ? null : i;
                   },
                 ),
@@ -352,7 +375,9 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
           ),
         ],
       ),
-      bottomNavigationBar: _codex ? null : _selectionBar(scheme, lib),
+      bottomNavigationBar: _codex || _gallery
+          ? null
+          : _selectionBar(scheme, lib),
     );
   }
 
@@ -366,19 +391,16 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     if (i < 0 || i >= keys.length) return;
     final k = keys[i];
     if (k == _current) return;
-    ref
-        .read(uiPrefsProvider.notifier)
-        .setLastPage(
-          _kLastPage,
-          k is TagCategory ? tagCategoryDef(k).webId : kCodexTabKey,
-        );
+    ref.read(uiPrefsProvider.notifier).setLastPage(_kLastPage, switch (k) {
+      TagCategory() => tagCategoryDef(k).webId,
+      _kGallerySel => _kGalleryLast,
+      _ => kCodexTabKey,
+    });
     setState(() {
-      if (k is TagCategory) {
-        _cat = k;
-        _codex = false;
-      } else {
-        _codex = true;
-      }
+      // 停在法典 / 画廊时 _cat 不动,回来还是进去之前那一类
+      if (k is TagCategory) _cat = k;
+      _codex = k == _kCodexSel;
+      _gallery = k == _kGallerySel;
     });
   }
 
@@ -397,7 +419,11 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
             child: CategoryTabs(
               labels: [
                 for (final k in keys)
-                  k is TagCategory ? tagCategoryDef(k).label : codexTabLabel(),
+                  switch (k) {
+                    TagCategory() => tagCategoryDef(k).label,
+                    _kGallerySel => '在线画廊',
+                    _ => codexTabLabel(),
+                  },
               ],
               index: index,
               position: _pagePos,
@@ -411,14 +437,17 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
               capsule: true,
             ),
           ),
-          // 新建:翻向法典页时跟着翻页进度收起、淡出,翻回来再展开
+          // 新建:翻向法典 / 在线画廊页时跟着翻页进度收起、淡出,翻回来再展开
           ValueListenableBuilder(
             valueListenable: _pagePos,
             builder: (context, pos, child) {
-              final ci = keys.indexOf(_kCodexSel);
-              final hide = ci < 0
-                  ? 0.0
-                  : (1 - (pos - ci).abs()).clamp(0.0, 1.0).toDouble();
+              var hide = 0.0;
+              for (final sel in const [_kCodexSel, _kGallerySel]) {
+                final i = keys.indexOf(sel);
+                if (i < 0) continue;
+                final h = (1 - (pos - i).abs()).clamp(0.0, 1.0).toDouble();
+                if (h > hide) hide = h;
+              }
               final t = Curves.easeOut.transform(1 - hide);
               return IgnorePointer(
                 ignoring: hide > .5,
@@ -431,22 +460,10 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
                 ),
               );
             },
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                IconButton(
-                  tooltip: '在线画廊',
-                  icon: const Icon(Icons.public),
-                  onPressed: () => Navigator.of(
-                    context,
-                  ).push(sharedAxisRoute(const OnlineGalleryPage())),
-                ),
-                IconButton(
-                  tooltip: context.l10n.newLabel,
-                  icon: const Icon(Icons.add),
-                  onPressed: () => _openNew(_cat),
-                ),
-              ],
+            child: IconButton(
+              tooltip: context.l10n.newLabel,
+              icon: const Icon(Icons.add),
+              onPressed: () => _openNew(_cat),
             ),
           ),
         ],
