@@ -286,7 +286,12 @@ abstract final class RemoteImageStore {
 /// 网络恢复了也不会重试)。
 @immutable
 class RemoteImageProvider extends ImageProvider<RemoteImageProvider> {
-  const RemoteImageProvider(this.url, {this.scale = 1.0, this.version = 0});
+  const RemoteImageProvider(
+    this.url, {
+    this.scale = 1.0,
+    this.version = 0,
+    this.headers,
+  });
 
   final String url;
   final double scale;
@@ -295,6 +300,9 @@ class RemoteImageProvider extends ImageProvider<RemoteImageProvider> {
   /// 同一个 URL 换了内容时它 +1,于是内存里那份解码后的旧位图不再命中。
   /// 加载路径根本不看它 —— 字节永远以磁盘上那份为准。
   final int version;
+
+  /// 附加请求头(如外站图床要求的 User-Agent)。不参与缓存键。
+  final Map<String, String>? headers;
 
   static final _client = http.Client();
   static const _timeout = Duration(seconds: 30);
@@ -350,16 +358,16 @@ class RemoteImageProvider extends ImageProvider<RemoteImageProvider> {
       if (hit != null) {
         // 旧版本可能把 Gelbooru 的 HTML 403 页面写进了缓存。缓存命中
         // 也必须经过解码；失败后删除旧文件并在本次请求中重新下载。
+        // 过期的**在后台**回源验证 —— 阻塞等 304 会把「秒开」变成「每张图都先等
+        // 一个来回」;真拿到新内容时 write(replaced: true) 会换掉缓存键。
         try {
-          unawaited(_revalidate(key.url));
-          return await decode(
-            await ui.ImmutableBuffer.fromUint8List(hit),
-          );
+          unawaited(_revalidate(key.url, headers: key.headers));
+          return await decode(await ui.ImmutableBuffer.fromUint8List(hit));
         } catch (_) {
           await RemoteImageStore.invalidate(key.url);
         }
       }
-      final bytes = await _shared(key.url, chunks);
+      final bytes = await _shared(key.url, chunks, key.headers);
       try {
         return await decode(await ui.ImmutableBuffer.fromUint8List(bytes));
       } catch (_) {
@@ -384,9 +392,10 @@ class RemoteImageProvider extends ImageProvider<RemoteImageProvider> {
   static Future<Uint8List> _shared(
     String url, [
     StreamController<ImageChunkEvent>? chunks,
+    Map<String, String>? headers,
   ]) {
     if (_downloading[url] case final f?) return f;
-    final f = _fetch(url, chunks);
+    final f = _fetch(url, chunks, headers: headers);
     _downloading[url] = f;
     f.then((_) {}, onError: (_) => _downloading.remove(url));
     return f;
@@ -395,11 +404,13 @@ class RemoteImageProvider extends ImageProvider<RemoteImageProvider> {
   /// 首次下载并落盘。进度只报给发起这次下载的那一路。
   static Future<Uint8List> _fetch(
     String url,
-    StreamController<ImageChunkEvent>? chunks,
-  ) async {
+    StreamController<ImageChunkEvent>? chunks, {
+    Map<String, String>? headers,
+  }) async {
     final (:bytes, :etag, :immutable) = await _download(
       url,
       chunks,
+      headers: headers,
     ).timeout(_timeout);
     // 落盘是旁路:写失败只是下次还得重下,不该连累这一次显示。
     // 落盘完成前别从 _downloading 里摘掉,这段时间里来要字节的直接拿这一份
@@ -428,7 +439,10 @@ class RemoteImageProvider extends ImageProvider<RemoteImageProvider> {
   /// ⚠ 每一步都得防这条回路:换缓存键 → provider 相等性变化 → Flutter 重新
   /// resolve → 再走一次 _load → 又发起验证。只要有一步**无条件**换键,就是
   /// 死循环(不发 ETag 的服务端曾经就踩在这上面,预览图肉眼可见地反复刷新)。
-  static Future<void> _revalidate(String url) async {
+  static Future<void> _revalidate(
+    String url, {
+    Map<String, String>? headers,
+  }) async {
     if (!_validating.add(url)) return;
     try {
       // 新鲜期对「验过没有」生效,而不是对「有没有 ETag」生效
@@ -440,6 +454,7 @@ class RemoteImageProvider extends ImageProvider<RemoteImageProvider> {
       }
       final req = http.Request('GET', Uri.parse(url));
       req.headers.addAll(_headersForUrl(url));
+      if (headers != null) req.headers.addAll(headers);
       if (v != null && v.etag.isNotEmpty) req.headers['If-None-Match'] = v.etag;
       final resp = await _client.send(req).timeout(_revalidateTimeout);
       // 拿到任何一个完整响应就算验过。放在分支之前:非 200 那条也得记,
@@ -507,8 +522,7 @@ class RemoteImageProvider extends ImageProvider<RemoteImageProvider> {
       headers['Referer'] = 'https://aitag.win/';
     } else if (host == 'ai-img.10118899.xyz') {
       headers['Referer'] = 'https://aitag.win/';
-    } else if (host == 'danbooru.donmai.us' ||
-        host.endsWith('.donmai.us')) {
+    } else if (host == 'danbooru.donmai.us' || host.endsWith('.donmai.us')) {
       headers['Referer'] = 'https://danbooru.donmai.us/';
     }
     return headers;
@@ -522,12 +536,14 @@ class RemoteImageProvider extends ImageProvider<RemoteImageProvider> {
 
   static Future<({Uint8List bytes, String? etag, bool immutable})> _download(
     String url,
-    StreamController<ImageChunkEvent>? chunks,
-  ) async {
+    StreamController<ImageChunkEvent>? chunks, {
+    Map<String, String>? headers,
+  }) async {
     final uri = Uri.parse(url);
-    final resp = await _client.send(
-      http.Request('GET', uri)..headers.addAll(_headersForUrl(url)),
-    );
+    // 站点防盗链要的头在前,调用方显式给的(如外站图床要求的 User-Agent)覆盖它
+    final req = http.Request('GET', uri)..headers.addAll(_headersForUrl(url));
+    if (headers != null) req.headers.addAll(headers);
+    final resp = await _client.send(req);
     if (resp.statusCode != 200) {
       throw NetworkImageLoadException(statusCode: resp.statusCode, uri: uri);
     }
@@ -620,6 +636,7 @@ class RemoteImage extends StatelessWidget {
     this.width,
     this.height,
     this.decodeWidth,
+    this.headers,
     this.filterQuality = FilterQuality.medium,
     this.gaplessPlayback = false,
     this.frameBuilder,
@@ -635,6 +652,9 @@ class RemoteImage extends StatelessWidget {
   /// 解码宽度上限(**逻辑像素**,内部乘 dpr);null = 取布局约束宽。
   final double? decodeWidth;
 
+  /// 附加请求头(见 [RemoteImageProvider.headers])。
+  final Map<String, String>? headers;
+
   final FilterQuality filterQuality;
   final bool gaplessPlayback;
   final ImageFrameBuilder? frameBuilder;
@@ -645,6 +665,7 @@ class RemoteImage extends StatelessWidget {
     final base = RemoteImageProvider(
       url,
       version: RemoteImageStore.versionOf(url),
+      headers: headers,
     );
     return Image(
       image: cacheWidth == null
