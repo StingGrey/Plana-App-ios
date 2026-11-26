@@ -91,7 +91,9 @@ void main() {
       final basic = 'Basic ${base64Encode(utf8.encode('alice:secret'))}';
       expect(seen[0].url.host, 'danbooru.donmai.us');
       expect(seen[0].headers['Authorization'], basic);
-      expect(seen[1].url.host, 'safebooru.donmai.us');
+      // Safebooru 整站挂在 Cloudflare 验证后面:走 Danbooru 接口钉全年龄,同一把 Key
+      expect(seen[1].url.host, 'danbooru.donmai.us');
+      expect(seen[1].url.queryParameters['tags'], 'rating:g');
       expect(seen[1].headers['Authorization'], basic);
       expect(seen[2].headers.containsKey('Authorization'), isFalse);
       // 凭据不进网址
@@ -130,6 +132,65 @@ void main() {
           ),
         ),
       );
+    });
+
+    test('Cloudflare 验证页报成人机验证,不冤枉 Key', () async {
+      final service = OnlineGalleryService(
+        client: MockClient(
+          (_) async => http.Response(
+            '<!DOCTYPE html><html><head><title>Just a moment...</title>',
+            403,
+            headers: {'content-type': 'text/html; charset=UTF-8'},
+          ),
+        ),
+        credentials: () async => const OnlineGalleryCredentials(
+          danbooruLogin: 'alice',
+          danbooruApiKey: 'secret',
+        ),
+      );
+      addTearDown(service.dispose);
+      await expectLater(
+        _fetch(service, OnlineGallerySource.danbooru),
+        throwsA(
+          isA<Exception>()
+              .having((e) => '$e', 'message', contains('Cloudflare'))
+              .having((e) => '$e', 'message', isNot(contains('API Key 无效'))),
+        ),
+      );
+    });
+
+    test('Safebooru 带上搜索词仍钉全年龄,排行榜在本地筛掉非全年龄', () async {
+      final seen = <http.Request>[];
+      Map<String, Object> post(int id, String rating) => {
+        'id': id,
+        'rating': rating,
+        'large_file_url': 'https://cdn.donmai.us/sample/$id.jpg',
+        'file_url': 'https://cdn.donmai.us/original/$id.jpg',
+        'tag_string': 'solo',
+      };
+      final service = OnlineGalleryService(
+        client: MockClient((req) async {
+          seen.add(req);
+          return http.Response(
+            jsonEncode([post(1, 'g'), post(2, 's'), post(3, 'e')]),
+            200,
+          );
+        }),
+      );
+      addTearDown(service.dispose);
+      await _fetch(service, OnlineGallerySource.safebooru, query: 'solo');
+      expect(seen.single.url.queryParameters['tags'], 'solo rating:g');
+      final ranking = await service.fetch(
+        OnlineGallerySource.safebooru,
+        feed: OnlineGalleryFeed.ranking,
+        query: '',
+        page: 1,
+        ratings: _all,
+        blacklist: const {},
+      );
+      expect(seen.last.url.host, 'danbooru.donmai.us');
+      expect(ranking.items.map((e) => e.id), ['1']);
+      expect(ranking.hasMore, isTrue);
     });
 
     test('Gelbooru 填了 Key 走 DAPI,解析原图、尺寸、分级与日期', () async {

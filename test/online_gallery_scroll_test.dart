@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:plana_app/features/editor/data/tag_translation_service.dart';
 import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/features/generate/generate_state.dart';
 import 'package:plana_app/features/online_gallery/online_gallery_models.dart';
@@ -50,6 +51,11 @@ void main() {
       addTearDown(service.dispose);
       final container = ProviderContainer(
         overrides: [
+          tagTranslationServiceProvider.overrideWith((ref) {
+            final service = TagTranslationService(enabled: false, baseUrl: '');
+            ref.onDispose(service.dispose);
+            return service;
+          }),
           appStoresProvider.overrideWithValue(AppStores.ephemeral()),
           onlineGalleryServiceProvider.overrideWithValue(service),
         ],

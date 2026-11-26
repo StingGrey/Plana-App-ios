@@ -7,6 +7,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
 import '../../core/store/app_stores.dart';
+import '../editor/data/local_tag_db.dart';
+import '../editor/data/tag_index.dart' show TagHit;
 import 'online_gallery_credentials.dart';
 import 'online_gallery_models.dart';
 import 'ai_tag_metadata.dart';
@@ -24,14 +26,20 @@ class OnlineGalleryPageResult {
 /// notifier deal only with [OnlineGalleryItem], so adding a new source does not
 /// leak API response shapes into the UI.
 class OnlineGalleryService {
-  OnlineGalleryService({http.Client? client, this._credentials})
-    : _client = client ?? http.Client();
+  OnlineGalleryService({
+    http.Client? client,
+    this._credentials,
+    this._localTags,
+  }) : _client = client ?? http.Client();
 
   final http.Client _client;
 
   /// 每次请求前现取一次用户自填的凭据(见 [OnlineGalleryCredentials]);
   /// null / 读失败 = 匿名。
   final Future<OnlineGalleryCredentials> Function()? _credentials;
+
+  /// 离线词库的英文补全(`LocalTagDb.search`),搜索框联想的兜底;null = 没有兜底。
+  final LocalTagSearch? _localTags;
   static const _timeout = Duration(seconds: 25);
   static const _ua = 'Plana-App/1.1 (mobile online gallery)';
   String? _aiTagAssetBase;
@@ -110,9 +118,8 @@ class OnlineGalleryService {
     switch (item.source) {
       case OnlineGallerySource.danbooru:
       case OnlineGallerySource.safebooru:
-        final base = _donmaiBase(item.source);
         final response = await _getJson(
-          '$base/posts/${item.id}.json',
+          '$_donmaiApi/posts/${item.id}.json',
           creds: creds,
         );
         if (response is! Map) throw const FormatException('详情格式异常');
@@ -186,6 +193,122 @@ class OnlineGalleryService {
     }
   }
 
+  /// 搜索框的标签联想。[term] 是光标所在那个词(`-` / `~` 前缀已去掉)。
+  ///
+  /// Danbooru / Safebooru 用站点自己的 autocomplete(带别名,中日文的其他名也认,
+  /// 和网页版那个下拉同一份);Gelbooru 用 autocomplete2。站点连不上、没结果,
+  /// 以及 AI TAG(搜的是提示词原文)都退回离线词库。
+  Future<List<GalleryTagSuggestion>> suggestTags(
+    OnlineGallerySource source,
+    String term, {
+    int limit = 10,
+  }) async {
+    final q = term.trim();
+    if (q.isEmpty || source == OnlineGallerySource.codex) return const [];
+    try {
+      final online = switch (source) {
+        OnlineGallerySource.danbooru ||
+        OnlineGallerySource.safebooru => await _danbooruSuggest(q, limit),
+        OnlineGallerySource.gelbooru => await _gelbooruSuggest(q, limit),
+        _ => const <GalleryTagSuggestion>[],
+      };
+      if (online.isNotEmpty) return online;
+    } catch (_) {
+      // 联想只是锦上添花:站点挂了、限流了都退回离线词库,不打扰输入
+    }
+    return _localSuggest(q, limit);
+  }
+
+  Future<List<GalleryTagSuggestion>> _danbooruSuggest(
+    String q,
+    int limit,
+  ) async {
+    final url = Uri.https('danbooru.donmai.us', '/autocomplete.json', {
+      'search[query]': q,
+      'search[type]': 'tag_query',
+      'version': '1',
+      'limit': '$limit',
+    }).toString();
+    final raw = await _getJson(url, creds: await _creds());
+    if (raw is! List) return const [];
+    final out = <GalleryTagSuggestion>[];
+    for (final v in raw) {
+      if (v is! Map) continue;
+      final value = _string(v['value']).trim();
+      if (value.isEmpty) continue;
+      final type = _string(v['type']);
+      // rating: / order: 这类元标签的取值:label 只是半截(general),显示全名
+      final meta = type == 'static' || type == 'metatag';
+      final antecedent = _string(v['antecedent']).trim();
+      out.add(
+        GalleryTagSuggestion(
+          value: value,
+          label: meta ? value : _string(v['label'], value.replaceAll('_', ' ')),
+          category: meta
+              ? OnlineGalleryTagCategory.meta
+              : donmaiTagCategory(_int(v['category'])),
+          postCount: _int(v['post_count']),
+          antecedent: antecedent.isEmpty ? null : antecedent,
+        ),
+      );
+    }
+    return out;
+  }
+
+  Future<List<GalleryTagSuggestion>> _gelbooruSuggest(
+    String q,
+    int limit,
+  ) async {
+    final url = Uri.https('gelbooru.com', '/index.php', {
+      'page': 'autocomplete2',
+      'term': q,
+      'type': 'tag_query',
+      'limit': '$limit',
+    }).toString();
+    final raw = await _getJson(url);
+    if (raw is! List) return const [];
+    return [
+      for (final v in raw)
+        if (v is Map && _string(v['value']).trim().isNotEmpty)
+          GalleryTagSuggestion(
+            value: _string(v['value']).trim(),
+            label: _string(
+              v['label'],
+              _string(v['value']).replaceAll('_', ' '),
+            ),
+            category: switch (_string(v['category'])) {
+              'artist' => OnlineGalleryTagCategory.artist,
+              'character' => OnlineGalleryTagCategory.character,
+              'copyright' => OnlineGalleryTagCategory.copyright,
+              'metadata' || 'meta' => OnlineGalleryTagCategory.meta,
+              'tag' || 'general' => OnlineGalleryTagCategory.general,
+              _ => OnlineGalleryTagCategory.unknown,
+            },
+            postCount: _int(v['post_count']),
+          ),
+    ];
+  }
+
+  Future<List<GalleryTagSuggestion>> _localSuggest(String q, int limit) async {
+    final search = _localTags;
+    if (search == null) return const [];
+    try {
+      final hits = await search(q, limit: limit);
+      return [
+        for (final h in hits)
+          GalleryTagSuggestion(
+            value: h.tag.trim().replaceAll(' ', '_'),
+            label: h.tag.trim().replaceAll('_', ' '),
+            category: donmaiTagCategory(h.category),
+            postCount: h.count,
+            translation: h.zh,
+          ),
+      ];
+    } catch (_) {
+      return const [];
+    }
+  }
+
   void dispose() => _client.close();
 
   Future<Uint8List> download(String url) async {
@@ -214,9 +337,13 @@ class OnlineGalleryService {
     required String rankingPeriod,
     required int dateDays,
   }) async {
-    final base = _donmaiBase(source);
+    const base = _donmaiApi;
+    final safe = source == OnlineGallerySource.safebooru;
     var tags = query.trim();
-    if (source != OnlineGallerySource.safebooru && ratings.length < 4) {
+    if (safe) {
+      // rating: 不占匿名用户的两个标签名额
+      tags = _join(tags, 'rating:g');
+    } else if (ratings.length < 4) {
       final rating = ratings.length == 1
           ? 'rating:${ratings.first}'
           : ratings.map((value) => '~rating:$value').join(' ');
@@ -241,6 +368,8 @@ class OnlineGalleryService {
       try {
         final item = _donmaiItem(source, Map<String, dynamic>.from(value));
         if (item.previewUrl.isEmpty ||
+            // 排行榜接口不吃 tags,Safebooru 的全年龄只能在这里筛
+            (safe && item.rating != 'g') ||
             !_passes(item, ratings, blacklist) ||
             !_matchesQuery(item, query) ||
             !_matchesDate(item, dateDays)) {
@@ -710,6 +839,11 @@ class OnlineGalleryService {
         _ => 'AI TAG 中转请求失败 (${proxy.statusCode})',
       });
     }
+    if (isCloudflareChallenge(response)) {
+      throw HttpException(
+        '${uri.host} 开了 Cloudflare 人机验证,App 里没法直连 (${response.statusCode})',
+      );
+    }
     final authed =
         headers.containsKey('Authorization') ||
         uri.queryParameters.containsKey('api_key');
@@ -793,10 +927,13 @@ class OnlineGalleryService {
     return null;
   }
 
-  String _donmaiBase(OnlineGallerySource source) =>
-      source == OnlineGallerySource.safebooru
-      ? 'https://safebooru.donmai.us'
-      : 'https://danbooru.donmai.us';
+  /// Danbooru 与 Safebooru 的接口都走这里。
+  ///
+  /// safebooru.donmai.us 是同一个站只看全年龄(rating:g)的那一面,同一个库、
+  /// 同一套账号;但它整站挂在 Cloudflare 浏览器验证后面,原生请求不论带不带
+  /// Key 一律 403 —— 以前带了 Key 就报成「API Key 无效」,看着像两边 Key 不
+  /// 通用。所以 Safebooru 改走 Danbooru 接口并钉 `rating:g`,同一把 Key 两边都用。
+  static const _donmaiApi = 'https://danbooru.donmai.us';
 
   bool _passes(
     OnlineGalleryItem item,
@@ -1050,6 +1187,7 @@ DateTime? parseGelbooruDate(String raw) {
 final onlineGalleryServiceProvider = Provider<OnlineGalleryService>((ref) {
   final service = OnlineGalleryService(
     credentials: () => ref.read(onlineGalleryCredentialsProvider.future),
+    localTags: ref.watch(localTagDbProvider).search,
   );
   // 凭据改了(在 API Key 面板里保存):不重建服务,下一次请求自然取到新的
   ref.onDispose(service.dispose);
@@ -1422,4 +1560,58 @@ class OnlineGalleryNotifier extends Notifier<OnlineGalleryState> {
     }
     return true;
   }
+}
+
+/// Cloudflare 的浏览器验证页(「Just a moment...」):原生 HTTP 客户端过不去,
+/// 和 Key 对不对无关,别报成 Key 无效。
+bool isCloudflareChallenge(http.Response response) {
+  if (response.statusCode != 403 && response.statusCode != 503) return false;
+  if (response.headers['cf-mitigated'] == 'challenge') return true;
+  final type = (response.headers['content-type'] ?? '').toLowerCase();
+  if (!type.contains('html')) return false;
+  final head = utf8.decode(
+    response.bodyBytes.take(4096).toList(),
+    allowMalformed: true,
+  );
+  return head.contains('Just a moment') ||
+      head.contains('challenge-platform') ||
+      head.contains('cf-chl');
+}
+
+/// 离线词库英文补全的签名(`LocalTagDb.search`)。
+typedef LocalTagSearch =
+    Future<List<TagHit>> Function(String query, {int limit});
+
+/// Danbooru 类目号(离线词库同口径):0 一般 / 1 画师 / 3 作品 / 4 角色 / 5 meta。
+OnlineGalleryTagCategory donmaiTagCategory(int category) => switch (category) {
+  0 => OnlineGalleryTagCategory.general,
+  1 => OnlineGalleryTagCategory.artist,
+  3 => OnlineGalleryTagCategory.copyright,
+  4 => OnlineGalleryTagCategory.character,
+  5 => OnlineGalleryTagCategory.meta,
+  _ => OnlineGalleryTagCategory.unknown,
+};
+
+/// 搜索框联想的一条。
+class GalleryTagSuggestion {
+  const GalleryTagSuggestion({
+    required this.value,
+    required this.label,
+    this.category = OnlineGalleryTagCategory.unknown,
+    this.postCount = 0,
+    this.antecedent,
+    this.translation,
+  });
+
+  /// 填进搜索框的写法(下划线形态,元标签带前缀)。
+  final String value;
+  final String label;
+  final OnlineGalleryTagCategory category;
+  final int postCount;
+
+  /// 输入命中的是别名 / 其他名(比如「初音ミク」)时的那个原词。
+  final String? antecedent;
+
+  /// 词库自带的中文;没有时界面再去共享缓存里反查。
+  final String? translation;
 }

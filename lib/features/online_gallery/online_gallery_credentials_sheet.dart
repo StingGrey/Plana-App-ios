@@ -146,7 +146,8 @@ class _CredentialsSheetState extends ConsumerState<_CredentialsSheet> {
               title: 'Danbooru / Safebooru',
               done: _draft.hasDanbooru,
               hint:
-                  '登录 danbooru.donmai.us → 我的账户 → API Key 里新建一把。'
+                  '登录 danbooru.donmai.us → 我的账户 → API Key 里新建一把,两边共用这一把'
+                  '(Safebooru 就是 Danbooru 只看全年龄的那一面)。'
                   '填了按账号权限访问:搜索可用的标签数、能看的内容随账号等级,限流也更宽。',
               children: [
                 _field(_danLogin, '用户名'),

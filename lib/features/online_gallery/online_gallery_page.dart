@@ -1,7 +1,7 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/store/app_stores.dart';
@@ -22,11 +22,20 @@ import 'online_gallery_credentials_sheet.dart';
 import 'online_gallery_import_sheet.dart';
 import 'online_gallery_models.dart';
 import 'online_gallery_service.dart';
+import 'online_gallery_tag_chips.dart';
+import '../editor/data/suggestions.dart' show translationOf;
 
 // Keep the scroll bucket beside the cached gallery data, beyond a route's life.
 final onlineGalleryScrollStorageProvider = Provider(
   (ref) => PageStorageBucket(),
 );
+
+/// 搜索框联想的一条:联想本身、当时光标那个词、选它之后整个搜索框的内容。
+typedef _SuggestPick = ({
+  GalleryTagSuggestion suggestion,
+  String term,
+  String query,
+});
 
 /// Multi-source online reference gallery.
 class OnlineGalleryPage extends ConsumerStatefulWidget {
@@ -42,6 +51,7 @@ class OnlineGalleryPage extends ConsumerStatefulWidget {
 
 class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
   final _search = TextEditingController();
+  final _searchFocus = FocusNode();
   final _scroll = ScrollController();
   Timer? _debounce;
   bool _showFilters = false;
@@ -57,6 +67,7 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
   void dispose() {
     _debounce?.cancel();
     _search.dispose();
+    _searchFocus.dispose();
     _scroll.dispose();
     super.dispose();
   }
@@ -102,6 +113,34 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
         unawaited(_notifier.load(append: true));
       }
     });
+  }
+
+  /// 搜索框联想:光标所在那个词停顿一下再去问(打字途中不每个字母都问)。
+  /// 过期的结果 RawAutocomplete 自己会丢,这里只管少问几次。
+  Future<Iterable<_SuggestPick>> _suggestFor(
+    TextEditingValue value,
+    OnlineGallerySource source,
+  ) async {
+    if (source == OnlineGallerySource.codex) return const [];
+    final word = galleryQueryWordAt(value);
+    if (word == null || !galleryWorthSuggesting(word.term)) return const [];
+    await Future<void>.delayed(const Duration(milliseconds: 180));
+    if (!mounted || _search.text != value.text) return const [];
+    final list = await ref
+        .read(onlineGalleryServiceProvider)
+        .suggestTags(source, word.term);
+    return [
+      for (final s in list)
+        (
+          suggestion: s,
+          term: word.term,
+          // AI TAG 搜的是提示词原文(空格写法),标签站认下划线
+          query: galleryQueryReplace(
+            word,
+            source == OnlineGallerySource.aiTag ? s.label : s.value,
+          ),
+        ),
+    ];
   }
 
   void _onSearchChanged(String value) {
@@ -379,43 +418,109 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
   }
 
   Widget _searchBar(OnlineGalleryState state, ColorScheme scheme) {
+    final source = state.source;
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 2, 14, 4),
-      child: TextField(
-        controller: _search,
-        onChanged: _onSearchChanged,
-        onSubmitted: (value) {
+      child: RawAutocomplete<_SuggestPick>(
+        textEditingController: _search,
+        focusNode: _searchFocus,
+        displayStringForOption: (pick) => pick.query,
+        optionsBuilder: (value) => _suggestFor(value, source),
+        // 点一条就把光标那个词换掉并直接搜;回车照旧按原文搜(不抢选中项)
+        onSelected: (pick) {
           _debounce?.cancel();
-          _notifier.setQuery(value);
+          _notifier.setQuery(pick.query);
           _notifier.load();
         },
-        decoration: InputDecoration(
-          isDense: true,
-          prefixIcon: const Icon(Icons.search, size: 20),
-          hintText: state.feed == OnlineGalleryFeed.ranking
-              ? '搜索排行标签…'
-              : '搜索标签…',
-          suffixIcon: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (state.blacklist.isNotEmpty)
-                Icon(Icons.block, size: 17, color: scheme.error),
-              IconButton(
-                tooltip: _showFilters ? '收起筛选' : '展开筛选',
-                icon: Icon(
-                  _showFilters ? Icons.expand_less : Icons.expand_more,
+        optionsViewBuilder: (context, onSelected, options) =>
+            _suggestionList(context, scheme, onSelected, options.toList()),
+        fieldViewBuilder: (context, controller, focusNode, _) => TextField(
+          controller: controller,
+          focusNode: focusNode,
+          onChanged: _onSearchChanged,
+          onSubmitted: (value) {
+            _debounce?.cancel();
+            _notifier.setQuery(value);
+            _notifier.load();
+          },
+          decoration: InputDecoration(
+            isDense: true,
+            prefixIcon: const Icon(Icons.search, size: 20),
+            hintText: state.feed == OnlineGalleryFeed.ranking
+                ? '搜索排行标签…'
+                : '搜索标签…',
+            suffixIcon: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (state.blacklist.isNotEmpty)
+                  Icon(Icons.block, size: 17, color: scheme.error),
+                IconButton(
+                  tooltip: _showFilters ? '收起筛选' : '展开筛选',
+                  icon: Icon(
+                    _showFilters ? Icons.expand_less : Icons.expand_more,
+                  ),
+                  onPressed: () => setState(() => _showFilters = !_showFilters),
                 ),
-                onPressed: () => setState(() => _showFilters = !_showFilters),
-              ),
-            ],
+              ],
+            ),
+            filled: true,
+            fillColor: scheme.surfaceContainerHigh,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide.none,
+            ),
+            contentPadding: const EdgeInsets.symmetric(vertical: 9),
           ),
-          filled: true,
-          fillColor: scheme.surfaceContainerHigh,
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide.none,
+        ),
+      ),
+    );
+  }
+
+  Widget _suggestionList(
+    BuildContext context,
+    ColorScheme scheme,
+    AutocompleteOnSelected<_SuggestPick> onSelected,
+    List<_SuggestPick> options,
+  ) {
+    final highlighted = AutocompleteHighlightedOption.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Material(
+        color: scheme.surfaceContainerHigh,
+        elevation: 6,
+        shadowColor: Colors.black.withValues(alpha: .35),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(
+            color: scheme.outlineVariant.withValues(alpha: .6),
+            width: .5,
           ),
-          contentPadding: const EdgeInsets.symmetric(vertical: 9),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 360),
+          child: ListView.builder(
+            key: const ValueKey('online-gallery-suggestions'),
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            shrinkWrap: true,
+            itemCount: options.length,
+            itemBuilder: (context, i) {
+              final pick = options[i];
+              final s = pick.suggestion;
+              return GallerySuggestionTile(
+                label: s.label,
+                term: pick.term,
+                color: galleryTagColor(s.category, scheme),
+                postCount: s.postCount,
+                antecedent: s.antecedent,
+                translation: galleryTagTranslatable(s.category)
+                    ? s.translation ?? translationOf(s.value)
+                    : null,
+                highlighted: i == highlighted,
+                onTap: () => onSelected(pick),
+              );
+            },
+          ),
         ),
       ),
     );
@@ -1126,11 +1231,48 @@ class _OnlineGalleryDetailPageState
     _openGeneration();
   }
 
+  /// 宽屏(iPad 横竖屏、大屏)左图右栏;窄屏图在上、操作吸底。
+  static const _wideBreakpoint = 840.0;
+
+  void _searchTag(String tag) {
+    final current = ref.read(onlineGalleryProvider).query;
+    final next = current.trim().isEmpty ? tag : '$current $tag';
+    ref.read(onlineGalleryProvider.notifier).setQuery(next);
+    unawaited(ref.read(onlineGalleryProvider.notifier).load());
+    Navigator.pop(context);
+  }
+
+  void _copyTag(String tag) {
+    final text = tag.replaceAll('_', ' ');
+    Clipboard.setData(ClipboardData(text: text));
+    hintSnack(context, '已复制:$text', icon: Icons.copy_rounded);
+  }
+
+  void _openViewer(OnlineGalleryItem item) {
+    final preview = item.previewUrl.isEmpty ? item.imageUrl : item.previewUrl;
+    final full = item.imageUrl.isEmpty ? preview : item.imageUrl;
+    if (full.isEmpty) return;
+    Navigator.of(context).push(
+      PageRouteBuilder<void>(
+        transitionDuration: Motion.medium,
+        reverseTransitionDuration: Motion.fast,
+        pageBuilder: (_, _, _) => _OnlineImageViewer(
+          full: full,
+          preview: preview,
+          sourceWidth: item.width,
+        ),
+        transitionsBuilder: (_, animation, _, child) =>
+            FadeTransition(opacity: animation, child: child),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(onlineGalleryProvider);
     final favorite = state.isFavorite(_item);
     final scheme = context.scheme;
+    final wide = MediaQuery.sizeOf(context).width >= _wideBreakpoint;
     return Scaffold(
       appBar: AppBar(
         title: Text(
@@ -1145,282 +1287,548 @@ class _OnlineGalleryDetailPageState
             onPressed: () =>
                 ref.read(onlineGalleryProvider.notifier).toggleFavorite(_item),
           ),
-          IconButton(
-            tooltip: '保存到本地图库',
-            icon: _saving
-                ? const SizedBox.square(
-                    dimension: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.download_outlined),
-            onPressed: _saving ? null : _saveLocal,
-          ),
+          const SizedBox(width: 4),
         ],
       ),
-      bottomNavigationBar: SafeArea(
-        key: const ValueKey('online-gallery-detail-actions'),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 6, 14, 10),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: FilledButton.tonalIcon(
-                      onPressed: _loading ? null : _usePrompt,
-                      icon: const Icon(Icons.auto_awesome, size: 18),
-                      label: const Text('使用提示词'),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: FilledButton.icon(
-                      onPressed: _saving ? null : _saveLocal,
-                      icon: const Icon(Icons.save_alt, size: 18),
-                      label: const Text('保存本地'),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 7),
-              Row(
-                children: [
-                  Expanded(
-                    child: FilledButton.tonalIcon(
-                      onPressed: _saving ? null : _useAsReference,
-                      icon: const Icon(Icons.center_focus_strong, size: 18),
-                      label: const Text('用作参考'),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: FilledButton.tonalIcon(
-                      onPressed: _saving ? null : _useAsImg2Img,
-                      icon: const Icon(Icons.image_search_outlined, size: 18),
-                      label: const Text('图生图'),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 7),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: _savePromptToLibrary,
-                  icon: const Icon(Icons.bookmark_add_outlined, size: 18),
-                  label: const Text('保存提示词到词库'),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+      bottomNavigationBar: wide
+          ? null
+          : SafeArea(
+              key: const ValueKey('online-gallery-detail-actions'),
+              child: _actions(scheme),
+            ),
       // Keep the list rendition visible while metadata is fetched. Previously
       // the whole body was replaced by a spinner/error, which made a tap look
       // like an empty black page when a source detail endpoint was slow or
       // blocked.
-      body: _body(scheme),
+      body: wide ? _wideBody(scheme) : _narrowBody(scheme),
     );
   }
 
-  Widget _body(ColorScheme scheme) {
-    final item = _item;
-    final imageRatio = item.aspectRatio.clamp(.3, 3.5).toDouble();
+  /// 操作区:主操作「使用提示词」占满一行,其余四个并排成图标 + 字的小格。
+  Widget _actions(ColorScheme scheme) => Padding(
+    padding: const EdgeInsets.fromLTRB(14, 8, 14, 10),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(
+          width: double.infinity,
+          height: 46,
+          child: FilledButton.icon(
+            onPressed: _loading ? null : _usePrompt,
+            icon: const Icon(Icons.auto_awesome, size: 18),
+            label: const Text('使用提示词'),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: _ActionTile(
+                icon: Icons.save_alt,
+                label: '保存本地',
+                busy: _saving,
+                onTap: _saving ? null : _saveLocal,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _ActionTile(
+                icon: Icons.center_focus_strong,
+                label: '用作参考',
+                onTap: _saving ? null : _useAsReference,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _ActionTile(
+                icon: Icons.image_search_outlined,
+                label: '图生图',
+                onTap: _saving ? null : _useAsImg2Img,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _ActionTile(
+                icon: Icons.bookmark_add_outlined,
+                label: '存到词库',
+                onTap: _savePromptToLibrary,
+              ),
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
+
+  Widget _wideBody(ColorScheme scheme) {
+    final width = MediaQuery.sizeOf(context).width;
+    final panel = (width * .32).clamp(360.0, 440.0);
+    return Column(
+      children: [
+        SizedBox(
+          height: 2,
+          child: _loading ? const LinearProgressIndicator(minHeight: 2) : null,
+        ),
+        Expanded(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(child: _stage()),
+              SizedBox(
+                width: panel,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    border: Border(
+                      left: BorderSide(
+                        color: scheme.outlineVariant.withValues(alpha: .6),
+                        width: .5,
+                      ),
+                    ),
+                  ),
+                  child: Column(
+                    children: [
+                      Expanded(
+                        child: ListView(
+                          padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+                          children: _info(scheme),
+                        ),
+                      ),
+                      SafeArea(
+                        key: const ValueKey('online-gallery-detail-actions'),
+                        top: false,
+                        left: false,
+                        child: _actions(scheme),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 宽屏左侧的看图区:整张图按比例放进可用空间,多图时下面是切换。
+  Widget _stage() {
+    final images = _detail?.images ?? const <OnlineGalleryItem>[];
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+      child: Column(
+        children: [
+          Expanded(child: Center(child: _image(_item))),
+          if (images.length > 1) ...[
+            const SizedBox(height: 12),
+            _imagePicker(images),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _narrowBody(ColorScheme scheme) {
+    final images = _detail?.images ?? const <OnlineGalleryItem>[];
     return ListView(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
       children: [
         if (_loading) const LinearProgressIndicator(minHeight: 2),
-        if (_error != null)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Material(
-              color: scheme.errorContainer,
-              borderRadius: BorderRadius.circular(10),
-              child: ListTile(
-                dense: true,
-                leading: Icon(
-                  Icons.info_outline,
-                  color: scheme.onErrorContainer,
-                ),
-                title: Text(
-                  '详情暂时不可用，先显示预览图',
+        // 竖长图别把下面的信息整屏挤走
+        Center(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height * .6,
+            ),
+            child: _image(_item),
+          ),
+        ),
+        if (images.length > 1) ...[
+          const SizedBox(height: 10),
+          _imagePicker(images),
+        ],
+        const SizedBox(height: 18),
+        ..._info(scheme),
+      ],
+    );
+  }
+
+  Widget _image(OnlineGalleryItem item) => AspectRatio(
+    key: const ValueKey('online-gallery-detail-image'),
+    aspectRatio: item.aspectRatio.clamp(.3, 3.5).toDouble(),
+    child: GestureDetector(
+      onTap: () => _openViewer(item),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(14),
+        child: _RemoteThumb(
+          // Load the large preview first. Full originals can be very large
+          // or hotlink-protected; actions still download imageUrl, and the
+          // full-screen viewer swaps the original in once it arrives.
+          url: item.previewUrl.isEmpty ? item.imageUrl : item.previewUrl,
+          fit: BoxFit.contain,
+          fallbackUrl: item.imageUrl,
+        ),
+      ),
+    ),
+  );
+
+  Widget _imagePicker(List<OnlineGalleryItem> images) => Wrap(
+    spacing: 6,
+    runSpacing: 6,
+    alignment: WrapAlignment.center,
+    children: [
+      for (var i = 0; i < images.length; i++)
+        ChoiceChip(
+          label: Text('图片 ${i + 1}'),
+          selected: _imageIndex == i,
+          onSelected: (_) => setState(() => _imageIndex = i),
+        ),
+    ],
+  );
+
+  List<Widget> _info(ColorScheme scheme) {
+    final item = _item;
+    final rating = OnlineGalleryRatingX.fromKey(item.rating);
+    final created = item.createdAt?.toLocal();
+    return [
+      if (_error != null)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 14),
+          child: Material(
+            color: scheme.errorContainer,
+            borderRadius: BorderRadius.circular(10),
+            child: ListTile(
+              dense: true,
+              leading: Icon(Icons.info_outline, color: scheme.onErrorContainer),
+              title: Text(
+                '详情暂时不可用，先显示预览图',
+                style: TextStyle(color: scheme.onErrorContainer),
+              ),
+              trailing: TextButton(
+                onPressed: _loadDetail,
+                child: Text(
+                  '重试',
                   style: TextStyle(color: scheme.onErrorContainer),
-                ),
-                trailing: TextButton(
-                  onPressed: _loadDetail,
-                  child: Text(
-                    '重试',
-                    style: TextStyle(color: scheme.onErrorContainer),
-                  ),
                 ),
               ),
             ),
           ),
-        if ((_detail?.images.length ?? 0) > 1)
-          Wrap(
-            spacing: 6,
-            children: [
-              for (var i = 0; i < _detail!.images.length; i++)
-                ChoiceChip(
-                  label: Text('图片 ${i + 1}'),
-                  selected: _imageIndex == i,
-                  onSelected: (_) => setState(() => _imageIndex = i),
-                ),
-            ],
-          ),
-        AspectRatio(
-          key: const ValueKey('online-gallery-detail-image'),
-          aspectRatio: imageRatio,
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: _RemoteThumb(
-              // Load the large preview first. Full originals can be very large
-              // or hotlink-protected; actions below still download imageUrl.
-              url: item.previewUrl.isEmpty ? item.imageUrl : item.previewUrl,
-              fit: BoxFit.contain,
-              fallbackUrl: item.imageUrl,
-            ),
+        ),
+      if (item.title.isNotEmpty) ...[
+        Text(
+          item.title,
+          style: context.texts.titleMedium!.copyWith(
+            fontWeight: FontWeight.w700,
           ),
         ),
         const SizedBox(height: 14),
-        Wrap(
-          spacing: 7,
-          runSpacing: 7,
-          children: [
-            _DetailChip(label: '来源', value: item.source.label),
-            if (item.source == OnlineGallerySource.aiTag)
-              _DetailChip(label: '生成平台', value: item.platform),
-            _DetailChip(label: '评分', value: '${item.score}'),
-            if (item.width > 0)
-              _DetailChip(label: '尺寸', value: '${item.width} × ${item.height}'),
-            if (item.author.isNotEmpty)
-              _DetailChip(label: '作者', value: item.author),
-          ],
+      ],
+      Wrap(
+        spacing: 22,
+        runSpacing: 12,
+        children: [
+          _Spec(label: '来源', value: item.source.label),
+          if (item.source == OnlineGallerySource.aiTag)
+            _Spec(label: '生成平台', value: item.platform),
+          if (rating != null) _Spec(label: '分级', value: rating.label),
+          _Spec(label: '评分', value: '${item.score}'),
+          if (item.width > 0)
+            _Spec(label: '尺寸', value: '${item.width} × ${item.height}'),
+          if (item.author.isNotEmpty) _Spec(label: '作者', value: item.author),
+          if (created != null)
+            _Spec(
+              label: '发布',
+              value:
+                  '${created.year}-${'${created.month}'.padLeft(2, '0')}-${'${created.day}'.padLeft(2, '0')}',
+            ),
+        ],
+      ),
+      if (item.description.isNotEmpty) ...[
+        const SizedBox(height: 18),
+        _TextSection(title: '简介', text: item.description),
+      ],
+      if (item.prompt.isNotEmpty) ...[
+        const SizedBox(height: 18),
+        _TextSection(
+          title: '正向提示词',
+          text: item.prompt,
+          source: item.promptSource,
         ),
-        if (item.title.isNotEmpty) ...[
-          const SizedBox(height: 18),
-          Text(
-            item.title,
-            style: context.texts.titleMedium!.copyWith(
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ],
-        if (item.description.isNotEmpty) ...[
-          const SizedBox(height: 14),
-          _TextSection(title: '简介', text: item.description),
-        ],
-        if (item.prompt.isNotEmpty) ...[
-          const SizedBox(height: 14),
-          _TextSection(
-            title: '正向提示词',
-            text: item.prompt,
-            source: item.promptSource,
-          ),
-        ],
-        if (item.negativePrompt.isNotEmpty) ...[
-          const SizedBox(height: 14),
-          _TextSection(
-            title: '负向提示词',
-            text: item.negativePrompt,
-            source: item.negativePromptSource,
-          ),
-        ],
-        if (!_loading &&
-            item.source == OnlineGallerySource.aiTag &&
-            item.prompt.isEmpty &&
-            item.negativePrompt.isEmpty)
-          const Padding(
-            padding: EdgeInsets.only(top: 14),
-            child: Text('这张图没有可解析的生图提示词；作品标签不会作为提示词导入。'),
-          ),
-        if (item.tags.isNotEmpty) ...[
-          const SizedBox(height: 16),
-          Text(
-            '${item.source == OnlineGallerySource.aiTag ? '作品标签（非生图提示词）' : '标签'} (${item.tags.length})',
-            style: context.texts.titleSmall!.copyWith(
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 7),
-          for (final group in item.groupedTags.entries) ...[
-            Padding(
-              padding: const EdgeInsets.only(top: 12, bottom: 6),
-              child: Text(
-                '${group.key.label} (${group.value.length})',
-                style: context.texts.titleSmall!.copyWith(
-                  color: galleryTagColor(group.key, scheme),
-                  fontWeight: FontWeight.w700,
-                ),
+      ],
+      if (item.negativePrompt.isNotEmpty) ...[
+        const SizedBox(height: 14),
+        _TextSection(
+          title: '负向提示词',
+          text: item.negativePrompt,
+          source: item.negativePromptSource,
+        ),
+      ],
+      if (!_loading &&
+          item.source == OnlineGallerySource.aiTag &&
+          item.prompt.isEmpty &&
+          item.negativePrompt.isEmpty)
+        const Padding(
+          padding: EdgeInsets.only(top: 14),
+          child: Text('这张图没有可解析的生图提示词；作品标签不会作为提示词导入。'),
+        ),
+      if (item.tags.isNotEmpty) ...[
+        const SizedBox(height: 22),
+        _tags(item, scheme),
+      ],
+    ];
+  }
+
+  Widget _tags(OnlineGalleryItem item, ColorScheme scheme) {
+    final groups = item.groupedTags;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.baseline,
+          textBaseline: TextBaseline.alphabetic,
+          children: [
+            Text(
+              item.source == OnlineGallerySource.aiTag ? '作品标签' : '标签',
+              style: context.texts.titleSmall!.copyWith(
+                fontWeight: FontWeight.w700,
               ),
             ),
-            Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: [
-                for (final tag in group.value)
-                  InputChip(
-                    label: Text(
-                      tag.replaceAll('_', ' '),
-                      style: TextStyle(
-                        color: galleryTagColor(group.key, scheme),
-                      ),
-                    ),
-                    onPressed: () {
-                      final current = ref.read(onlineGalleryProvider).query;
-                      final next = current.trim().isEmpty
-                          ? tag
-                          : '$current $tag';
-                      ref.read(onlineGalleryProvider.notifier).setQuery(next);
-                      unawaited(
-                        ref.read(onlineGalleryProvider.notifier).load(),
-                      );
-                      Navigator.pop(context);
-                    },
-                    visualDensity: VisualDensity.compact,
-                  ),
-              ],
+            const SizedBox(width: 6),
+            Text(
+              '${item.tags.length}',
+              style: context.texts.labelMedium!.copyWith(color: scheme.outline),
+            ),
+            const Spacer(),
+            Text(
+              '点按搜索 · 长按复制',
+              style: context.texts.labelSmall!.copyWith(color: scheme.outline),
             ),
           ],
-        ],
+        ),
+        if (item.source == OnlineGallerySource.aiTag)
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Text(
+              '作品标签不是生图提示词',
+              style: context.texts.labelSmall!.copyWith(color: scheme.outline),
+            ),
+          ),
+        GalleryTagTranslations(
+          tags: [
+            for (final g in groups.entries)
+              if (galleryTagTranslatable(g.key)) ...g.value,
+          ],
+          builder: (context, tr) => Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (final group in groups.entries) ...[
+                Padding(
+                  padding: const EdgeInsets.only(top: 14, bottom: 7),
+                  child: Text(
+                    '${group.key.label} · ${group.value.length}',
+                    style: context.texts.labelMedium!.copyWith(
+                      color: galleryTagColor(group.key, scheme),
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    for (final tag in group.value)
+                      GalleryTagChip(
+                        tag: tag,
+                        color: galleryTagColor(group.key, scheme),
+                        reserveTrans: galleryTagTranslatable(group.key),
+                        trans: galleryTagTranslatable(group.key)
+                            ? tr.of(tag)
+                            : null,
+                        pending:
+                            galleryTagTranslatable(group.key) &&
+                            tr.pending(tag),
+                        onTap: () => _searchTag(tag),
+                        onLongPress: () => _copyTag(tag),
+                      ),
+                  ],
+                ),
+              ],
+            ],
+          ),
+        ),
       ],
     );
   }
 }
 
-class _DetailChip extends StatelessWidget {
-  const _DetailChip({required this.label, required this.value});
+/// 操作区的小格:图标在上、字在下,和主按钮同一套圆角。
+class _ActionTile extends StatelessWidget {
+  const _ActionTile({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.busy = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback? onTap;
+  final bool busy;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    final enabled = onTap != null;
+    final fg = enabled ? scheme.onSurface : scheme.outline;
+    return Material(
+      color: scheme.surfaceContainerHigh,
+      borderRadius: BorderRadius.circular(12),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 4),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox.square(
+                dimension: 20,
+                child: busy
+                    ? const Padding(
+                        padding: EdgeInsets.all(2),
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Icon(icon, size: 20, color: fg),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: context.texts.labelMedium!.copyWith(color: fg),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 详情信息的一项:上面小字标签,下面数值。
+class _Spec extends StatelessWidget {
+  const _Spec({required this.label, required this.value});
 
   final String label;
   final String value;
 
   @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
-    decoration: BoxDecoration(
-      color: context.scheme.surfaceContainerLow,
-      borderRadius: BorderRadius.circular(8),
-    ),
-    child: RichText(
-      text: TextSpan(
-        style: context.texts.labelMedium,
-        children: [
-          TextSpan(
-            text: '$label  ',
-            style: TextStyle(color: context.scheme.outline),
+  Widget build(BuildContext context) => ConstrainedBox(
+    constraints: const BoxConstraints(maxWidth: 220),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: context.texts.labelSmall!.copyWith(
+            color: context.scheme.outline,
           ),
-          TextSpan(
-            text: value,
-            style: TextStyle(
-              color: context.scheme.onSurface,
-              fontWeight: FontWeight.w600,
+        ),
+        const SizedBox(height: 2),
+        Text(
+          value,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: context.texts.bodyMedium!.copyWith(
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+/// 点图进来的全屏看图:双指缩放,原图到货前先垫着预览图。
+class _OnlineImageViewer extends StatelessWidget {
+  const _OnlineImageViewer({
+    required this.full,
+    required this.preview,
+    required this.sourceWidth,
+  });
+
+  final String full;
+  final String preview;
+  final int sourceWidth;
+
+  @override
+  Widget build(BuildContext context) {
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+    Widget previewImage() => preview.isEmpty
+        ? const SizedBox.shrink()
+        : RemoteImage(preview, fit: BoxFit.contain, gaplessPlayback: true);
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          GestureDetector(
+            onTap: () => Navigator.pop(context),
+            child: InteractiveViewer(
+              maxScale: 8,
+              child: Center(
+                child: RemoteImage(
+                  full,
+                  fit: BoxFit.contain,
+                  gaplessPlayback: true,
+                  // 按原图宽解码,放大看得清;不知道宽就给个够用的上限
+                  decodeWidth: (sourceWidth > 0 ? sourceWidth : 4096) / dpr,
+                  loadingBuilder: (context, child, progress) => progress == null
+                      ? child
+                      : Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            previewImage(),
+                            const Align(
+                              alignment: Alignment.bottomCenter,
+                              child: Padding(
+                                padding: EdgeInsets.only(bottom: 32),
+                                child: SizedBox.square(
+                                  dimension: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white70,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                  errorBuilder: (_, _, _) => previewImage(),
+                ),
+              ),
+            ),
+          ),
+          SafeArea(
+            child: Align(
+              alignment: Alignment.topLeft,
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: IconButton(
+                  tooltip: '关闭',
+                  style: IconButton.styleFrom(
+                    backgroundColor: Colors.white.withValues(alpha: .12),
+                  ),
+                  color: Colors.white,
+                  icon: const Icon(Icons.close),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ),
             ),
           ),
         ],
       ),
-    ),
-  );
+    );
+  }
 }
 
 class _TextSection extends StatelessWidget {

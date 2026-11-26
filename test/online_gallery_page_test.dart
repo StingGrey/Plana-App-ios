@@ -2,7 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:plana_app/features/editor/data/tag_translation_service.dart';
 import 'package:plana_app/core/store/app_stores.dart';
+import 'package:plana_app/features/editor/data/suggestions.dart'
+    show cacheTagMeta;
 import 'package:plana_app/features/generate/generate_state.dart';
 import 'package:plana_app/features/online_gallery/online_gallery_models.dart';
 import 'package:plana_app/features/online_gallery/online_gallery_page.dart';
@@ -54,6 +57,11 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          tagTranslationServiceProvider.overrideWith((ref) {
+            final service = TagTranslationService(enabled: false, baseUrl: '');
+            ref.onDispose(service.dispose);
+            return service;
+          }),
           appStoresProvider.overrideWithValue(AppStores.ephemeral()),
           onlineGalleryServiceProvider.overrideWithValue(service),
         ],
@@ -73,6 +81,59 @@ void main() {
     expect(actions.top, greaterThan(400));
     expect(actions.bottom, closeTo(768, 1));
   });
+  testWidgets('窄屏:标签带中文译名、画师不翻;图不超过六成屏高,操作吸底', (tester) async {
+    cacheTagMeta('long_hair', trans: '长发');
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() async {
+      await tester.binding.setSurfaceSize(null);
+    });
+    const item = OnlineGalleryItem(
+      id: 'detail-tags-test',
+      source: OnlineGallerySource.danbooru,
+      previewUrl: '',
+      imageUrl: '',
+      width: 600,
+      height: 1800,
+      tags: ['long_hair', 'some_artist'],
+      tagCategories: {
+        'long_hair': OnlineGalleryTagCategory.general,
+        'some_artist': OnlineGalleryTagCategory.artist,
+      },
+    );
+    final service = _StubGalleryService(item);
+    addTearDown(service.dispose);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          tagTranslationServiceProvider.overrideWith((ref) {
+            final service = TagTranslationService(enabled: false, baseUrl: '');
+            ref.onDispose(service.dispose);
+            return service;
+          }),
+          appStoresProvider.overrideWithValue(AppStores.ephemeral()),
+          onlineGalleryServiceProvider.overrideWithValue(service),
+        ],
+        child: const MaterialApp(home: OnlineGalleryDetailPage(item: item)),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('long hair'), findsOneWidget);
+    expect(find.text('长发'), findsOneWidget);
+    expect(find.text('some artist'), findsOneWidget);
+    final image = tester.getRect(
+      find.byKey(const ValueKey('online-gallery-detail-image')),
+    );
+    expect(image.height, lessThanOrEqualTo(844 * .6 + 1));
+    final actions = tester.getRect(
+      find.byKey(const ValueKey('online-gallery-detail-actions')),
+    );
+    expect(actions.bottom, closeTo(844, 1));
+    expect(find.text('使用提示词'), findsOneWidget);
+    expect(find.text('保存本地'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('AI TAG 切换图片后导入对应提示词而非作品标签', (tester) async {
     const first = OnlineGalleryItem(
       id: 'multi',
@@ -92,6 +153,11 @@ void main() {
     addTearDown(service.dispose);
     final container = ProviderContainer(
       overrides: [
+        tagTranslationServiceProvider.overrideWith((ref) {
+          final service = TagTranslationService(enabled: false, baseUrl: '');
+          ref.onDispose(service.dispose);
+          return service;
+        }),
         appStoresProvider.overrideWithValue(AppStores.ephemeral()),
         onlineGalleryServiceProvider.overrideWithValue(service),
       ],

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'online_gallery_models.dart';
+import 'online_gallery_tag_chips.dart';
 import 'ai_tag_metadata.dart';
 
 Color galleryTagColor(OnlineGalleryTagCategory category, ColorScheme scheme) =>
@@ -173,19 +174,31 @@ class _OnlineGalleryImportSheetState extends State<OnlineGalleryImportSheet> {
                           }
                         }),
                       ),
-                      Wrap(
-                        spacing: 6,
-                        runSpacing: 4,
-                        children: [
-                          for (final tag in group.value)
-                            FilterChip(
-                              label: Text(tag.replaceAll('_', ' ')),
-                              selected: _selected.contains(tag),
-                              onSelected: (v) => setState(() {
-                                v ? _selected.add(tag) : _selected.remove(tag);
-                              }),
-                            ),
-                        ],
+                      GalleryTagTranslations(
+                        tags: galleryTagTranslatable(group.key)
+                            ? group.value
+                            : const [],
+                        builder: (context, tr) => Wrap(
+                          spacing: 6,
+                          runSpacing: 4,
+                          children: [
+                            for (final tag in group.value)
+                              FilterChip(
+                                label: _TagLabel(
+                                  tag: tag,
+                                  trans: galleryTagTranslatable(group.key)
+                                      ? tr.of(tag)
+                                      : null,
+                                ),
+                                selected: _selected.contains(tag),
+                                onSelected: (v) => setState(() {
+                                  v
+                                      ? _selected.add(tag)
+                                      : _selected.remove(tag);
+                                }),
+                              ),
+                          ],
+                        ),
                       ),
                     ],
                   ],
@@ -233,6 +246,38 @@ class _OnlineGalleryImportSheetState extends State<OnlineGalleryImportSheet> {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// 选词芯片的字:英文名,有译名时下面一行小字中文。
+class _TagLabel extends StatelessWidget {
+  const _TagLabel({required this.tag, this.trans});
+
+  final String tag;
+  final String? trans;
+
+  @override
+  Widget build(BuildContext context) {
+    final trans = this.trans;
+    final name = Text(tag.replaceAll('_', ' '));
+    if (trans == null) return name;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        name,
+        Text(
+          trans,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontSize: 10.5,
+            height: 1.3,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ],
     );
   }
 }
