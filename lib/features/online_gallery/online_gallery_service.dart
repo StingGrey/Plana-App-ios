@@ -11,6 +11,7 @@ import '../editor/data/local_tag_db.dart';
 import '../editor/data/tag_index.dart' show TagHit;
 import 'online_gallery_credentials.dart';
 import 'online_gallery_models.dart';
+import 'online_gallery_source_lookup.dart';
 import 'ai_tag_metadata.dart';
 
 class OnlineGalleryPageResult {
@@ -339,7 +340,8 @@ class OnlineGalleryService {
   }) async {
     const base = _donmaiApi;
     final safe = source == OnlineGallerySource.safebooru;
-    var tags = query.trim();
+    // 粘贴的出处链接(Pixiv / X …)换成 Danbooru 认的反查写法
+    var tags = rewriteGallerySourceQuery(query);
     if (safe) {
       // rating: 不占匿名用户的两个标签名额
       tags = _join(tags, 'rating:g');
@@ -371,7 +373,10 @@ class OnlineGalleryService {
             // 排行榜接口不吃 tags,Safebooru 的全年龄只能在这里筛
             (safe && item.rating != 'g') ||
             !_passes(item, ratings, blacklist) ||
-            !_matchesQuery(item, query) ||
+            // 搜索接口已经按 tags 筛过;本地再按字面筛一遍会把 `-tag`、
+            // `pixiv:123`、`source:*…*` 这类元标签的结果全吞掉,只给排行用
+            (feed == OnlineGalleryFeed.ranking &&
+                !_matchesQuery(item, query)) ||
             !_matchesDate(item, dateDays)) {
           continue;
         }
@@ -1287,11 +1292,47 @@ class OnlineGalleryNotifier extends Notifier<OnlineGalleryState> {
 
   void setQuery(String query) {
     _invalidateLoads();
-    state = state.copyWith(query: query, loading: false, loadingMore: false);
+    // 排行榜接口不吃 tags:在排行页粘贴出处链接,切回搜索才查得到
+    final toSearch =
+        state.feed == OnlineGalleryFeed.ranking &&
+        _searchesDonmai(state.source) &&
+        gallerySourceLookupIn(query) != null;
+    state = state.copyWith(
+      query: query,
+      feed: toSearch ? OnlineGalleryFeed.search : null,
+      items: toSearch ? const [] : null,
+      page: toSearch ? 1 : null,
+      hasMore: toSearch ? true : null,
+      loading: false,
+      loadingMore: false,
+    );
     if (state.feed == OnlineGalleryFeed.favorites) {
       _refreshFavoritesView();
     }
   }
+
+  /// 拿一条出处链接去 Danbooru 反查。当前已在 Danbooru / Safebooru 就原地查,
+  /// 其他来源(Gelbooru、AI TAG)切到 Danbooru。
+  void lookupSource(String url) {
+    _invalidateLoads();
+    state = state.copyWith(
+      query: url.trim(),
+      source: _searchesDonmai(state.source)
+          ? state.source
+          : OnlineGallerySource.danbooru,
+      feed: OnlineGalleryFeed.search,
+      items: const [],
+      page: 1,
+      hasMore: true,
+      loading: false,
+      loadingMore: false,
+    );
+    unawaited(load());
+  }
+
+  static bool _searchesDonmai(OnlineGallerySource source) =>
+      source == OnlineGallerySource.danbooru ||
+      source == OnlineGallerySource.safebooru;
 
   void _invalidateLoads() {
     ++_loadSerial;

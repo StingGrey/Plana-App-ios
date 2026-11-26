@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/store/app_stores.dart';
 import '../../core/net/remote_image.dart';
@@ -22,6 +23,7 @@ import 'online_gallery_credentials_sheet.dart';
 import 'online_gallery_import_sheet.dart';
 import 'online_gallery_models.dart';
 import 'online_gallery_service.dart';
+import 'online_gallery_source_lookup.dart';
 import 'online_gallery_tag_chips.dart';
 import '../editor/data/suggestions.dart' show translationOf;
 
@@ -123,7 +125,12 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
   ) async {
     if (source == OnlineGallerySource.codex) return const [];
     final word = galleryQueryWordAt(value);
-    if (word == null || !galleryWorthSuggesting(word.term)) return const [];
+    if (word == null ||
+        !galleryWorthSuggesting(word.term) ||
+        // 粘贴的出处链接不是标签,别拿去问联想
+        gallerySourceLookup(word.term) != null) {
+      return const [];
+    }
     await Future<void>.delayed(const Duration(milliseconds: 180));
     if (!mounted || _search.text != value.text) return const [];
     final list = await ref
@@ -253,6 +260,7 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
           _feedBar(state, scheme),
           if (state.source == OnlineGallerySource.aiTag) _platformBar(state),
           _searchBar(state, scheme),
+          _sourceLookupBar(state, scheme),
           AnimatedSize(
             duration: Motion.fast,
             child: _showFilters
@@ -476,6 +484,77 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
     );
   }
 
+  /// 搜索框里是出处链接时的一行说明:Danbooru / Safebooru 上标明正在按出处
+  /// 反查和找到几张;别的来源查不了出处,给一个切到 Danbooru 的按钮。
+  Widget _sourceLookupBar(OnlineGalleryState state, ColorScheme scheme) {
+    final lookup = state.feed == OnlineGalleryFeed.favorites
+        ? null
+        : gallerySourceLookupIn(state.query);
+    if (lookup == null) return const SizedBox.shrink();
+    final donmai =
+        state.source == OnlineGallerySource.danbooru ||
+        state.source == OnlineGallerySource.safebooru;
+    final muted = context.texts.labelMedium!.copyWith(color: scheme.outline);
+    final String? status;
+    if (!donmai || state.error != null) {
+      status = null;
+    } else if (state.loading || (state.items.isEmpty && state.loadingMore)) {
+      status = '查找中…';
+    } else {
+      final n = state.displayItems.length;
+      status = n == 0 ? '没找到' : '$n 张';
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 2, 14, 4),
+      child: Container(
+        key: const ValueKey('online-gallery-source-lookup'),
+        // 两种样式同高,切换来源时提示条不跳
+        constraints: const BoxConstraints(minHeight: 40),
+        padding: EdgeInsets.only(left: 12, right: donmai ? 12 : 2),
+        decoration: BoxDecoration(
+          color: scheme.primary.withValues(alpha: .08),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.link_rounded, size: 17, color: scheme.primary),
+            const SizedBox(width: 8),
+            Text(
+              donmai ? '按出处反查' : '出处链接',
+              style: context.texts.labelMedium!.copyWith(
+                color: scheme.primary,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                '${lookup.site} ${lookup.ref}'.trim(),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: muted,
+              ),
+            ),
+            if (status != null) ...[
+              const SizedBox(width: 8),
+              Text(status, style: muted),
+            ],
+            if (!donmai)
+              TextButton(
+                onPressed: () => _notifier.lookupSource(state.query),
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  minimumSize: const Size(0, 36),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                child: const Text('到 Danbooru 查'),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _suggestionList(
     BuildContext context,
     ColorScheme scheme,
@@ -685,6 +764,20 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
           ),
         );
       }
+      if (state.feed != OnlineGalleryFeed.favorites &&
+          (state.source == OnlineGallerySource.danbooru ||
+              state.source == OnlineGallerySource.safebooru) &&
+          gallerySourceLookupIn(state.query) != null) {
+        return _empty(
+          '${state.source.label} 上没找到这个出处',
+          scheme,
+          hint:
+              state.ratings.length < 4 ||
+                  state.source == OnlineGallerySource.safebooru
+              ? '可能还没人传，也可能被分级筛选挡住了'
+              : '可能还没人传到这里',
+        );
+      }
       return _empty(
         state.feed == OnlineGalleryFeed.favorites ? '还没有收藏作品' : '没有匹配的作品',
         scheme,
@@ -759,7 +852,11 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
     );
   }
 
-  Widget _empty(String text, ColorScheme scheme) => Center(
+  Widget _empty(
+    String text,
+    ColorScheme scheme, {
+    String hint = '调整来源或搜索条件后重试',
+  }) => Center(
     child: Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -773,7 +870,7 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
         ),
         const SizedBox(height: 5),
         Text(
-          '调整来源或搜索条件后重试',
+          hint,
           style: context.texts.bodySmall!.copyWith(color: scheme.outline),
         ),
       ],
@@ -1542,9 +1639,16 @@ class _OnlineGalleryDetailPageState
             ),
         ],
       ),
-      if (item.description.isNotEmpty) ...[
+      // 标签站的 description 存的是 source(出处),AI TAG 的才是真简介
+      if (item.source == OnlineGallerySource.aiTag ||
+          item.source == OnlineGallerySource.codex) ...[
+        if (item.description.isNotEmpty) ...[
+          const SizedBox(height: 18),
+          _TextSection(title: '简介', text: item.description),
+        ],
+      ] else ...[
         const SizedBox(height: 18),
-        _TextSection(title: '简介', text: item.description),
+        _links(item, scheme),
       ],
       if (item.prompt.isNotEmpty) ...[
         const SizedBox(height: 18),
@@ -1575,6 +1679,104 @@ class _OnlineGalleryDetailPageState
         _tags(item, scheme),
       ],
     ];
+  }
+
+  /// 帖子本身和它的出处:点按在浏览器打开,右边复制。Gelbooru 的帖子还能
+  /// 拿出处去 Danbooru 反查(那边标签更全、有中文译名)。
+  Widget _links(OnlineGalleryItem item, ColorScheme scheme) {
+    final postUrl = switch (item.source) {
+      // safebooru.donmai.us 挂着 Cloudflare 验证,两边是同一个库
+      OnlineGallerySource.danbooru || OnlineGallerySource.safebooru =>
+        'https://danbooru.donmai.us/posts/${item.id}',
+      OnlineGallerySource.gelbooru =>
+        'https://gelbooru.com/index.php?page=post&s=view&id=${item.id}',
+      _ => '',
+    };
+    final source = item.description.trim();
+    final lookup = gallerySourceLookup(source);
+    // Pixiv 存的是 i.pximg.net 原图地址(浏览器里打开是 403),换成作品页
+    final sourceUrl = lookup?.pageUrl ?? '';
+    final divider = Divider(
+      height: .5,
+      thickness: .5,
+      indent: 14,
+      color: scheme.outlineVariant.withValues(alpha: .6),
+    );
+    final rows = <Widget>[
+      if (postUrl.isNotEmpty)
+        _LinkRow(
+          key: const ValueKey('online-gallery-post-link'),
+          label: '帖子',
+          text: _displayUrl(postUrl),
+          onTap: () => _openUrl(postUrl),
+          onCopy: () => _copyLink(postUrl),
+        ),
+      if (source.isNotEmpty)
+        _LinkRow(
+          key: const ValueKey('online-gallery-source-link'),
+          label: '出处',
+          text: sourceUrl.isEmpty ? source : _displayUrl(sourceUrl),
+          onTap: sourceUrl.isEmpty ? null : () => _openUrl(sourceUrl),
+          onCopy: () => _copyLink(sourceUrl.isEmpty ? source : sourceUrl),
+        ),
+      if (item.source == OnlineGallerySource.gelbooru && lookup != null)
+        _LinkRow(
+          key: const ValueKey('online-gallery-source-lookup-danbooru'),
+          label: '反查',
+          text: '在 Danbooru 按出处查找',
+          trailing: Icons.arrow_forward_rounded,
+          onTap: () {
+            ref
+                .read(onlineGalleryProvider.notifier)
+                .lookupSource(lookup.pageUrl);
+            Navigator.pop(context);
+          },
+        ),
+    ];
+    if (rows.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '链接',
+          style: context.texts.titleSmall!.copyWith(
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Material(
+          color: scheme.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(12),
+          clipBehavior: Clip.antiAlias,
+          child: Column(
+            children: [
+              for (var i = 0; i < rows.length; i++) ...[
+                if (i > 0) divider,
+                rows[i],
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  static String _displayUrl(String url) =>
+      url.replaceFirst(RegExp(r'^https?://(www\.)?', caseSensitive: false), '');
+
+  Future<void> _openUrl(String url) async {
+    final uri = Uri.tryParse(url);
+    final ok =
+        uri != null &&
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!ok && mounted) {
+      hintSnack(context, '打不开这个链接', icon: Icons.link_off);
+    }
+  }
+
+  void _copyLink(String url) {
+    Clipboard.setData(ClipboardData(text: url));
+    hintSnack(context, '已复制链接', icon: Icons.copy_rounded);
   }
 
   Widget _tags(OnlineGalleryItem item, ColorScheme scheme) {
@@ -1706,6 +1908,76 @@ class _ActionTile extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
                 style: context.texts.labelMedium!.copyWith(color: fg),
               ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 详情「链接」里的一行:左边短标签,中间链接,右边复制(或箭头)。
+class _LinkRow extends StatelessWidget {
+  const _LinkRow({
+    super.key,
+    required this.label,
+    required this.text,
+    this.onTap,
+    this.onCopy,
+    this.trailing,
+  });
+
+  final String label;
+  final String text;
+  final VoidCallback? onTap;
+  final VoidCallback? onCopy;
+  final IconData? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return InkWell(
+      onTap: onTap,
+      onLongPress: onCopy,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 46),
+        child: Padding(
+          padding: EdgeInsets.only(left: 14, right: onCopy != null ? 2 : 14),
+          child: Row(
+            children: [
+              SizedBox(
+                width: 40,
+                child: Text(
+                  label,
+                  style: context.texts.labelMedium!.copyWith(
+                    color: scheme.outline,
+                  ),
+                ),
+              ),
+              Expanded(
+                child: Text(
+                  text,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: context.texts.bodyMedium!.copyWith(
+                    color: onTap != null ? scheme.onSurface : scheme.outline,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              if (onCopy != null)
+                IconButton(
+                  tooltip: '复制',
+                  visualDensity: VisualDensity.compact,
+                  icon: Icon(
+                    Icons.copy_rounded,
+                    size: 17,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                  onPressed: onCopy,
+                )
+              else if (trailing != null)
+                Icon(trailing, size: 18, color: scheme.primary),
             ],
           ),
         ),
