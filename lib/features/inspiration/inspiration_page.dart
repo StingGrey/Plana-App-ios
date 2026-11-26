@@ -803,9 +803,15 @@ class _CategoryPageState extends ConsumerState<_CategoryPage>
 
   /// 表里记过就按记的来(捏过的地方是显式选择);没记过按可用宽度自适应 ——
   /// 平板横屏默认就该是四到六列,不该停在手机那两列上等用户捏。
+  ///
+  /// 首次由 PinchColumnsMixin.initState 调用,那时还不能 dependOn MediaQuery;
+  /// 列数只在这一刻取一次,不需要跟着窗口变化重建,所以直接找祖先读宽度。
   int _savedCols(TagCategory c) =>
       ref.read(uiPrefsProvider).inspirationColumns[c.name] ??
-      _columnCount(MediaQuery.sizeOf(context).width);
+      _columnCount(
+        context.findAncestorWidgetOfExactType<MediaQuery>()?.data.size.width ??
+            0,
+      );
 
   @override
   int get initialGridColumns => _savedCols(_cat);
