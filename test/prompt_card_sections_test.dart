@@ -1,4 +1,4 @@
-// 提示词卡分区行(369dp 宽):一格一行,操作照角色卡。
+// 提示词卡分区行(369dp 宽):一格一行(长的按整段换行),操作照角色卡。
 //
 // 容易坏的几处:窄屏一行塞不下(名字签 + 预览 + 计数 + 两颗按钮)直接溢出;
 // 删除没给撤销,或撤销没放回原位;主体那行冒出删除钮;点名字没先拿到手势,
@@ -115,6 +115,26 @@ void main() {
     expect(find.text('分区 1'), findsOneWidget);
     expect(find.byIcon(Icons.delete_outline), findsNWidgets(3));
     expect(find.byIcon(Icons.power_settings_new), findsNWidgets(3));
+    await _settleTimers(tester);
+  });
+
+  testWidgets('展开时分区里的提示词整段显示,不截成一行', (tester) async {
+    await _pumpCard(tester);
+    final preview = find.byWidgetPredicate(
+      (w) =>
+          w is RichText &&
+          w.text.toPlainText().contains('looking at viewer, smile'),
+    );
+    expect(preview, findsOneWidget);
+    final text = tester.widget<RichText>(preview);
+    expect(text.maxLines, isNull);
+    expect(text.overflow, isNot(TextOverflow.ellipsis));
+    // 369dp 宽放不下一行,换行后比一行高;名字签仍对着第一行
+    final box = tester.getRect(preview);
+    expect(box.height, greaterThan(30));
+    final name = tester.getRect(find.text('主体'));
+    expect(name.center.dy, lessThan(box.top + 20));
+    expect(tester.takeException(), isNull);
     await _settleTimers(tester);
   });
 

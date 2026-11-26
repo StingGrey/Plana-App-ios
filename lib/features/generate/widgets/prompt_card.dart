@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -899,7 +901,10 @@ class _SectionRow extends ConsumerWidget {
             ),
       child: Padding(
         padding: EdgeInsets.fromLTRB(selecting ? 0 : 15, 4, 13, 4),
+        // 卡片展开时预览按整段换行显示(没分区时那段正文也是全文),名字、
+        // 读数和按钮都对齐第一行 —— 只有一行时和原来居中一个样
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (selecting)
               // 按下就能拖;把手连同左边距一起算,图标和卡头的退出钮对齐
@@ -918,19 +923,34 @@ class _SectionRow extends ConsumerWidget {
                   ),
                 ),
               ),
-            _NameChip(
-              name: sectionDisplayName(context.l10n, s.name),
-              enabled: on,
-              onTap: selecting ? onToggle! : () => _rename(context, notifier),
+            SizedBox(
+              height: btnSize,
+              child: Center(
+                child: _NameChip(
+                  name: sectionDisplayName(context.l10n, s.name),
+                  enabled: on,
+                  onTap: selecting
+                      ? onToggle!
+                      : () => _rename(context, notifier),
+                ),
+              ),
             ),
             const SizedBox(width: 8),
             Expanded(
-              child: _Preview(draft: draft, enabled: on),
+              child: Padding(
+                // 一行字的行高垫到按钮高度,首行和名字、按钮同一条中线
+                padding: EdgeInsets.symmetric(
+                  vertical: math.max(0, (btnSize - _previewLineHeight) / 2),
+                ),
+                child: _Preview(draft: draft, enabled: on),
+              ),
             ),
             const SizedBox(width: 8),
             // 上正向、下负面
-            SizedBox(
+            Container(
               width: 30,
+              height: btnSize,
+              alignment: Alignment.centerRight,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.end,
@@ -1123,6 +1143,9 @@ class _NameChip extends StatelessWidget {
 }
 
 /// 一行预览:折叠(画师串等)显示成它的名字,其余照定稿写法。
+/// 分区预览的行高(bodyMedium 14 × 1.43),行的对齐按它算。
+const _previewLineHeight = 20.0;
+
 class _Preview extends StatelessWidget {
   const _Preview({required this.draft, required this.enabled});
 
@@ -1134,6 +1157,8 @@ class _Preview extends StatelessWidget {
     final scheme = context.scheme;
     // 停用:字灰掉再加一道删除线,一眼看出这一格不进载荷
     final style = context.texts.bodyMedium!.copyWith(
+      height: _previewLineHeight / 14,
+      fontSize: 14,
       color: enabled ? scheme.onSurfaceVariant : scheme.outline,
       decoration: enabled ? null : TextDecoration.lineThrough,
       decorationColor: scheme.outline,
@@ -1181,12 +1206,7 @@ class _Preview extends StatelessWidget {
             : TextSpan(text: p.text),
       );
     }
-    return Text.rich(
-      TextSpan(children: spans),
-      maxLines: 1,
-      overflow: TextOverflow.ellipsis,
-      style: style,
-    );
+    return Text.rich(TextSpan(children: spans), style: style);
   }
 }
 
