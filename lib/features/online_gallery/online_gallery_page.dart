@@ -17,6 +17,8 @@ import '../local_gallery/local_gallery_state.dart';
 import '../shell/shell_state.dart';
 import '../inspiration/codex/codex_view.dart';
 import '../inspiration/prompt_library_save.dart';
+import 'online_gallery_credentials.dart';
+import 'online_gallery_credentials_sheet.dart';
 import 'online_gallery_import_sheet.dart';
 import 'online_gallery_models.dart';
 import 'online_gallery_service.dart';
@@ -28,7 +30,11 @@ final onlineGalleryScrollStorageProvider = Provider(
 
 /// Multi-source online reference gallery.
 class OnlineGalleryPage extends ConsumerStatefulWidget {
-  const OnlineGalleryPage({super.key});
+  const OnlineGalleryPage({super.key, this.embedded = false});
+
+  /// 嵌在灵感页的页签里:不带自己的 AppBar(顶上已经是页签栏),
+  /// 黑名单、刷新挪进来源那一行。
+  final bool embedded;
 
   @override
   ConsumerState<OnlineGalleryPage> createState() => _OnlineGalleryPageState();
@@ -199,50 +205,70 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
       if (_search.text != query) _search.text = query;
     });
     final scheme = context.scheme;
+    final body = Column(
+      children: [
+        _sourceBar(state, scheme),
+        if (state.source == OnlineGallerySource.codex)
+          const Expanded(child: CodexView())
+        else ...[
+          _feedBar(state, scheme),
+          if (state.source == OnlineGallerySource.aiTag) _platformBar(state),
+          _searchBar(state, scheme),
+          AnimatedSize(
+            duration: Motion.fast,
+            child: _showFilters
+                ? _filterBar(state, scheme)
+                : const SizedBox.shrink(),
+          ),
+          Expanded(child: _content(state, scheme)),
+        ],
+      ],
+    );
+    if (widget.embedded) return body;
     return Scaffold(
       appBar: AppBar(
         title: const Text('在线画廊'),
-        actions: [
-          IconButton(
-            tooltip: '黑名单',
-            icon: Icon(
-              state.blacklist.isEmpty ? Icons.block_outlined : Icons.block,
-              color: state.blacklist.isEmpty ? null : scheme.error,
-            ),
-            onPressed: _editBlacklist,
-          ),
-          IconButton(
-            tooltip: '刷新',
-            icon: const Icon(Icons.refresh),
-            onPressed: state.loading ? null : () => _notifier.load(),
-          ),
-        ],
+        actions: [_blacklistButton(state, scheme), _refreshButton(state)],
       ),
-      body: Column(
-        children: [
-          _sourceBar(state, scheme),
-          if (state.source == OnlineGallerySource.codex)
-            const Expanded(child: CodexView())
-          else ...[
-            _feedBar(state, scheme),
-            if (state.source == OnlineGallerySource.aiTag) _platformBar(state),
-            _searchBar(state, scheme),
-            AnimatedSize(
-              duration: Motion.fast,
-              child: _showFilters
-                  ? _filterBar(state, scheme)
-                  : const SizedBox.shrink(),
-            ),
-            Expanded(child: _content(state, scheme)),
-          ],
-        ],
+      body: body,
+    );
+  }
+
+  Widget _blacklistButton(OnlineGalleryState state, ColorScheme scheme) =>
+      IconButton(
+        tooltip: '黑名单',
+        icon: Icon(
+          state.blacklist.isEmpty ? Icons.block_outlined : Icons.block,
+          color: state.blacklist.isEmpty ? null : scheme.error,
+        ),
+        onPressed: _editBlacklist,
+      );
+
+  Widget _refreshButton(OnlineGalleryState state) => IconButton(
+    tooltip: '刷新',
+    icon: const Icon(Icons.refresh),
+    onPressed: state.loading ? null : () => _notifier.load(),
+  );
+
+  /// 当前来源填没填凭据:填了钥匙点亮。
+  Widget _keyButton(OnlineGalleryState state, ColorScheme scheme) {
+    final creds = ref.watch(onlineGalleryCredentialsProvider).value;
+    final on = creds?.configuredFor(state.source) ?? false;
+    return IconButton(
+      tooltip: on ? 'API Key(已配置)' : 'API Key',
+      icon: Icon(
+        on ? Icons.key : Icons.key_outlined,
+        color: on ? scheme.primary : null,
       ),
+      onPressed: () => showOnlineGalleryCredentialsSheet(context),
     );
   }
 
   Widget _sourceBar(OnlineGalleryState state, ColorScheme scheme) {
+    final codex = state.source == OnlineGallerySource.codex;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 8, 14, 4),
+      // 行尾是 IconButton 时右边距减去它的内衬,图标视觉边与下面各行对齐
+      padding: EdgeInsets.fromLTRB(14, 8, codex ? 14 : 6, 4),
       child: Row(
         children: [
           Icon(Icons.public, size: 19, color: scheme.primary),
@@ -290,6 +316,14 @@ class _OnlineGalleryPageState extends ConsumerState<OnlineGalleryPage> {
               ),
             ),
           ),
+          if (!codex) ...[
+            const SizedBox(width: 2),
+            _keyButton(state, scheme),
+            if (widget.embedded) ...[
+              _blacklistButton(state, scheme),
+              _refreshButton(state),
+            ],
+          ],
         ],
       ),
     );
