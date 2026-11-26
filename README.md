@@ -8,7 +8,6 @@
 
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/StingGrey/Plana-App-ios?include_prereleases&label=iOS%20release)](https://github.com/StingGrey/Plana-App-ios/releases)
-[![Android](https://img.shields.io/badge/Android-7.0%2B-3ddc84?logo=android&logoColor=white)](#构建)
 [![iOS](https://img.shields.io/badge/iOS-16%2B%20beta-000000?logo=apple&logoColor=white)](IOS_PORT.md)
 [![Flutter](https://img.shields.io/badge/built%20with-Flutter-02569B?logo=flutter&logoColor=white)](https://flutter.dev)
 
